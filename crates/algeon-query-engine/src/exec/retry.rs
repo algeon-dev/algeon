@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::{ExecutionContext, ExecutionMetrics, QueryError, QueryErrorCode, Result};
+use crate::runtime::MemoryControlPolicy;
 
 const BOUNDED_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -43,10 +44,28 @@ pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metri
     }
 }
 
+/// Waits before a retry. Cancellation or the deadline ends the wait at once.
 pub(in crate::exec) fn backoff_before_retry(context: &ExecutionContext, stage: &'static str) -> Result<()> {
     context.check_cancellation(stage)?;
-    std::thread::sleep(BOUNDED_RETRY_BACKOFF);
+    context.cancellation().sleep(BOUNDED_RETRY_BACKOFF, stage)?;
     context.check_cancellation(stage)
+}
+
+/// How far a bounded retry boundary may go: at most `max_attempts` tries of
+/// one unit, and no source split below `min_split_row_groups` row groups.
+/// Context construction validates both policy fields as nonzero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec) struct RetryLimits {
+    pub(in crate::exec) max_attempts: usize,
+    pub(in crate::exec) min_split_row_groups: usize,
+}
+
+impl RetryLimits {
+    pub(in crate::exec) fn of(context: &ExecutionContext) -> Self {
+        let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } =
+            context.memory_control_policy();
+        Self { max_attempts: max_retry_attempts, min_split_row_groups: min_retry_chunk_row_groups }
+    }
 }
 
 #[cfg(test)]

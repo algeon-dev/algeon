@@ -110,7 +110,7 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Result<BoundedCompiledJoinBuildState> {
         let estimate = JoinBuildStreamEstimate {
             rows: Some(stream.num_rows()).filter(|rows| *rows > 0),
-            bytes: Some(stream.total_bytes_hint()).filter(|bytes| *bytes > 0),
+            bytes: stream.total_bytes_hint().filter(|bytes| *bytes > 0),
         };
         self.execute_join_build_from_input_stream(
             task,

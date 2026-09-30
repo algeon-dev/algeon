@@ -10,6 +10,7 @@ use super::{
     stream::{
         RootHashJoinMaterializeStreamSource, is_retryable_join_stream_slice_error, record_join_stream_slice_retry_error,
     },
+    sum_bounds,
 };
 use crate::{
     exec::retry::backoff_before_retry,
@@ -123,7 +124,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             return Err(error);
         },
     };
-    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let output_reservation_bytes = sum_bounds(left_output_bytes, right_output_bytes);
     let output = match materialize_join_output_projection(
         &left.frame,
         &right.frame,
@@ -178,7 +179,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
 
 pub(in crate::exec::bounded::join::hash) struct RootHashJoinStreamChunkOutput {
     pub(in crate::exec::bounded::join::hash) frame: ResidentGpuFrame,
-    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
+    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
     pub(in crate::exec::bounded::join::hash) output_bytes: u64,
     pub(in crate::exec::bounded::join::hash) output_rows: u64,
 }
@@ -322,7 +323,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
             return Err(error);
         },
     };
-    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let output_reservation_bytes = sum_bounds(left_output_bytes, right_output_bytes);
     let output = match materialize_join_output_projection(
         &left.frame,
         &right.frame,

@@ -158,7 +158,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
         index_bytes: gather_map_bytes,
         materialization_bytes: candidate_reservation_bytes,
-        output_reservation_bytes: output_bytes,
+        output_reservation_bytes: Some(output_bytes),
         output_rows,
         output_bytes,
     };

@@ -78,7 +78,9 @@ pub(super) fn record_streamed_one_shot_join_metrics(
 ) {
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(summary.index_bytes);
-    metrics.record_one_shot_join_materialization_bytes(summary.materialization_bytes);
+    if let Some(bytes) = summary.materialization_bytes {
+        metrics.record_one_shot_join_materialization_bytes(bytes);
+    }
     metrics.record_one_shot_join_output_bytes(summary.output_bytes);
     metrics.record_operator_metrics(OperatorMetrics::join(
         node_id,
@@ -116,7 +118,9 @@ pub(super) fn record_one_shot_join_chunk_metrics(
 ) {
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(chunk.index_bytes);
-    metrics.record_one_shot_join_materialization_bytes(chunk.materialization_bytes);
+    if let Some(bytes) = chunk.materialization_bytes {
+        metrics.record_one_shot_join_materialization_bytes(bytes);
+    }
     metrics.record_one_shot_join_output_bytes(chunk.output_bytes);
     metrics.record_operator_metrics(OperatorMetrics::join(
         node_id,

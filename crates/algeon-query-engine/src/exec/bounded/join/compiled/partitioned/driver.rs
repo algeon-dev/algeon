@@ -1,14 +1,13 @@
 use super::{
     BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame,
-    JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
-    PartitionedJoinPartitionOutput, PartitionedJoinRowRange, PartitionedJoinSide, QueryError, ResidentGpuFrame, Result,
-    RetryFacts, VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
-    observe_device_memory_bytes, partition_row_range, partitioned_join_reusable_rejected_reason, probe_side,
-    release_bounded_join_side_frame, release_partitioned_join_side, side_metric, slice_partition_join_side_range,
-    with_partition_side,
+    JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinPartitionOutput,
+    PartitionedJoinRowRange, PartitionedJoinSide, QueryError, ResidentGpuFrame, Result, RetryFacts, VecDeque,
+    cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side, observe_device_memory_bytes,
+    partition_row_range, partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
+    release_partitioned_join_side, side_metric, slice_partition_join_side_range, sum_bounds, with_partition_side,
 };
 use crate::{
-    exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
+    exec::retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
     metrics::{JoinOperatorMetrics, OperatorMetrics},
 };
 
@@ -79,13 +78,24 @@ pub(super) struct PartitionedJoinInputStats {
 }
 
 // Accumulates per-partition output costs for the final join metric row.
-#[derive(Default)]
 pub(super) struct PartitionedJoinOutputSummary {
     pub(super) index_bytes: u64,
     pub(super) mixed_size_data_bytes: u64,
-    pub(super) output_reservation_bytes: u64,
+    pub(super) output_reservation_bytes: Option<u64>,
     pub(super) output_rows: u64,
     pub(super) output_bytes: u64,
+}
+
+impl Default for PartitionedJoinOutputSummary {
+    fn default() -> Self {
+        Self {
+            index_bytes: 0,
+            mixed_size_data_bytes: 0,
+            output_reservation_bytes: Some(0),
+            output_rows: 0,
+            output_bytes: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +211,7 @@ impl PartitionedJoinOutputSummary {
     pub(super) fn record_partition_output(&mut self, output: &PartitionedJoinPartitionOutput) {
         self.index_bytes = self.index_bytes.saturating_add(output.index_bytes);
         self.mixed_size_data_bytes = self.mixed_size_data_bytes.saturating_add(output.mixed_size_data_bytes);
-        self.output_reservation_bytes = self.output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+        self.output_reservation_bytes = sum_bounds(self.output_reservation_bytes, output.output_reservation_bytes);
         self.output_rows = self.output_rows.saturating_add(output.output_rows);
         self.output_bytes = self.output_bytes.saturating_add(output.output_bytes);
     }
@@ -644,12 +654,10 @@ where
 }
 
 fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinRetryPolicy {
-    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
+    let RetryLimits { max_attempts, min_split_row_groups } = RetryLimits::of(context);
     PartitionedJoinRetryPolicy {
-        max_attempts: max_retry_attempts.max(1),
-        min_probe_rows: min_retry_chunk_row_groups
-            .max(1)
-            .saturating_mul(PARTITIONED_JOIN_MIN_PROBE_ROWS_PER_RETRY_UNIT),
+        max_attempts,
+        min_probe_rows: min_split_row_groups.saturating_mul(PARTITIONED_JOIN_MIN_PROBE_ROWS_PER_RETRY_UNIT),
     }
 }
 

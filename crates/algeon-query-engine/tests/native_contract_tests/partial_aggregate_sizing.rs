@@ -1,10 +1,7 @@
 use arrow::datatypes::{DataType as ArrowDataType, Fields, TimeUnit};
-use query_engine::{
-    error::QueryErrorCode,
-    materialization_sizing::{
-        JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
-        STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
-    },
+use query_engine::materialization_sizing::{
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
+    STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
 
 fn fixed_column(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {
@@ -32,7 +29,9 @@ fn grouped_shape_uses_input_rows_as_upper_bound() {
 
 #[test]
 fn empty_partial_columns_returns_zero() {
-    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &[]).unwrap();
+    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &[])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound, 0);
 }
 
@@ -41,8 +40,11 @@ fn global_with_single_int64_count_column_uses_one_row() {
     // Mirrors a `SELECT COUNT(*)` partial: one Int64 column, one row.
     let bound =
         partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &[fixed_column(ArrowDataType::Int64)])
-            .unwrap();
-    let direct = join_output_upper_bound_bytes(1, &[fixed_column(ArrowDataType::Int64)]).unwrap();
+            .unwrap()
+            .expect("the byte model bounds this output");
+    let direct = join_output_upper_bound_bytes(1, &[fixed_column(ArrowDataType::Int64)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound, direct, "global helper must delegate with row count = 1");
     // Bound must contain at least 8 bytes for the Int64 data slot.
     assert!(bound >= 8);
@@ -58,9 +60,10 @@ fn grouped_partial_bound_matches_direct_join_helper_call() {
         fixed_column(ArrowDataType::Decimal128(18, 2)),
     ];
     let rows = 4_096;
-    let bound =
-        partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows: rows }, &columns).unwrap();
-    let direct = join_output_upper_bound_bytes(rows, &columns).unwrap();
+    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows: rows }, &columns)
+        .unwrap()
+        .expect("the byte model bounds this output");
+    let direct = join_output_upper_bound_bytes(rows, &columns).unwrap().expect("the byte model bounds this output");
     assert_eq!(bound, direct);
 }
 
@@ -72,7 +75,8 @@ fn global_partial_with_avg_state_uses_sum_plus_count_columns() {
         PartialAggregateShape::Global,
         &[fixed_column(ArrowDataType::Decimal128(18, 2)), fixed_column(ArrowDataType::Int64)],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     // Two columns × (data + null mask 0-bytes-when-1-row + 256-byte alignment padding).
     // null_mask_bytes(1) = ceil(1/8)=1, rounded up to 64-byte alignment → 64.
     let null_mask_bytes_one_row = 64;
@@ -94,7 +98,9 @@ fn grouped_partial_with_string_keys_uses_max_string_length() {
         fixed_column(ArrowDataType::Int32),
         fixed_column(ArrowDataType::Int64), // partial COUNT state
     ];
-    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows }, &columns).unwrap();
+    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows }, &columns)
+        .unwrap()
+        .expect("the byte model bounds this output");
     // Sanity: bound must be ≥ worst-case data bytes for the two string keys
     // (1M rows × (200 + 20) chars) without overflowing u64.
     let data_only_strings = input_rows * (200 + 20);
@@ -113,7 +119,8 @@ fn grouped_partial_with_zero_input_rows_returns_offset_only_bound_for_strings() 
         PartialAggregateShape::Grouped { input_rows: 0 },
         &[string_column(64), fixed_column(ArrowDataType::Int64)],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     // String: 0 data + 1 offset × 8 bytes + 0 null mask + 256 alignment.
     // Int64: 0 data + 0 null mask + 256 alignment.
     let expected_string = STRING_OFFSET_BYTES_CONSERVATIVE + PER_COLUMN_ALIGNMENT_PADDING_BYTES;
@@ -122,18 +129,16 @@ fn grouped_partial_with_zero_input_rows_returns_offset_only_bound_for_strings() 
 }
 
 #[test]
-fn unsupported_partial_column_dtype_is_rejected() {
-    // Binary and nested dtypes are not supported by the bounded
-    // materialize sizing path. The admission gate's dtype loop is expected to
-    // reject plans that project these into the partial state, but the helper
-    // remains a defense-in-depth check.
+fn partial_column_dtype_without_a_byte_model_has_no_bound() {
+    // Binary and nested dtypes have no closed-form size in the cuDF byte
+    // model; the partial state then has no bound and no proactive split.
     for dtype in [ArrowDataType::Binary, ArrowDataType::Float16, ArrowDataType::Struct(Fields::empty())] {
-        let error = partial_aggregate_upper_bound_bytes(
+        let bound = partial_aggregate_upper_bound_bytes(
             PartialAggregateShape::Grouped { input_rows: 10 },
             &[fixed_column(dtype.clone())],
         )
-        .unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "dtype {dtype:?}");
+        .unwrap();
+        assert_eq!(bound, None, "dtype {dtype:?}");
     }
 }
 
@@ -145,7 +150,8 @@ fn global_partial_with_timestamp_uses_eight_bytes() {
         PartialAggregateShape::Global,
         &[fixed_column(ArrowDataType::Timestamp(TimeUnit::Microsecond, None))],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     let null_mask_bytes_one_row = 64;
     let expected = 8 + null_mask_bytes_one_row + PER_COLUMN_ALIGNMENT_PADDING_BYTES;
     assert_eq!(bound, expected);
@@ -159,8 +165,11 @@ fn grouped_partial_with_temporal_keys_uses_physical_widths() {
         fixed_column(ArrowDataType::Time32(TimeUnit::Millisecond)),
         fixed_column(ArrowDataType::Time64(TimeUnit::Nanosecond)),
     ];
-    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows }, &columns).unwrap();
-    let direct = join_output_upper_bound_bytes(input_rows, &columns).unwrap();
+    let bound = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Grouped { input_rows }, &columns)
+        .unwrap()
+        .expect("the byte model bounds this output");
+    let direct =
+        join_output_upper_bound_bytes(input_rows, &columns).unwrap().expect("the byte model bounds this output");
     assert_eq!(bound, direct);
 }
 
@@ -174,12 +183,14 @@ fn grouped_partial_with_no_aggregate_state_only_group_keys() {
         PartialAggregateShape::Grouped { input_rows },
         &[fixed_column(ArrowDataType::Int32), fixed_column(ArrowDataType::Int64)],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     let direct = join_output_upper_bound_bytes(
         input_rows,
         &[fixed_column(ArrowDataType::Int32), fixed_column(ArrowDataType::Int64)],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     assert_eq!(bound, direct);
 }
 
@@ -189,7 +200,11 @@ fn global_shape_does_not_scale_with_input_rows() {
     // row count. This is the defining property of the Global vs Grouped
     // distinction.
     let columns = [fixed_column(ArrowDataType::Int64)];
-    let bound_small = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &columns).unwrap();
-    let bound_large = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &columns).unwrap();
+    let bound_small = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &columns)
+        .unwrap()
+        .expect("the byte model bounds this output");
+    let bound_large = partial_aggregate_upper_bound_bytes(PartialAggregateShape::Global, &columns)
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound_small, bound_large);
 }

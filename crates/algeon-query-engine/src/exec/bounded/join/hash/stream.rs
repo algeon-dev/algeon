@@ -7,7 +7,7 @@ use super::{
     materialize::{materialize_bounded_root_hash_join_index_slice, release_root_hash_join_stream_outputs},
     probe::reusable_hash_join_execution_strategy,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
-    release_bounded_root_hash_join_build_state, side_metric,
+    release_bounded_root_hash_join_build_state, side_metric, sum_bounds,
 };
 use crate::{
     exec::retry::{is_retryable_resource_error, record_retryable_resource_error},
@@ -77,9 +77,9 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             return Err(error);
         },
     };
-    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let output_reservation_bytes = sum_bounds(left_output_bytes, right_output_bytes);
     let mut outputs = Vec::new();
-    let mut cumulative_output_reservation_bytes = 0u64;
+    let mut cumulative_output_reservation_bytes = Some(0);
     let mut cumulative_output_bytes = 0u64;
     let mut emitted_rows = 0u64;
     let mut offset = 0usize;
@@ -100,7 +100,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             Ok(slice_outputs) => {
                 for output in slice_outputs {
                     cumulative_output_reservation_bytes =
-                        cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+                        sum_bounds(cumulative_output_reservation_bytes, output.output_reservation_bytes);
                     cumulative_output_bytes = cumulative_output_bytes.saturating_add(output.output_bytes);
                     outputs.push(output.frame);
                 }
@@ -136,7 +136,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             Ok(slice_outputs) => {
                 for output in slice_outputs {
                     cumulative_output_reservation_bytes =
-                        cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+                        sum_bounds(cumulative_output_reservation_bytes, output.output_reservation_bytes);
                     cumulative_output_bytes = cumulative_output_bytes.saturating_add(output.output_bytes);
                     emitted_rows = emitted_rows.saturating_add(output.output_rows);
                     outputs.push(output.frame);
@@ -187,13 +187,13 @@ pub(in crate::exec::bounded::join::hash) struct RootHashJoinMaterializeStreamSou
     pub(in crate::exec::bounded::join::hash) left_indices: Option<cudf::DataFrameJoinIndices>,
     pub(in crate::exec::bounded::join::hash) right_indices: Option<cudf::DataFrameJoinIndices>,
     pub(in crate::exec::bounded::join::hash) gather_map_bytes: u64,
-    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
+    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
     pub(in crate::exec::bounded::join::hash) timer: Option<Instant>,
     pub(in crate::exec::bounded::join::hash) pending_outputs: VecDeque<ResidentGpuFrame>,
     pub(in crate::exec::bounded::join::hash) offset: usize,
     pub(in crate::exec::bounded::join::hash) output_len: usize,
     pub(in crate::exec::bounded::join::hash) emitted_empty_output: bool,
-    pub(in crate::exec::bounded::join::hash) cumulative_output_reservation_bytes: u64,
+    pub(in crate::exec::bounded::join::hash) cumulative_output_reservation_bytes: Option<u64>,
     pub(in crate::exec::bounded::join::hash) cumulative_output_bytes: u64,
     pub(in crate::exec::bounded::join::hash) emitted_rows: u64,
 }
@@ -227,7 +227,7 @@ impl RootHashJoinMaterializeStreamSource {
             offset: 0,
             output_len,
             emitted_empty_output: false,
-            cumulative_output_reservation_bytes: 0,
+            cumulative_output_reservation_bytes: Some(0),
             cumulative_output_bytes: 0,
             emitted_rows: 0,
         }
@@ -264,7 +264,7 @@ impl RootHashJoinMaterializeStreamSource {
         )?;
         for output in slice_outputs {
             self.cumulative_output_reservation_bytes =
-                self.cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+                sum_bounds(self.cumulative_output_reservation_bytes, output.output_reservation_bytes);
             self.cumulative_output_bytes = self.cumulative_output_bytes.saturating_add(output.output_bytes);
             self.emitted_rows = self.emitted_rows.saturating_add(output.output_rows);
             self.pending_outputs.push_back(output.frame);
@@ -382,27 +382,35 @@ pub(in crate::exec::bounded::join::hash) fn record_join_stream_slice_retry_error
     record_retryable_resource_error(error, metrics);
 }
 
+/// Output rows per slice. A join whose output has no byte bound, or fits the
+/// target, materializes in one slice; the slice retry splits it if its
+/// allocation fails.
 pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_stream_chunk_rows(
     output_rows: u64,
-    output_reservation_bytes: u64,
+    output_reservation_bytes: Option<u64>,
     target_bytes: u64,
 ) -> usize {
-    if output_rows == 0 || output_reservation_bytes <= target_bytes {
-        return usize::try_from(output_rows.max(1)).unwrap_or(usize::MAX);
+    match output_reservation_bytes {
+        Some(bytes) if output_rows > 0 && bytes > target_bytes => {
+            let rows = (target_bytes.saturating_mul(output_rows) / bytes).max(1);
+            usize::try_from(rows).unwrap_or(usize::MAX)
+        },
+        _ => usize::try_from(output_rows.max(1)).unwrap_or(usize::MAX),
     }
-    let rows = (target_bytes.saturating_mul(output_rows) / output_reservation_bytes).max(1);
-    usize::try_from(rows).unwrap_or(usize::MAX)
 }
 
+/// The share of `total_bytes` that `rows` of `total_rows` carry.
 pub(in crate::exec::bounded::join::hash) fn proportional_join_stream_bytes(
-    total_bytes: u64,
+    total_bytes: Option<u64>,
     rows: u64,
     total_rows: u64,
-) -> u64 {
+) -> Option<u64> {
+    let total_bytes = total_bytes?;
     if total_rows == 0 {
-        return total_bytes;
+        return Some(total_bytes);
     }
-    ((u128::from(total_bytes) * u128::from(rows)).div_ceil(u128::from(total_rows))).min(u128::from(u64::MAX)) as u64
+    Some(((u128::from(total_bytes) * u128::from(rows)).div_ceil(u128::from(total_rows))).min(u128::from(u64::MAX))
+        as u64)
 }
 
 pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(

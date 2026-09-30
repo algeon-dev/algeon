@@ -10,7 +10,7 @@ use super::{
     partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
     projected_output_columns_for_retained_sizing, record_partitioned_join_operator_metrics,
     record_partitioned_join_selection, record_partitioned_join_sides, release_partitioned_join_side,
-    residual_input_columns, run_partitioned_join_driver, validate_partitioned_mixed_keyed_residual_join,
+    residual_input_columns, run_partitioned_join_driver, sum_bounds, validate_partitioned_mixed_keyed_residual_join,
 };
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
@@ -104,8 +104,8 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
             metrics_recorded: false,
         };
         let payload = ResidentFrameStreamPayload::from_producer(
-            plan.partition_target_bytes,
-            0,
+            Some(plan.partition_target_bytes),
+            None,
             0,
             node.spec.output_projection.len(),
             Box::new(stream),
@@ -253,7 +253,7 @@ fn partitioned_mixed_join_output_upper_bound_bytes(
     left: &BoundedJoinSideFrame,
     right: &BoundedJoinSideFrame,
     expected_output_rows: u64,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
     let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
     let left_bytes = join_side_output_upper_bound_bytes(
@@ -272,7 +272,7 @@ fn partitioned_mixed_join_output_upper_bound_bytes(
         &right_projection,
         JoinSide::Right,
     )?;
-    Ok(left_bytes.saturating_add(right_bytes))
+    Ok(sum_bounds(left_bytes, right_bytes))
 }
 
 struct PartitionedMixedJoinStreamSource {

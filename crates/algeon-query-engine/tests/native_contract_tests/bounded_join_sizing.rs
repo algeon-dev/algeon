@@ -40,20 +40,22 @@ fn string_column_expected(rows: u64, max_len: u64) -> u64 {
 
 #[test]
 fn empty_projection_returns_zero() {
-    let bound = join_output_upper_bound_bytes(1_000, &[]).unwrap();
+    let bound = join_output_upper_bound_bytes(1_000, &[]).unwrap().expect("the byte model bounds this output");
     assert_eq!(bound, 0);
 }
 
 #[test]
 fn empty_projection_with_zero_rows_returns_zero() {
-    let bound = join_output_upper_bound_bytes(0, &[]).unwrap();
+    let bound = join_output_upper_bound_bytes(0, &[]).unwrap().expect("the byte model bounds this output");
     assert_eq!(bound, 0);
 }
 
 #[test]
 fn fixed_width_int32_column_bound_is_exact() {
     let rows = 1_000_000;
-    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Int32)]).unwrap();
+    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Int32)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound, fixed_column_expected(rows, 4));
 }
 
@@ -62,7 +64,9 @@ fn fixed_width_int64_uint64_float64_match_eight_byte_size() {
     let rows = 256;
     let expected = fixed_column_expected(rows, 8);
     for dtype in [ArrowDataType::Int64, ArrowDataType::UInt64, ArrowDataType::Float64] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "dtype {dtype:?}");
     }
 }
@@ -72,7 +76,9 @@ fn boolean_int8_uint8_match_one_byte_size() {
     let rows = 1_024;
     let expected = fixed_column_expected(rows, 1);
     for dtype in [ArrowDataType::Boolean, ArrowDataType::Int8, ArrowDataType::UInt8] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "dtype {dtype:?}");
     }
 }
@@ -82,7 +88,9 @@ fn int16_uint16_match_two_byte_size() {
     let rows = 1_024;
     let expected = fixed_column_expected(rows, 2);
     for dtype in [ArrowDataType::Int16, ArrowDataType::UInt16] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "dtype {dtype:?}");
     }
 }
@@ -90,10 +98,14 @@ fn int16_uint16_match_two_byte_size() {
 #[test]
 fn date32_uses_four_bytes_and_time32_uses_the_cudf_duration_width() {
     let rows = 10_000;
-    let date = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Date32)]).unwrap();
+    let date = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Date32)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(date, fixed_column_expected(rows, 4));
     for dtype in [ArrowDataType::Time32(TimeUnit::Second), ArrowDataType::Time32(TimeUnit::Millisecond)] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, fixed_column_expected(rows, 8), "dtype {dtype:?}");
     }
 }
@@ -107,7 +119,9 @@ fn date64_and_time64_use_eight_bytes() {
         ArrowDataType::Time64(TimeUnit::Microsecond),
         ArrowDataType::Time64(TimeUnit::Nanosecond),
     ] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "dtype {dtype:?}");
     }
 }
@@ -117,16 +131,17 @@ fn timestamp_no_timezone_uses_eight_bytes() {
     let rows = 64;
     let expected = fixed_column_expected(rows, 8);
     for unit in [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Timestamp(unit, None))]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Timestamp(unit, None))])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "unit {unit:?}");
     }
 }
 
 #[test]
-fn timestamp_with_timezone_is_rejected() {
+fn timestamp_with_timezone_has_no_bound() {
     let column = fixed_column(ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())));
-    let error = join_output_upper_bound_bytes(64, &[column]).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(join_output_upper_bound_bytes(64, &[column]).unwrap(), None);
 }
 
 #[test]
@@ -134,7 +149,9 @@ fn duration_uses_eight_bytes() {
     let rows = 64;
     let expected = fixed_column_expected(rows, 8);
     for unit in [TimeUnit::Second, TimeUnit::Millisecond, TimeUnit::Microsecond, TimeUnit::Nanosecond] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Duration(unit))]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Duration(unit))])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, expected, "unit {unit:?}");
     }
 }
@@ -142,7 +159,9 @@ fn duration_uses_eight_bytes() {
 #[test]
 fn decimal128_uses_sixteen_bytes() {
     let rows = 100;
-    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Decimal128(38, 6))]).unwrap();
+    let bound = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Decimal128(38, 6))])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound, fixed_column_expected(rows, 16));
 }
 
@@ -150,7 +169,9 @@ fn decimal128_uses_sixteen_bytes() {
 fn decimal32_and_decimal64_use_four_and_eight_bytes() {
     let rows = 100;
     for (data_type, width) in [(ArrowDataType::Decimal32(9, 2), 4), (ArrowDataType::Decimal64(18, 6), 8)] {
-        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(data_type.clone())]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(data_type.clone())])
+            .unwrap()
+            .expect("the byte model bounds this output");
         assert_eq!(bound, fixed_column_expected(rows, width), "dtype {data_type:?}");
     }
 }
@@ -162,7 +183,9 @@ fn string_column_bound_uses_max_length_times_rows_plus_offsets() {
     // tracks the worst-case duplication (codex v1 counterexample).
     let rows = 1_000;
     let max_len = 1_000;
-    let bound = join_output_upper_bound_bytes(rows, &[string_column(max_len)]).unwrap();
+    let bound = join_output_upper_bound_bytes(rows, &[string_column(max_len)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     assert_eq!(bound, string_column_expected(rows, max_len));
     // Sanity: bound must be ≥ the worst-case data bytes.
     assert!(bound >= rows * max_len);
@@ -172,14 +195,16 @@ fn string_column_bound_uses_max_length_times_rows_plus_offsets() {
 fn large_utf8_and_utf8view_match_utf8_bound() {
     let rows = 500;
     let max_len = 64;
-    let baseline = join_output_upper_bound_bytes(rows, &[string_column(max_len)]).unwrap();
+    let baseline = join_output_upper_bound_bytes(rows, &[string_column(max_len)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     for dtype in [ArrowDataType::LargeUtf8, ArrowDataType::Utf8View] {
         let column = JoinOutputColumnUpperBoundInput {
             data_type: dtype.clone(),
             input_max_string_length_bytes: Some(max_len),
             input_total_string_bytes: None,
         };
-        let bound = join_output_upper_bound_bytes(rows, &[column]).unwrap();
+        let bound = join_output_upper_bound_bytes(rows, &[column]).unwrap().expect("the byte model bounds this output");
         assert_eq!(bound, baseline, "dtype {dtype:?}");
     }
 }
@@ -196,7 +221,7 @@ fn string_column_without_max_length_returns_invalid_plan() {
 }
 
 #[test]
-fn unsupported_dtypes_are_rejected() {
+fn dtypes_without_a_byte_model_have_no_bound() {
     for dtype in [
         ArrowDataType::Binary,
         ArrowDataType::LargeBinary,
@@ -205,21 +230,23 @@ fn unsupported_dtypes_are_rejected() {
         ArrowDataType::List(FieldRef::new(Field::new("item", ArrowDataType::Int32, true))),
         ArrowDataType::Struct(Fields::empty()),
     ] {
-        let error = join_output_upper_bound_bytes(10, &[fixed_column(dtype.clone())]).unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "dtype {dtype:?}");
+        assert_eq!(join_output_upper_bound_bytes(10, &[fixed_column(dtype.clone())]).unwrap(), None, "dtype {dtype:?}");
     }
 }
 
 #[test]
 fn zero_rows_with_fixed_width_column_returns_alignment_padding_only() {
-    let bound = join_output_upper_bound_bytes(0, &[fixed_column(ArrowDataType::Int64)]).unwrap();
+    let bound = join_output_upper_bound_bytes(0, &[fixed_column(ArrowDataType::Int64)])
+        .unwrap()
+        .expect("the byte model bounds this output");
     // 0 data bytes + 0 null mask + alignment padding.
     assert_eq!(bound, PER_COLUMN_ALIGNMENT_PADDING_BYTES);
 }
 
 #[test]
 fn zero_rows_with_string_column_includes_one_offset_entry() {
-    let bound = join_output_upper_bound_bytes(0, &[string_column(64)]).unwrap();
+    let bound =
+        join_output_upper_bound_bytes(0, &[string_column(64)]).unwrap().expect("the byte model bounds this output");
     let expected = STRING_OFFSET_BYTES_CONSERVATIVE + PER_COLUMN_ALIGNMENT_PADDING_BYTES;
     assert_eq!(bound, expected);
 }
@@ -231,7 +258,8 @@ fn multi_column_bound_is_sum_of_per_column_bounds() {
         rows,
         &[fixed_column(ArrowDataType::Int32), fixed_column(ArrowDataType::Float64), string_column(128)],
     )
-    .unwrap();
+    .unwrap()
+    .expect("the byte model bounds this output");
     let expected = fixed_column_expected(rows, 4) + fixed_column_expected(rows, 8) + string_column_expected(rows, 128);
     assert_eq!(bound, expected);
 }
@@ -261,7 +289,7 @@ fn q72_n15_shape_bound_matches_observed_order_of_magnitude() {
         fixed_column(ArrowDataType::Float64),
         fixed_column(ArrowDataType::Float64),
     ];
-    let bound = join_output_upper_bound_bytes(rows, &projection).unwrap();
+    let bound = join_output_upper_bound_bytes(rows, &projection).unwrap().expect("the byte model bounds this output");
     let observed = 58_268_236_464u64; // partition 1 observed reservation bytes
     // Bound must be ≥ observed (correctness).
     assert!(bound >= observed, "bound {bound} below observed {observed}");

@@ -10,7 +10,7 @@ use crate::{
             },
             compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
         },
-        retry::backoff_before_retry,
+        retry::{RetryLimits, backoff_before_retry},
     },
     naming::unique_alias_with_suffix,
     observability::{
@@ -1396,11 +1396,12 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         retry_budget,
         execution.device_budget_bytes(),
     ) {
-        execution.metrics().record_retry_resource_exhausted();
-        if let Err(error) = backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.source_adjacent_partition_aggregate_split_retry",
-        ) {
+        // A proactive split has no allocation failure behind it: no retry
+        // counter, no backoff, only the cancellation boundary.
+        if let Err(error) = execution
+            .context()
+            .check_cancellation("query_engine.exec.bounded.source_adjacent_partition_aggregate_split")
+        {
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
         }
         let (left, right) = split_source_adjacent_partition_aggregate_input(
@@ -1501,17 +1502,18 @@ fn execute_source_adjacent_partition_aggregate(
 }
 
 fn source_adjacent_partition_aggregate_retry_budget(context: &ExecutionContext) -> usize {
-    let MemoryControlPolicy { max_retry_attempts, .. } = context.memory_control_policy();
-    max_retry_attempts.saturating_sub(1)
+    RetryLimits::of(context).max_attempts - 1
 }
 
+/// Splits a partition proactively when its partial state can outgrow the
+/// budget. Without a bound the partition runs whole.
 fn source_adjacent_partition_aggregate_should_split(
     input_rows: usize,
-    upper_bound_bytes: u64,
+    upper_bound_bytes: Option<u64>,
     retry_budget: usize,
     remaining_bytes: u64,
 ) -> bool {
-    retry_budget > 0 && input_rows > 1 && upper_bound_bytes > remaining_bytes
+    retry_budget > 0 && input_rows > 1 && upper_bound_bytes.is_some_and(|bytes| bytes > remaining_bytes)
 }
 
 fn split_source_adjacent_partition_aggregate_input(
@@ -1705,10 +1707,11 @@ mod tests {
 
     #[test]
     fn source_adjacent_partial_aggregate_split_requires_budget_pressure_and_a_safe_retry() {
-        assert!(!source_adjacent_partition_aggregate_should_split(1, 101, 1, 100));
-        assert!(!source_adjacent_partition_aggregate_should_split(2, 101, 0, 100));
-        assert!(!source_adjacent_partition_aggregate_should_split(2, 100, 1, 100));
-        assert!(source_adjacent_partition_aggregate_should_split(2, 101, 1, 100));
+        assert!(!source_adjacent_partition_aggregate_should_split(1, Some(101), 1, 100));
+        assert!(!source_adjacent_partition_aggregate_should_split(2, Some(101), 0, 100));
+        assert!(!source_adjacent_partition_aggregate_should_split(2, Some(100), 1, 100));
+        assert!(!source_adjacent_partition_aggregate_should_split(2, None, 1, 100));
+        assert!(source_adjacent_partition_aggregate_should_split(2, Some(101), 1, 100));
     }
 
     #[test]

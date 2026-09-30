@@ -15,7 +15,7 @@ use super::{
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame, residual_input_columns,
     side_metric, stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
-    validate_executable_join_subset,
+    sum_bounds, validate_executable_join_subset,
 };
 use crate::{
     error::ResourceBoundary,

@@ -981,6 +981,46 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
 }
 
 #[test]
+fn read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cannot_bound_it() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("unbounded_preflight.parquet");
+    let rt = sample_runtime();
+    write_parquet_df(&path, &["value"], vec![column_from_slice(&[10i64, 20, 30]).unwrap()], 0);
+    // The row-group metadata claims more rows than a fixed-width byte count can hold.
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "part-0", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1_024], vec![u64::MAX / 4])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("value", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["value"],
+        [SourceOutputColumn::new("value", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+    DataFrame::parquet_source_chunk_exact_preflight(&source, chunk, SourceReadMode::FinalOutput)
+        .expect_err("the claimed rows overflow the byte model");
+
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("unbounded_preflight"))
+            .unwrap();
+    let outcome =
+        DataFrame::read_parquet_source_chunk_with_budget(&rt, &source, chunk, SourceReadMode::FinalOutput, &token)
+            .expect("a successful read survives its diagnostic preflight");
+
+    assert_eq!(outcome.value().series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
+    let facts = outcome.report().context_facts();
+    assert_eq!(facts.get("source_read_preflight_contract").map(String::as_str), Some("unavailable"));
+    assert_eq!(
+        facts.get("source_read_preflight_unavailable_reason").map(String::as_str),
+        Some("column_byte_count_overflow")
+    );
+}
+
+#[test]
 fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("batch-fan-in-first.parquet");

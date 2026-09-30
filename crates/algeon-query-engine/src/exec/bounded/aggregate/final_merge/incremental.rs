@@ -22,7 +22,7 @@ use crate::{
             BoundedPartitionTargetPolicy, ResidentGpuFrame,
             compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
         },
-        retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
+        retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
     },
     runtime::resident::GpuDataFrame,
 };
@@ -110,7 +110,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         expected_partials: usize,
         expected_input_rows: Option<u64>,
     ) -> Result<Self> {
-        let MemoryControlPolicy { device_budget_bytes, max_retry_attempts, .. } = context.memory_control_policy();
+        let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
         let key_columns = lower_final_aggregate_spec(&aggregate.spec)?.key_columns;
         let policy = BoundedFinalMergePolicy::default();
         let partition_target_bytes =
@@ -127,7 +127,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             partition_count: None,
             partition_batch_bytes: policy.incremental_partition_batch_bytes(partition_target_bytes),
             min_flush_bytes: policy.incremental_min_flush_bytes(partition_target_bytes),
-            max_attempts: max_retry_attempts.max(1),
+            max_attempts: RetryLimits::of(context).max_attempts,
             pending_raw: Vec::new(),
             pending_raw_bytes: 0,
             pending: Vec::new(),
@@ -355,8 +355,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         Ok(ResidentFrameStreamPayload::from_producer(
             // The allocator cap bounds each eventual output; retained partial
             // bytes are observed separately and never used as an allocation veto.
-            execution.device_budget_bytes(),
-            retained_bytes,
+            Some(execution.device_budget_bytes()),
+            Some(retained_bytes),
             output_rows,
             self.output_schema.fields().len(),
             Box::new(PartitionedFinalAggregateStream {

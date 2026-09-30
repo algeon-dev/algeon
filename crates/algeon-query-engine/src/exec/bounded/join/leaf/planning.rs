@@ -1,11 +1,10 @@
 use super::{
-    BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, ExecutionMetrics, LocalParquetSource,
-    MemoryControlPolicy, NodeId, Result, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-    annotate_join_leaf_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps,
-    plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
-    validate_local_parquet_source,
+    BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, ExecutionMetrics, LocalParquetSource, NodeId, Result,
+    SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
+    record_bounded_parquet_source_metrics, validate_local_parquet_source,
 };
-use crate::{pipeline::AggregateInputHints, rapids_backend::rapids_analysis_context};
+use crate::{exec::retry::RetryLimits, pipeline::AggregateInputHints, rapids_backend::rapids_analysis_context};
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
     context: &ExecutionContext,
@@ -84,7 +83,7 @@ fn plan_bounded_local_parquet_source_stream(
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
-    let (max_attempts, min_retry_chunk_row_groups) = join_source_retry_policy(context);
+    let RetryLimits { max_attempts, min_split_row_groups: min_retry_chunk_row_groups } = RetryLimits::of(context);
     Ok(BoundedJoinLeafLocalParquetSourceStream {
         source: source.clone(),
         node_id,
@@ -109,9 +108,4 @@ pub(super) fn local_parquet_source_stream_chunk_planning_policy(
         context.source_chunk_planning_mode(),
         context.source_chunk_planning_options(),
     )
-}
-
-pub(super) fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {
-    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
-    (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
 }

@@ -90,7 +90,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes: 0,
-            output_reservation_bytes,
+            output_reservation_bytes: Some(output_reservation_bytes),
             output_rows,
             output_bytes,
         },

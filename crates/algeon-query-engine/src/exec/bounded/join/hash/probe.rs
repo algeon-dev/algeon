@@ -4,7 +4,7 @@ use super::{
     execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
     prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
     release_bounded_join_side_frame, state::validate_root_hash_join,
-    stream::materialize_bounded_root_hash_join_probe_stream,
+    stream::materialize_bounded_root_hash_join_probe_stream, sum_bounds,
 };
 
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
@@ -141,8 +141,8 @@ pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_execution_strateg
 }
 
 pub(in crate::exec::bounded::join::hash) struct RootHashJoinOutputReservationBounds {
-    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
-    pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: u64,
+    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
+    pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: Option<u64>,
 }
 
 pub(in crate::exec::bounded::join::hash) fn root_hash_join_output_reservation_bounds(
@@ -177,9 +177,9 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_output_reservation_bo
         &right_projection,
         JoinSide::Right,
     )?;
-    let output_reservation_bytes = left_output_bytes[0].saturating_add(right_output_bytes[0]);
+    let output_reservation_bytes = sum_bounds(left_output_bytes[0], right_output_bytes[0]);
     let minimum_output_reservation_bytes =
-        if expected_output_rows == 0 { 0 } else { left_output_bytes[1].saturating_add(right_output_bytes[1]) };
+        if expected_output_rows == 0 { Some(0) } else { sum_bounds(left_output_bytes[1], right_output_bytes[1]) };
     Ok(RootHashJoinOutputReservationBounds { output_reservation_bytes, minimum_output_reservation_bytes })
 }
 

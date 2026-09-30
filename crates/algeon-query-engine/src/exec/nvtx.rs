@@ -2,7 +2,10 @@
 
 #[cfg(feature = "cugraph")]
 use std::ffi::CStr;
-use std::ffi::{CString, c_char, c_int};
+use std::{
+    ffi::{CString, c_char, c_int},
+    marker::PhantomData,
+};
 
 use crate::{observability::AttemptId, runtime::ExecutionContext};
 
@@ -19,6 +22,8 @@ pub(in crate::exec) struct NvtxRange {
     // Keep dynamic labels alive through the corresponding pop even though the
     // NVTX API consumes the pointer at range-push time.
     _label: CString,
+    // NVTX ranges nest per thread, so the pop must run on the pushing thread.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl NvtxRange {
@@ -26,7 +31,7 @@ impl NvtxRange {
         // NVTX accepts a borrowed NUL-terminated label and returns a
         // diagnostic nesting level only.
         unsafe { nvtxRangePushA(label.as_ptr()) };
-        Self { _label: label }
+        Self { _label: label, _not_send: PhantomData }
     }
 
     #[cfg(feature = "cugraph")]

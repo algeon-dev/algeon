@@ -406,7 +406,7 @@ fn query_metrics_have_join_operator_contract() {
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes: 256,
-            output_reservation_bytes: 0,
+            output_reservation_bytes: Some(0),
             output_rows: 5,
             output_bytes: 512,
         },

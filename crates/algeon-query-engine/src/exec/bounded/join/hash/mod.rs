@@ -2,7 +2,7 @@ use super::{
     common::{
         BoundedJoinSideFrame, join_side_output_upper_bound_bytes, join_side_output_upper_bound_bytes_for_row_counts,
         prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
-        release_bounded_join_side_frame,
+        release_bounded_join_side_frame, sum_bounds,
     },
     *,
 };
