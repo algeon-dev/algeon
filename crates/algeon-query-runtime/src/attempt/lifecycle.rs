@@ -4,12 +4,12 @@ use std::{error::Error, fmt};
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
     AttemptFailureOperation, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
-    COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1, CleanupFailureSummary, RuntimeTerminalOutcome,
+    COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
 use crate::observability::{
     AttemptCapacityDisposition, AttemptFailureCode, AttemptFailureStatus, AttemptFinalDomainUsage,
-    AttemptHealthTransition, CleanupFailurePhase,
+    AttemptHealthTransition,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,30 +37,76 @@ impl fmt::Display for AttemptLifecycleError {
 
 impl Error for AttemptLifecycleError {}
 
+/// The attempt's published admission grant and the facts attached to it.
+#[derive(Debug, Clone)]
+struct AttemptAdmitted {
+    requested_ns: u64,
+    admitted_ns: u64,
+    fact: AttemptAdmissionFact,
+    wait: Option<AttemptAdmissionWaitFact>,
+    composed_schedule: Option<AttemptComposedScheduleProjection>,
+}
+
+/// How far admission got when the outcome became terminal.
+#[derive(Debug, Clone)]
+enum TerminalAdmission {
+    Unclaimed,
+    Claimed {
+        requested_ns: u64,
+    },
+    /// The cleanup commit is still owed.
+    Admitted(Box<AttemptAdmitted>),
+}
+
+/// How the attempt's one finalizer was consumed.
+#[derive(Debug, Clone)]
+enum FinalizedAdmission {
+    NotAdmitted { requested_ns: Option<u64> },
+    Admitted(Box<AdmittedCleanup>),
+}
+
+/// An admitted attempt's grant and the cleanup commit that consumed its
+/// finalizer.
+#[derive(Debug, Clone)]
+struct AdmittedCleanup {
+    admitted: AttemptAdmitted,
+    cleanup_ns: u64,
+    commit: AttemptTerminalCommit,
+}
+
+/// The attempt's progress through its one admission and its terminal
+/// publication. Each phase carries the facts that exist at that point: an
+/// admission fact without a claim, a cleanup commit without a grant, and
+/// report-ready before finalization have no representation.
+#[derive(Debug, Clone)]
+enum AttemptPhase {
+    /// Before the attempt claims admission.
+    Unclaimed,
+    /// The attempt holds its one admission claim.
+    Claimed { requested_ns: u64 },
+    /// Admission published a grant.
+    Admitted(Box<AttemptAdmitted>),
+    /// The outcome is terminal.
+    Terminal { terminal_ns: u64, outcome: RuntimeTerminalOutcome, admission: TerminalAdmission },
+    /// The finalizer is consumed; the report is not ready yet.
+    Finalized { terminal_ns: u64, outcome: RuntimeTerminalOutcome, admission: FinalizedAdmission },
+    /// The report-ready boundary is recorded.
+    Ready { terminal_ns: u64, ready_ns: u64, outcome: RuntimeTerminalOutcome, admission: FinalizedAdmission },
+}
+
+/// One attempt's lifecycle. Disposition, the planning and execution-start
+/// timestamps, and the primary failure are set-once facts recorded
+/// independently of admission order, so they stay fields beside the phase.
 #[derive(Debug)]
 pub(crate) struct AttemptLifecycle {
-    pub(crate) submitted: u64,
-    pub(crate) planning_started: Option<u64>,
-    pub(crate) planning_finished: Option<u64>,
-    pub(crate) admission_requested: Option<u64>,
-    pub(crate) admitted: Option<(u64, AttemptAdmissionFact)>,
-    pub(crate) admission_wait: Option<AttemptAdmissionWaitFact>,
-    pub(crate) composed_schedule: Option<AttemptComposedScheduleProjection>,
-    pub(crate) physical: Option<u64>,
-    pub(crate) gpu: Option<u64>,
-    pub(crate) terminal: Option<(u64, RuntimeTerminalOutcome)>,
-    pub(crate) cleanup: Option<u64>,
-    pub(crate) ready: Option<u64>,
-    pub(crate) disposition: Option<AttemptDisposition>,
-    pub(crate) cleanup_failures: u64,
-    pub(crate) cleanup_failures_complete: bool,
-    pub(crate) primary_failure: Option<AttemptFailureSummary>,
-    pub(crate) first_cleanup_failure: Option<CleanupFailureSummary>,
-    pub(crate) terminal_commit: Option<AttemptTerminalCommit>,
-    /// A terminal report may be sealed only after its one finalizer has been
-    /// consumed. Admitted attempts consume it with their cleanup/capacity
-    /// commit; all other attempts consume it with `NotRequired` finalization.
-    pub(crate) finalized: bool,
+    submitted: u64,
+    planning_started: Option<u64>,
+    planning_finished: Option<u64>,
+    physical: Option<u64>,
+    gpu: Option<u64>,
+    disposition: Option<AttemptDisposition>,
+    primary_failure: Option<AttemptFailureSummary>,
+    phase: AttemptPhase,
 }
 
 fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str) -> Result<(), AttemptLifecycleError> {
@@ -74,29 +120,127 @@ fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str)
     Ok(())
 }
 
+impl AttemptPhase {
+    fn requested_ns(&self) -> Option<u64> {
+        match self {
+            Self::Unclaimed => None,
+            Self::Claimed { requested_ns } => Some(*requested_ns),
+            Self::Admitted(admitted) => Some(admitted.requested_ns),
+            Self::Terminal { admission, .. } => match admission {
+                TerminalAdmission::Unclaimed => None,
+                TerminalAdmission::Claimed { requested_ns } => Some(*requested_ns),
+                TerminalAdmission::Admitted(admitted) => Some(admitted.requested_ns),
+            },
+            Self::Finalized { admission, .. } | Self::Ready { admission, .. } => match admission {
+                FinalizedAdmission::NotAdmitted { requested_ns } => *requested_ns,
+                FinalizedAdmission::Admitted(cleanup) => Some(cleanup.admitted.requested_ns),
+            },
+        }
+    }
+
+    fn admitted(&self) -> Option<&AttemptAdmitted> {
+        match self {
+            Self::Admitted(admitted) | Self::Terminal { admission: TerminalAdmission::Admitted(admitted), .. } => {
+                Some(admitted)
+            },
+            Self::Finalized { admission: FinalizedAdmission::Admitted(cleanup), .. }
+            | Self::Ready { admission: FinalizedAdmission::Admitted(cleanup), .. } => Some(&cleanup.admitted),
+            Self::Unclaimed
+            | Self::Claimed { .. }
+            | Self::Terminal { .. }
+            | Self::Finalized { .. }
+            | Self::Ready { .. } => None,
+        }
+    }
+
+    /// The admitted facts that may still change: before finalization.
+    fn open_admitted(&mut self) -> Option<&mut AttemptAdmitted> {
+        match self {
+            Self::Admitted(admitted) | Self::Terminal { admission: TerminalAdmission::Admitted(admitted), .. } => {
+                Some(admitted)
+            },
+            Self::Unclaimed
+            | Self::Claimed { .. }
+            | Self::Terminal { .. }
+            | Self::Finalized { .. }
+            | Self::Ready { .. } => None,
+        }
+    }
+
+    fn terminal(&self) -> Option<(u64, &RuntimeTerminalOutcome)> {
+        match self {
+            Self::Terminal { terminal_ns, outcome, .. }
+            | Self::Finalized { terminal_ns, outcome, .. }
+            | Self::Ready { terminal_ns, outcome, .. } => Some((*terminal_ns, outcome)),
+            Self::Unclaimed | Self::Claimed { .. } | Self::Admitted(_) => None,
+        }
+    }
+
+    fn cleanup(&self) -> Option<(u64, AttemptTerminalCommit)> {
+        match self {
+            Self::Finalized { admission: FinalizedAdmission::Admitted(cleanup), .. }
+            | Self::Ready { admission: FinalizedAdmission::Admitted(cleanup), .. } => {
+                Some((cleanup.cleanup_ns, cleanup.commit))
+            },
+            Self::Unclaimed
+            | Self::Claimed { .. }
+            | Self::Admitted(_)
+            | Self::Terminal { .. }
+            | Self::Finalized { .. }
+            | Self::Ready { .. } => None,
+        }
+    }
+}
+
 impl AttemptLifecycle {
     pub(crate) fn new(submitted: u64) -> Self {
         Self {
             submitted,
             planning_started: None,
             planning_finished: None,
-            admission_requested: None,
-            admitted: None,
-            admission_wait: None,
-            composed_schedule: None,
             physical: None,
             gpu: None,
-            terminal: None,
-            cleanup: None,
-            ready: None,
             disposition: None,
-            cleanup_failures: 0,
-            cleanup_failures_complete: true,
             primary_failure: None,
-            first_cleanup_failure: None,
-            terminal_commit: None,
-            finalized: false,
+            phase: AttemptPhase::Unclaimed,
         }
+    }
+
+    pub(crate) fn recorded_disposition(&self) -> Option<AttemptDisposition> {
+        self.disposition
+    }
+
+    pub(crate) fn primary_failure_summary(&self) -> Option<&AttemptFailureSummary> {
+        self.primary_failure.as_ref()
+    }
+
+    /// Whether the attempt took its one admission claim.
+    pub(crate) fn is_claimed(&self) -> bool {
+        self.phase.requested_ns().is_some()
+    }
+
+    pub(crate) fn admission_fact(&self) -> Option<&AttemptAdmissionFact> {
+        self.phase.admitted().map(|admitted| &admitted.fact)
+    }
+
+    pub(crate) fn admission_wait_fact(&self) -> Option<AttemptAdmissionWaitFact> {
+        self.phase.admitted().and_then(|admitted| admitted.wait)
+    }
+
+    pub(crate) fn composed_schedule_projection(&self) -> Option<&AttemptComposedScheduleProjection> {
+        self.phase.admitted().and_then(|admitted| admitted.composed_schedule.as_ref())
+    }
+
+    pub(crate) fn terminal_outcome(&self) -> Option<&RuntimeTerminalOutcome> {
+        self.phase.terminal().map(|(_, outcome)| outcome)
+    }
+
+    pub(crate) fn cleanup_commit(&self) -> Option<AttemptTerminalCommit> {
+        self.phase.cleanup().map(|(_, commit)| commit)
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        matches!(self.phase, AttemptPhase::Ready { .. })
     }
 
     pub(crate) fn planning_started(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
@@ -120,12 +264,12 @@ impl AttemptLifecycle {
     }
 
     /// Records the attempt's one admission claim. Every check runs before the
-    /// timestamp is written, so a rejected claim leaves the lifecycle as it was.
+    /// phase changes, so a rejected claim leaves the lifecycle as it was.
     pub(crate) fn admission_requested(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
-        if self.admission_requested.is_some() {
+        if self.is_claimed() {
             return Err(AttemptLifecycleError::AdmissionAlreadyClaimed);
         }
-        if self.terminal.is_some() {
+        if self.terminal_outcome().is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_requested",
                 reason: "attempt_terminal",
@@ -141,34 +285,42 @@ impl AttemptLifecycle {
                 reason: "disposition_not_set",
             });
         }
-        first(
-            &mut self.admission_requested,
-            at,
-            self.planning_finished.unwrap_or(self.submitted),
-            "admission_requested",
-        )
+        if at < self.planning_finished.unwrap_or(self.submitted) {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_requested",
+                reason: "timestamp_regressed",
+            });
+        }
+        self.phase = AttemptPhase::Claimed { requested_ns: at };
+        Ok(())
     }
 
     pub(crate) fn admitted(&mut self, fact: AttemptAdmissionFact, at: u64) -> Result<(), AttemptLifecycleError> {
         self.rejects_gpu_boundary("admitted")?;
-        if self.admitted.is_some() {
+        if self.phase.admitted().is_some() {
             return Ok(());
         }
         // The owner may terminalize while admission is in flight; a grant
         // published after that terminal would never execute.
-        if self.terminal.is_some() {
+        if self.terminal_outcome().is_some() {
             return Err(AttemptLifecycleError::InvalidOrder { boundary: "admitted", reason: "attempt_terminal" });
         }
-        let Some(requested) = self.admission_requested else {
+        let AttemptPhase::Claimed { requested_ns } = self.phase else {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admitted",
                 reason: "admission_not_requested",
             });
         };
-        if at < requested {
+        if at < requested_ns {
             return Err(AttemptLifecycleError::InvalidOrder { boundary: "admitted", reason: "timestamp_regressed" });
         }
-        self.admitted = Some((at, fact));
+        self.phase = AttemptPhase::Admitted(Box::new(AttemptAdmitted {
+            requested_ns,
+            admitted_ns: at,
+            fact,
+            wait: None,
+            composed_schedule: None,
+        }));
         Ok(())
     }
 
@@ -176,15 +328,15 @@ impl AttemptLifecycle {
     /// succeeded. A second identical observation is harmless; conflicting
     /// state would make the immutable sealed report ambiguous.
     pub(crate) fn admission_wait(&mut self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
-        if self.admitted.is_none() {
+        let Some(admitted) = self.phase.open_admitted() else {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_wait",
                 reason: "admission_not_granted",
             });
-        }
-        match self.admission_wait {
+        };
+        match admitted.wait {
             None => {
-                self.admission_wait = Some(fact);
+                admitted.wait = Some(fact);
                 Ok(())
             },
             Some(current) if current == fact => Ok(()),
@@ -215,34 +367,33 @@ impl AttemptLifecycle {
                 reason: "fingerprint_mismatch",
             });
         }
-        if self.admitted.is_none() {
+        if self.phase.admitted().is_none() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "composed_schedule",
                 reason: "admission_not_granted",
             });
         }
-        if self.ready.is_some() || self.finalized {
+        let Some(admitted) = self.phase.open_admitted() else {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "composed_schedule",
                 reason: "report_ready_already_recorded",
             });
-        }
-        let (_, admission) = self.admitted.as_ref().expect("admission checked");
-        if projection.device_ordinal != admission.device_ordinal {
+        };
+        if projection.device_ordinal != admitted.fact.device_ordinal {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "composed_schedule",
                 reason: "device_ordinal_mismatch",
             });
         }
-        if projection.grant_bytes != admission.grant_bytes {
+        if projection.grant_bytes != admitted.fact.grant_bytes {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "composed_schedule",
                 reason: "grant_bytes_mismatch",
             });
         }
-        match &self.composed_schedule {
+        match &admitted.composed_schedule {
             None => {
-                self.composed_schedule = Some(projection);
+                admitted.composed_schedule = Some(projection);
                 Ok(())
             },
             Some(current) if current == &projection => Ok(()),
@@ -266,24 +417,27 @@ impl AttemptLifecycle {
                 reason: "unplanned_has_execution",
             });
         }
-        let previous = self.admitted.as_ref().map_or(self.planning_finished.unwrap_or(self.submitted), |(at, _)| *at);
+        let previous = self
+            .phase
+            .admitted()
+            .map_or(self.planning_finished.unwrap_or(self.submitted), |admitted| admitted.admitted_ns);
         first(&mut self.physical, at, previous, "physical_execution_started")
     }
 
     pub(crate) fn gpu(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
-        let Some((admitted, _)) = self.admitted else {
+        let Some(admitted_ns) = self.phase.admitted().map(|admitted| admitted.admitted_ns) else {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "gpu_execution_started",
                 reason: "not_admitted",
             });
         };
-        first(&mut self.gpu, at, admitted, "gpu_execution_started")
+        first(&mut self.gpu, at, admitted_ns, "gpu_execution_started")
     }
 
     pub(crate) fn disposition(&mut self, d: AttemptDisposition) -> Result<(), AttemptLifecycleError> {
         match self.disposition {
             None => {
-                let has_gpu = self.admission_requested.is_some() || self.admitted.is_some() || self.gpu.is_some();
+                let has_gpu = self.is_claimed() || self.gpu.is_some();
                 if matches!(d, AttemptDisposition::Unplanned | AttemptDisposition::CpuFallback) && has_gpu {
                     return Err(AttemptLifecycleError::InvalidOrder {
                         boundary: "disposition",
@@ -309,27 +463,28 @@ impl AttemptLifecycle {
         outcome: RuntimeTerminalOutcome,
         at: u64,
     ) -> Result<(), AttemptLifecycleError> {
-        if self.terminal.is_some() {
-            return Err(AttemptLifecycleError::DoubleTerminalization);
-        }
+        let admission = match &self.phase {
+            AttemptPhase::Unclaimed => TerminalAdmission::Unclaimed,
+            AttemptPhase::Claimed { requested_ns } => TerminalAdmission::Claimed { requested_ns: *requested_ns },
+            AttemptPhase::Admitted(admitted) => TerminalAdmission::Admitted(admitted.clone()),
+            AttemptPhase::Terminal { .. } | AttemptPhase::Finalized { .. } | AttemptPhase::Ready { .. } => {
+                return Err(AttemptLifecycleError::DoubleTerminalization);
+            },
+        };
+        let admitted_ns = self.phase.admitted().map(|admitted| admitted.admitted_ns);
         let d = self.disposition.unwrap_or(AttemptDisposition::Unplanned);
         if matches!(d, AttemptDisposition::Unplanned)
-            && (self.admitted.is_some() || self.physical.is_some() || self.gpu.is_some())
+            && (admitted_ns.is_some() || self.physical.is_some() || self.gpu.is_some())
         {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "terminal",
                 reason: "unplanned_has_execution",
             });
         }
-        if matches!(d, AttemptDisposition::CpuFallback) && (self.admitted.is_some() || self.gpu.is_some()) {
+        if matches!(d, AttemptDisposition::CpuFallback) && (admitted_ns.is_some() || self.gpu.is_some()) {
             return Err(AttemptLifecycleError::InvalidOrder { boundary: "terminal", reason: "cpu_has_gpu" });
         }
-        let last = self
-            .gpu
-            .or(self.physical)
-            .or(self.admitted.as_ref().map(|(at, _)| *at))
-            .or(self.planning_finished)
-            .unwrap_or(self.submitted);
+        let last = self.gpu.or(self.physical).or(admitted_ns).or(self.planning_finished).unwrap_or(self.submitted);
         if at < last {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "outcome_terminal",
@@ -340,7 +495,7 @@ impl AttemptLifecycle {
         if self.primary_failure.is_none() {
             self.primary_failure = outcome.fallback_failure_summary();
         }
-        self.terminal = Some((at, outcome));
+        self.phase = AttemptPhase::Terminal { terminal_ns: at, outcome, admission };
         Ok(())
     }
 
@@ -354,13 +509,13 @@ impl AttemptLifecycle {
         summary: Option<AttemptFailureSummary>,
         at: u64,
     ) -> Result<(), AttemptLifecycleError> {
-        if self.admission_requested.is_some() {
+        if self.is_claimed() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_rejection",
                 reason: "admission_claimed",
             });
         }
-        if self.admitted.is_some() || self.physical.is_some() || self.gpu.is_some() {
+        if self.physical.is_some() || self.gpu.is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_rejection",
                 reason: "admission_already_granted",
@@ -372,7 +527,7 @@ impl AttemptLifecycle {
                 reason: "outcome_not_rejection",
             });
         }
-        if self.terminal.is_some() {
+        if self.terminal_outcome().is_some() {
             return Err(AttemptLifecycleError::DoubleTerminalization);
         }
         if let Some(summary) = summary {
@@ -394,11 +549,11 @@ impl AttemptLifecycle {
     /// Later stages win: admission implies planning is over even when its
     /// timestamps were never recorded.
     pub(crate) fn failure_operation(&self) -> AttemptFailureOperation {
-        if self.cleanup.is_some() {
+        if self.phase.cleanup().is_some() {
             AttemptFailureOperation::Cleanup
-        } else if self.admitted.is_some() {
+        } else if self.phase.admitted().is_some() {
             AttemptFailureOperation::Execution
-        } else if self.admission_requested.is_some() {
+        } else if self.is_claimed() {
             AttemptFailureOperation::Admission
         } else if self.planning_finished.is_none() {
             AttemptFailureOperation::Planning
@@ -407,39 +562,22 @@ impl AttemptLifecycle {
         }
     }
 
-    /// Retains only the first cleanup failure while accounting every observed
-    /// cleanup failure. Overflow is marked incomplete rather than published as
-    /// a saturated exact value.
-    pub(crate) fn cleanup_failure(&mut self, summary: CleanupFailureSummary) {
-        if let Some(first) = &mut self.first_cleanup_failure {
-            // The report retains one representative summary. Once another
-            // cleanup failure is observed that representative is necessarily
-            // incomplete, even though the count remains exact below.
-            first.mark_incomplete();
-        } else {
-            self.first_cleanup_failure = Some(summary);
-        }
-        match self.cleanup_failures.checked_add(1) {
-            Some(next) => self.cleanup_failures = next,
-            None => self.cleanup_failures_complete = false,
-        }
-    }
-
     /// Commits the cleanup and capacity outcome observed by the admitting
-    /// query service. It must happen after the primary outcome but before the
-    /// report-ready boundary; first-wins preserves exactly one release fact.
+    /// query service, consuming the admitted attempt's finalizer. It must
+    /// happen after the primary outcome but before the report-ready boundary;
+    /// first-wins preserves exactly one release fact.
     pub(crate) fn terminal_commit(
         &mut self,
         commit: AttemptTerminalCommit,
         at: u64,
     ) -> Result<(), AttemptLifecycleError> {
-        if self.ready.is_some() {
+        if self.is_ready() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "terminal_commit",
                 reason: "report_ready_already_recorded",
             });
         }
-        if let Some(current) = self.terminal_commit {
+        if let Some((_, current)) = self.phase.cleanup() {
             return if current == commit { Ok(()) } else { Err(AttemptLifecycleError::TerminalCommitConflict) };
         }
         if !commit.has_consistent_capacity_health_transition() {
@@ -454,9 +592,37 @@ impl AttemptLifecycle {
                 reason: "invalid_admitted_cleanup_fact",
             });
         }
-        self.cleanup(at)?;
-        self.terminal_commit = Some(commit);
-        self.finalized = true;
+        let (terminal_ns, outcome, admitted) = match &self.phase {
+            AttemptPhase::Terminal { terminal_ns, outcome, admission: TerminalAdmission::Admitted(admitted) } => {
+                (*terminal_ns, outcome.clone(), admitted.clone())
+            },
+            AttemptPhase::Admitted(_) => {
+                return Err(AttemptLifecycleError::InvalidOrder {
+                    boundary: "cleanup_complete",
+                    reason: "not_terminal",
+                });
+            },
+            AttemptPhase::Unclaimed
+            | AttemptPhase::Claimed { .. }
+            | AttemptPhase::Terminal { .. }
+            | AttemptPhase::Finalized { .. }
+            | AttemptPhase::Ready { .. } => return Err(AttemptLifecycleError::CleanupWithoutAdmission),
+        };
+        if at < terminal_ns {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "cleanup_complete",
+                reason: "timestamp_regressed",
+            });
+        }
+        self.phase = AttemptPhase::Finalized {
+            terminal_ns,
+            outcome,
+            admission: FinalizedAdmission::Admitted(Box::new(AdmittedCleanup {
+                admitted: *admitted,
+                cleanup_ns: at,
+                commit,
+            })),
+        };
         Ok(())
     }
 
@@ -464,82 +630,128 @@ impl AttemptLifecycle {
     /// admission grant. This is deliberately separate from an admitted
     /// terminal commit: no cleanup, capacity, health, or domain facts exist.
     pub(crate) fn finalize_not_admitted(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
-        if self.admitted.is_some() {
+        if self.phase.admitted().is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "attempt_finalization",
                 reason: "admission_already_granted",
             });
         }
-        if self.terminal.is_none() {
-            return Err(AttemptLifecycleError::ReportBeforeTerminal);
-        }
-        if self.finalized {
-            return Ok(());
-        }
+        let (terminal_ns, outcome, requested_ns) = match &self.phase {
+            AttemptPhase::Terminal { terminal_ns, outcome, admission } => {
+                let requested_ns = match admission {
+                    TerminalAdmission::Unclaimed => None,
+                    TerminalAdmission::Claimed { requested_ns } => Some(*requested_ns),
+                    TerminalAdmission::Admitted(_) => unreachable!("an admitted phase was rejected above"),
+                };
+                (*terminal_ns, outcome.clone(), requested_ns)
+            },
+            AttemptPhase::Finalized { .. } | AttemptPhase::Ready { .. } => return Ok(()),
+            AttemptPhase::Unclaimed | AttemptPhase::Claimed { .. } | AttemptPhase::Admitted(_) => {
+                return Err(AttemptLifecycleError::ReportBeforeTerminal);
+            },
+        };
         // Keep the finalization point monotonic even though it has no public
         // timestamp field of its own. `ready` remains the published boundary.
-        let terminal = self.terminal.as_ref().expect("terminal was checked").0;
-        if at < terminal {
+        if at < terminal_ns {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "attempt_finalization",
                 reason: "timestamp_regressed",
             });
         }
-        self.finalized = true;
+        self.phase = AttemptPhase::Finalized {
+            terminal_ns,
+            outcome,
+            admission: FinalizedAdmission::NotAdmitted { requested_ns },
+        };
         Ok(())
     }
 
-    pub(crate) fn cleanup(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
-        if self.cleanup.is_some() {
-            return Ok(());
-        }
-        if self.admitted.is_none() {
-            return Err(AttemptLifecycleError::CleanupWithoutAdmission);
-        }
-        let Some((terminal, _)) = self.terminal else {
-            return Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", reason: "not_terminal" });
-        };
-        first(&mut self.cleanup, at, terminal, "cleanup_complete")
-    }
-
     pub(crate) fn ready(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
-        let Some((terminal, _)) = self.terminal else { return Err(AttemptLifecycleError::ReportBeforeTerminal) };
-        if !self.finalized {
+        let (terminal_ns, outcome, admission) = match &self.phase {
+            AttemptPhase::Finalized { terminal_ns, outcome, admission } => {
+                (*terminal_ns, outcome.clone(), admission.clone())
+            },
+            AttemptPhase::Ready { .. } => return Ok(()),
+            AttemptPhase::Terminal { .. } => {
+                return Err(AttemptLifecycleError::InvalidOrder {
+                    boundary: "report_ready",
+                    reason: "finalization_incomplete",
+                });
+            },
+            AttemptPhase::Unclaimed | AttemptPhase::Claimed { .. } | AttemptPhase::Admitted(_) => {
+                return Err(AttemptLifecycleError::ReportBeforeTerminal);
+            },
+        };
+        let previous = match &admission {
+            FinalizedAdmission::Admitted(cleanup) => cleanup.cleanup_ns,
+            FinalizedAdmission::NotAdmitted { .. } => terminal_ns,
+        };
+        if at < previous {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "report_ready",
-                reason: "finalization_incomplete",
+                reason: "timestamp_regressed",
             });
         }
-        if self.admitted.is_some() && self.cleanup.is_none() {
-            return Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "cleanup_incomplete" });
-        }
-        first(&mut self.ready, at, self.cleanup.unwrap_or(terminal), "report_ready")
+        self.phase = AttemptPhase::Ready { terminal_ns, ready_ns: at, outcome, admission };
+        Ok(())
     }
 
     pub(crate) fn timestamps(&self) -> AttemptTimestamps {
+        let terminal_ns = self.phase.terminal().map(|(at, _)| at);
         AttemptTimestamps {
             submitted_ns: self.submitted,
             planning_started_ns: self.planning_started,
             planning_finished_ns: self.planning_finished,
-            admission_requested_ns: self.admission_requested,
-            admitted_ns: self.admitted.as_ref().map(|(at, _)| *at),
+            admission_requested_ns: self.phase.requested_ns(),
+            admitted_ns: self.phase.admitted().map(|admitted| admitted.admitted_ns),
             physical_execution_started_ns: self.physical,
             gpu_execution_started_ns: self.gpu,
-            outcome_terminal_ns: self.terminal.as_ref().map(|(at, _)| *at).unwrap_or(self.submitted),
-            cleanup_complete_ns: self.cleanup,
-            report_ready_ns: self.ready,
+            outcome_terminal_ns: terminal_ns.unwrap_or(self.submitted),
+            cleanup_complete_ns: self.phase.cleanup().map(|(at, _)| at),
+            report_ready_ns: match self.phase {
+                AttemptPhase::Ready { ready_ns, .. } => Some(ready_ns),
+                AttemptPhase::Unclaimed
+                | AttemptPhase::Claimed { .. }
+                | AttemptPhase::Admitted(_)
+                | AttemptPhase::Terminal { .. }
+                | AttemptPhase::Finalized { .. } => None,
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use query_planning::error::{QueryError, QueryErrorCode};
-
     use super::*;
 
     fn fact() -> AttemptAdmissionFact {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }
+    }
+
+    fn projection() -> AttemptComposedScheduleProjection {
+        AttemptComposedScheduleProjection::for_test(2, 11, 4096)
+    }
+
+    fn failed() -> RuntimeTerminalOutcome {
+        RuntimeTerminalOutcome::Failed {
+            error_code: AttemptFailureCode::Internal,
+            error_status: AttemptFailureStatus::Permanent,
+        }
+    }
+
+    fn released() -> AttemptTerminalCommit {
+        AttemptTerminalCommit::new(AttemptCapacityDisposition::Released, None, AttemptHealthTransition::HealthyReuse)
+    }
+
+    fn phase_name(lifecycle: &AttemptLifecycle) -> &'static str {
+        match lifecycle.phase {
+            AttemptPhase::Unclaimed => "unclaimed",
+            AttemptPhase::Claimed { .. } => "claimed",
+            AttemptPhase::Admitted(_) => "admitted",
+            AttemptPhase::Terminal { .. } => "terminal",
+            AttemptPhase::Finalized { .. } => "finalized",
+            AttemptPhase::Ready { .. } => "ready",
+        }
     }
 
     #[test]
@@ -554,32 +766,9 @@ mod tests {
         lifecycle.admitted(fact(), 3).unwrap();
         assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Execution);
         lifecycle.terminalize(RuntimeTerminalOutcome::Cancelled, 4).unwrap();
-        lifecycle.cleanup(5).unwrap();
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Execution);
+        lifecycle.terminal_commit(released(), 5).unwrap();
         assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Cleanup);
-    }
-
-    fn projection() -> AttemptComposedScheduleProjection {
-        AttemptComposedScheduleProjection::for_test(2, 11, 4096)
-    }
-
-    fn failed() -> RuntimeTerminalOutcome {
-        RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Internal,
-            error_status: AttemptFailureStatus::Permanent,
-        }
-    }
-
-    #[test]
-    fn cleanup_failure_counter_never_publishes_a_saturated_exact_count() {
-        let mut lifecycle = AttemptLifecycle::new(0);
-        lifecycle.cleanup_failures = u64::MAX;
-        lifecycle.cleanup_failure(CleanupFailureSummary::from_native_error(
-            CleanupFailurePhase::QueryServiceCleanup,
-            &QueryError::new(QueryErrorCode::Internal, "test.cleanup", "overflow probe"),
-        ));
-
-        assert_eq!(lifecycle.cleanup_failures, u64::MAX);
-        assert!(!lifecycle.cleanup_failures_complete);
     }
 
     #[test]
@@ -613,7 +802,7 @@ mod tests {
         );
     }
 
-    /// One row of the phase lifecycle table driven through the state machine.
+    /// One attempt path from begin to report-ready.
     #[derive(Debug, Clone, Copy)]
     enum Row {
         UnplannedPlanningFailure,
@@ -626,118 +815,122 @@ mod tests {
         QueueCancellation,
     }
 
-    fn drive(row: Row) -> AttemptLifecycle {
+    const ROWS: [Row; 8] = [
+        Row::UnplannedPlanningFailure,
+        Row::UnplannedPrePlanningRejection,
+        Row::CpuFallback,
+        Row::CpuFallbackDroppedBeforePoll,
+        Row::PartialNative,
+        Row::Native,
+        Row::QueueRejection,
+        Row::QueueCancellation,
+    ];
+
+    /// Drives `row` through the lifecycle and returns it with the phases it
+    /// passed through, in order.
+    fn drive(row: Row) -> (AttemptLifecycle, Vec<&'static str>) {
         let mut lifecycle = AttemptLifecycle::new(0);
+        let mut phases = vec![phase_name(&lifecycle)];
+        let mut step = |lifecycle: &mut AttemptLifecycle, apply: &dyn Fn(&mut AttemptLifecycle)| {
+            apply(lifecycle);
+            let phase = phase_name(lifecycle);
+            if phases.last() != Some(&phase) {
+                phases.push(phase);
+            }
+        };
         match row {
             Row::UnplannedPlanningFailure => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.terminalize(failed(), 2).unwrap();
-                lifecycle.finalize_not_admitted(3).unwrap();
-                lifecycle.ready(3).unwrap();
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_started(1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(failed(), 2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.finalize_not_admitted(3).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(3).unwrap());
             },
             Row::UnplannedPrePlanningRejection => {
-                lifecycle.terminalize(failed(), 1).unwrap();
-                lifecycle.finalize_not_admitted(2).unwrap();
-                lifecycle.ready(2).unwrap();
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(failed(), 1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.finalize_not_admitted(2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(2).unwrap());
             },
             Row::CpuFallback => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap();
-                lifecycle.physical(3).unwrap();
-                lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 4).unwrap();
-                lifecycle.finalize_not_admitted(5).unwrap();
-                lifecycle.ready(5).unwrap();
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_started(1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_finished(2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.physical(3).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 4).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.finalize_not_admitted(5).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(5).unwrap());
             },
             Row::CpuFallbackDroppedBeforePoll => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap();
-                lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, 3).unwrap();
-                lifecycle.finalize_not_admitted(4).unwrap();
-                lifecycle.ready(4).unwrap();
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_started(1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_finished(2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.disposition(AttemptDisposition::CpuFallback).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, 3).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.finalize_not_admitted(4).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(4).unwrap());
             },
-            Row::PartialNative => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::PartialNative).unwrap();
-                lifecycle.admission_requested(3).unwrap();
-                lifecycle.admitted(fact(), 4).unwrap();
-                lifecycle.physical(4).unwrap();
-                lifecycle.gpu(5).unwrap();
-                lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 6).unwrap();
-                lifecycle
-                    .terminal_commit(
-                        AttemptTerminalCommit::new(
-                            AttemptCapacityDisposition::Released,
-                            None,
-                            AttemptHealthTransition::HealthyReuse,
-                        ),
-                        7,
-                    )
-                    .unwrap();
-                lifecycle.ready(8).unwrap();
+            Row::PartialNative | Row::Native => {
+                let disposition = match row {
+                    Row::PartialNative => AttemptDisposition::PartialNative,
+                    _ => AttemptDisposition::Native,
+                };
+                let outcome = match row {
+                    Row::PartialNative => RuntimeTerminalOutcome::Succeeded,
+                    _ => failed(),
+                };
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_started(1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_finished(2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.disposition(disposition).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.admission_requested(3).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.admitted(fact(), 4).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.physical(4).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.gpu(5).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(outcome.clone(), 6).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminal_commit(released(), 7).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(8).unwrap());
             },
-            Row::Native => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::Native).unwrap();
-                lifecycle.admission_requested(3).unwrap();
-                lifecycle.admitted(fact(), 4).unwrap();
-                lifecycle.physical(4).unwrap();
-                lifecycle.gpu(5).unwrap();
-                lifecycle.terminalize(failed(), 6).unwrap();
-                lifecycle
-                    .terminal_commit(
-                        AttemptTerminalCommit::new(
-                            AttemptCapacityDisposition::Released,
-                            None,
-                            AttemptHealthTransition::HealthyReuse,
-                        ),
-                        7,
-                    )
-                    .unwrap();
-                lifecycle.ready(8).unwrap();
-            },
-            Row::QueueRejection => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::Native).unwrap();
-                lifecycle.admission_requested(3).unwrap();
-                lifecycle.terminalize(failed(), 4).unwrap();
-                lifecycle.finalize_not_admitted(5).unwrap();
-                lifecycle.ready(5).unwrap();
-            },
-            Row::QueueCancellation => {
-                lifecycle.planning_started(1).unwrap();
-                lifecycle.planning_finished(2).unwrap();
-                lifecycle.disposition(AttemptDisposition::PartialNative).unwrap();
-                lifecycle.admission_requested(3).unwrap();
-                lifecycle.terminalize(RuntimeTerminalOutcome::Cancelled, 4).unwrap();
-                lifecycle.finalize_not_admitted(5).unwrap();
-                lifecycle.ready(5).unwrap();
+            Row::QueueRejection | Row::QueueCancellation => {
+                let (disposition, outcome) = match row {
+                    Row::QueueRejection => (AttemptDisposition::Native, failed()),
+                    _ => (AttemptDisposition::PartialNative, RuntimeTerminalOutcome::Cancelled),
+                };
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_started(1).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.planning_finished(2).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.disposition(disposition).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.admission_requested(3).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.terminalize(outcome.clone(), 4).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.finalize_not_admitted(5).unwrap());
+                step(&mut lifecycle, &|lifecycle| lifecycle.ready(5).unwrap());
             },
         }
-        lifecycle
+        (lifecycle, phases)
     }
 
     #[test]
-    fn every_lifecycle_row_reaches_report_ready_with_the_required_boundaries() {
-        for row in [
-            Row::UnplannedPlanningFailure,
-            Row::UnplannedPrePlanningRejection,
-            Row::CpuFallback,
-            Row::CpuFallbackDroppedBeforePoll,
-            Row::PartialNative,
-            Row::Native,
-            Row::QueueRejection,
-            Row::QueueCancellation,
-        ] {
-            let lifecycle = drive(row);
+    fn every_row_moves_through_its_phases_in_order() {
+        for row in ROWS {
+            let expected: &[&str] = match row {
+                Row::UnplannedPlanningFailure
+                | Row::UnplannedPrePlanningRejection
+                | Row::CpuFallback
+                | Row::CpuFallbackDroppedBeforePoll => &["unclaimed", "terminal", "finalized", "ready"],
+                Row::PartialNative | Row::Native => {
+                    &["unclaimed", "claimed", "admitted", "terminal", "finalized", "ready"]
+                },
+                Row::QueueRejection | Row::QueueCancellation => {
+                    &["unclaimed", "claimed", "terminal", "finalized", "ready"]
+                },
+            };
+            assert_eq!(drive(row).1, expected, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn every_row_reaches_report_ready_after_its_terminal_boundary() {
+        for row in ROWS {
+            let (lifecycle, _) = drive(row);
             let timestamps = lifecycle.timestamps();
             assert_eq!(timestamps.submitted_ns, 0);
-            assert!(lifecycle.terminal.is_some(), "outcome terminal required for {row:?}");
-            assert!(lifecycle.ready.is_some(), "report ready required for {row:?}");
+            assert!(lifecycle.terminal_outcome().is_some(), "outcome terminal required for {row:?}");
+            assert!(lifecycle.is_ready(), "report ready required for {row:?}");
             assert!(timestamps.outcome_terminal_ns <= timestamps.report_ready_ns.expect("ready"));
         }
     }
@@ -745,8 +938,8 @@ mod tests {
     #[test]
     fn unplanned_rows_have_no_execution_or_gpu_boundaries() {
         for row in [Row::UnplannedPlanningFailure, Row::UnplannedPrePlanningRejection] {
-            let lifecycle = drive(row);
-            assert_eq!(lifecycle.disposition, Some(AttemptDisposition::Unplanned));
+            let (lifecycle, _) = drive(row);
+            assert_eq!(lifecycle.recorded_disposition(), Some(AttemptDisposition::Unplanned));
             let timestamps = lifecycle.timestamps();
             assert_eq!(timestamps.physical_execution_started_ns, None);
             assert_eq!(timestamps.admission_requested_ns, None);
@@ -758,7 +951,7 @@ mod tests {
 
     #[test]
     fn cpu_fallback_rows_have_physical_start_but_no_gpu_boundaries() {
-        let lifecycle = drive(Row::CpuFallback);
+        let (lifecycle, _) = drive(Row::CpuFallback);
         let timestamps = lifecycle.timestamps();
         assert_eq!(timestamps.physical_execution_started_ns, Some(3));
         assert_eq!(timestamps.admission_requested_ns, None);
@@ -770,28 +963,29 @@ mod tests {
     #[test]
     fn native_rows_have_distinct_physical_and_gpu_starts_and_cleanup() {
         for row in [Row::PartialNative, Row::Native] {
-            let lifecycle = drive(row);
+            let (lifecycle, _) = drive(row);
             let timestamps = lifecycle.timestamps();
             assert_eq!(timestamps.physical_execution_started_ns, Some(4));
             assert_eq!(timestamps.gpu_execution_started_ns, Some(5));
-            assert!(timestamps.gpu_execution_started_ns >= timestamps.physical_execution_started_ns);
             assert_eq!(timestamps.cleanup_complete_ns, Some(7));
             assert_eq!(timestamps.admitted_ns, Some(4));
+            assert_eq!(lifecycle.cleanup_commit(), Some(released()));
         }
     }
 
     #[test]
-    fn queue_terminal_rows_have_queue_facts_but_no_execution_or_cleanup() {
+    fn queue_terminal_rows_keep_their_claim_but_no_execution_or_cleanup() {
         for row in [Row::QueueRejection, Row::QueueCancellation] {
-            let lifecycle = drive(row);
+            let (lifecycle, _) = drive(row);
             let timestamps = lifecycle.timestamps();
             assert_eq!(timestamps.admission_requested_ns, Some(3));
             assert_eq!(timestamps.admitted_ns, None);
             assert_eq!(timestamps.physical_execution_started_ns, None);
             assert_eq!(timestamps.gpu_execution_started_ns, None);
             assert_eq!(timestamps.cleanup_complete_ns, None);
+            assert!(lifecycle.is_claimed());
             assert!(matches!(
-                lifecycle.disposition,
+                lifecycle.recorded_disposition(),
                 Some(AttemptDisposition::Native | AttemptDisposition::PartialNative)
             ));
         }
@@ -799,7 +993,7 @@ mod tests {
 
     #[test]
     fn absent_boundaries_are_none_not_zero() {
-        let lifecycle = drive(Row::UnplannedPrePlanningRejection);
+        let (lifecycle, _) = drive(Row::UnplannedPrePlanningRejection);
         let timestamps = lifecycle.timestamps();
         assert_eq!(timestamps.planning_started_ns, None);
         assert_eq!(timestamps.planning_finished_ns, None);
@@ -813,11 +1007,12 @@ mod tests {
         lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 1).unwrap();
         assert_eq!(lifecycle.terminalize(failed(), 2), Err(AttemptLifecycleError::DoubleTerminalization));
         // The first outcome is preserved.
-        assert!(matches!(lifecycle.terminal, Some((1, RuntimeTerminalOutcome::Succeeded))));
+        assert_eq!(lifecycle.terminal_outcome(), Some(&RuntimeTerminalOutcome::Succeeded));
+        assert_eq!(lifecycle.timestamps().outcome_terminal_ns, 1);
     }
 
     #[test]
-    fn report_ready_requires_terminal_and_cleanup_when_admitted() {
+    fn report_ready_requires_terminal_and_finalization() {
         let mut lifecycle = AttemptLifecycle::new(0);
         assert_eq!(lifecycle.ready(1), Err(AttemptLifecycleError::ReportBeforeTerminal));
 
@@ -825,37 +1020,45 @@ mod tests {
         admitted.disposition(AttemptDisposition::Native).unwrap();
         admitted.admission_requested(1).unwrap();
         admitted.admitted(fact(), 2).unwrap();
+        assert_eq!(admitted.ready(3), Err(AttemptLifecycleError::ReportBeforeTerminal));
         admitted.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
-        assert!(matches!(admitted.ready(4), Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", .. })));
-        admitted.cleanup(4).unwrap();
-        assert!(matches!(
-            admitted.ready(5),
+        assert_eq!(
+            admitted.ready(4),
             Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "finalization_incomplete" })
-        ));
-        admitted
-            .terminal_commit(
-                AttemptTerminalCommit::new(
-                    AttemptCapacityDisposition::Released,
-                    None,
-                    AttemptHealthTransition::HealthyReuse,
-                ),
-                5,
-            )
-            .unwrap();
+        );
+        assert_eq!(
+            admitted.finalize_not_admitted(4),
+            Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "attempt_finalization",
+                reason: "admission_already_granted"
+            })
+        );
+        admitted.terminal_commit(released(), 5).unwrap();
+        assert_eq!(
+            admitted.ready(4),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "timestamp_regressed" })
+        );
         admitted.ready(6).unwrap();
+        assert_eq!(admitted.timestamps().report_ready_ns, Some(6));
     }
 
     #[test]
-    fn cleanup_requires_admission_and_terminal() {
+    fn cleanup_commit_requires_admission_and_terminal() {
         let mut lifecycle = AttemptLifecycle::new(0);
-        assert_eq!(lifecycle.cleanup(1), Err(AttemptLifecycleError::CleanupWithoutAdmission));
+        assert_eq!(lifecycle.terminal_commit(released(), 1), Err(AttemptLifecycleError::CleanupWithoutAdmission));
         lifecycle.disposition(AttemptDisposition::Native).unwrap();
         lifecycle.admission_requested(1).unwrap();
+        assert_eq!(lifecycle.terminal_commit(released(), 2), Err(AttemptLifecycleError::CleanupWithoutAdmission));
         lifecycle.admitted(fact(), 2).unwrap();
-        assert!(matches!(
-            lifecycle.cleanup(3),
-            Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", .. })
-        ));
+        assert_eq!(
+            lifecycle.terminal_commit(released(), 3),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", reason: "not_terminal" })
+        );
+
+        let mut not_admitted = AttemptLifecycle::new(0);
+        not_admitted.terminalize(failed(), 1).unwrap();
+        not_admitted.finalize_not_admitted(2).unwrap();
+        assert_eq!(not_admitted.terminal_commit(released(), 3), Err(AttemptLifecycleError::CleanupWithoutAdmission));
     }
 
     #[test]
@@ -865,14 +1068,7 @@ mod tests {
         lifecycle.admission_requested(1).unwrap();
         lifecycle.admitted(fact(), 2).unwrap();
         assert!(matches!(
-            lifecycle.terminal_commit(
-                AttemptTerminalCommit::new(
-                    AttemptCapacityDisposition::Released,
-                    None,
-                    AttemptHealthTransition::HealthyReuse,
-                ),
-                3,
-            ),
+            lifecycle.terminal_commit(released(), 3),
             Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", reason: "not_terminal" })
         ));
         lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
@@ -898,9 +1094,10 @@ mod tests {
             AttemptHealthTransition::HealthyReuse,
         );
         lifecycle.terminal_commit(released, 4).unwrap();
-        assert_eq!(lifecycle.cleanup, Some(4));
-        assert_eq!(lifecycle.terminal_commit, Some(released));
+        assert_eq!(lifecycle.timestamps().cleanup_complete_ns, Some(4));
+        assert_eq!(lifecycle.cleanup_commit(), Some(released));
         lifecycle.terminal_commit(released, 5).unwrap();
+        assert_eq!(lifecycle.timestamps().cleanup_complete_ns, Some(4));
         assert_eq!(
             lifecycle.terminal_commit(
                 AttemptTerminalCommit::new(
@@ -1031,8 +1228,8 @@ mod tests {
         lifecycle.disposition(AttemptDisposition::Native).unwrap();
         lifecycle.admission_requested(1).unwrap();
         assert_eq!(lifecycle.admission_requested(2), Err(AttemptLifecycleError::AdmissionAlreadyClaimed));
-        assert_eq!(lifecycle.admission_requested, Some(1));
-        assert!(lifecycle.terminal.is_none() && lifecycle.primary_failure.is_none());
+        assert_eq!(lifecycle.timestamps().admission_requested_ns, Some(1));
+        assert!(lifecycle.terminal_outcome().is_none() && lifecycle.primary_failure_summary().is_none());
     }
 
     #[test]
@@ -1108,12 +1305,12 @@ mod tests {
 
     #[test]
     fn boundary_recording_is_first_wins_for_repeated_fragment_calls() {
-        let mut lifecycle = drive(Row::Native);
+        let (mut lifecycle, _) = drive(Row::Native);
         let before = lifecycle.timestamps();
         lifecycle.gpu(9).unwrap();
         lifecycle.physical(9).unwrap();
         lifecycle.admitted(fact(), 9).unwrap();
-        lifecycle.cleanup(9).unwrap();
+        lifecycle.ready(9).unwrap();
         let after = lifecycle.timestamps();
         assert_eq!(before, after);
     }
@@ -1128,7 +1325,7 @@ mod tests {
         // Disposition stays cpu_fallback; unplanned is only assigned when no
         // disposition was set, so this stays a valid cpu_fallback terminal.
         lifecycle.terminalize(RuntimeTerminalOutcome::Dropped, 4).unwrap();
-        assert_eq!(lifecycle.disposition, Some(AttemptDisposition::CpuFallback));
+        assert_eq!(lifecycle.recorded_disposition(), Some(AttemptDisposition::CpuFallback));
     }
 }
 

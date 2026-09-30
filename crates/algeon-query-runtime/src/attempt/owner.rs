@@ -2,7 +2,9 @@
 use std::{
     fmt,
     future::Future,
-    mem, panic,
+    mem,
+    ops::{Deref, DerefMut},
+    panic,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync,
@@ -32,11 +34,11 @@ use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
-        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit,
-        AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport, RuntimeObservationClock,
-        RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
-        RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
-        SystemRuntimeObservationClock,
+        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptReportSealProvider, AttemptRetryAdvice,
+        AttemptTerminalCommit, AttemptTraceContext, CleanupFailureTally, QUERY_ATTEMPT_REPORT_SCHEMA_V2,
+        QueryAttemptReport, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter,
+        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
 };
@@ -137,6 +139,22 @@ pub(crate) struct AttemptFinalizer(Arc<AttemptCore>);
 /// not admitted or after GPU cleanup.
 pub(crate) struct AttemptAdmission(AttemptFinalizer);
 
+/// Builds the attempt report when the attempt's observation seals. The
+/// holder of a finished admission passes it to that seal.
+pub(crate) struct AttemptReportPublisher(Arc<AttemptCore>);
+
+impl AttemptReportPublisher {
+    pub(crate) fn seal_provider(&self) -> AttemptReportSealProvider {
+        self.0.report_seal_provider()
+    }
+}
+
+impl fmt::Debug for AttemptReportPublisher {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("AttemptReportPublisher").field("attempt_id", &self.0.attempt_id).finish_non_exhaustive()
+    }
+}
+
 /// Shared routing for one [`AttemptFinalizer`]. Cloning an admission binding
 /// clones this routing handle, never the finalizer itself. Before admission,
 /// the owner-side path consumes it with `NotRequired`; after a grant is
@@ -170,14 +188,14 @@ impl Clone for AttemptAdmissionRejection {
 /// [`AttemptCompletionFactory`] instead, so an attempt object or result
 /// stream never masks caller abandonment.
 pub struct AttemptCompletion {
-    cell: Arc<AttemptCompletionCell>,
+    shared: Arc<AttemptShared>,
 }
 
 impl Clone for AttemptCompletion {
     fn clone(&self) -> Self {
-        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        state.receivers = state.receivers.saturating_add(1);
-        Self { cell: Arc::clone(&self.cell) }
+        let mut state = self.shared.lock();
+        state.completion.receivers = state.completion.receivers.saturating_add(1);
+        Self { shared: Arc::clone(&self.shared) }
     }
 }
 
@@ -190,12 +208,12 @@ impl Clone for AttemptCompletion {
 /// mask caller abandonment. It cannot terminalize the attempt or store a
 /// second report.
 pub struct AttemptCompletionFactory {
-    cell: Arc<AttemptCompletionCell>,
+    shared: Arc<AttemptShared>,
 }
 
 impl Clone for AttemptCompletionFactory {
     fn clone(&self) -> Self {
-        Self { cell: Arc::clone(&self.cell) }
+        Self { shared: Arc::clone(&self.shared) }
     }
 }
 
@@ -203,15 +221,14 @@ impl AttemptCompletionFactory {
     /// Mints one independent counted receiver for the attempt's immutable
     /// terminal report.
     pub fn completion(&self) -> AttemptCompletion {
-        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        state.receivers = state.receivers.saturating_add(1);
-        AttemptCompletion { cell: Arc::clone(&self.cell) }
+        let mut state = self.shared.lock();
+        state.completion.receivers = state.completion.receivers.saturating_add(1);
+        AttemptCompletion { shared: Arc::clone(&self.shared) }
     }
 
     /// Returns the published report without waiting, when ready.
     pub fn try_report(&self) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
+        self.shared.lock().completion.visible_report()
     }
 }
 
@@ -243,23 +260,60 @@ struct CompletionState {
     receivers: u64,
 }
 
-struct AttemptCompletionCell {
-    state: Mutex<CompletionState>,
+impl CompletionState {
+    fn visible_report(&self) -> Option<Arc<QueryAttemptReport>> {
+        self.report_visible.then(|| self.report.as_ref().map(Arc::clone)).flatten()
+    }
+}
+
+/// The attempt lifecycle and its completion delivery under one lock, so the
+/// report-ready boundary and the report a receiver sees cannot disagree.
+struct AttemptState {
+    lifecycle: AttemptLifecycle,
+    completion: CompletionState,
+}
+
+/// State shared by the attempt core and its completion receivers. Receivers
+/// hold only this, never the observation session behind the core.
+struct AttemptShared {
+    state: Mutex<AttemptState>,
     changed: Condvar,
+}
+
+impl AttemptShared {
+    fn lock(&self) -> MutexGuard<'_, AttemptState> {
+        self.state.lock().unwrap_or_else(sync::PoisonError::into_inner)
+    }
+}
+
+/// The attempt lock viewed as its lifecycle.
+struct LifecycleGuard<'a>(MutexGuard<'a, AttemptState>);
+
+impl Deref for LifecycleGuard<'_> {
+    type Target = AttemptLifecycle;
+
+    fn deref(&self) -> &AttemptLifecycle {
+        &self.0.lifecycle
+    }
+}
+
+impl DerefMut for LifecycleGuard<'_> {
+    fn deref_mut(&mut self) -> &mut AttemptLifecycle {
+        &mut self.0.lifecycle
+    }
 }
 
 struct AttemptCore {
     attempt_id: AttemptId,
     query_id: Option<AttemptQueryId>,
     trace_context: Option<AttemptTraceContext>,
-    lifecycle: Mutex<AttemptLifecycle>,
+    shared: Arc<AttemptShared>,
     clock: Arc<dyn RuntimeObservationClock>,
     cancellation: AttemptCancellation,
     // Set once during construction after the observation owner exists. A
     // `RuntimeObservationHandle` is cloneable record-only state, so holding it
     // here cannot cycle back into the attempt core.
     observation: OnceLock<RuntimeObservationHandle>,
-    cell: Arc<AttemptCompletionCell>,
     counters: Arc<AttemptBackendCounters>,
     completion_queue: Option<Arc<AttemptCompletionQueue>>,
     // The begin-vs-close linearization artifact. It fences observation
@@ -281,8 +335,8 @@ impl fmt::Debug for AttemptCore {
 }
 
 impl AttemptCore {
-    fn lock_lifecycle(&self) -> MutexGuard<'_, AttemptLifecycle> {
-        self.lifecycle.lock().unwrap_or_else(sync::PoisonError::into_inner)
+    fn lock_lifecycle(&self) -> LifecycleGuard<'_> {
+        LifecycleGuard(self.shared.lock())
     }
 
     fn monotonic_ns(&self) -> u64 {
@@ -293,18 +347,19 @@ impl AttemptCore {
     where F: Fn(Arc<QueryAttemptReport>) + Send + Sync + 'static {
         let mut sink = Some(SealedAttemptReportSink { notify: Box::new(sink) });
         let published = {
-            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-            match &state.report {
-                Some(report) if state.report_visible => Some(Arc::clone(report)),
+            let mut state = self.shared.lock();
+            let completion = &mut state.completion;
+            match &completion.report {
+                Some(report) if completion.report_visible => Some(Arc::clone(report)),
                 Some(_) => {
                     // Publication is draining the pre-visibility queue. Join
                     // it rather than invoke independently, so a concurrent
                     // late registration cannot race completion visibility.
-                    state.sealed_report_sinks.push(sink.take().expect("sink exists"));
+                    completion.sealed_report_sinks.push(sink.take().expect("sink exists"));
                     None
                 },
                 None => {
-                    state.sealed_report_sinks.push(sink.take().expect("sink exists"));
+                    completion.sealed_report_sinks.push(sink.take().expect("sink exists"));
                     None
                 },
             }
@@ -317,13 +372,11 @@ impl AttemptCore {
     /// Builds the fixed report from lifecycle state. The sole seal commit
     /// applies observation completeness before this value is made visible to
     /// either the sealed snapshot or completion receivers.
-    fn report(&self) -> QueryAttemptReport {
-        let lifecycle = self.lock_lifecycle();
-        let terminal_commit = lifecycle.terminal_commit;
-        let cleanup_failure_count = lifecycle.cleanup_failures;
-        let outcome =
-            lifecycle.terminal.as_ref().map(|(_, outcome)| outcome.clone()).unwrap_or(RuntimeTerminalOutcome::Dropped);
-        let primary_failure = lifecycle.primary_failure.clone();
+    fn report(&self, lifecycle: &AttemptLifecycle, cleanup_failures: &CleanupFailureTally) -> QueryAttemptReport {
+        let terminal_commit = lifecycle.cleanup_commit();
+        let cleanup_failure_count = cleanup_failures.count();
+        let outcome = lifecycle.terminal_outcome().cloned().unwrap_or(RuntimeTerminalOutcome::Dropped);
+        let primary_failure = lifecycle.primary_failure_summary().cloned();
         let capacity_disposition = terminal_commit
             .map(AttemptTerminalCommit::capacity_disposition)
             .unwrap_or(AttemptCapacityDisposition::NotAdmitted);
@@ -347,16 +400,16 @@ impl AttemptCore {
             attempt_id: self.attempt_id,
             query_id: self.query_id.clone(),
             trace_context: self.trace_context.clone(),
-            disposition: lifecycle.disposition.unwrap_or(AttemptDisposition::Unplanned),
+            disposition: lifecycle.recorded_disposition().unwrap_or(AttemptDisposition::Unplanned),
             outcome,
             primary_failure,
             retry_advice,
-            device_ordinal: lifecycle.admitted.as_ref().map(|(_, fact)| fact.device_ordinal),
-            admission: lifecycle.admitted.as_ref().map(|(_, fact)| fact.clone()),
-            admission_wait: lifecycle.admission_wait,
-            composed_schedule: lifecycle.composed_schedule.clone(),
+            device_ordinal: lifecycle.admission_fact().map(|fact| fact.device_ordinal),
+            admission: lifecycle.admission_fact().cloned(),
+            admission_wait: lifecycle.admission_wait_fact(),
+            composed_schedule: lifecycle.composed_schedule_projection().cloned(),
             timestamps: lifecycle.timestamps(),
-            cleanup_disposition: if lifecycle.admitted.is_some() {
+            cleanup_disposition: if lifecycle.admission_fact().is_some() {
                 if cleanup_failure_count == 0 {
                     AttemptCleanupDisposition::Completed
                 } else {
@@ -366,8 +419,8 @@ impl AttemptCore {
                 AttemptCleanupDisposition::NotRequired
             },
             cleanup_failure_count,
-            cleanup_failure_count_complete: lifecycle.cleanup_failures_complete,
-            first_cleanup_failure: lifecycle.first_cleanup_failure.clone(),
+            cleanup_failure_count_complete: cleanup_failures.complete(),
+            first_cleanup_failure: cleanup_failures.first().cloned(),
             // `finish_with_footer` requires finalization before publication.
             // An admitted report therefore always has a terminal commit;
             // `NotAdmitted` is the only valid no-commit projection.
@@ -392,11 +445,11 @@ impl AttemptCore {
         fallback: RuntimeTerminalOutcome,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
         let mut lifecycle = self.lock_lifecycle();
-        if lifecycle.terminal.is_some() {
+        if lifecycle.terminal_outcome().is_some() {
             return Err(AttemptLifecycleError::DoubleTerminalization);
         }
         lifecycle.terminalize(fallback, self.monotonic_ns())?;
-        Ok(lifecycle.terminal.as_ref().expect("terminal outcome was recorded").1.clone())
+        Ok(lifecycle.terminal_outcome().cloned().expect("terminal outcome was recorded"))
     }
 
     fn terminalize_for_release_with_primary_failure(
@@ -405,20 +458,21 @@ impl AttemptCore {
         summary: AttemptFailureSummary,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
         let mut lifecycle = self.lock_lifecycle();
-        if lifecycle.terminal.is_some() {
+        if lifecycle.terminal_outcome().is_some() {
             return Err(AttemptLifecycleError::DoubleTerminalization);
         }
         lifecycle.primary_failure(summary);
         lifecycle.terminalize(outcome, self.monotonic_ns())?;
-        Ok(lifecycle.terminal.as_ref().expect("terminal outcome was recorded").1.clone())
+        Ok(lifecycle.terminal_outcome().cloned().expect("terminal outcome was recorded"))
     }
 
-    /// Resolves the sole terminal outcome at seal. Recorder-local pending
-    /// outcomes are only an early observation; the attempt lifecycle remains
-    /// canonical once it has a terminal state.
+    /// Resolves the attempt's sole terminal outcome before cleanup. A pending
+    /// outcome the recorder observed is only a fallback: the attempt
+    /// lifecycle remains canonical once it has a terminal state, and every
+    /// seal of the attempt's observation uses that outcome.
     fn canonical_terminal_outcome(&self, fallback: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
         let mut lifecycle = self.lock_lifecycle();
-        if let Some((_, outcome)) = &lifecycle.terminal {
+        if let Some(outcome) = lifecycle.terminal_outcome() {
             return outcome.clone();
         }
         // A caller can capture a borrowed native failure before it hands the
@@ -428,10 +482,21 @@ impl AttemptCore {
         // classification available at this boundary; do not replace it with
         // a mechanical drop/cancellation fallback.
         let fallback =
-            lifecycle.primary_failure.as_ref().map(RuntimeTerminalOutcome::from_primary_failure).unwrap_or(fallback);
+            lifecycle.primary_failure_summary().map(RuntimeTerminalOutcome::from_primary_failure).unwrap_or(fallback);
         let at = self.monotonic_ns();
         lifecycle.terminalize(fallback.clone(), at).unwrap_or(());
-        lifecycle.terminal.as_ref().map(|(_, outcome)| outcome.clone()).unwrap_or(fallback)
+        lifecycle.terminal_outcome().cloned().unwrap_or(fallback)
+    }
+
+    /// The report provider for this attempt's observation seal. Every seal of
+    /// the attempt's session passes it, so the sealed snapshot embeds the
+    /// report that completion receivers publish.
+    fn report_seal_provider(self: &Arc<Self>) -> AttemptReportSealProvider {
+        let core = Arc::clone(self);
+        Arc::new(move |footer, cleanup_failures| {
+            core.finish_with_footer(footer, cleanup_failures)
+                .expect("attempt lifecycle must complete while sealing its sole immutable report")
+        })
     }
 
     /// The single seal-and-completion commit: a previously consumed finalizer,
@@ -440,33 +505,31 @@ impl AttemptCore {
     fn finish_with_footer(
         &self,
         footer: &RuntimeObservationFooter,
+        cleanup_failures: &CleanupFailureTally,
     ) -> Result<Arc<QueryAttemptReport>, AttemptLifecycleError> {
-        {
-            let mut lifecycle = self.lock_lifecycle();
-            if lifecycle.ready.is_none() {
-                lifecycle.ready(self.monotonic_ns())?;
-            }
-        }
+        // Report-ready, the report built from that lifecycle, and its storage
+        // share one lock hold. The stored report stays unreadable until every
+        // pre-registered projection consumed it. Sinks consume that exact Arc
+        // before the visibility flag wakes any completion receiver; late
+        // registrations clone this canonical allocation directly rather than
+        // retaining another copy.
         let report = {
-            let mut report = self.report();
-            report.set_observation_completeness(footer);
-            Arc::new(report)
-        };
-        // The canonical completion cell first owns the report without making
-        // it observable. Sinks consume that exact Arc before the visibility
-        // flag wakes any completion receiver; late registrations clone this
-        // canonical allocation directly rather than retaining another copy.
-        let report = loop {
-            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-            if let Some(existing) = &state.report {
-                if state.report_visible {
-                    return Ok(Arc::clone(existing));
+            let mut state = self.shared.lock();
+            loop {
+                match &state.completion.report {
+                    Some(existing) if state.completion.report_visible => return Ok(Arc::clone(existing)),
+                    Some(_) => state = self.shared.changed.wait(state).unwrap_or_else(sync::PoisonError::into_inner),
+                    None => break,
                 }
-                let _guard = self.cell.changed.wait(state).unwrap_or_else(sync::PoisonError::into_inner);
-                continue;
             }
-            state.report = Some(Arc::clone(&report));
-            break report;
+            if !state.lifecycle.is_ready() {
+                state.lifecycle.ready(self.monotonic_ns())?;
+            }
+            let mut report = self.report(&state.lifecycle, cleanup_failures);
+            report.set_observation_completeness(footer);
+            let report = Arc::new(report);
+            state.completion.report = Some(Arc::clone(&report));
+            report
         };
 
         // Keep draining under a visibility fence. A sink may register another
@@ -474,23 +537,21 @@ impl AttemptCore {
         // flight; every such pre-visibility sink receives this exact Arc
         // before any completion reader can observe it.
         let (wakers, abandoned) = loop {
-            let sinks = {
-                let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-                mem::take(&mut state.sealed_report_sinks)
-            };
+            let sinks = mem::take(&mut self.shared.lock().completion.sealed_report_sinks);
             for sink in sinks {
                 sink.invoke(Arc::clone(&report));
             }
-            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-            if !state.sealed_report_sinks.is_empty() {
+            let mut state = self.shared.lock();
+            let completion = &mut state.completion;
+            if !completion.sealed_report_sinks.is_empty() {
                 continue;
             }
-            debug_assert!(state.report.as_ref().is_some_and(|existing| Arc::ptr_eq(existing, &report)));
-            state.report_visible = true;
-            break (mem::take(&mut state.wakers), state.receivers == 0);
+            debug_assert!(completion.report.as_ref().is_some_and(|existing| Arc::ptr_eq(existing, &report)));
+            completion.report_visible = true;
+            break (mem::take(&mut completion.wakers), completion.receivers == 0);
         };
         self.counters.reports_ready.fetch_add(1, Ordering::AcqRel);
-        self.cell.changed.notify_all();
+        self.shared.changed.notify_all();
         for waker in wakers {
             waker.wake();
         }
@@ -508,24 +569,6 @@ impl AttemptCore {
         // quiescence. Report and completion state carry no lease.
         self.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
         Ok(report)
-    }
-
-    fn finish_without_observation(&self) -> Result<Arc<QueryAttemptReport>, AttemptLifecycleError> {
-        self.finish_with_footer(&RuntimeObservationFooter {
-            complete: true,
-            terminal: None,
-            retained_records: 0,
-            retained_bytes: 0,
-            first_dropped_sequence: None,
-            last_attempted_sequence: None,
-            dropped_by_class: Vec::new(),
-            dropped_by_reason: Vec::new(),
-            truncated: false,
-            degraded: false,
-            poison_recoveries: 0,
-            attempt_report: None,
-            counter_overflow: false,
-        })
     }
 }
 
@@ -555,13 +598,16 @@ impl AttemptOwner {
         } else {
             RuntimeObservationConfig::bounded(0, 0)
         };
-        let cell = Arc::new(AttemptCompletionCell {
-            state: Mutex::new(CompletionState {
-                report: None,
-                report_visible: false,
-                sealed_report_sinks: Vec::new(),
-                wakers: Vec::new(),
-                receivers: 0,
+        let shared = Arc::new(AttemptShared {
+            state: Mutex::new(AttemptState {
+                lifecycle: AttemptLifecycle::new(clock.monotonic_ns()),
+                completion: CompletionState {
+                    report: None,
+                    report_visible: false,
+                    sealed_report_sinks: Vec::new(),
+                    wakers: Vec::new(),
+                    receivers: 0,
+                },
             }),
             changed: Condvar::new(),
         });
@@ -569,11 +615,10 @@ impl AttemptOwner {
             attempt_id: AttemptId::mint(),
             query_id: request.query_id,
             trace_context: request.trace_context,
-            lifecycle: Mutex::new(AttemptLifecycle::new(clock.monotonic_ns())),
+            shared: Arc::clone(&shared),
             clock: Arc::clone(&clock),
             cancellation: AttemptCancellation::new(request.deadline),
             observation: sync::OnceLock::new(),
-            cell: Arc::clone(&cell),
             counters,
             completion_queue: queue,
             observation_permit: Mutex::new(None),
@@ -587,26 +632,12 @@ impl AttemptOwner {
             .map(|query_id| RuntimeQueryId::new(query_id.as_str()))
             .unwrap_or_else(|| RuntimeQueryId::new(""));
         let trace_id = core.trace_context.as_ref().map(|trace| RuntimeTraceId::new(trace.as_str()));
-        let terminal_outcome_core = Arc::clone(&core);
-        let report_core = Arc::clone(&core);
-        let cleanup_failure_core = Arc::downgrade(&core);
-        let owner = RuntimeObservationOwner::with_clock(query_id, trace_id, observation, clock)
-            .with_terminal_outcome_resolver(move |fallback| terminal_outcome_core.canonical_terminal_outcome(fallback))
-            .with_attempt_report_seal_provider(move |footer| {
-                report_core
-                    .finish_with_footer(footer)
-                    .expect("attempt lifecycle must complete while sealing its sole immutable report")
-            })
-            .with_attempt_cleanup_failure_recorder(move |summary| {
-                if let Some(core) = cleanup_failure_core.upgrade() {
-                    core.lock_lifecycle().cleanup_failure(summary);
-                }
-            });
+        let owner = RuntimeObservationOwner::with_clock(query_id, trace_id, observation, clock);
         core.observation.set(owner.handle()).expect("attempt observation handle is set exactly once");
         core.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).replace(permit);
         AttemptBegin {
             owner: Self(Arc::new(AttemptInner { core, observation_owner: owner, finalizer_slot })),
-            completion: AttemptCompletionFactory { cell },
+            completion: AttemptCompletionFactory { shared },
         }
     }
 
@@ -656,8 +687,8 @@ impl AttemptOwner {
 
     /// An independent receiver for the terminal report.
     pub fn completion(&self) -> AttemptCompletion {
-        self.0.core.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner).receivers += 1;
-        AttemptCompletion { cell: Arc::clone(&self.0.core.cell) }
+        self.0.core.shared.lock().completion.receivers += 1;
+        AttemptCompletion { shared: Arc::clone(&self.0.core.shared) }
     }
 
     /// The attempt-scoped cooperative cancellation signal and deadline.
@@ -690,29 +721,15 @@ impl AttemptOwner {
     fn commit_resolved_terminal(&self, terminal: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
         match self.0.finalizer_slot.finalize_not_admitted(terminal) {
             Ok(terminal) => {
-                let _ = self.0.observation_owner.finish_query(Some(terminal));
+                let _ = self.0.observation_owner.finish_attempt(terminal, self.0.core.report_seal_provider());
+                Ok(())
             },
             // An admission claim holds the finalizer, or a not-admitted
             // commit already consumed it. Either way the terminal outcome is
             // recorded and its holder publishes the report.
-            Err(AttemptLifecycleError::FinalizationUnavailable) => return Ok(()),
-            Err(error) => return Err(error),
+            Err(AttemptLifecycleError::FinalizationUnavailable) => Ok(()),
+            Err(error) => Err(error),
         }
-        // Seal-observer delivery is the primary completion path; finish
-        // here as an idempotent backstop so no delivery ordering can lose
-        // the report.
-        let report_ready = self.0.core.lock_lifecycle().ready.is_some();
-        if !report_ready {
-            match self.0.observation_owner.sealed_snapshot() {
-                Some(snapshot) => {
-                    let _ = self.0.core.finish_with_footer(snapshot.footer())?;
-                },
-                None => {
-                    let _ = self.0.core.finish_without_observation()?;
-                },
-            }
-        }
-        Ok(())
     }
 
     /// Captures the native error by reference before reducing it to the
@@ -741,7 +758,7 @@ impl AttemptOwner {
 
 impl Drop for AttemptOwner {
     fn drop(&mut self) {
-        let report_ready = self.0.core.lock_lifecycle().ready.is_some();
+        let report_ready = self.0.core.lock_lifecycle().is_ready();
         if !report_ready {
             let _ = self.commit_terminal(if thread::panicking() {
                 RuntimeTerminalOutcome::Panicked
@@ -866,13 +883,13 @@ impl AttemptAdmissionRejection {
             let mut lifecycle = self.core.lock_lifecycle();
             // A claimed admission, including one whose second claim was just
             // rejected, is finished by its claim; this rejection changes nothing.
-            if lifecycle.admission_requested.is_some() {
+            if lifecycle.is_claimed() {
                 return Ok(());
             }
             lifecycle.terminalize_admission_rejection(outcome.clone(), summary, self.core.monotonic_ns())?;
         }
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
-        self.observation_owner.finish_query(Some(outcome));
+        self.observation_owner.finish_attempt(outcome, self.core.report_seal_provider());
         Ok(())
     }
 }
@@ -940,11 +957,11 @@ impl AttemptFinalizer {
         fallback: RuntimeTerminalOutcome,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
         let mut lifecycle = self.0.lock_lifecycle();
-        let outcome = match &lifecycle.terminal {
-            Some((_, outcome)) => outcome.clone(),
+        let outcome = match lifecycle.terminal_outcome() {
+            Some(outcome) => outcome.clone(),
             None => {
                 lifecycle.terminalize(fallback, self.0.monotonic_ns())?;
-                lifecycle.terminal.as_ref().expect("terminal outcome was recorded").1.clone()
+                lifecycle.terminal_outcome().cloned().expect("terminal outcome was recorded")
             },
         };
         lifecycle.finalize_not_admitted(self.0.monotonic_ns())?;
@@ -964,6 +981,12 @@ impl AttemptFinalizer {
 impl AttemptAdmission {
     pub(crate) fn monotonic_ns(&self) -> u64 {
         self.0.monotonic_ns()
+    }
+
+    /// The attempt's report publication, which the admission's holder uses to
+    /// seal the attempt's observation after it finishes the admission.
+    pub(crate) fn report_publisher(&self) -> AttemptReportPublisher {
+        AttemptReportPublisher(Arc::clone(&self.0.0))
     }
 
     pub(crate) fn record_primary_failure(&self, summary: AttemptFailureSummary) {
@@ -987,7 +1010,7 @@ impl AttemptAdmission {
     }
 
     pub(crate) fn is_admitted(&self) -> bool {
-        self.0.0.lock_lifecycle().admitted.is_some()
+        self.0.0.lock_lifecycle().admission_fact().is_some()
     }
 
     pub(crate) fn terminalize_for_release(
@@ -1027,12 +1050,12 @@ impl AttemptHandle {
 
     /// Returns whether the attempt outcome is already terminal.
     pub fn is_terminal(&self) -> bool {
-        self.0.lock_lifecycle().terminal.is_some()
+        self.0.lock_lifecycle().terminal_outcome().is_some()
     }
 
     /// The current disposition, when planning or execution has classified it.
     pub fn disposition(&self) -> Option<AttemptDisposition> {
-        self.0.lock_lifecycle().disposition
+        self.0.lock_lifecycle().recorded_disposition()
     }
 
     pub fn record_planning_started(&self) -> Result<(), AttemptLifecycleError> {
@@ -1092,8 +1115,8 @@ impl AttemptHandle {
     #[cfg(test)]
     pub(crate) fn record_cleanup_failure(&self, phase: CleanupFailurePhase, cleanup_error: &QueryError) {
         let summary = CleanupFailureSummary::from_native_error(phase, cleanup_error);
-        self.0.lock_lifecycle().cleanup_failure(summary.clone());
         let Some(observation) = self.0.observation.get() else { return };
+        observation.record_attempt_cleanup_failure(summary.clone());
         observation.record(|| {
             RuntimeObservationPayload::CleanupFailure(Box::new(RuntimeCleanupFailureObservation { summary }))
         });
@@ -1103,25 +1126,24 @@ impl AttemptHandle {
 impl AttemptCompletion {
     /// Returns whether the terminal report has been published.
     pub fn is_ready(&self) -> bool {
-        self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner).report_visible
+        self.shared.lock().completion.report_visible
     }
 
     /// Returns the published report without waiting, when ready.
     pub fn try_report(&self) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
+        self.shared.lock().completion.visible_report()
     }
 
     /// Blocks the current thread until the report is published or the timeout
     /// elapses. Intended for synchronous tests and diagnostics.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
+        let state = self.shared.lock();
         let (state, _) = self
-            .cell
+            .shared
             .changed
-            .wait_timeout_while(state, timeout, |state| !state.report_visible)
+            .wait_timeout_while(state, timeout, |state| !state.completion.report_visible)
             .unwrap_or_else(sync::PoisonError::into_inner);
-        state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
+        state.completion.visible_report()
     }
 }
 
@@ -1129,14 +1151,13 @@ impl Future for AttemptCompletion {
     type Output = Arc<QueryAttemptReport>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        if state.report_visible
-            && let Some(report) = &state.report
-        {
-            return Poll::Ready(Arc::clone(report));
+        let mut state = self.shared.lock();
+        let completion = &mut state.completion;
+        if let Some(report) = completion.visible_report() {
+            return Poll::Ready(report);
         }
-        if !state.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-            state.wakers.push(cx.waker().clone());
+        if !completion.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+            completion.wakers.push(cx.waker().clone());
         }
         Poll::Pending
     }
@@ -1144,8 +1165,8 @@ impl Future for AttemptCompletion {
 
 impl Drop for AttemptCompletion {
     fn drop(&mut self) {
-        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        state.receivers = state.receivers.saturating_sub(1);
+        let mut state = self.shared.lock();
+        state.completion.receivers = state.completion.receivers.saturating_sub(1);
     }
 }
 
@@ -1197,6 +1218,14 @@ mod tests {
         handle.record_planning_started().unwrap();
         handle.record_planning_finished().unwrap();
         handle.set_disposition(AttemptDisposition::Native).unwrap();
+    }
+
+    /// Seals the attempt's observation after GPU cleanup the way the query
+    /// service does: with the lifecycle's resolved outcome and the attempt's
+    /// report publisher.
+    fn seal_after_cleanup(begin: &AttemptBegin, publisher: &AttemptReportPublisher, fallback: RuntimeTerminalOutcome) {
+        let outcome = begin.owner.0.core.canonical_terminal_outcome(fallback);
+        begin.owner.observation_owner_for_test().finish_attempt(outcome, publisher.seal_provider());
     }
 
     fn claim_admitted(begin: &AttemptBegin, fact: AttemptAdmissionFact) -> AttemptAdmission {
@@ -1304,6 +1333,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
         );
+        let publisher = admission.report_publisher();
         handle.record_physical_execution_started().unwrap();
         handle.record_gpu_execution_started().unwrap();
         clock.set_monotonic_ns(20);
@@ -1335,7 +1365,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
+        seal_after_cleanup(&begin, &publisher, RuntimeTerminalOutcome::Succeeded);
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published after seal");
         assert_eq!(report.timestamps.outcome_terminal_ns, 20);
         assert_eq!(report.timestamps.cleanup_complete_ns, Some(30));
@@ -1358,6 +1388,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
         );
+        let publisher = admission.report_publisher();
         let native_fault_evidence = AttemptNativeFaultEvidence {
             isolation: AttemptFaultIsolation::DeviceLocal,
             teardown_health: AttemptTeardownHealth::Completed,
@@ -1385,7 +1416,7 @@ mod tests {
                 .with_native_fault_evidence(native_fault_evidence),
             )
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
+        seal_after_cleanup(&begin, &publisher, RuntimeTerminalOutcome::Succeeded);
 
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::RetainedQuarantine);
@@ -1402,6 +1433,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
         );
+        let publisher = admission.report_publisher();
         clock.set_monotonic_ns(20);
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         clock.set_monotonic_ns(30);
@@ -1416,7 +1448,7 @@ mod tests {
             matches!(begin.owner.admission_binding().claim(), Err(AttemptLifecycleError::AdmissionAlreadyClaimed)),
             "the admission right is linear and cannot be claimed a second time"
         );
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
+        seal_after_cleanup(&begin, &publisher, RuntimeTerminalOutcome::Succeeded);
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
@@ -1555,6 +1587,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
         );
+        let publisher = admission.report_publisher();
         let primary_error =
             QueryError::new(QueryErrorCode::CudfTemporaryFailure, "test.primary", "primary native failure");
         begin.owner.commit_query_error(&primary_error).unwrap();
@@ -1568,10 +1601,14 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::CudfTemporaryFailure,
-            error_status: AttemptFailureStatus::Temporary,
-        }));
+        seal_after_cleanup(
+            &begin,
+            &publisher,
+            RuntimeTerminalOutcome::Failed {
+                error_code: AttemptFailureCode::CudfTemporaryFailure,
+                error_status: AttemptFailureStatus::Temporary,
+            },
+        );
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 2);
         assert!(report.cleanup_failure_count_complete);
@@ -1625,6 +1662,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
         );
+        let publisher = admission.report_publisher();
 
         // This models synchronous `input.execute` failure: the adapter still
         // borrows the native error while dropping the admitted handle starts
@@ -1647,7 +1685,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(terminal));
+        seal_after_cleanup(&begin, &publisher, terminal);
 
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
@@ -1677,6 +1715,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
         );
+        let publisher = admission.report_publisher();
 
         let error = QueryError::new(
             QueryErrorCode::CudfTemporaryFailure,
@@ -1693,7 +1732,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(terminal));
+        seal_after_cleanup(&begin, &publisher, terminal);
 
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         let summary = report.primary_failure.as_ref().expect("captured native primary summary");
@@ -1709,6 +1748,7 @@ mod tests {
             &begin,
             AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
         );
+        let publisher = admission.report_publisher();
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let cleanup_error = QueryError::new(QueryErrorCode::Internal, "test.cleanup", "ring-full cleanup failure");
         handle.record_cleanup_failure(CleanupFailurePhase::QueryServiceCleanup, &cleanup_error);
@@ -1719,7 +1759,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
+        seal_after_cleanup(&begin, &publisher, RuntimeTerminalOutcome::Succeeded);
 
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 1);

@@ -121,13 +121,12 @@ impl RuntimeObservationHandle {
                 state: Mutex::new(state),
                 sealed: AtomicBool::new(false),
             })),
-            attempt_cleanup_failure_recorder: None,
         }
     }
 
     /// Returns a disabled session.
     pub const fn disabled() -> Self {
-        Self { config: RuntimeObservationConfig::disabled(), inner: None, attempt_cleanup_failure_recorder: None }
+        Self { config: RuntimeObservationConfig::disabled(), inner: None }
     }
 
     /// Returns whether this session constructs and records trace payloads.
@@ -148,13 +147,20 @@ impl RuntimeObservationHandle {
         self.config
     }
 
-    /// Routes an attempt-owned cleanup failure into the lifecycle before the
-    /// caller attempts an optional timeline projection.
+    /// Counts one cleanup failure in the session's exact tally, which the
+    /// attempt report reads at seal, before the caller attempts an optional
+    /// timeline projection. Failures after the seal are ignored.
     #[doc(hidden)]
     pub fn record_attempt_cleanup_failure(&self, summary: CleanupFailureSummary) {
-        if let Some(recorder) = &self.attempt_cleanup_failure_recorder {
-            recorder(summary);
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let mut state = inner.lock_state();
+        // Sealing flips this flag while holding the same lock.
+        if inner.sealed.load(Ordering::Acquire) {
+            return;
         }
+        state.cleanup_failures.record(summary);
     }
 
     /// Returns the immutable query identity when recording is enabled.

@@ -52,7 +52,10 @@ pub use query_planning::{
     execution_contracts::RuntimeTaskId,
     schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1},
 };
-pub(crate) use recorder::{BudgetWindow, QueryCleanupSealDelivery, in_runtime_observation_delivery};
+pub(crate) use recorder::{
+    AttemptReportSealProvider, BudgetWindow, CleanupFailureTally, QueryCleanupSealDelivery,
+    in_runtime_observation_delivery,
+};
 pub use recorder::{
     BudgetWindowPeaks, LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig,
     RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,

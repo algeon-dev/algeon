@@ -224,9 +224,9 @@ impl QueryHandleReportCommit {
             CleanupEvidence::CallbackAbandoned => Some(CleanupFailureSummary::callback_abandoned()),
         };
         if let Some(summary) = cleanup_failure {
-            // Record the canonical lifecycle fact before the bounded timeline
-            // projection. Dropped timeline records cannot affect the exact
-            // cleanup count or its first summary.
+            // Record the exact tally before the bounded timeline projection.
+            // Dropped timeline records cannot affect the exact cleanup count
+            // or its first summary.
             self.observation.record_attempt_cleanup_failure(summary.clone());
             self.observation.record(|| {
                 RuntimeObservationPayload::CleanupFailure(Box::new(RuntimeCleanupFailureObservation { summary }))

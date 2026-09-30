@@ -9,11 +9,10 @@ use std::{
 };
 
 use super::{
-    AttemptCleanupFailureRecorder, AttemptReportProvider, AttemptReportSealProvider, CleanupFailureSummary,
-    DeferredRuntimeObservationSeal, LiveRuntimeObservationSnapshot, QueryAttemptReport, QueryBoundaryKind,
-    QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter,
-    RuntimeObservationHandle, RuntimeObservationPayload, RuntimeObservationSealObserver, RuntimeObservationSession,
-    RuntimeObservationTerminalOutcomeResolver, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+    AttemptReportProvider, AttemptReportSealProvider, DeferredRuntimeObservationSeal, LiveRuntimeObservationSnapshot,
+    QueryBoundaryKind, QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig,
+    RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeObservationSealObserver,
+    RuntimeObservationSession, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
     SealedRuntimeObservationSnapshot,
 };
 
@@ -27,9 +26,6 @@ pub struct RuntimeObservationOwner {
     session: Arc<RuntimeObservationSession>,
     lifecycle: Arc<RuntimeObservationOwnerLifecycle>,
     attempt_report_provider: Option<AttemptReportProvider>,
-    attempt_report_seal_provider: Option<AttemptReportSealProvider>,
-    terminal_outcome_resolver: Option<RuntimeObservationTerminalOutcomeResolver>,
-    attempt_cleanup_failure_recorder: Option<AttemptCleanupFailureRecorder>,
     #[cfg(test)]
     deferred_delivery_gate: Arc<Mutex<Option<Arc<RuntimeObservationDeliveryGate>>>>,
 }
@@ -167,9 +163,6 @@ impl RuntimeObservationOwner {
             session: Arc::new(session),
             lifecycle: Arc::new(RuntimeObservationOwnerLifecycle::default()),
             attempt_report_provider: None,
-            attempt_report_seal_provider: None,
-            terminal_outcome_resolver: None,
-            attempt_cleanup_failure_recorder: None,
             #[cfg(test)]
             deferred_delivery_gate: Arc::new(Mutex::new(None)),
         };
@@ -180,33 +173,6 @@ impl RuntimeObservationOwner {
     /// Installs a construction-time fixed attempt-summary provider.
     pub fn with_attempt_report_provider(mut self, provider: AttemptReportProvider) -> Self {
         self.attempt_report_provider = Some(provider);
-        self
-    }
-
-    /// Installs attempt-owned report construction at the sole seal point.
-    /// This remains internal so no adapter can manufacture a second report for
-    /// a live attempt.
-    pub(crate) fn with_attempt_report_seal_provider<F>(mut self, provider: F) -> Self
-    where F: Fn(&RuntimeObservationFooter) -> Arc<QueryAttemptReport> + Send + Sync + 'static {
-        self.attempt_report_seal_provider = Some(Arc::new(provider));
-        self
-    }
-
-    /// Installs the attempt-owned terminal outcome resolver. It runs after
-    /// cleanup evidence is recorded but before the recorder seals, so the
-    /// footer and attempt report cannot disagree on the terminal outcome.
-    pub(crate) fn with_terminal_outcome_resolver<F>(mut self, resolver: F) -> Self
-    where F: Fn(RuntimeTerminalOutcome) -> RuntimeTerminalOutcome + Send + Sync + 'static {
-        self.terminal_outcome_resolver = Some(Arc::new(resolver));
-        self
-    }
-
-    /// Installs the engine-owned attempt cleanup recorder. This internal hook
-    /// is only routing: lifecycle state remains the sole owner of the count
-    /// and first-summary facts.
-    pub(crate) fn with_attempt_cleanup_failure_recorder<F>(mut self, recorder: F) -> Self
-    where F: Fn(CleanupFailureSummary) + Send + Sync + 'static {
-        self.attempt_cleanup_failure_recorder = Some(Arc::new(recorder));
         self
     }
 
@@ -231,9 +197,7 @@ impl RuntimeObservationOwner {
 
     /// Returns cloneable recording access without terminal authority.
     pub fn handle(&self) -> RuntimeObservationHandle {
-        let mut handle = self.session.handle();
-        handle.attempt_cleanup_failure_recorder = self.attempt_cleanup_failure_recorder.clone();
-        handle
+        self.session.handle()
     }
 
     /// Returns the immutable query identity.
@@ -284,7 +248,7 @@ impl RuntimeObservationOwner {
                 RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
             }
         };
-        self.finish_owner_terminal(Some(outcome), |_| {})
+        self.finish_owner_terminal(Some(outcome), None, |_| {})
     }
 
     /// Retains one plan or admission outcome until the query owner completes cleanup.
@@ -364,18 +328,43 @@ impl RuntimeObservationOwner {
     /// returns; [`QueryCleanupSealDelivery::deliver`] runs afterwards and
     /// never gates reuse.
     pub(crate) fn seal_query_cleanup(&self, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
-        self.seal_query_cleanup_with_fallback(Some(fallback))
+        self.seal_query_cleanup_with(CleanupSeal::Recorded { fallback: Some(fallback) })
     }
 
-    fn seal_query_cleanup_with_fallback(&self, fallback: Option<RuntimeTerminalOutcome>) -> QueryCleanupSealDelivery {
+    /// Seals an attempt's session after its query-owned cleanup with the
+    /// attempt's resolved terminal `outcome`, which wins over any recorded
+    /// pending outcome. `report` builds the attempt report embedded in the
+    /// sealed snapshot. Observer delivery is deferred to the returned value.
+    pub(crate) fn seal_attempt_cleanup(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        report: AttemptReportSealProvider,
+    ) -> QueryCleanupSealDelivery {
+        self.seal_query_cleanup_with(CleanupSeal::Attempt { outcome, report })
+    }
+
+    /// As [`Self::seal_attempt_cleanup`], delivering observers before it
+    /// returns.
+    pub(crate) fn finish_attempt(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        report: AttemptReportSealProvider,
+    ) -> Option<SealedRuntimeObservationSnapshot> {
+        self.seal_attempt_cleanup(outcome, report).deliver()
+    }
+
+    fn seal_query_cleanup_with(&self, seal: CleanupSeal) -> QueryCleanupSealDelivery {
         self.begin_query_cleanup();
-        let outcome = loop {
+        let (outcome, attempt_report) = loop {
             let mut lifecycle = self.lock_lifecycle();
             match &mut *lifecycle {
                 RuntimeObservationOwnerLifecycleState::Open { pending_outcome, .. } => {
-                    let outcome = pending_outcome.take().or_else(|| fallback.clone());
+                    let pending_outcome = pending_outcome.take();
                     *lifecycle = RuntimeObservationOwnerLifecycleState::Finishing { late_observers: Vec::new() };
-                    break outcome;
+                    break match seal {
+                        CleanupSeal::Recorded { fallback } => (pending_outcome.or(fallback), None),
+                        CleanupSeal::Attempt { outcome, report } => (Some(outcome), Some(report)),
+                    };
                 },
                 RuntimeObservationOwnerLifecycleState::Finishing { .. } => {
                     lifecycle = match self.lifecycle.finished.wait(lifecycle) {
@@ -403,7 +392,7 @@ impl RuntimeObservationOwner {
                 },
             }
         };
-        let deferred = self.seal_owner_terminal(outcome, |outcome| {
+        let deferred = self.seal_owner_terminal(outcome, attempt_report, |outcome| {
             self.handle()
                 .record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::CleanupFinished });
             if let Some(outcome) = outcome {
@@ -425,7 +414,7 @@ impl RuntimeObservationOwner {
                 self.record_terminal_outcome(outcome.clone());
                 self.finish_query_cleanup(outcome)
             },
-            None => self.seal_query_cleanup_with_fallback(None).deliver(),
+            None => self.seal_query_cleanup_with(CleanupSeal::Recorded { fallback: None }).deliver(),
         }
     }
 
@@ -473,12 +462,13 @@ impl RuntimeObservationOwner {
     fn finish_owner_terminal<F>(
         &self,
         outcome: Option<RuntimeTerminalOutcome>,
+        attempt_report: Option<AttemptReportSealProvider>,
         before_seal: F,
     ) -> Option<SealedRuntimeObservationSnapshot>
     where
         F: FnOnce(Option<&RuntimeTerminalOutcome>),
     {
-        let deferred = self.seal_owner_terminal(outcome, before_seal);
+        let deferred = self.seal_owner_terminal(outcome, attempt_report, before_seal);
         self.complete_observer_delivery(deferred)
     }
 
@@ -486,22 +476,19 @@ impl RuntimeObservationOwner {
     fn seal_owner_terminal<F>(
         &self,
         outcome: Option<RuntimeTerminalOutcome>,
+        attempt_report: Option<AttemptReportSealProvider>,
         before_seal: F,
     ) -> DeferredRuntimeObservationSeal
     where
         F: FnOnce(Option<&RuntimeTerminalOutcome>),
     {
         let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let outcome = outcome.map(|outcome| match &self.terminal_outcome_resolver {
-                Some(resolver) => resolver(outcome),
-                None => outcome,
-            });
             before_seal(outcome.as_ref());
             let attempt_report_provider = outcome.as_ref().and_then(|_| {
-                self.attempt_report_seal_provider.clone().or_else(|| {
+                attempt_report.or_else(|| {
                     self.attempt_report_provider.as_ref().map(|provider| {
                         let provider = Arc::clone(provider);
-                        Arc::new(move |footer: &RuntimeObservationFooter| {
+                        Arc::new(move |footer: &RuntimeObservationFooter, _: &_| {
                             let mut report = provider();
                             report.set_observation_completeness(footer);
                             Arc::new(report)
@@ -585,6 +572,15 @@ impl Default for RuntimeObservationOwner {
     fn default() -> Self {
         Self::disabled()
     }
+}
+
+/// How a cleanup seal picks its terminal outcome and attempt report.
+enum CleanupSeal {
+    /// A recorded pending outcome wins over `fallback`; the report, if any,
+    /// comes from the owner's construction-time provider.
+    Recorded { fallback: Option<RuntimeTerminalOutcome> },
+    /// The attempt resolved `outcome` from its lifecycle and builds `report`.
+    Attempt { outcome: RuntimeTerminalOutcome, report: AttemptReportSealProvider },
 }
 
 fn query_terminal_boundary(outcome: &RuntimeTerminalOutcome) -> QueryBoundaryKind {

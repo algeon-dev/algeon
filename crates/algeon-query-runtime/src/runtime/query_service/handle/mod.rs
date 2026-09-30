@@ -28,8 +28,6 @@ mod report_commit;
 
 pub(super) use lifetime::QueryHandleLifetime;
 use lifetime::{ContextSetupClaim, RootContextSetupClaimGuard};
-#[cfg(test)]
-use release::take_owned_for_cleanup;
 
 /// RAII admission handle for one native query.
 #[derive(Debug)]
@@ -80,11 +78,7 @@ impl QueryHandle {
 
     /// Immutable attempt and ledger generation committed for this admission.
     pub fn grant_identity(&self) -> Result<GrantIdentity> {
-        self.lifetime
-            .lock_envelope()?
-            .as_ref()
-            .map(|envelope| envelope.memory_grant().identity())
-            .ok_or_else(|| self.lifetime.released_error())
+        self.lifetime.with_resources(|resources| Ok(resources.envelope.memory_grant().identity()))
     }
 
     /// Bounded memory policy this handle will use for native execution.
@@ -269,14 +263,8 @@ impl QueryHandle {
             ));
         };
         let device = resources.devices.context_by_ordinal(self.device_ordinal)?;
-        let mut root_context = self.lifetime.root_context.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.query_service.context",
-                "query service root context mutex was poisoned",
-            )
-        })?;
-        if let Some(template) = root_context.as_ref().cloned() {
+        let template = self.lifetime.with_resources(|lifetime| Ok(lifetime.root_context.clone()))?;
+        if let Some(template) = template {
             if setup_claim != ContextSetupClaim::Auxiliary {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
@@ -290,7 +278,6 @@ impl QueryHandle {
             // root stream: cuDF rejects a second live query-domain budget token
             // on the same stream. Bind each secondary acquire to a dedicated
             // service stream while preserving the shared grant/domain.
-            drop(root_context);
             let context = self.clone_auxiliary_context(
                 &cancellation,
                 device,
@@ -317,8 +304,6 @@ impl QueryHandle {
         // domain, and root stream member. Consume that binding; no stream or
         // domain is created after admission.
         let context = self.bind_root_execution_context(cancellation, stream_scope, device, &service, resources)?;
-        *root_context = Some(context.clone());
-        drop(root_context);
         self.lifetime.complete_root_context_setup();
         let context = context.with_query_resource_anchor(query_anchor);
         self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
@@ -357,6 +342,11 @@ impl QueryHandle {
             .with_auxiliary_stream_permit_guard(attempt_auxiliary_permit))
     }
 
+    /// Binds the attempt's root execution context. Only the root setup claim
+    /// holder calls this. The lifetime lock is held only to take the root
+    /// binding and to store the result, so a release request never waits on
+    /// the binding; the query anchor the caller holds keeps the release from
+    /// taking the resources in between.
     fn bind_root_execution_context(
         &self,
         cancellation: ExecutionCancellation,
@@ -365,36 +355,36 @@ impl QueryHandle {
         service: &QueryServiceInner,
         resources: &QueryServiceResources,
     ) -> Result<ExecutionContext> {
-        let operation = "query_engine.query_service.context";
         let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
-        let (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, attempt_member_lease) = {
-            let envelope = self.lifetime.lock_envelope()?;
-            let envelope = envelope.as_ref().ok_or_else(|| self.lifetime.released_error())?;
-            // The envelope's worker scope is the admission-time identity
-            // evidence: same device, same worker pool, and the lane the
-            // attempt has held since the ledger transaction committed.
-            if let Some(scope) = envelope.worker_scope() {
-                debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
-                debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
-                debug_assert_eq!(scope.pool_id(), gpu_execution_pool.snapshot().pool_id);
-            }
-            let binding = envelope.take_root_binding()?;
-            validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
-            let stream_lease_guard = Arc::new(binding.stream_lease);
-            let memory_grant = envelope.memory_grant().clone();
-            let runtime = stream_lease_guard.shared_runtime()?;
-            let attempt_allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
-            #[cfg(test)]
-            self.lifetime.wait_at_root_context_binding_gate();
-            (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, binding.member_lease)
-        };
+        let (binding, memory_grant, attempt_allocation_domain, observation_owner) =
+            self.lifetime.with_resources(|lifetime| {
+                let envelope = &lifetime.envelope;
+                // The envelope's worker scope is the admission-time identity
+                // evidence: same device, same worker pool, and the lane the
+                // attempt has held since the ledger transaction committed.
+                if let Some(scope) = envelope.worker_scope() {
+                    debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
+                    debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
+                    debug_assert_eq!(scope.pool_id(), gpu_execution_pool.snapshot().pool_id);
+                }
+                let binding = envelope.take_root_binding()?;
+                let memory_grant = envelope.memory_grant().clone();
+                let attempt_allocation_domain =
+                    envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
+                Ok((binding, memory_grant, attempt_allocation_domain, lifetime.observation_owner()))
+            })?;
+        #[cfg(test)]
+        self.lifetime.wait_at_root_context_binding_gate();
+        validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
+        let stream_lease_guard = Arc::new(binding.stream_lease);
+        let runtime = stream_lease_guard.shared_runtime()?;
+        let attempt_member_lease = binding.member_lease;
         let attempt_stream_provider_route = Arc::new(
             attempt_allocation_domain
                 .create_stream_provider_route(runtime.stream(), self.lifetime.attempt_auxiliary_slots.capacity())?,
         );
         // The root execution stream binds the attempt's root domain member
         // once for the whole attempt lifetime.
-        let observation_owner = self.lifetime.observation_owner();
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
         let trace_id = self.lifetime.observation.trace_id().map(|trace_id| TraceId::new(trace_id.as_str()));
         let runtime_observation = self.lifetime.observation.clone();
@@ -444,13 +434,15 @@ impl QueryHandle {
             auxiliary_stream_permit_guard: None,
             query_service_admitted: true,
         });
-        {
-            let mut route = self.lifetime.attempt_stream_provider_route.lock().map_err(|_error| {
-                QueryError::new(QueryErrorCode::Internal, operation, "attempt stream-provider route mutex was poisoned")
-            })?;
-            debug_assert!(route.is_none(), "an admitted attempt can install only one stream-provider route");
-            *route = Some(Arc::clone(&attempt_stream_provider_route));
-        }
+        self.lifetime.with_resources(|lifetime| {
+            debug_assert!(
+                lifetime.attempt_stream_provider_route.is_none(),
+                "an admitted attempt can install only one stream-provider route"
+            );
+            lifetime.attempt_stream_provider_route = Some(Arc::clone(&attempt_stream_provider_route));
+            lifetime.root_context = Some(context.clone());
+            Ok(())
+        })?;
         Ok(context)
     }
 
@@ -483,28 +475,5 @@ impl AdmittedQueryContext {
     /// Native execution context for this admitted query.
     pub fn context(&self) -> &ExecutionContext {
         &self.context
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        panic::{AssertUnwindSafe, catch_unwind},
-        sync::{Arc, Mutex},
-    };
-
-    use super::take_owned_for_cleanup;
-
-    #[test]
-    fn poisoned_owned_resource_is_recovered_for_ordered_cleanup() {
-        let owned = Arc::new(Mutex::new(Some(7_u8)));
-        let poison = Arc::clone(&owned);
-        let _ = catch_unwind(AssertUnwindSafe(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison test resource");
-        }));
-
-        assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), Some(7));
-        assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), None);
     }
 }

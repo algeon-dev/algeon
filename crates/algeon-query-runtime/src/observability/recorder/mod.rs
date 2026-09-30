@@ -35,13 +35,10 @@ pub use owner::RuntimeObservationOwner;
 use owner::RuntimeObservationOwnerLifecycleState;
 pub(crate) use owner::in_runtime_observation_delivery;
 pub use session::RuntimeObservationSession;
-use session::{
-    AttemptCleanupFailureRecorder, AttemptReportSealProvider, DeferredRuntimeObservationSeal,
-    RuntimeObservationSealObserver, RuntimeObservationSessionInner, RuntimeObservationTerminalOutcomeResolver,
-};
-pub(crate) use session::{AttemptReportProvider, QueryCleanupSealDelivery};
-pub(crate) use state::BudgetWindow;
+pub(crate) use session::{AttemptReportProvider, AttemptReportSealProvider, QueryCleanupSealDelivery};
+use session::{DeferredRuntimeObservationSeal, RuntimeObservationSealObserver, RuntimeObservationSessionInner};
 pub use state::BudgetWindowPeaks;
+pub(crate) use state::{BudgetWindow, CleanupFailureTally};
 use state::{PlanExecutionMetrics, RuntimeObservationRecorderState};
 
 /// Query-local recorder configuration.
@@ -207,7 +204,6 @@ impl SealedRuntimeObservationSnapshot {
 pub struct RuntimeObservationHandle {
     config: RuntimeObservationConfig,
     inner: Option<Arc<RuntimeObservationSessionInner>>,
-    attempt_cleanup_failure_recorder: Option<AttemptCleanupFailureRecorder>,
 }
 
 impl fmt::Debug for RuntimeObservationHandle {

@@ -31,16 +31,6 @@ use crate::{
 /// prepared frozen resident bytes.
 const FROZEN_RESIDENT_PUBLISH_FAILED_REASON: &str = "frozen_resident_publish_failed";
 
-pub(super) fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
-    match owned.lock() {
-        Ok(mut owned) => owned.take(),
-        Err(error) => {
-            eprintln!("[query-engine] warning: recovering poisoned query service {resource}");
-            error.into_inner().take()
-        },
-    }
-}
-
 pub(super) struct QueryHandleRelease {
     pub(super) service: Option<Arc<QueryServiceInner>>,
     pub(super) admission_request_id: AdmissionRequestId,
