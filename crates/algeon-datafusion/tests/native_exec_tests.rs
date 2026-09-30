@@ -13,8 +13,8 @@ use algeon_datafusion::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
-        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
-        DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan,
+        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition,
+        classify_final_plan,
     },
     report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
@@ -277,9 +277,8 @@ fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion
     write_ilike_parquet_file(&path);
     let config = native_optimizer_config();
     let native_rule = AlgeonNativePhysicalOptimizerRule::new(config.clone());
-    let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
-        config.with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
-    );
+    let reject_rule =
+        AlgeonNativePhysicalOptimizerRule::new(config.with_execution_mode(AlgeonGpuExecutionMode::NativeRequired));
 
     let (planned, diagnostics) =
         native_rule.optimize_with_diagnostics(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
@@ -455,7 +454,7 @@ proptest! {
         );
 
         let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
-            config.with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            config.with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         );
         let error = reject_rule
             .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
@@ -747,7 +746,7 @@ fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() 
     write_parquet_file(&right);
     let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config())
         .with_native_plan_cost_options(NativePlanCostOptions::default());
     let rules = installed_physical_optimizer_rules(config);
@@ -773,7 +772,7 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let final_native = rules
@@ -818,7 +817,7 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     writer.close().unwrap();
 
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let native_rule = rules
@@ -852,7 +851,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
@@ -892,7 +891,7 @@ fn no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_pro
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let rules = installed_physical_optimizer_rules(
         AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+            .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
             .with_native_execution_config(bounded_config()),
     );
     let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
@@ -929,7 +928,7 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     write_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan(&path));
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
@@ -961,7 +960,7 @@ fn no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table() {
     let plan = count_only_plan(scan);
     let rules = installed_physical_optimizer_rules(
         AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+            .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
             .with_native_execution_config(bounded_config()),
     );
     let count_only_probe = rules
@@ -1047,7 +1046,7 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
         .unwrap(),
     );
     let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let final_native = installed_native_stage(&rules, "algeon_datafusion_native");
@@ -1564,7 +1563,7 @@ fn dense_rank_and_percent_rank_windows_stay_in_datafusion() {
 /// native rule configured with `policy`.
 fn admission_refused_stddev_plan(
     dir: &std::path::Path,
-    policy: DataFusionCpuExecutionPolicy,
+    policy: AlgeonGpuExecutionMode,
 ) -> (SessionContext, Arc<dyn ExecutionPlan>, Arc<dyn PhysicalOptimizerRule + Send + Sync>) {
     let path = dir.join("input.parquet");
     let schema =
@@ -1583,12 +1582,10 @@ fn admission_refused_stddev_plan(
         block_on(ctx.sql("SELECT k, STDDEV(x) AS s FROM input GROUP BY k ORDER BY k")).unwrap().create_physical_plan(),
     )
     .unwrap();
-    let config =
-        AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(policy)
-            .with_native_execution_config(bounded_config().with_statistical_aggregate_execution_mode(
-                StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
-            ));
+    let config = AlgeonNativeOptimizerConfig::default().with_execution_mode(policy).with_native_execution_config(
+        bounded_config()
+            .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford),
+    );
     let final_native = installed_physical_optimizer_rules(config)
         .into_iter()
         .find(|rule| rule.name() == "algeon_datafusion_native")
@@ -1599,7 +1596,7 @@ fn admission_refused_stddev_plan(
 #[test]
 fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-fallback");
-    let (ctx, plan, final_native) = admission_refused_stddev_plan(&dir, DataFusionCpuExecutionPolicy::Allow);
+    let (ctx, plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativePreferred);
 
     let optimized = final_native
         .optimize(plan, &ConfigOptions::default())
@@ -1617,7 +1614,7 @@ fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
 #[test]
 fn native_required_rejection_names_the_admission_refusal() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-refusal");
-    let (_ctx, plan, final_native) = admission_refused_stddev_plan(&dir, DataFusionCpuExecutionPolicy::Reject);
+    let (_ctx, plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativeRequired);
 
     let error = final_native
         .optimize(plan, &ConfigOptions::default())

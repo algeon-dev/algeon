@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use datafusion::execution::context::TaskContext;
-use query_engine::{admission::AdmittedPlan, rapids_backend::rapids_analysis_context, runtime::SourceStorageProfile};
+use query_engine::{admission::AdmittedPlan, rapids_backend::rapids_analysis_context};
 
 use crate::{
     error::{Error, Result},
@@ -14,7 +14,6 @@ use crate::{
 /// footer pruning on, that artifact admitted again for the resolved plan.
 pub(crate) async fn resolve_admitted_plan(
     lakehouse_footer_pruning: bool,
-    source_storage_profiles: &[SourceStorageProfile],
     admitted: &Arc<AdmittedPlan>,
     task_context: &TaskContext,
 ) -> Result<Arc<AdmittedPlan>> {
@@ -22,9 +21,7 @@ pub(crate) async fn resolve_admitted_plan(
         return Ok(Arc::clone(admitted));
     }
     let runtime_env = task_context.runtime_env();
-    let resolved =
-        prune_native_query_plan(admitted.plan().clone(), &runtime_env, source_storage_profiles, admitted.policy())
-            .await?;
+    let resolved = prune_native_query_plan(admitted.plan().clone(), &runtime_env, admitted.policy()).await?;
     admitted.with_pruned_sources(resolved, rapids_analysis_context(admitted.policy())).map_err(|error| {
         Error::from_native(
             "algeon_datafusion.native_exec.footer_pruning",

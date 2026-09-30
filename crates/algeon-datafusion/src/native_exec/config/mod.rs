@@ -16,12 +16,15 @@ use query_engine::{
     observability::RuntimeObservationConfig,
     policy::PlanningPolicy,
     runtime::{
-        AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, SourceChunkPlanningMode,
-        SourceSchedulerPolicy, SourceStorageProfile,
+        AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, S3SourceStorageProfile,
+        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
     },
 };
 
-pub use self::chunking::SourceChunking;
+pub use self::{
+    chunking::SourceChunking,
+    source_reads::{LakehouseByteCache, LakehouseByteCacheFill},
+};
 use super::{
     admission::{
         QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketAdmissionContext,
@@ -29,9 +32,12 @@ use super::{
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
-use crate::error::{Error, Result};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::graph::GraphExecutionServices;
+use crate::{
+    error::{Error, Result},
+    native::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint},
+};
 
 /// Adapter-side native execution configuration.
 ///
@@ -50,7 +56,11 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) planning_policy: PlanningPolicy,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
-    pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
+    pub(super) s3_storage: Option<S3SourceStorageProfile>,
+    pub(super) lakehouse_byte_cache: Option<LakehouseByteCache>,
+    /// The ambient AWS endpoint, read once here, that scopes byte-cache
+    /// entries when no S3 storage profile names an endpoint.
+    pub(super) ambient_s3_endpoint: Option<String>,
     pub(super) query_admission_source: Option<QueryAdmissionSource>,
     pub(super) query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
     pub(super) query_id: Option<QueryId>,
@@ -75,6 +85,7 @@ pub(crate) struct AlgeonNativeExecutionContext {
 mod admission;
 mod chunking;
 mod context;
+mod source_reads;
 #[cfg(test)]
 mod tests;
 
@@ -104,7 +115,9 @@ impl AlgeonNativeExecutionConfig {
             planning_policy: PlanningPolicy::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
-            source_storage_profiles: Vec::new(),
+            s3_storage: None,
+            lakehouse_byte_cache: None,
+            ambient_s3_endpoint: ambient_s3_endpoint(),
             query_admission_source: None,
             query_admission_ticket: None,
             query_id: None,
@@ -206,12 +219,15 @@ impl AlgeonNativeExecutionConfig {
             .map_or_else(RuntimeObservationConfig::native_execution, NativeMetricsCapture::runtime_observation_config)
     }
 
-    pub(crate) fn with_lakehouse_footer_pruning(mut self, enabled: bool) -> Self {
+    /// Prunes `s3://` Parquet row groups from their footers before native
+    /// execution admits the plan. Off by default.
+    pub fn with_lakehouse_footer_pruning(mut self, enabled: bool) -> Self {
         self.lakehouse_footer_pruning = enabled;
         self
     }
 
-    pub(crate) fn lakehouse_footer_pruning(&self) -> bool {
+    /// Whether footer pruning runs before admission.
+    pub fn lakehouse_footer_pruning(&self) -> bool {
         self.lakehouse_footer_pruning
     }
 
@@ -270,10 +286,24 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Source object-store profiles registered for native remote source
-    /// fetches and local-cache miss fills.
-    pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
-        &self.source_storage_profiles
+    /// The S3 storage every `s3://` source reads through, when configured.
+    pub fn s3_storage(&self) -> Option<&S3SourceStorageProfile> {
+        self.s3_storage.as_ref()
+    }
+
+    /// The runtime storage profiles native remote reads and cache fills
+    /// resolve: the S3 storage under [`S3_STORAGE_PROFILE_ID`], when set.
+    pub(crate) fn source_storage_profiles(&self) -> Vec<SourceStorageProfile> {
+        self.s3_storage.iter().map(|profile| SourceStorageProfile::s3(S3_STORAGE_PROFILE_ID, profile.clone())).collect()
+    }
+
+    /// How lowering resolves an `s3://` Parquet file.
+    pub(crate) fn source_read_strategy(&self) -> ParquetReadStrategyConfig {
+        ParquetReadStrategyConfig::new(
+            self.lakehouse_byte_cache.as_ref(),
+            self.s3_storage.as_ref(),
+            self.ambient_s3_endpoint.as_deref(),
+        )
     }
 
     #[cfg(feature = "cugraph")]
@@ -286,16 +316,17 @@ impl AlgeonNativeExecutionConfig {
         self.graph_execution_services.bfs_singleflight_snapshot()
     }
 
-    /// Register source object-store profiles used by native remote source
-    /// fetches and local-cache miss fills.
-    pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
-        self.source_storage_profiles = profiles.into_iter().collect();
+    /// Reads every `s3://` source through `profile`: native reads, cache
+    /// fills, footer pruning, and the DataFusion object store that sessions
+    /// installed with this config resolve for `s3://` URLs.
+    pub fn with_s3_storage(mut self, profile: S3SourceStorageProfile) -> Self {
+        self.s3_storage = Some(profile);
         self
     }
 
-    /// Register one source object-store profile.
-    pub fn with_source_storage_profile(mut self, profile: SourceStorageProfile) -> Self {
-        self.source_storage_profiles.push(profile);
+    /// Keeps a local byte cache of `s3://` Parquet objects.
+    pub fn with_lakehouse_byte_cache(mut self, cache: LakehouseByteCache) -> Self {
+        self.lakehouse_byte_cache = Some(cache);
         self
     }
 

@@ -23,7 +23,7 @@ use algeon_datafusion::{
     cugraph_sql::CugraphSqlConfig,
     error::DataFusionErrorExt,
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
-    planner::DataFusionCpuExecutionPolicy,
+    planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -1021,7 +1021,7 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<AlgeonGpuBackend
         // final plan that retains any DataFusion CPU operator fails planning
         // with a structured FinalPlanRequirementUnsatisfied rather than
         // silently falling back.
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .queue_policy(queue)
         .devices(profile.backend.device_profiles.iter().map(|device| {
             let p = AlgeonGpuDeviceProfile::new(device.ordinal)

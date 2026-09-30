@@ -122,8 +122,11 @@ use query_engine::{
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
-pub(crate) use source::native_parquet_file_reader_factory_is_supported;
 use source::source_diagnostics_for_normalized_plan;
+pub(crate) use source::{
+    ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint,
+    native_parquet_file_reader_factory_is_supported,
+};
 #[cfg(feature = "cugraph")]
 pub(crate) use source::{
     datafusion_local_parquet_scan_has_simple_directed_edge_topology, exact_row_count_for_datafusion_local_parquet_scan,
@@ -168,12 +171,18 @@ impl NativeLoweringResult {
 ///
 /// A candidate the native IR cannot express is reported as not supported. A
 /// lowered plan that breaks the IR construction invariants is an error.
-pub(crate) fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> Result<NativeLoweringResult> {
-    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
+pub(crate) fn lower_physical_plan_to_native(
+    plan: Arc<dyn ExecutionPlan>,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Result<NativeLoweringResult> {
+    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final, source_reads)
 }
 
-pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> Result<NativeLoweringResult> {
-    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::CountOnly)
+pub(crate) fn lower_count_only_physical_plan_to_native(
+    plan: Arc<dyn ExecutionPlan>,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Result<NativeLoweringResult> {
+    lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::CountOnly, source_reads)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +194,7 @@ enum NativeLoweringMode {
 fn lower_physical_plan_to_native_with_mode(
     plan: Arc<dyn ExecutionPlan>,
     mode: NativeLoweringMode,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeLoweringResult> {
     let _footers = FooterScope::enter();
     let normalized = normalize_native_plan(plan.as_ref()).map(|mut normalized| {
@@ -220,7 +230,7 @@ fn lower_physical_plan_to_native_with_mode(
                 source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
             })
         },
-        Ok(normalized) => match lower_normalized_plan(&normalized) {
+        Ok(normalized) => match lower_normalized_plan(&normalized, source_reads) {
             Err(LoweringFailure::Invalid(error)) => Err(Error::from_native(
                 "algeon_datafusion.native.lower",
                 "native lowering built a malformed native plan",

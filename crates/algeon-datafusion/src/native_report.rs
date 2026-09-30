@@ -199,13 +199,13 @@ fn report_rows_for_item(
 fn report_rows_for_plan(
     query_id: String,
     plan: Arc<dyn ExecutionPlan>,
-    _execution_config: &AlgeonNativeExecutionConfig,
+    execution_config: &AlgeonNativeExecutionConfig,
 ) -> Result<Vec<NativeFallbackPressureRow>> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
     let join_diagnostics = physical_join_diagnostics(plan.as_ref());
     let source_diagnostics_plan = Arc::clone(&plan);
-    let result = lower_physical_plan_to_native(plan)?;
+    let result = lower_physical_plan_to_native(plan, &execution_config.source_read_strategy())?;
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
     Ok(result

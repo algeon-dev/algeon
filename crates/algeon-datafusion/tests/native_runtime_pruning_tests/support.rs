@@ -105,7 +105,7 @@ pub(super) fn optimize_with_pruning_template_requiring_native(
 ) -> TemplatedNativeOptimization {
     optimize_with_optimizer_config(
         plan,
-        pruning_template_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+        pruning_template_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
     )
 }
 

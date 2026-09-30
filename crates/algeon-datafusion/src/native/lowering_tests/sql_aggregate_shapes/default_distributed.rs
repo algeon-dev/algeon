@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[tokio::test]
 async fn default_sql_physical_plan_lowers_to_native_plan() {
@@ -7,7 +8,7 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -44,7 +45,7 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_AVG_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -82,7 +83,7 @@ async fn default_sql_distributed_median_aggregate_remains_rejected() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_MEDIAN_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -108,7 +109,7 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_ROLLUP_AVG_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -137,7 +138,7 @@ async fn grouping_sets_over_empty_local_parquet_lower_through_empty_literal_sour
         let plan = sql_plan(&path, direct_friendly_sql_session_config(), sql).await;
         let plan = replace_parquet_scans_with_empty_file_groups(plan);
 
-        let result = lower_physical_plan_to_native(plan).unwrap();
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
         assert_eq!(result.candidate_count(), 1, "{label}");
         assert_eq!(result.selected_count(), 1, "{label}: outcomes={:?}", result.report.outcomes());
@@ -162,7 +163,7 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_FILTERED_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -192,7 +193,7 @@ async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_DISTINCT_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -211,7 +212,7 @@ async fn default_sql_mixed_distinct_and_count_over_union_lowers_to_one_native_ag
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, SessionConfig::new(), SQL_MIXED_DISTINCT_COUNT_UNION_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -236,7 +237,7 @@ async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
         aggregate_expr_on_column_like(original, max_udaf(), final_aggregate.input().schema(), 1, false, vec![])
     });
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
@@ -260,7 +261,7 @@ async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
         )
     });
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
@@ -295,7 +296,7 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
         )
     });
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -341,7 +342,7 @@ async fn distributed_final_aggregate_filter_expr_is_rejected() {
         )
     });
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
@@ -360,7 +361,7 @@ async fn distributed_aggregate_distinct_expr_is_rejected() {
         Arc::new(partial_aggregate.with_new_aggr_exprs(vec![distinct]))
     });
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
@@ -392,7 +393,7 @@ async fn distributed_aggregate_order_by_expr_is_rejected() {
         },
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 
@@ -407,7 +408,7 @@ async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
     let plan = with_distributed_final_input_replaced_by_scan(plan);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
 

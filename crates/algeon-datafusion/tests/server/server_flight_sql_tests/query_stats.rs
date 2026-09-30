@@ -69,8 +69,8 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_stats() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        "no_datafusion_cpu".to_string(),
+        ALGEON_SERVER_EXECUTION_MODE_ENV,
+        "native_required".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
@@ -129,8 +129,8 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
 async fn strict_flight_executes_basic_list_limit_natively() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        "no_datafusion_cpu".to_string(),
+        ALGEON_SERVER_EXECUTION_MODE_ENV,
+        "native_required".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);

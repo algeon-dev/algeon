@@ -34,7 +34,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_join_residual,
         normalize::{
             NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeLiteralSource,
@@ -409,6 +409,7 @@ pub(super) fn lower_hash_join_input(
     join: &NormalizedNativeHashJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     // Flow: canonicalize the join type, derive DataFusion-output-preserving
     // projection, collect keys/residual requirements, lower both children, add
@@ -453,11 +454,13 @@ pub(super) fn lower_hash_join_input(
         &join.left,
         builder,
         &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
         &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        source_reads,
     )?;
     let residual = if join.join.filter().is_some() {
         join.join
@@ -555,6 +558,7 @@ pub(super) fn lower_nested_loop_join_input(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     // Nested-loop lowering shares the residual/materialization path with hash
     // joins, but has no equality keys. Cross joins are represented as keyless
@@ -583,11 +587,13 @@ pub(super) fn lower_nested_loop_join_input(
         &join.left,
         builder,
         &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
         &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        source_reads,
     )?;
     let residual = match join.join.filter() {
         Some(filter) => {
@@ -628,6 +634,7 @@ pub(super) fn lower_cross_join_input(
     join: &NormalizedNativeCrossJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let canonical = CanonicalJoin::new(CanonicalJoinKind::Cross, false);
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
@@ -646,11 +653,13 @@ pub(super) fn lower_cross_join_input(
         &join.left,
         builder,
         &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
         &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        source_reads,
     )?;
     let output_columns = output_requests.lower(&left, &right, canonical)?;
     let mut spec = NativeJoinSpec::new(NativeJoinType::Cross, Vec::new())

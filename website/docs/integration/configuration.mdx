@@ -131,7 +131,7 @@ Native settings are accepted both under `[native]` and through the environment:
 | `max_source_reads_in_flight` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
 | `source_chunk_planning_mode` | `ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
 | `statistical_aggregate_execution_mode` | `ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `gpu_native_tolerant` |
-| `final_plan_requirement` | `ALGEON_SERVER_FINAL_PLAN_REQUIREMENT` | unset |
+| `lakehouse_footer_pruning` | `ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING` | `false` |
 
 `source_chunk_planning_mode` also accepts `local_parquet_throughput`.
 
@@ -144,10 +144,10 @@ DataFusion. That mode copies the aggregate input to host memory, and a query
 whose group keys or other aggregates in the same `GROUP BY` it cannot evaluate
 exactly is not rewritten to native execution.
 
-The only final-plan requirement is `no_datafusion_cpu`. Used alone, it has the
-same effect as `execution_mode = "native_required"`. If both fields are set,
-they must agree: combining it with `native_preferred` or `functions_only`
-fails startup.
+`native_required` rejects any query whose completed plan still runs a
+DataFusion CPU operator. The former `final_plan_requirement` field and
+`ALGEON_SERVER_FINAL_PLAN_REQUIREMENT` are gone; startup fails when that
+variable is set.
 
 Native settings carry no device-budget planning placeholder. Device capacity
 is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)
@@ -312,6 +312,8 @@ has a non-blank value:
   `ALGEON_ICEBERG_REST_CATALOG_HANDLE`
 - `ALGEON_ICEBERG_S3_ENDPOINT`, `ALGEON_ICEBERG_S3_REGION`,
   `ALGEON_ICEBERG_S3_PATH_STYLE`, and `ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE`
+  (use [`[s3]`](#s3-storage) instead)
+- `ALGEON_ICEBERG_FOOTER_PRUNING` (use `native.lakehouse_footer_pruning`)
 - `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
   `ALGEON_LAKEHOUSE_CACHE_POLICY`, and `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`
 
@@ -320,20 +322,36 @@ process cannot enable the persistent lakehouse byte cache for `s3://` Parquet
 files. See [Iceberg support](./overview.mdx#iceberg-support) for the status of
 Iceberg sources.
 
+## S3 storage
+
+The `[s3]` table configures the storage every `s3://` Parquet source reads
+through. DataFusion scans, footer pruning, and native GPU reads all use it, so
+a query that falls back to DataFusion reads the same endpoint, region, and
+credentials as one that runs on the GPU:
+
+| TOML field | Environment variable | Meaning |
+| --- | --- | --- |
+| `endpoint` | `ALGEON_SERVER_S3_ENDPOINT` | S3-compatible endpoint, such as `http://localhost:9000` |
+| `region` | `ALGEON_SERVER_S3_REGION` | Region of every bucket |
+| `path_style` | `ALGEON_SERVER_S3_PATH_STYLE` | `true` for path-style addressing (MinIO, RustFS) |
+| `unsigned` | `ALGEON_SERVER_S3_UNSIGNED` | `true` for anonymous requests |
+
+The table, or any of its variables, turns the storage on; each variable
+overrides its TOML field. Credentials come from the default AWS chain, such as
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, unless `unsigned` is set.
+Without the table, the server registers no `s3://` object store for
+DataFusion, and native reads use the process-wide AWS settings.
+
 ## Parquet source flags
 
-Native scans read local and `s3://` Parquet files. Remote reads go through
-KvikIO, which reads `AWS_DEFAULT_REGION`; the engine's own S3 metadata reads
-use `AWS_REGION` first. Set both to the same region.
+Native scans read local and `s3://` Parquet files. Without `[s3]`, remote
+reads go through KvikIO, which reads `AWS_DEFAULT_REGION`; the engine's own S3
+metadata reads use `AWS_REGION` first. Set both to the same region.
 
-`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `ALGEON_ICEBERG_FOOTER_PRUNING` are not
-`ServerConfig` fields; set them in the process environment before startup.
-`ALGEON_ICEBERG_FOOTER_PRUNING=true` enables Parquet-footer row-group pruning
-for `s3://` scans (see
+`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` is not a `ServerConfig` field; set it in the
+process environment before startup. `native.lakehouse_footer_pruning = true`
+enables Parquet-footer row-group pruning for `s3://` scans (see
 [Lakehouse and workspace boundary](../design/index.mdx#lakehouse-and-workspace-boundary)).
-It accepts `true`, `false`, `1`, or `0` in any letter case, and an unset or
-blank value means `false`. Any other value fails query planning. The variable
-name predates the removal of the Iceberg integration.
 
 ## Workspace overlay
 

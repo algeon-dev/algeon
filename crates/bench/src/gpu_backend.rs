@@ -4,7 +4,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::Result,
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
 
 /// Device budget, in bytes, that benchmark profiles carry when no budget
@@ -17,10 +17,9 @@ pub(crate) fn build_installed_gpu_backend(
     device_memory_limit: GpuDeviceMemoryLimit,
     source_work_per_attempt: usize,
     max_active_attempts: usize,
-    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
+    execution_mode: AlgeonGpuExecutionMode,
 ) -> Result<AlgeonGpuBackend> {
-    let native_optimizer_config =
-        native_optimizer_config.with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy);
+    let native_optimizer_config = native_optimizer_config.with_execution_mode(execution_mode);
     let device_profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(device_memory_limit)
         .with_cache_cap_bytes(0)

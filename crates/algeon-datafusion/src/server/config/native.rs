@@ -8,7 +8,7 @@ use super::{
     file::ServerNativeFileConfig,
     *,
 };
-use crate::server::planner::{AlgeonGpuExecutionMode, DataFusionCpuExecutionPolicy};
+use crate::server::planner::AlgeonGpuExecutionMode;
 pub const ALGEON_SERVER_EXECUTION_MODE_ENV: &str = "ALGEON_SERVER_EXECUTION_MODE";
 
 /// Maximum source row groups planned into one native bounded source chunk.
@@ -31,9 +31,9 @@ pub const ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "ALGEON_SE
 /// floating-point results) or `datafusion_exact_host_welford`.
 pub const ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-/// Completed-plan requirement enforced after native rewriting. Accepts
-/// `no_datafusion_cpu`; unset leaves the completed plan unconstrained.
-pub const ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str = "ALGEON_SERVER_FINAL_PLAN_REQUIREMENT";
+/// Prunes `s3://` Parquet row groups from their footers before native
+/// execution admits a plan. Accepts a boolean; off by default.
+pub const ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV: &str = "ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING";
 /// Scope for a server `[native]` configuration option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -126,11 +126,11 @@ pub const ALGEON_SERVER_NATIVE_CONFIG_OPTIONS: &[AlgeonServerNativeConfigOption]
         description: "Floating statistical aggregate execution contract.",
     },
     AlgeonServerNativeConfigOption {
-        toml_field: "native.final_plan_requirement",
-        env_var: ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        value_type: "enum: no_datafusion_cpu",
+        toml_field: "native.lakehouse_footer_pruning",
+        env_var: ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV,
+        value_type: "boolean",
         scope: ServerNativeConfigScope::NativeExecution,
-        description: "Completed-plan requirement enforced after native rewriting.",
+        description: "Prune s3:// Parquet row groups from footers before admission.",
     },
 ];
 pub(super) fn native_optimizer_config(
@@ -182,17 +182,10 @@ pub(super) fn native_optimizer_config(
             .map(|mode| NativeConfigValue::new(mode, raw.field))
     })
     .transpose()?;
-    let datafusion_cpu_execution_policy = optional_native_string(
-        values,
-        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        "native.final_plan_requirement",
-        file.final_plan_requirement.as_deref(),
-    )
-    .map(|raw| {
-        parse_datafusion_cpu_execution_policy(raw.field, &raw.value)
-            .map(|policy| NativeConfigValue::new(policy, raw.field))
-    })
-    .transpose()?;
+    let lakehouse_footer_pruning = match values.optional_bool(ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV)? {
+        Some(enabled) => Some(enabled),
+        None => file.lakehouse_footer_pruning,
+    };
     let execution_mode = optional_native_string(
         values,
         ALGEON_SERVER_EXECUTION_MODE_ENV,
@@ -224,21 +217,14 @@ pub(super) fn native_optimizer_config(
     if let Some(mode) = statistical_aggregate_execution_mode {
         execution_config = execution_config.with_statistical_aggregate_execution_mode(mode.value);
     }
+    if let Some(enabled) = lakehouse_footer_pruning {
+        execution_config = execution_config.with_lakehouse_footer_pruning(enabled);
+    }
 
     let mut optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(execution_config);
     if let Some(mode) = execution_mode {
         optimizer_config = optimizer_config.with_execution_mode(mode.value);
-        if let Some(policy) = datafusion_cpu_execution_policy
-            && optimizer_config.datafusion_cpu_execution_policy() != policy.value
-        {
-            return Err(ServerError::invalid_config(policy.field, "conflicts with native.execution_mode"));
-        }
-    } else if let Some(policy) = datafusion_cpu_execution_policy {
-        optimizer_config = optimizer_config.with_datafusion_cpu_execution_policy(policy.value);
     }
-    optimizer_config.validate().map_err(|_| {
-        ServerError::invalid_config("native.execution_mode", "conflicts with native.final_plan_requirement")
-    })?;
     Ok(optimizer_config)
 }
 
@@ -329,16 +315,6 @@ pub(super) fn parse_statistical_aggregate_execution_mode(
             field,
             format!("must be `datafusion_exact_host_welford` or `gpu_native_tolerant`, got `{other}`"),
         )),
-    }
-}
-
-pub(super) fn parse_datafusion_cpu_execution_policy(
-    field: &'static str,
-    raw: &str,
-) -> Result<DataFusionCpuExecutionPolicy> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "no_datafusion_cpu" => Ok(DataFusionCpuExecutionPolicy::Reject),
-        other => Err(ServerError::invalid_config(field, format!("must be `no_datafusion_cpu`, got `{other}`"))),
     }
 }
 

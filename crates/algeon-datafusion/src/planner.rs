@@ -24,11 +24,7 @@ pub use query_engine::{
     source::SourceDiagnostics,
 };
 
-use crate::{
-    error::{Error, ErrorCode, Result},
-    final_plan_observation::observe_final_plan,
-    native_exec::AlgeonNativeExecutionConfig,
-};
+use crate::{final_plan_observation::observe_final_plan, native_exec::AlgeonNativeExecutionConfig};
 
 pub(crate) mod native;
 
@@ -55,35 +51,6 @@ pub enum FinalPlanDisposition {
     Mixed,
 }
 
-#[cfg(test)]
-mod execution_mode_tests {
-    use super::*;
-
-    #[test]
-    fn execution_modes_map_to_one_canonical_policy_pair() {
-        for mode in [
-            AlgeonGpuExecutionMode::NativePreferred,
-            AlgeonGpuExecutionMode::FunctionsOnly,
-            AlgeonGpuExecutionMode::NativeRequired,
-        ] {
-            let config = AlgeonNativeOptimizerConfig::default().with_execution_mode(mode);
-            assert_eq!(config.execution_mode().unwrap(), mode);
-            config.validate().unwrap();
-        }
-    }
-
-    #[test]
-    fn disabled_relational_rewrite_cannot_reject_datafusion_cpu_execution() {
-        let config = AlgeonNativeOptimizerConfig::default()
-            .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Disabled)
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
-
-        let error = config.validate().expect_err("contradictory policies must reject before planning");
-        assert_eq!(error.code(), ErrorCode::InvalidRequest);
-        assert_eq!(error.fact_value("reason"), Some("relational_native_rewrite_disabled_with_cpu_reject"));
-    }
-}
-
 impl FinalPlanDisposition {
     /// Stable label for diagnostics and typed requirement errors.
     pub const fn as_str(self) -> &'static str {
@@ -101,30 +68,8 @@ impl std::fmt::Display for FinalPlanDisposition {
     }
 }
 
-/// Policy for DataFusion CPU execution in the completed physical plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum DataFusionCpuExecutionPolicy {
-    /// Preserve the DataFusion baseline when native candidates are not accepted.
-    #[default]
-    Allow,
-    /// Reject a completed plan that executes any DataFusion CPU operator.
-    Reject,
-}
-
-/// Whether ordinary relational DataFusion plans are candidates for native
-/// lowering. Explicit GPU UDTF nodes remain eligible in both policies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum RelationalNativeRewritePolicy {
-    /// Run the existing native relational selection rules.
-    #[default]
-    Enabled,
-    /// Preserve ordinary relational operators for DataFusion CPU execution.
-    Disabled,
-}
-
-/// Product-level mapping of relational selection and final CPU policy.
+/// Which plans native lowering rewrites and whether the completed plan may
+/// execute DataFusion CPU operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum AlgeonGpuExecutionMode {
@@ -136,6 +81,20 @@ pub enum AlgeonGpuExecutionMode {
     FunctionsOnly,
     /// Require the completed plan to contain no DataFusion CPU execution.
     NativeRequired,
+}
+
+impl AlgeonGpuExecutionMode {
+    /// Whether ordinary relational SQL is a candidate for native lowering.
+    /// Explicit GPU UDTF nodes are candidates in every mode.
+    pub const fn rewrites_relational_plans(self) -> bool {
+        !matches!(self, Self::FunctionsOnly)
+    }
+
+    /// Whether a completed plan that executes any DataFusion CPU operator is
+    /// rejected.
+    pub const fn rejects_datafusion_cpu(self) -> bool {
+        matches!(self, Self::NativeRequired)
+    }
 }
 
 /// Classify the exact completed physical plan without invoking planning.
@@ -161,8 +120,7 @@ pub struct AlgeonNativeOptimizerConfig {
     native_execution_config: AlgeonNativeExecutionConfig,
     native_optimizer_options: NativeOptimizerOptions,
     native_plan_cost_options: NativePlanCostOptions,
-    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
-    relational_native_rewrite_policy: RelationalNativeRewritePolicy,
+    execution_mode: AlgeonGpuExecutionMode,
 }
 
 impl Default for AlgeonNativeOptimizerConfig {
@@ -171,8 +129,7 @@ impl Default for AlgeonNativeOptimizerConfig {
             native_execution_config: AlgeonNativeExecutionConfig::default(),
             native_optimizer_options: NativeOptimizerOptions::default(),
             native_plan_cost_options: NativePlanCostOptions::disabled(),
-            datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy::Allow,
-            relational_native_rewrite_policy: RelationalNativeRewritePolicy::Enabled,
+            execution_mode: AlgeonGpuExecutionMode::NativePreferred,
         }
     }
 }
@@ -197,66 +154,16 @@ impl AlgeonNativeOptimizerConfig {
         &self.native_plan_cost_options
     }
 
-    /// Completed-plan DataFusion CPU policy enforced after native rewriting,
-    /// without planning a second time.
-    pub fn datafusion_cpu_execution_policy(&self) -> DataFusionCpuExecutionPolicy {
-        self.datafusion_cpu_execution_policy
+    /// The execution mode native rewriting and the completed-plan check
+    /// follow.
+    pub fn execution_mode(&self) -> AlgeonGpuExecutionMode {
+        self.execution_mode
     }
 
-    /// Set the completed-plan DataFusion CPU policy.
-    pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
-        self.datafusion_cpu_execution_policy = policy;
+    /// Set the execution mode.
+    pub fn with_execution_mode(mut self, mode: AlgeonGpuExecutionMode) -> Self {
+        self.execution_mode = mode;
         self
-    }
-
-    /// Return whether ordinary relational SQL participates in native lowering.
-    pub fn relational_native_rewrite_policy(&self) -> RelationalNativeRewritePolicy {
-        self.relational_native_rewrite_policy
-    }
-    /// Set whether ordinary relational SQL participates in native lowering.
-    pub fn with_relational_native_rewrite_policy(mut self, policy: RelationalNativeRewritePolicy) -> Self {
-        self.relational_native_rewrite_policy = policy;
-        self
-    }
-    /// Return the canonical product mode represented by this configuration.
-    ///
-    /// A disabled relational rewrite combined with CPU rejection is invalid.
-    pub fn execution_mode(&self) -> Result<AlgeonGpuExecutionMode> {
-        match (self.relational_native_rewrite_policy, self.datafusion_cpu_execution_policy) {
-            (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Allow) => {
-                Ok(AlgeonGpuExecutionMode::NativePreferred)
-            },
-            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Allow) => {
-                Ok(AlgeonGpuExecutionMode::FunctionsOnly)
-            },
-            (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Reject) => {
-                Ok(AlgeonGpuExecutionMode::NativeRequired)
-            },
-            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Reject) => Err(Error::new(
-                ErrorCode::InvalidRequest,
-                "algeon_datafusion.planner.config",
-                "relational native rewrite cannot be disabled when DataFusion CPU execution is rejected",
-            )
-            .with_fact("reason", "relational_native_rewrite_disabled_with_cpu_reject")),
-        }
-    }
-    /// Apply one canonical product mode without storing parallel mode state.
-    pub fn with_execution_mode(self, mode: AlgeonGpuExecutionMode) -> Self {
-        match mode {
-            AlgeonGpuExecutionMode::NativePreferred => self
-                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Enabled)
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Allow),
-            AlgeonGpuExecutionMode::FunctionsOnly => self
-                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Disabled)
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Allow),
-            AlgeonGpuExecutionMode::NativeRequired => self
-                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Enabled)
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
-        }
-    }
-    /// Reject contradictory optimizer policies before planning begins.
-    pub fn validate(&self) -> Result<()> {
-        self.execution_mode().map(|_| ())
     }
 
     /// Floating statistical aggregate execution contract used by native execution.

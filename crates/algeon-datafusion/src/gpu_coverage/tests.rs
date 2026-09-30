@@ -32,7 +32,7 @@ use crate::{
     final_plan_observation::observe_final_plan,
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::FinalPlanDisposition,
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -343,9 +343,8 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
 
 #[tokio::test]
 async fn validate_query_preserves_the_installed_final_plan_policy() {
-    let ctx = validation_context(
-        bounded_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
-    );
+    let ctx =
+        validation_context(bounded_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired));
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
     let rejection = coverage.rejection().expect("rejection");
@@ -388,7 +387,7 @@ async fn validate_query_with_installed_rule_and_unsupported_candidate_produces_c
 async fn validate_query_metadata_uses_effective_session_optimizer_options() {
     let optimizer_config = AlgeonNativeOptimizerConfig::default()
         .with_native_execution_config(test_execution_config())
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
     let mut session_config = SessionConfig::new();
     // The deleted pipeline-mode session key is rejected; the single bounded
     // path projects the canonical execution-mode label.
@@ -628,8 +627,7 @@ mod cugraph {
     fn assert_reject_cpu_policy_rejects_mixed_plan(plan: Arc<dyn ExecutionPlan>) {
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
         let rule = AlgeonNativePhysicalOptimizerRule::new(
-            AlgeonNativeOptimizerConfig::default()
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         );
 
         let error = rule
@@ -663,8 +661,7 @@ mod cugraph {
         let plan = composed_cugraph_plan(nested);
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
         let rule = AlgeonNativePhysicalOptimizerRule::new(
-            AlgeonNativeOptimizerConfig::default()
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         );
         rule.optimize(plan, &ConfigOptions::default())
             .expect("the reject policy must accept a recursively native graph input");

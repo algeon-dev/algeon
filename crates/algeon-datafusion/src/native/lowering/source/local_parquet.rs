@@ -27,7 +27,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         lowering::{
             LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
@@ -49,6 +49,7 @@ pub(super) fn lower_local_parquet_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(CapabilityReason::UnsupportedOperator)?;
@@ -85,10 +86,23 @@ pub(super) fn lower_local_parquet_source_input(
         }
         return lower_empty_local_parquet_source_input(source_exec, filter, builder, required_output_fields);
     }
-    validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    validate_slice1_parquet_scan(
+        file_scan,
+        parquet_source,
+        filter,
+        Arc::clone(&table_schema),
+        &column_requirements,
+        source_reads,
+    )?;
 
-    let native_files =
-        local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let native_files = local_parquet_files(
+        file_scan,
+        parquet_source,
+        filter,
+        Arc::clone(&table_schema),
+        &column_requirements,
+        source_reads,
+    )?;
     let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
         let required_scan_projection =
             required_scan_projection(scan_projection, &column_requirements.scan_output_columns);

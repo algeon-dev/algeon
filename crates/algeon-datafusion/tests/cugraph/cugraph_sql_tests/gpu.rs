@@ -5,10 +5,7 @@ use algeon_datafusion::{
     backend::{AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit},
     gpu_coverage::validate_query,
     native_exec::below_native_admission,
-    planner::{
-        AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
-        classify_final_plan,
-    },
+    planner::{AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition, classify_final_plan},
 };
 use arrow::{array::ListArray, buffer::OffsetBuffer};
 use cudf::{
@@ -1715,7 +1712,7 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     assert!(find_cugraph_algo_exec(plan.as_ref()).is_some());
     assert!(!plan_contains_named_node(plan.as_ref(), "SortExec"));
     let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
-        backend.optimizer_config().clone().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+        backend.optimizer_config().clone().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
     );
     reject_rule
         .optimize(Arc::clone(&plan), &ConfigOptions::default())

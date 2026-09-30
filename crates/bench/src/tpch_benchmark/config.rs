@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,
     native_exec::SourceChunking,
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
 use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode, SourceSchedulerPolicy};
 
@@ -175,7 +175,7 @@ impl NativeTpchBenchmarkConfig {
             self.native_memory_policy.device_budget.memory_limit(),
             self.max_source_reads_in_flight,
             1,
-            DataFusionCpuExecutionPolicy::Reject,
+            AlgeonGpuExecutionMode::NativeRequired,
         )
         .map_err(|error| DataFusionError::External(Box::new(error)))?;
         Ok(NativeTpchRuntimeResources { backend: Some(backend) })

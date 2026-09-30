@@ -31,7 +31,6 @@ use crate::server::{
         GpuMemoryOwnership,
     },
     cugraph_sql::CUGRAPH_OPERATION_REGISTRY,
-    planner::DataFusionCpuExecutionPolicy,
 };
 pub(crate) use crate::{
     attempt, backend, capability, cugraph_sql, cuml_sql, error as adapter_error, gpu_coverage, native_exec,
@@ -60,8 +59,8 @@ pub use auth::{AuthConfig, AuthMode, PasswordHashError, StaticUserConfig, hash_p
 pub use config::{
     ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
     ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-    ALGEON_SERVER_GPU_DEVICES_ENV, ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
+    ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV,
+    ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS, ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV,
     ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
     ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
@@ -69,10 +68,12 @@ pub use config::{
     ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
     ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
     ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-    ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
-    ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV, ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
-    ALGEON_SERVER_WORKSPACE_CATALOG_ENV, ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption,
-    CugraphServerConfig, ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
+    ALGEON_SERVER_S3_ENDPOINT_ENV, ALGEON_SERVER_S3_PATH_STYLE_ENV, ALGEON_SERVER_S3_REGION_ENV,
+    ALGEON_SERVER_S3_UNSIGNED_ENV, ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+    ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV, ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+    ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, ALGEON_SERVER_WORKSPACE_CATALOG_ENV,
+    ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption, CugraphServerConfig, ServerConfig,
+    ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
 };
 pub use error::{
     ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
@@ -781,8 +782,7 @@ fn validate_injected_session_matches_server_config(
     config: &ServerConfig,
 ) -> Result<()> {
     validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))?;
-    let requires_single_partition =
-        config.native_optimizer_config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject;
+    let requires_single_partition = config.native_optimizer_config.execution_mode().rejects_datafusion_cpu();
     let target_partitions = ctx.state().config_options().execution.target_partitions;
     if requires_single_partition && target_partitions != 1 {
         return Err(ServerError::builder_validation(

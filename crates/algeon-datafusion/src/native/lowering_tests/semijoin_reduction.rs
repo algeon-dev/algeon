@@ -14,6 +14,7 @@ use query_engine::{
 };
 
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 const NON_TPCH_SEMIJOIN_SQL: &str = "
 SELECT c.c_key, o.o_key, i.i_value
@@ -36,7 +37,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
     write_non_tpch_semijoin_fixture(&dir);
 
     let plan = non_tpch_semijoin_sql_plan(&dir).await;
-    let lowering = lower_physical_plan_to_native(plan).unwrap();
+    let lowering = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 

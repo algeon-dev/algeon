@@ -56,4 +56,4 @@ lane_count = 4
 max_source_chunk_bytes = 268435456
 max_row_groups_per_chunk = 1024
 max_retry_attempts = 3
-final_plan_requirement = "no_datafusion_cpu"
+execution_mode = "native_required"

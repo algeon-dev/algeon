@@ -24,7 +24,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::{native_aggregate_function_kind, validate_physical_expr_contract},
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
         validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
@@ -94,12 +94,13 @@ pub(super) fn lower_aggregate_input(
     aggregate: &NormalizedNativeAggregate<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     validate_schema(Arc::clone(&aggregate.aggregate_output_schema))?;
     validate_aggregate_for_native_lowering(aggregate.aggregate, aggregate.aggregate_allows_partial)?;
     validate_aggregate_scalar_expressions(aggregate.aggregate)?;
     let child_required = required_aggregate_input_fields(aggregate.aggregate, None)?;
-    let input = lower_native_input(&aggregate.input, builder, &child_required)?;
+    let input = lower_native_input(&aggregate.input, builder, &child_required, source_reads)?;
     let (aggregate_schema, aggregate_bindings) =
         executable_schema_and_bindings(&aggregate.aggregate_output_schema, &RequiredFields::all())?;
     let aggregate_node =

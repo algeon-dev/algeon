@@ -1,6 +1,11 @@
 #[test]
 fn server_config_rejects_settings_of_the_removed_iceberg_integration() {
-    for name in ["ALGEON_ICEBERG_NAMESPACE", "ALGEON_ICEBERG_S3_ENDPOINT", "ALGEON_LAKEHOUSE_CACHE_ROOT"] {
+    for name in [
+        "ALGEON_ICEBERG_NAMESPACE",
+        "ALGEON_ICEBERG_S3_ENDPOINT",
+        "ALGEON_LAKEHOUSE_CACHE_ROOT",
+        "ALGEON_ICEBERG_FOOTER_PRUNING",
+    ] {
         let env = BTreeMap::from([(name, "value".to_string())]);
         let error = server_config_with_default_device_profile(env).unwrap_err();
 

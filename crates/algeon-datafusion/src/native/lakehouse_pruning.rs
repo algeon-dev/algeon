@@ -4,7 +4,7 @@ mod object_store;
 #[cfg(test)]
 mod product_path_tests;
 
-use std::{cmp::Ordering, env, mem, ops::Range, sync::Arc};
+use std::{cmp::Ordering, mem, ops::Range, sync::Arc};
 
 use arrow::datatypes::DataType;
 use bytes::Bytes;
@@ -38,7 +38,6 @@ use query_engine::{
     plan::{NodeId, QueryPlan},
     policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
-    runtime::SourceStorageProfile,
     source::{LocalParquetSource, SourceColumnRef},
 };
 
@@ -49,27 +48,9 @@ use self::object_store::{
     object_store_pruning_error, stable_log_field,
 };
 use crate::{
-    error::{Error, ErrorCode, Result},
+    error::{Error, Result},
     native::table_format_pruning_policy::TableFormatPruningPolicy,
 };
-
-pub(crate) fn enabled_from_env() -> Result<bool> {
-    const ALGEON_ICEBERG_FOOTER_PRUNING_ENV: &str = "ALGEON_ICEBERG_FOOTER_PRUNING";
-    let Ok(raw) = env::var(ALGEON_ICEBERG_FOOTER_PRUNING_ENV) else {
-        return Ok(false);
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" => Ok(false),
-        "1" | "true" => Ok(true),
-        "0" | "false" => Ok(false),
-        other => Err(Error::new(
-            ErrorCode::InvalidRequest,
-            "algeon_datafusion.native.lakehouse_pruning_config",
-            format!("{ALGEON_ICEBERG_FOOTER_PRUNING_ENV} must be `true`, `false`, `1`, or `0`, got `{other}`"),
-        )
-        .with_fact("config_field", ALGEON_ICEBERG_FOOTER_PRUNING_ENV)),
-    }
-}
 
 /// Resolves footer-backed pruning for one already-lowered native plan.
 ///
@@ -80,12 +61,10 @@ pub(crate) fn enabled_from_env() -> Result<bool> {
 pub(crate) async fn prune_native_query_plan(
     plan: QueryPlan,
     runtime_env: &Arc<RuntimeEnv>,
-    source_storage_profiles: &[SourceStorageProfile],
     planning_policy: PlanningPolicy,
 ) -> Result<QueryPlan> {
     let policy = TableFormatPruningPolicy::default();
-    let mut resolver =
-        FooterPruningResolver { object_stores: FooterObjectStoreRegistry::new(runtime_env, source_storage_profiles) };
+    let mut resolver = FooterPruningResolver { object_stores: FooterObjectStoreRegistry::new(runtime_env) };
     let result = optimize_lakehouse_footer_pruning(
         plan,
         LakehouseFooterPruningOptions::new(policy.max_target_files_across_requests()),
@@ -192,7 +171,7 @@ impl LakehouseFooterPruningResolver for FooterPruningResolver<'_> {
         let mut per_file_row_group_key_ranges = Vec::with_capacity(source.files.len());
         for file in &source.files {
             let object = object_store_file(&file.location)?;
-            let store = self.object_stores.store_for_file(file, &object, source_node_id)?;
+            let store = self.object_stores.store_for_file(&object, source_node_id)?;
             let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id).await?;
             let selected_row_groups = file.selected_or_all_row_groups(metadata.num_row_groups());
             per_file_row_group_key_ranges.push(row_group_key_ranges(
@@ -220,7 +199,7 @@ async fn static_reader_predicate_row_group_selections(
                 stable_log_field(&error)
             )
         })?;
-        let store = object_stores.store_for_file(file, &object, source_node_id)?;
+        let store = object_stores.store_for_file(&object, source_node_id)?;
         let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id)
             .await
             .map_err(|error| format!("static_reader_predicate_footer_unavailable {error}"))?;
@@ -682,7 +661,7 @@ async fn derive_dimension_key_filter(
     for file in &source.files {
         let object = object_store_file(&file.location)?;
         let object_context = object_error_context(source_node_id, &object.path);
-        let store = object_stores.store_for_file(file, &object, source_node_id)?;
+        let store = object_stores.store_for_file(&object, source_node_id)?;
         let object_meta = store
             .head(&object.path)
             .await

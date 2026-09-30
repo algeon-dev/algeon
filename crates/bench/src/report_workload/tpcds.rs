@@ -7,7 +7,7 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,
 };
@@ -202,7 +202,7 @@ pub(crate) fn build_tpcds_gpu_backend(
         device_memory_limit,
         source_work_per_attempt,
         1,
-        DataFusionCpuExecutionPolicy::Allow,
+        AlgeonGpuExecutionMode::NativePreferred,
     )
     .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 fn timestamp_timezone_residual_hash_join_plan(
     left: Arc<dyn ExecutionPlan>,
@@ -206,7 +207,7 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_comparison() {
     write_join_right_timestamp_tz_parquet_file(&right_path);
     let plan = timestamp_timezone_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path), false);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -221,7 +222,7 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_in_list() {
     write_join_right_timestamp_tz_parquet_file(&right_path);
     let plan = timestamp_timezone_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path), true);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -236,7 +237,7 @@ fn hash_join_filter_rejects_list_null_predicate_residual() {
     write_join_right_list_parquet_file(&right_path);
     let plan = list_null_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -251,7 +252,7 @@ fn hash_join_filter_rejects_integer_divide_residual() {
     write_join_right_parquet_file(&right_path);
     let plan = integer_divide_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedExpression);
     fs::remove_dir_all(dir).unwrap();
@@ -266,7 +267,7 @@ fn nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison() {
     write_join_right_timestamp_tz_parquet_file(&right_path);
     let plan = timestamp_timezone_residual_nested_loop_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -281,7 +282,7 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     write_join_right_parquet_file(&right_path);
     let plan = hash_join_filter_in_list_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -316,7 +317,7 @@ fn hash_join_filter_cast_lowers_to_native_residual_predicate() {
     write_join_right_parquet_file(&right_path);
     let plan = hash_join_filter_cast_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -351,7 +352,7 @@ fn hash_join_filter_decimal_to_float_cast_lowers_to_native_residual_predicate() 
     write_join_right_decimal_payload_parquet_file(&right_path);
     let plan = hash_join_filter_cast_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -390,7 +391,7 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
         JoinType::Inner,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
@@ -446,7 +447,7 @@ fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_pred
         parquet_scan(&right_path),
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
@@ -490,7 +491,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
         parquet_scan(&right_path),
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
@@ -553,7 +554,7 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
         parquet_scan(&right_path),
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
@@ -589,7 +590,7 @@ fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_input
         JoinType::Right,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Left);
@@ -635,7 +636,7 @@ fn right_hash_join_lowers_to_swapped_native_left_join_spec() {
         JoinType::Right,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     assert_right_hash_join_contract(
@@ -665,7 +666,7 @@ fn right_semi_hash_join_lowers_to_swapped_native_left_semi_join_spec() {
         JoinType::RightSemi,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     assert_right_hash_join_contract(
@@ -691,7 +692,7 @@ fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
         JoinType::RightAnti,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     assert_right_hash_join_contract(
@@ -725,7 +726,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
     write_join_right_parquet_file(&right_path);
     let plan = hash_join_count_star_plan(parquet_scan(&left_path), parquet_scan(&right_path), datafusion_join_type);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let native_plan = &result.plans[0];
     let join = rewritten_native_join(&result);
@@ -756,7 +757,7 @@ fn nested_loop_join_filter_lowers_to_native_residual_predicate() {
         JoinType::Inner,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -794,7 +795,7 @@ fn full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
         JoinType::Full,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -826,7 +827,7 @@ fn inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
         JoinType::Inner,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -858,7 +859,7 @@ fn predicate_free_full_nested_loop_join_lowers_to_native_keyless_outer_cross_joi
         JoinType::Full,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -884,7 +885,7 @@ fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_
         JoinType::Right,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -910,7 +911,7 @@ fn right_nested_loop_join_filter_lowers_to_swapped_native_left_join() {
         JoinType::Right,
     );
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Left);

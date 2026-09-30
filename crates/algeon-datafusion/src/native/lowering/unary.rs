@@ -18,7 +18,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
     },
@@ -28,6 +28,7 @@ pub(super) fn lower_filter_input(
     filter: &NormalizedNativeFilter<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let validated_predicate =
         validate_physical_expr_contract(filter.filter.predicate(), &filter.filter.input().schema())?;
@@ -52,6 +53,7 @@ pub(super) fn lower_filter_input(
         &filter.input,
         builder,
         &RequiredFields::only_with_predicates(child_required, predicate_required),
+        source_reads,
     )?;
     let filtered_node = builder.add_filter(
         input.node,
@@ -121,6 +123,7 @@ pub(super) fn lower_projection_input(
     projection: &NormalizedNativeProjection<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
@@ -143,6 +146,7 @@ pub(super) fn lower_projection_input(
         &projection.input,
         builder,
         &RequiredFields::only_with_predicates(child_required, child_predicate_required),
+        source_reads,
     )?;
     let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
     let expressions = required_projection

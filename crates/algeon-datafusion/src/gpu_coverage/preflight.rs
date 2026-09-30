@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics, Result},
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::AlgeonNativeOptimizerConfig,
     session::installed_algeon_native_optimizer_config,
 };
 
@@ -126,9 +126,10 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
         source_chunk_planning_mode: execution.source_chunk_planning_mode(),
         statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
     };
-    let final_plan_requirements = match optimizer_config.datafusion_cpu_execution_policy() {
-        DataFusionCpuExecutionPolicy::Allow => Vec::new(),
-        DataFusionCpuExecutionPolicy::Reject => vec!["no_datafusion_cpu".to_string()],
+    let final_plan_requirements = if optimizer_config.execution_mode().rejects_datafusion_cpu() {
+        vec!["no_datafusion_cpu".to_string()]
+    } else {
+        Vec::new()
     };
     let optimizer_fingerprint_input = format!(
         "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={final_plan_requirements:?}",

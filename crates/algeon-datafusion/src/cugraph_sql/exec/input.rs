@@ -27,7 +27,7 @@ use super::{
     graph_input_native_producer, plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution,
     resident_side_input_output_rows,
 };
-use crate::native_exec::validate_host_wrapped_gpu_execution;
+use crate::{native::ParquetReadStrategyConfig, native_exec::validate_host_wrapped_gpu_execution};
 
 const CUGRAPH_HOST_INPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-input-staging]";
 const CUGRAPH_HOST_OUTPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-output-staging]";
@@ -141,9 +141,10 @@ impl CugraphInputRowBounds {
     pub(super) fn from_execution_plans(
         edge_source: &dyn ExecutionPlan,
         predicate_sources: &[Arc<dyn ExecutionPlan>],
+        source_reads: &ParquetReadStrategyConfig,
     ) -> DataFusionResult<Self> {
         Ok(Self {
-            edge: edge_source_output_rows(edge_source)?,
+            edge: edge_source_output_rows(edge_source, source_reads)?,
             predicates: predicate_sources
                 .iter()
                 .map(|source| resident_side_input_output_rows(source.as_ref()))
@@ -383,8 +384,11 @@ pub(super) fn host_staging_limit_error(
 }
 
 impl CollectedCugraphInputs {
-    pub(super) fn row_bounds(&self) -> DataFusionResult<CugraphInputRowBounds> {
-        cugraph_input_row_bounds(&self.edge, &self.predicates)
+    pub(super) fn row_bounds(
+        &self,
+        source_reads: &ParquetReadStrategyConfig,
+    ) -> DataFusionResult<CugraphInputRowBounds> {
+        cugraph_input_row_bounds(&self.edge, &self.predicates, source_reads)
     }
 
     pub(super) fn prepare_logical_inputs(self, _spec: &CugraphAlgorithmSpec) -> Result<StagedCugraphInputs> {
@@ -401,8 +405,11 @@ impl CollectedCugraphInputs {
 }
 
 impl StagedCugraphInputs {
-    pub(super) fn row_bounds(&self) -> DataFusionResult<CugraphInputRowBounds> {
-        cugraph_input_row_bounds(&self.edge, &self.predicates)
+    pub(super) fn row_bounds(
+        &self,
+        source_reads: &ParquetReadStrategyConfig,
+    ) -> DataFusionResult<CugraphInputRowBounds> {
+        cugraph_input_row_bounds(&self.edge, &self.predicates, source_reads)
     }
 
     pub(super) fn validate_admission(&self, context: &ExecutionContext) -> Result<()> {
@@ -449,13 +456,14 @@ impl StagedCugraphInputs {
 fn cugraph_input_row_bounds(
     edge: &StagedCugraphSource,
     predicates: &[StagedCugraphSource],
+    source_reads: &ParquetReadStrategyConfig,
 ) -> DataFusionResult<CugraphInputRowBounds> {
     Ok(CugraphInputRowBounds {
-        edge: edge.row_upper_bound(StagedCugraphSourceRole::Edge)?,
+        edge: edge.row_upper_bound(StagedCugraphSourceRole::Edge, source_reads)?,
         predicates: predicates
             .iter()
             .enumerate()
-            .map(|(index, source)| source.row_upper_bound(StagedCugraphSourceRole::Predicate(index)))
+            .map(|(index, source)| source.row_upper_bound(StagedCugraphSourceRole::Predicate(index), source_reads))
             .collect::<DataFusionResult<Vec<_>>>()?,
     })
 }
@@ -473,10 +481,14 @@ impl StagedCugraphSource {
         }
     }
 
-    fn row_upper_bound(&self, role: StagedCugraphSourceRole) -> DataFusionResult<Option<u64>> {
+    fn row_upper_bound(
+        &self,
+        role: StagedCugraphSourceRole,
+        source_reads: &ParquetReadStrategyConfig,
+    ) -> DataFusionResult<Option<u64>> {
         match self {
             Self::Native { plan, .. } => match role {
-                StagedCugraphSourceRole::Edge => edge_source_output_rows(plan.as_ref()),
+                StagedCugraphSourceRole::Edge => edge_source_output_rows(plan.as_ref(), source_reads),
                 StagedCugraphSourceRole::Predicate(_) => resident_side_input_output_rows(plan.as_ref()),
             },
             Self::Host { batches, .. } => {

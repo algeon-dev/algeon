@@ -15,6 +15,8 @@ use query_engine::{
     source::SourceDiagnostics as NativeSourceDiagnostics,
 };
 
+use crate::native::ParquetReadStrategyConfig;
+
 mod local_parquet;
 mod reader_pushdown;
 
@@ -38,8 +40,16 @@ pub(super) fn lower_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    lower_local_parquet_source_input(source.scan, source.filter, builder, required_output_fields, pushed_scan_limit)
+    lower_local_parquet_source_input(
+        source.scan,
+        source.filter,
+        builder,
+        required_output_fields,
+        pushed_scan_limit,
+        source_reads,
+    )
 }
 
 pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {

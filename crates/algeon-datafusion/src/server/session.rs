@@ -10,7 +10,6 @@ use crate::server::{
     cugraph_sql::CugraphSqlConfig,
     cuml_sql::CumlSqlConfig,
     error::{Result as ServerResult, ServerError},
-    planner::DataFusionCpuExecutionPolicy,
     workspace::install_workspace_overlay,
 };
 
@@ -55,8 +54,7 @@ pub(crate) fn cugraph_sql_config(config: &CugraphServerConfig) -> CugraphSqlConf
 /// but does not change optimizer or execution settings beyond what the
 /// configured final plan requirement implies (see below).
 pub(crate) fn build_session_config(config: &ServerConfig) -> ServerResult<SessionConfig> {
-    let gpu_only =
-        config.native_optimizer_config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject;
+    let gpu_only = config.native_optimizer_config.execution_mode().rejects_datafusion_cpu();
     SessionConfig::from_env()
         .map(enable_session_discovery)
         .map(|session_config| {
@@ -107,7 +105,7 @@ mod tests {
     fn execution_mode_env_maps_to_functions_only_and_preserves_partitions() {
         let env = BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
         let server = server_config_with_test_device_profile(env);
-        assert_eq!(server.native_optimizer_config.execution_mode().unwrap(), AlgeonGpuExecutionMode::FunctionsOnly);
+        assert_eq!(server.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::FunctionsOnly);
         let session = build_session_config(&server).expect("session config");
         let baseline = SessionConfig::from_env().expect("baseline session config");
         assert_eq!(
