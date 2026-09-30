@@ -6,7 +6,13 @@ use datafusion::{common::Result as DataFusionResult, execution::SessionState};
 use prost::bytes::Bytes;
 
 use super::*;
-use crate::{error::Result, server::observability::RedactedSql};
+use crate::{
+    error::Result,
+    server::{
+        error::{ERROR_CODE_METADATA_KEY, REASON_METADATA_KEY},
+        observability::RedactedSql,
+    },
+};
 
 pub(super) fn datafusion_error_to_flight_error(
     error: DataFusionError,
@@ -320,6 +326,11 @@ pub(super) fn log_statement_status(
     status: &Status,
 ) {
     let outcome = status_outcome(status.code());
+    // The status message can name the caller's columns, types, and values;
+    // the operational log keeps only the bounded code and reason metadata.
+    let metadata = |key| status.metadata().get(key).and_then(|value| value.to_str().ok());
+    let error_code = metadata(ERROR_CODE_METADATA_KEY);
+    let reason = metadata(REASON_METADATA_KEY);
     if let Some(sql) = sql {
         tracing::warn!(
             query_id,
@@ -327,8 +338,9 @@ pub(super) fn log_statement_status(
             outcome,
             stage,
             grpc_code = ?status.code(),
+            error_code,
+            reason,
             elapsed_ms = started_at.elapsed().as_millis(),
-            error = status.message(),
             "failed Flight SQL statement"
         );
     } else {
@@ -337,8 +349,9 @@ pub(super) fn log_statement_status(
             outcome,
             stage,
             grpc_code = ?status.code(),
+            error_code,
+            reason,
             elapsed_ms = started_at.elapsed().as_millis(),
-            error = status.message(),
             "failed Flight SQL statement"
         );
     }

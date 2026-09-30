@@ -245,11 +245,13 @@ defined and maintained in the website documentation:
   `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`, `CUML_INSTALL_DIR`), native build order, and Rust
   workspace compilation.
 
-Always use `--workspace --all-features` in cargo commands, and select tests
-with nextest filtersets rather than `-p`. Feature unification ensures that the
-entire workspace dependency graph builds with a unified feature set and avoids
-unnecessary artifact rebuilds. `cargo nt` is the workspace alias for
-`cargo nextest run --workspace --all-features`.
+Use `--workspace --all-features` for ordinary cargo build, check, lint, and
+test commands, and select tests with nextest filtersets rather than `-p`. One
+build configuration keeps those commands warm and avoids unnecessary artifact
+rebuilds. The full gate keeps two feature-coverage exceptions, the
+feature-isolation shards and the shipped-server clippy lane, described in
+[Tests](website/docs/build/tests.md#harness-internals). `cargo nt` is the
+workspace alias for `cargo nextest run --workspace --all-features`.
 
 Focused component validation uses the same commands for every native wrapper:
 

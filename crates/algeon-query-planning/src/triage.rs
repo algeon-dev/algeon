@@ -3,7 +3,6 @@
 use serde_json::{Value, json};
 
 use crate::{
-    contract_report::CapabilityContractReport,
     correlation::{CompiledTaskId, PlanNodeId, QueryId},
     error::{QueryError, QueryErrorCode, triage_code_for_query_error},
 };
@@ -251,5 +250,3 @@ impl QueryError {
         TriageSummary::new(TriageVerdict::Failed, vec![signal])
     }
 }
-
-impl CapabilityContractReport {}

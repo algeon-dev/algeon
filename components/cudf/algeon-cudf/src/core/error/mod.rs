@@ -479,9 +479,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Reject canonical fact snake_case names on the detail write path.
 ///
 /// Canonical snake_case keys are reserved for `facts` and must never appear
-/// in `details`. This is enforced structurally at the writer so the boundary
-/// cannot be violated by reviewer inattention. A violation is a crate-internal
-/// bug and panics in every build profile.
+/// in `details`. The writer checks this in debug builds, where a violation (a
+/// crate-internal bug) panics; release builds keep the detail.
 fn assert_canonical_key_not_used_as_detail(key: &'static str) {
     debug_assert!(
         FactKeyName::from_snake_case(key).is_none(),

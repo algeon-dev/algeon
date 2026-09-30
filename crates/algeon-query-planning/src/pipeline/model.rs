@@ -275,8 +275,6 @@ pub enum AcceptedInputForm {
     AnyProducedForm,
 }
 
-impl AcceptedInputForm {}
-
 /// Final-sort execution strategy, selected once at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SortStrategy {
@@ -290,8 +288,6 @@ pub enum SortStrategy {
         limit_node: NodeId,
     },
 }
-
-impl SortStrategy {}
 
 /// Symbolic native work categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -636,8 +632,6 @@ pub enum OrderingScope {
     Global,
 }
 
-impl OrderingScope {}
-
 /// Payload form a compiled resident resource may carry between tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResidentDataForm {
@@ -648,8 +642,6 @@ pub enum ResidentDataForm {
     /// A deferred source stream the consumers re-stage and pull themselves.
     SourceStream,
 }
-
-impl ResidentDataForm {}
 
 /// How several consumers read one resident resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -662,8 +654,6 @@ pub enum ResourceSharing {
     /// Several consumers each take an independent cursor over the producer.
     IndependentCursorStream,
 }
-
-impl ResourceSharing {}
 
 /// Symbolic resident lifetime class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

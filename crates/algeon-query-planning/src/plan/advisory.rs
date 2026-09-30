@@ -69,12 +69,11 @@ pub enum AdvisoryUnknownReason {
 /// The statistics cover the occurrence's complete output across all
 /// partitions; they never describe a device allocation scope.
 ///
-/// These records are diagnostic input and low-priority optimizer hints. Build-side
-/// selection may use them only among executable alternatives when stronger
-/// native evidence does not determine a choice. They are not native bounds and
-/// cannot justify capability, admission, or grant size. A chosen executable
-/// strategy is recorded in the compiled plan. Rewrites invalidate a record when
-/// its occurrence, schema, or dependencies change.
+/// These records are diagnostic input only; build-side selection reads a
+/// join's own `JoinSpec::advisory_output_statistics`, not these bindings. They
+/// are not native bounds and cannot justify capability, admission, or grant
+/// size. Rewrites invalidate a record when its occurrence, schema, or
+/// dependencies change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvisoryOutputBinding {
     pub node: super::NodeId,

@@ -53,6 +53,11 @@ cugraph-oracle = [
   "algeon-datafusion/cugraph",
   "algeon-datafusion/bench-support",
 ]
+# Explicit black-box E2E runners; each drives a child process over the network.
+# The runtime-observability runner reads only the engine's JSONL schema constant,
+# to validate retained artifacts.
+server-runtime-observability-e2e = ["dep:query-engine"]
+embedded-backend-e2e = ["dep:reqwest"]
 # The production-validation runner is intentionally opt-in. The base feature
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.
@@ -114,6 +119,7 @@ parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json"], optional = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }

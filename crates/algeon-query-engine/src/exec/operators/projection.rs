@@ -324,14 +324,18 @@ fn materialize_prepared_regexp_replace_projection(
                 metrics,
                 "query_engine.projection.execute",
             );
-            frame = frame.with_column(output.field.name().as_str(), series).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.projection.execute",
-                    "failed to attach prepared REGEXP_REPLACE output column",
-                    error,
-                )
-                .with_fact("output_field", output.field.name().as_str())
-            })?;
+            frame = budgeted_value(
+                frame.with_column_with_budget(output.field.name().as_str(), series, token).map_err(|error| {
+                    cudf_query_error_with_budget_details(
+                        "query_engine.projection.execute",
+                        "failed to attach prepared REGEXP_REPLACE output column",
+                        error,
+                    )
+                    .with_fact("output_field", output.field.name().as_str())
+                })?,
+                metrics,
+                "query_engine.projection.execute",
+            );
         }
     }
 

@@ -201,7 +201,9 @@ fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowK
         .downcast_ref::<WindowUDFExpr>()
         .ok_or(CapabilityReason::UnsupportedOperator)?;
     let implementation = udf.fun().inner().as_ref() as &dyn Any;
-    if implementation.is::<Rank>() {
+    // `dense_rank()` and `percent_rank()` are the same `Rank` type with a
+    // private rank kind; only `rank()` has a native kernel.
+    if implementation.downcast_ref::<Rank>().is_some_and(|rank| *rank == Rank::basic()) {
         Ok(StandardWindowKind::Rank)
     } else if implementation.is::<RowNumber>() {
         Ok(StandardWindowKind::RowNumber)

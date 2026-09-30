@@ -5,7 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::{array::Int64Array, record_batch::RecordBatch};
+use arrow::{
+    array::{Int64Array, StringArray},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use arrow_flight::{decode::FlightRecordBatchStream, error::FlightError};
 use datafusion::{
     catalog::{CatalogProvider, SchemaProvider},
@@ -15,7 +19,7 @@ use datafusion::{
     logical_expr::LogicalPlanBuilder,
     prelude::SessionConfig,
 };
-use tracing::subscriber::with_default;
+use tracing::subscriber::{set_default, with_default};
 
 use super::*;
 use crate::{
@@ -24,6 +28,7 @@ use crate::{
         coordinator::QueryTerminalOutcome,
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+            REASON_METADATA_KEY,
         },
     },
 };
@@ -99,7 +104,9 @@ fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
         .with_target(false)
         .with_writer(move || writer.clone())
         .finish();
-    let status = Status::invalid_argument("terminal failure");
+    let mut status = Status::invalid_argument("terminal failure naming caller_column");
+    status.metadata_mut().insert(ERROR_CODE_METADATA_KEY, MetadataValue::from_static("sql_planning"));
+    status.metadata_mut().insert(REASON_METADATA_KEY, MetadataValue::from_static("unsupported_type"));
 
     with_default(subscriber, || {
         log_statement_status(
@@ -119,7 +126,9 @@ fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
     assert!(output.contains("stage=\"planning\""), "{output}");
     assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
     assert!(output.contains("elapsed_ms="), "{output}");
-    assert!(output.contains("error=\"terminal failure\""), "{output}");
+    assert!(output.contains("error_code=\"sql_planning\""), "{output}");
+    assert!(output.contains("reason=\"unsupported_type\""), "{output}");
+    assert!(!output.contains("caller_column"), "the status message must stay out of the log: {output}");
 }
 
 #[test]
@@ -144,8 +153,63 @@ fn statement_status_log_omits_sql_before_ticket_resolution() {
     assert!(output.contains("stage=\"ticket\""), "{output}");
     assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
     assert!(output.contains("elapsed_ms="), "{output}");
-    assert!(output.contains("error=\"unknown ticket\""), "{output}");
+    assert!(!output.contains("unknown ticket"), "the status message must stay out of the log: {output}");
     assert!(!output.contains("sql="), "unresolved tickets must not fabricate SQL context: {output}");
+}
+
+/// Failed statements log the bounded error code, never the status message:
+/// planning and execution errors can name the caller's columns and values.
+#[tokio::test]
+async fn failed_statement_logs_omit_the_status_message_on_get_flight_info_and_do_get() {
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _logs = set_default(subscriber);
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["caller_value"]))]).unwrap();
+    service.ctx.register_table("caller_rows", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+
+    let planning = service
+        .get_flight_info_statement(
+            CommandStatementQuery { query: "SELECT caller_column FROM caller_rows".to_string(), transaction_id: None },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect_err("an unknown column must fail planning");
+    assert!(planning.message().contains("caller_column"), "the client still sees the planning error: {planning:?}");
+
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery {
+                query: "SELECT to_timestamp(s) FROM caller_rows".to_string(),
+                transaction_id: None,
+            },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("a timestamp parse plans and fails only during DoGet");
+    let query_id = query_id_from_flight_info(&response);
+    let stream = service.execute_ticket(query_id, None).await.expect("DoGet returns a lazy stream").into_inner();
+    let error = FlightRecordBatchStream::new_from_flight_data(stream.map_err(FlightError::from))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect_err("parsing the caller's value must fail the stream");
+    let FlightError::Tonic(execution) = error else { panic!("DoGet must fail with a gRPC status: {error}") };
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    let failures = output.lines().filter(|line| line.contains("failed Flight SQL statement")).collect::<Vec<_>>();
+    assert_eq!(failures.len(), 2, "one GetFlightInfo and one DoGet failure: {output}");
+    for (line, status) in failures.iter().zip([&planning, &*execution]) {
+        assert!(line.contains("error_code="), "{line}");
+        assert!(!line.contains(status.message()), "the status message must stay out of the log: {line}");
+    }
 }
 
 #[test]

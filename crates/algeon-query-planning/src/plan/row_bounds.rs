@@ -17,8 +17,6 @@ pub(crate) enum RowBoundProvenance {
     PlanHardUpperBound,
 }
 
-impl RowBoundProvenance {}
-
 /// Returns a mathematically hard upper bound on the root row count when the
 /// native plan can prove one without executing any source.
 pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
@@ -69,14 +67,21 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
             .iter()
             .try_fold(0_u64, |total, input| input_bound(*input)?.0.checked_add(total))
             .map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound)),
-        PlanNode::Aggregate(aggregate) => {
-            let sets = aggregate.spec.grouping_sets.as_ref().map_or(1, |sets| sets.groups.len() as u64);
-            if aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none() {
-                Some((1, RowBoundProvenance::PlanExact))
-            } else {
+        PlanNode::Aggregate(aggregate) => match &aggregate.spec.grouping_sets {
+            None if aggregate.spec.group_exprs.is_empty() => Some((1, RowBoundProvenance::PlanExact)),
+            None => input_bound(aggregate.input).map(|(rows, _)| (rows, RowBoundProvenance::PlanHardUpperBound)),
+            Some(sets) => {
                 let (rows, _) = input_bound(aggregate.input)?;
-                rows.checked_mul(sets).map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound))
-            }
+                // A grouping set emits at most one row per input row, except
+                // the empty set (every key nulled): its grand-total row exists
+                // even for empty input.
+                sets.groups
+                    .iter()
+                    .try_fold(0_u64, |total, mask| {
+                        total.checked_add(if mask.iter().all(|nulled| *nulled) { 1 } else { rows })
+                    })
+                    .map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound))
+            },
         },
         PlanNode::Join(join) => {
             let left_rows = input_bound(join.inputs[0])?.0;
@@ -155,5 +160,30 @@ mod tests {
         let plan = builder.finish_with_host_sink(aggregate);
 
         assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(2));
+    }
+
+    #[test]
+    fn hard_row_bound_keeps_the_empty_grouping_set_total_row_for_empty_input() {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let empty =
+            RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(Vec::<i32>::new()))])
+                .unwrap();
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![empty])));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("a")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("count", DataType::UInt64, false),
+            ])),
+        );
+        let plan = builder.finish_with_host_sink(aggregate);
+
+        assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(1), "ROLLUP emits its total row for empty input");
     }
 }

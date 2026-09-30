@@ -83,8 +83,6 @@ pub struct StatisticalAggregateExecutionModeParseError {
     value: String,
 }
 
-impl StatisticalAggregateExecutionModeParseError {}
-
 impl fmt::Display for StatisticalAggregateExecutionModeParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid statistical aggregate execution mode: {}", self.value)

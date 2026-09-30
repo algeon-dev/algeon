@@ -32,7 +32,10 @@ mod clickbench_stage_probe;
 #[path = "../shadow_estimate_report.rs"]
 mod shadow_estimate_report;
 
-#[cfg(not(test))]
+// Under `test` only the runtime-observability runner, whose unit tests compile with it,
+// needs the retry policy.
+#[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
+#[cfg_attr(test, allow(dead_code))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
@@ -50,6 +53,9 @@ mod cugraph_sql_tests;
 #[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
 #[path = "../datafusion_baseline_contract_validate.rs"]
 mod datafusion_baseline_contract_validate;
+#[cfg(all(feature = "embedded-backend-e2e", not(test)))]
+#[path = "../e2e/embedded_backend_e2e.rs"]
+mod embedded_backend_e2e;
 #[cfg(not(test))]
 #[path = "../e2e/flight_sql_cugraph_smoke.rs"]
 mod flight_sql_cugraph_smoke;
@@ -62,6 +68,10 @@ mod flight_sql_query;
 #[cfg_attr(test, allow(dead_code))]
 #[path = "../flight_sql_stress.rs"]
 mod flight_sql_stress;
+#[cfg(feature = "server-runtime-observability-e2e")]
+#[cfg_attr(test, allow(dead_code))]
+#[path = "../e2e/server_runtime_observability/mod.rs"]
+mod server_runtime_observability;
 #[cfg(feature = "single-node-multi-gpu-validate")]
 #[cfg_attr(test, allow(dead_code))]
 #[path = "../single_node_multi_gpu_validate/mod.rs"]
@@ -76,6 +86,10 @@ async fn main() -> ToolResult<()> {
         Some("flight-sql-cugraph-smoke") => run_flight_sql_cugraph_smoke(env::args().nth(2)).await,
         Some("flight-sql-query") => run_flight_sql_query(env::args().skip(2).collect()).await,
         Some("flight-sql-stress") => run_flight_sql_stress(env::args().skip(2).collect()).await,
+        Some("server-runtime-observability-e2e") => {
+            run_server_runtime_observability_e2e(env::args().skip(2).collect()).await
+        },
+        Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
@@ -108,6 +122,8 @@ fn print_usage() {
            cargo run -p tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p tools -- flight-sql-query [URL] [SQL]\n\
            cargo run -p tools -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
+           flock /tmp/cudf-gpu.lock cargo run -p tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
+           flock /tmp/cudf-gpu.lock cargo run -p tools --features embedded-backend-e2e -- embedded-backend-e2e [--citation-data DIR]\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
            flock /tmp/cudf-gpu.lock cargo run -p tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]\n\
            cargo run -p tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run\n           cargo run -p tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight\n           flock /tmp/cudf-gpu.lock cargo run --release -p tools --features single-node-multi-gpu-validate-run -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [--nsight-trace PATH]"
@@ -195,6 +211,26 @@ async fn run_shadow_estimate_report(args: Vec<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "shadow-estimate-report", not(test))))]
 async fn run_shadow_estimate_report(_args: Vec<String>) -> ToolResult<()> {
     Err("shadow-estimate-report requires --features shadow-estimate-report and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "server-runtime-observability-e2e", not(test)))]
+async fn run_server_runtime_observability_e2e(args: Vec<String>) -> ToolResult<()> {
+    server_runtime_observability::run(args).await
+}
+
+#[cfg(not(all(feature = "server-runtime-observability-e2e", not(test))))]
+async fn run_server_runtime_observability_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("server-runtime-observability-e2e requires --features server-runtime-observability-e2e and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "embedded-backend-e2e", not(test)))]
+async fn run_embedded_backend_e2e(args: Vec<String>) -> ToolResult<()> {
+    embedded_backend_e2e::run(args).await
+}
+
+#[cfg(not(all(feature = "embedded-backend-e2e", not(test))))]
+async fn run_embedded_backend_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("embedded-backend-e2e requires --features embedded-backend-e2e and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "cugraph-oracle", not(test)))]

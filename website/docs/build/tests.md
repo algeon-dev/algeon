@@ -37,13 +37,13 @@ With no arguments it starts every phase at once, in four groups:
   nextest profile, then doctests run through the GPU lock wrapper.
 - **static**: clippy with `-D warnings`, then strict rustdoc, then the public
   API surface snapshot, in sequence.
-- **hygiene**: the six feature-isolation shards plus their union check,
-  `msrv-check`, a docs.rs native-free compile check, and the component-package
-  check, each in its own target directory.
+- **hygiene**: the seven feature-isolation shards plus their union check,
+  the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile
+  check, and the component-package check, each in its own target directory.
 
-Hygiene never blocks tests. Every Cargo phase uses `--workspace
---all-features`; the one exception is feature-isolation, described under
-[Harness internals](#harness-internals).
+Hygiene never blocks tests. Every other Cargo phase uses `--workspace
+--all-features`; feature-isolation and the shipped-server clippy lane are the
+two exceptions, described under [Harness internals](#harness-internals).
 
 ### What success looks like
 
@@ -86,8 +86,9 @@ FAIL: full pre-merge gate reported problems.
 
 `--fast` runs rustfmt, the native-source check, the policy self-test scripts,
 and the CPU nextest tests (`cargo nt -E 'not group(gpu) & not
-group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, every GPU
-test, doctests, rustdoc, the public API snapshot, and clippy:
+group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, the
+shipped-server clippy lane, every GPU test, doctests, rustdoc, the public API
+snapshot, and clippy:
 
 ```bash
 bash scripts/check_all.sh --fast
@@ -289,18 +290,32 @@ Rust version:
 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo
 ```
 
-Feature-isolation is the one repository-owned exception to the all-features
-rule. It compiles every target in each package's no-feature and non-default
-feature configurations. It does not execute tests:
+Feature-isolation is the first repository-owned exception to the
+all-features rule. It compiles every target in each package's no-feature and
+non-default feature configurations. It does not execute tests:
 
 ```bash
 cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going
 ```
 
-`scripts/check_all.sh` runs that exact matrix as six package shards
+`scripts/check_all.sh` runs that exact matrix as seven package shards
 (`FEATURE_ISOLATION_SHARDS`), each in its own target directory, then fails
 the phase closed unless the union of commands the shards actually ran matches
 the canonical command's own `--print-command-list` output.
+
+The shipped-server clippy lane is the second exception. `--all-features`
+unifies dev-dependency features such as `test-hooks` into every build, so it
+never lints the server as packaged. The lane selects only the `algeon_server`
+binary through its manifest, with `--no-default-features` and the packaging
+feature set that `scripts/build/cpu_packaging_policy.py shipped-features`
+reads from `.config/policies/cpu-packaging.toml`, and uses its own target
+directory:
+
+```bash
+cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
+  --features "$(python3 scripts/build/cpu_packaging_policy.py shipped-features)" --locked \
+  --target-dir target/check-all/shipped-clippy -- -D warnings
+```
 
 Doctests run as a separate command through the same GPU lock wrapper, since
 rustdoc does not build through nextest:

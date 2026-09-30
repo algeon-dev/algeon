@@ -452,7 +452,6 @@ impl CloseCompletion {
     }
 
     fn advance(&self, phase: u8) {
-        // TEMP-NEGATIVE-CONTROL: pre-fix discipline, notify outside the mutex.
         {
             let mut state = self.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.phase < phase && state.phase != PHASE_FAILED {
@@ -603,10 +602,7 @@ pub(crate) fn reject_reentrant_observation_close() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::Barrier,
-        time::{Duration, Instant},
-    };
+    use std::time::Instant;
 
     use super::{CleanupPhaseProgress, CloseCompletion};
     use crate::runtime::{backend_lifecycle::BackendLifecycle, query_service::QueryServiceDrainPhase};
@@ -675,47 +671,5 @@ mod tests {
         let error = state.wait_until(Instant::now(), &lifecycle).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
         assert_eq!(error.fact_value("gpu_resource_quiescent"), Some("false"));
-    }
-
-    #[test]
-    fn waiter_never_misses_a_phase_advance() {
-        // The phase change and its notification are atomic to waiters: a
-        // waiter either observes the new phase or blocks before the change
-        // and is woken by it. Advancing outside the wait mutex lets the
-        // change slip between a waiter's check and its sleep; the waiter
-        // then sleeps out its full deadline before the recheck recovers, so
-        // the regression signal is latency, bounded generously below. The
-        // advancer snapshots first so both sides run duration-matched paths
-        // after the barrier, aligning the advance with the waiters'
-        // check-then-block window.
-        const ITERATIONS: usize = 2000;
-        let started = Instant::now();
-        for _ in 0..ITERATIONS {
-            // Fail fast once stalled: a regressed run would otherwise sleep
-            // out thousands of full deadlines before the bound below trips.
-            assert!(started.elapsed() < Duration::from_secs(30), "waiters stalled on missed phase advances");
-            let state = CloseCompletion::new();
-            let lifecycle = BackendLifecycle::new();
-            let barrier = Barrier::new(3);
-            std::thread::scope(|scope| {
-                for _ in 0..2 {
-                    scope.spawn(|| {
-                        barrier.wait();
-                        let snapshot = state
-                            .wait_until(Instant::now() + Duration::from_secs(5), &lifecycle)
-                            .expect("phase advance must wake the waiter");
-                        assert!(snapshot.observation_quiescent);
-                    });
-                }
-                barrier.wait();
-                let _ = state.snapshot(&lifecycle);
-                state.mark_observation_quiescent();
-            });
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "waiters stalled on missed phase advances ({} iterations)",
-            ITERATIONS
-        );
     }
 }

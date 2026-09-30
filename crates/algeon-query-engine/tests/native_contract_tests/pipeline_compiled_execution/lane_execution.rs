@@ -1,5 +1,6 @@
 use std::{sync::Condvar, time::Duration};
 
+use ::cudf::testing::device_copy;
 use arrow::array::{BooleanArray, Int64Array, StringArray};
 use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver,
@@ -1721,6 +1722,64 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     let batch = materialize_gpu_result_to_host(handle, &mut QueryMetrics::default())
         .expect("resident join output stays readable after its lane leases are released");
     assert_eq!(int64_values(&batch, 0), vec![Some(3)], "inner join feeds three rows into the count");
+}
+
+/// A resident aggregate run that obtains no second lane executes every chunk on
+/// the root context, so its sink returns the aggregate frame as produced. Root
+/// adoption would copy the whole output device-to-device into the root runtime.
+#[test]
+fn resident_aggregate_without_lanes_skips_root_adoption_copy() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("query-engine-resident-aggregate-no-lanes");
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let path = dir.join("input.parquet");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2, 3])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
+        ],
+    )
+    .expect("resident aggregate input batch");
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&input_schema), None)
+        .expect("resident aggregate parquet writer");
+    writer.write(&batch).expect("resident aggregate parquet write");
+    writer.close().expect("resident aggregate parquet close");
+    let mut builder = QueryPlanBuilder::new();
+    let scan = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&path, &input_schema)));
+    let aggregate = builder.add_aggregate(
+        scan,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")]),
+        Arc::new(Schema::new(vec![Field::new("total", DataType::Int64, true)])),
+    );
+    let plan = builder.finish_gpu_resident(aggregate);
+
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("resident aggregate acquires a context");
+    // Hold every auxiliary permit so the run obtains no lane.
+    let mut held = Vec::new();
+    while let Some(lease) =
+        test_context.try_acquire_attempt_work_lease().expect("auxiliary try-acquire should not error")
+    {
+        held.push(lease);
+    }
+    let copies_before = device_copy::device_to_device_copy_count_for_test();
+    let result = execute_query_plan(&test_context, &plan).expect("lane-less resident aggregate should execute");
+    assert_eq!(
+        device_copy::device_to_device_copy_count_for_test() - copies_before,
+        0,
+        "a lane-less resident sink must not be copied into the root runtime"
+    );
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("resident aggregate retains its output");
+    };
+    let handle = handle.clone();
+    drop(result);
+    drop(held);
+    let batch = materialize_gpu_result_to_host(handle, &mut QueryMetrics::default())
+        .expect("resident aggregate output stays readable");
+    assert_eq!(int64_values(&batch, 0), vec![Some(100)]);
 }
 
 fn sort_lane_nullable_source(path: &Path, keys: &[Option<i32>], values: &[Option<i64>]) -> NativeLocalParquetSource {

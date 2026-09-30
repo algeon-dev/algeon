@@ -465,13 +465,11 @@ impl SeriesPreparedReplaceWithBackrefs {
         };
         // On failure the FFI already consumed the handle; do not destroy again.
         error::check_status_in(status, operation).map_err(&map_execution_error)?;
-        // Write allocations may run under a temporary stream-bound budget domain.
-        // Rebind the resulting column to the retained input series domain so the
-        // caller can attach it back onto the original DataFrame without an
-        // explicit copy_into_runtime relocation.
-        let column =
-            unsafe { Column::from_raw_with_domain(out, Arc::clone(self.input.as_column().execution_domain())) }
-                .map_err(&map_execution_error)?;
+        // The write pass allocated the output on the resolved stream and
+        // memory resource, which may be a budget token's own adaptor; the
+        // column retains that domain so the allocation outlives the token.
+        let column = unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
+            .map_err(&map_execution_error)?;
         Series::from_column(column).map_err(map_execution_error)
     }
 }
@@ -819,4 +817,44 @@ pub(crate) fn try_to_integers_impl(
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{ExecutionBudgetRequest, Runtime};
+
+    #[test]
+    fn budgeted_replace_with_backrefs_output_carries_the_execution_domain() {
+        let runtime = Runtime::new().expect("test runtime");
+        let input = runtime.series(&["abc-123", "def-456"]).expect("input series");
+        let (pattern, replacement) = (r"([a-z]+)-(\d+)", r"\2/\1");
+        let facts = input.str().replace_with_backrefs_output_size(pattern, replacement).expect("size pass");
+        let token = runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("replace_backrefs_domain"),
+            )
+            .expect("budget token");
+        let execution_domain = token
+            .execution_overrides()
+            .resolve_output_domain(input.as_column().execution_domain())
+            .expect("token output domain");
+        assert!(
+            !ExecutionDomain::same_provenance(&execution_domain, input.as_column().execution_domain()),
+            "the token must allocate through its own memory resource"
+        );
+
+        let (prepared, _) = input
+            .str()
+            .prepare_replace_with_backrefs_with_budget(pattern, replacement, &token)
+            .expect("prepare")
+            .into_parts();
+        let (output, _) = prepared.execute_with_budget(&token).expect("execute").into_parts();
+
+        assert!(
+            ExecutionDomain::same_provenance(output.as_column().execution_domain(), &execution_domain),
+            "the output must carry the domain that allocated it"
+        );
+        assert_eq!(output.to_strings_strict().expect("output values"), vec!["123/abc", "456/def"]);
+    }
 }
