@@ -420,7 +420,7 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
     );
     let rule = AlgeonNativePhysicalOptimizerRule::new(template_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     let composed = optimized
         .downcast_ref::<AlgeonNativeComposedExec>()
@@ -428,7 +428,7 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
     assert_eq!(composed.children().len(), 1);
     assert!(composed.children()[0].downcast_ref::<AlgeonNativeGpuProducerExec>().is_some());
     assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);
 }
 
@@ -447,11 +447,11 @@ fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
     assert!(expected_ordering.is_some());
     let rule = AlgeonNativePhysicalOptimizerRule::new(template_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeComposedExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);
 }
 

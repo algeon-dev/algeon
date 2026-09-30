@@ -25,10 +25,7 @@ pub use query_engine::{
     },
 };
 
-use crate::{
-    attempt::AlgeonAttemptExtension,
-    error::{Error, ErrorCode},
-};
+use crate::error::{Error, ErrorCode};
 
 #[cfg(test)]
 mod adapter_tests;
@@ -48,7 +45,6 @@ pub(crate) mod relation_function;
 pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_gpu_execution_task};
 
 #[cfg(feature = "cugraph")]
-pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::composed::composed_admission_capability_evidence;
 #[cfg(feature = "server")]
@@ -96,15 +92,7 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
     plan: &dyn ExecutionPlan,
     task_context: &TaskContext,
 ) -> DataFusionResult<()> {
-    let ticket = admission::query_admission_ticket_from_task_context(task_context)
-        .or_else(|| {
-            task_context
-                .session_config()
-                .options()
-                .extensions
-                .get::<AlgeonAttemptExtension>()
-                .and_then(AlgeonAttemptExtension::bound_ticket)
-        })
+    let ticket = admission::invocation_admission_ticket(task_context)
         .filter(|ticket| ticket.has_execution_manifest())
         .ok_or_else(|| {
             DataFusionError::from(

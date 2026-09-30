@@ -17,8 +17,7 @@ use algeon_datafusion::{
             ParityFloatTolerance,
         },
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
-    session::AlgeonSessionStateBuilderExt,
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
 };
 use datafusion::{
     error::DataFusionError,
@@ -262,7 +261,6 @@ struct TpcdsParityRunner {
     cpu_ctx: SessionContext,
     cpu_stats_fallback_ctx: Option<SessionContext>,
     native_ctx: SessionContext,
-    native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,
     backend: AlgeonGpuBackend,
 }
 
@@ -289,17 +287,16 @@ impl TpcdsParityRunner {
 
         let backend = build_tpcds_gpu_backend(optimizer_config, device_memory_limit)?;
         let native = async {
-            let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
             let builder = SessionStateBuilder::new_with_default_features()
                 .with_config(native_tpcds_session_config(native_session_config));
             let builder = backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error)))?;
-            let native_state = builder.with_algeon_native_rule(Arc::clone(&native_rule)).build();
+            let native_state = builder.build();
             let native_ctx = SessionContext::new_with_state(native_state);
             register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;
-            Ok((native_ctx, native_rule))
+            Ok(native_ctx)
         }
         .await;
-        let (native_ctx, native_rule) = match native {
+        let native_ctx = match native {
             Ok(native) => native,
             Err(error) => {
                 // Release setup contexts before closing their backend owner.
@@ -310,7 +307,7 @@ impl TpcdsParityRunner {
         };
         let (cpu_ctx, cpu_stats_fallback_ctx) = cpu_contexts;
 
-        Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule, backend })
+        Ok(Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, backend })
     }
 
     async fn run_query(
@@ -320,7 +317,7 @@ impl TpcdsParityRunner {
         external_oracles: Option<&TpcdsExternalOracleConfig>,
     ) -> NativeTpcdsParityWorkloadItem {
         let cpu_outcome = run_cpu_query(&self.cpu_ctx, self.cpu_stats_fallback_ctx.as_ref(), query.sql).await;
-        let (native_planning, native_runtime) = run_native_query(&self.native_ctx, &self.native_rule, query.sql).await;
+        let (native_planning, native_runtime) = run_native_query(&self.native_ctx, query.sql).await;
         let duckdb_output = external_oracles
             .and_then(|config| config.duckdb.as_ref().map(|engine| (config, engine)))
             .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
@@ -337,9 +334,9 @@ impl TpcdsParityRunner {
     }
 
     fn close(self) -> WorkloadResult<()> {
-        let Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule, backend } = self;
+        let Self { cpu_ctx, cpu_stats_fallback_ctx, native_ctx, backend } = self;
         let backend = {
-            let _contexts = (cpu_ctx, cpu_stats_fallback_ctx, native_ctx, native_rule);
+            let _contexts = (cpu_ctx, cpu_stats_fallback_ctx, native_ctx);
             backend
         };
         close_tpcds_gpu_backend(backend)
@@ -440,7 +437,6 @@ fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
 
 async fn run_native_query(
     ctx: &SessionContext,
-    native_rule: &Arc<AlgeonNativePhysicalOptimizerRule>,
     sql: &str,
 ) -> (NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome) {
     let df = match ctx.sql(sql).await {
@@ -456,8 +452,9 @@ async fn run_native_query(
             );
         },
     };
-    let plan = match df.create_physical_plan().await {
-        Ok(plan) => plan,
+    let (state, logical) = df.into_parts();
+    let (plan, diagnostics) = match plan_with_native_diagnostics(&state, &logical).await {
+        Ok(planned) => planned,
         Err(error) => {
             return (
                 NativeTpcdsParityNativePlanningOutcome::PlanningFailed(NativePlanningFailure {
@@ -468,16 +465,6 @@ async fn run_native_query(
                 NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
             );
         },
-    };
-    let Some(diagnostics) = native_rule.last_planning_diagnostics() else {
-        return (
-            NativeTpcdsParityNativePlanningOutcome::PlanningFailed(NativePlanningFailure {
-                stage: "native_diagnostics".to_string(),
-                reason_code: "missing_native_diagnostics".to_string(),
-                message: "native optimizer rule did not retain planning diagnostics".to_string(),
-            }),
-            NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
-        );
     };
     let accepted = diagnostics.report.selected_count() > 0;
     let planning_outcome = NativeTpcdsParityNativePlanningOutcome::Planned {

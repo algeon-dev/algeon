@@ -4,8 +4,9 @@
 //! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
 //! statistics and the final native rewrite immediately before final plan
 //! validation. Native candidate misses preserve the DataFusion baseline plan.
-//! A reject DataFusion CPU policy, when configured, inspects that exact
-//! resulting plan after native rewrite; it never triggers a second plan.
+//! A reject DataFusion CPU policy, when configured, is the last step of the
+//! final rewrite and inspects the plan that rewrite produced; it never
+//! triggers a second plan.
 //!
 //! [`FinalPlanDisposition`] describes one completed executable plan only
 //! (`DataFusion`, `Native`, or `Mixed`); planning failures have no disposition.
@@ -15,7 +16,6 @@
 //! [`crate::report::CandidateOutcome`].
 
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::metrics::QueryId;
 pub use query_engine::{
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::StatisticalAggregateExecutionMode,
@@ -33,11 +33,10 @@ use crate::{
 pub(crate) mod native;
 
 pub use native::{
-    ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonNativePhysicalOptimizerRule,
-    CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NativeCapabilityAcceptedCandidateDiagnostics,
-    NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics,
-    NativeCapabilityDeferredCandidateDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
-    NativePlanningDiagnostics,
+    AlgeonNativePhysicalOptimizerRule, CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
+    NativeCapabilityContractDiagnostics, NativeCapabilityDeferredCandidateDiagnostics,
+    NativeCapabilityRejectedCandidateDiagnostics, NativePlanningDiagnostics, plan_with_native_diagnostics,
 };
 
 pub use crate::final_plan_observation::FinalPlanCoverage;
@@ -269,12 +268,6 @@ impl AlgeonNativeOptimizerConfig {
     /// Replace the native execution config copied into accepted native plans.
     pub fn with_native_execution_config(mut self, execution_config: AlgeonNativeExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
-        self
-    }
-
-    /// Attach a query id to the native execution config only when the caller has not supplied one.
-    pub(crate) fn with_query_id_if_absent(mut self, query_id: impl Into<QueryId>) -> Self {
-        self.native_execution_config = self.native_execution_config.with_query_id_if_absent(query_id);
         self
     }
 

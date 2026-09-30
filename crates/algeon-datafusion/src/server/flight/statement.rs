@@ -2,7 +2,7 @@ use std::{ops::ControlFlow, sync::Arc, time::Instant};
 
 use datafusion::{
     common::{
-        TableReference,
+        Result as DataFusionResult, TableReference,
         tree_node::{TreeNode, TreeNodeRecursion},
     },
     sql::{
@@ -26,12 +26,6 @@ use crate::{
         coordinator::QueryKey,
     },
 };
-
-/// after physical optimization runs (during `DataFrame::execute_stream`).
-pub(super) struct QueryPlanning {
-    pub(super) ctx: SessionContext,
-    pub(super) native_rule: Option<Arc<AlgeonNativePhysicalOptimizerRule>>,
-}
 
 pub(super) type ParsedFlightStatement = Result<DataFusionSqlStatement, DataFusionError>;
 
@@ -112,7 +106,9 @@ impl DatafusionAlgeonFlightSqlService {
         Ok(())
     }
 
-    pub(super) fn metadata_query_planning(&self) -> QueryPlanning {
+    /// A per-query context without the Algeon rules: metadata statements plan
+    /// and run on DataFusion only.
+    pub(super) fn metadata_query_context(&self) -> SessionContext {
         let rules = self
             .ctx
             .state()
@@ -121,35 +117,37 @@ impl DatafusionAlgeonFlightSqlService {
             .filter(|rule| {
                 !matches!(
                     rule.name(),
-                    ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-                        | ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
-                        | ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME
+                    ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME | ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
                 )
             })
             .cloned()
             .collect();
         let state =
             SessionStateBuilder::new_from_existing(self.ctx.state()).with_physical_optimizer_rules(rules).build();
-        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule: None }
+        SessionContext::new_with_state(state)
     }
 
-    pub(super) fn attempt_query_planning(
+    /// Execution inputs of a statement whose native metrics stay with its
+    /// attempt.
+    pub(super) fn attempt_invocation_execution(
         &self,
         correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
-    ) -> QueryPlanning {
-        self.query_planning_with_capture(correlation_id, cancellation, NativeMetricsCapture::standalone())
+    ) -> InvocationExecution {
+        self.invocation_execution(correlation_id, cancellation, NativeMetricsCapture::standalone())
     }
 
-    pub(super) fn coordinated_query_planning(
+    /// Execution inputs of a statement whose native metrics also feed the
+    /// query coordinator's observation.
+    pub(super) fn coordinated_invocation_execution(
         &self,
         query_id: &str,
         correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
         observation: RuntimeObservationHandle,
         activity_factory: NativeObservationActivityFactory,
-    ) -> QueryPlanning {
-        self.query_planning_with_capture(
+    ) -> InvocationExecution {
+        self.invocation_execution(
             correlation_id,
             cancellation,
             NativeMetricsCapture::coordinated(query_id.to_string(), observation)
@@ -157,29 +155,36 @@ impl DatafusionAlgeonFlightSqlService {
         )
     }
 
-    fn query_planning_with_capture(
+    /// The context a Data statement plans in: its attempt's invocation, or,
+    /// without an attempt (only the CPU-only test admission has none), a
+    /// detached invocation carrying the same execution inputs.
+    pub(super) fn data_query_context(
+        &self,
+        attempt: Option<&AlgeonAttempt>,
+        execution: InvocationExecution,
+    ) -> DataFusionResult<SessionContext> {
+        let Some(attempt) = attempt else {
+            let invocation = Invocation::detached();
+            invocation.set_execution(execution);
+            let mut state = self.ctx.state();
+            invocation.install(state.config_mut());
+            return Ok(SessionContext::new_with_state(state));
+        };
+        attempt.planning_context(&self.ctx, execution)
+    }
+
+    fn invocation_execution(
         &self,
         correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
         metrics_capture: NativeMetricsCapture,
-    ) -> QueryPlanning {
-        let mut execution_config = self
-            .native_optimizer_config
-            .native_execution_config()
-            .clone()
-            .with_cancellation(cancellation)
-            .with_metrics_capture(metrics_capture);
-        if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
-            execution_config = execution_config.with_trace_id(correlation_id.to_string());
+    ) -> InvocationExecution {
+        InvocationExecution {
+            io_lifecycle: self.io_lifecycle.handle(),
+            cancellation,
+            metrics_capture,
+            trace_id: correlation_id.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
         }
-        let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
-        // Retain the native rule so we can read its `last_report` for the
-        // planning-report log after physical optimization runs.
-        let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));
-        let builder =
-            SessionStateBuilder::new_from_existing(self.ctx.state()).with_algeon_native_rule(Arc::clone(&native_rule));
-        let state = builder.build();
-        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule: Some(native_rule) }
     }
 
     /// Retain the immutable report at the attempt-owned seal point.
@@ -293,14 +298,12 @@ impl DatafusionAlgeonFlightSqlService {
         if let Some(attempt) = attempt.as_ref() {
             self.register_attempt_report_handoff(attempt, CoordinatorReportHandoffTerminal::planning(&planning_lease));
         }
-        let planning = match execution_domain {
-            StatementExecutionDomain::Metadata => self.metadata_query_planning(),
-            StatementExecutionDomain::Data => {
-                self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
-            },
-        };
-        let query_ctx = match attempt.as_ref() {
-            Some(attempt) => match attempt.planning_context(&planning.ctx) {
+        let query_ctx = match (execution_domain, attempt.as_ref()) {
+            (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
+            (StatementExecutionDomain::Data, attempt) => match self.data_query_context(
+                attempt,
+                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
+            ) {
                 Ok(context) => context,
                 Err(error) => {
                     let (status, captured) =
@@ -310,7 +313,6 @@ impl DatafusionAlgeonFlightSqlService {
                     return Err(status);
                 },
             },
-            None => planning.ctx.clone(),
         };
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {

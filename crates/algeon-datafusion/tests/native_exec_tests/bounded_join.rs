@@ -24,14 +24,15 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
     let plan = root_left_semi_join_plan(&left, &right);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
-    assert_eq!(rule.last_source_diagnostics().len(), 2);
+    assert_eq!(diagnostics.source_diagnostics.len(), 2);
 
     let batches = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
@@ -62,14 +63,15 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     let plan = root_left_anti_join_plan(&left, &right);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
-    assert_eq!(rule.last_source_diagnostics().len(), 2);
+    assert_eq!(diagnostics.source_diagnostics.len(), 2);
 
     let batches = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
@@ -97,11 +99,13 @@ fn assert_null_aware_anti_join_native_matches_datafusion(
     expected_rows: Vec<(Option<i32>, i32)>,
 ) {
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.selected_count(), 1, "report={report:?}; diagnostics={:?}", rule.last_planning_diagnostics());
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
+    assert_eq!(report.selected_count(), 1, "report={report:?}; diagnostics={diagnostics:?}");
 
     let native_rows =
         null_aware_anti_join_rows(&block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap());
@@ -164,19 +168,18 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     let plan = tpch_sql_plan(&dir, q11.sql);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert!(
         optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
-        "Q11 should optimize to AlgeonNativeExec; report={report:?}; diagnostics={:?}",
-        rule.last_planning_diagnostics()
+        "Q11 should optimize to AlgeonNativeExec; report={report:?}; diagnostics={diagnostics:?}"
     );
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
     assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
     let accepted = &diagnostics.capability_contract.accepted_candidates[0];
@@ -200,10 +203,11 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
     let plan = root_hash_join_plan(&left, &right);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
@@ -378,10 +382,11 @@ fn run_advisory_build_side_query(dir: &std::path::Path, collect_statistics: bool
         ..config.native_optimizer_options().clone()
     };
     let rule = AlgeonNativePhysicalOptimizerRule::new(config.with_native_optimizer_options(optimizer_options));
-    let optimized = rule.optimize(plan(ADVISORY_BUILD_SIDE_SQL), &ConfigOptions::default()).unwrap();
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(plan(ADVISORY_BUILD_SIDE_SQL), &ConfigOptions::default()).unwrap();
+    let diagnostics = diagnostics.expect("native optimizer should retain planning diagnostics");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain planning diagnostics");
     let candidate = diagnostics
         .native_optimizer
         .join_build_side_selection
@@ -413,8 +418,8 @@ fn bounded_planner_reports_compiled_graph_for_supported_join_path() {
     write_join_right_parquet_file(&right);
     let plan = root_nested_loop_join_plan(&left, &right);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-    let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    let (_, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
+    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
 
     assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());

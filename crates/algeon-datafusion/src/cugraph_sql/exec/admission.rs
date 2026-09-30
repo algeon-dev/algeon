@@ -14,15 +14,14 @@ use super::{
     task_context_with_query_admission_ticket,
 };
 use crate::{
-    attempt::AlgeonAttemptExtension,
     native::{
         exact_row_count_for_datafusion_local_parquet_scan, graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
     },
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, admission::QueryAdmissionTicket,
+        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, admission::invocation_admission_ticket,
         composed_admission_capability_evidence, gpu_resident_producer_input_name, lakehouse::resolve_query_plan,
-        query_admission_ticket_from_task_context,
     },
+    planner::native::Invocation,
 };
 
 pub(super) fn edge_execution_config(
@@ -82,7 +81,7 @@ pub(super) fn cugraph_execution_config_after_staging(
     } else {
         execution_config
     };
-    let (execution_config, graph_execution_plan, reused_invocation_ticket) = compile_cugraph_admission_ticket(
+    compile_cugraph_admission_ticket(
         spec,
         edge_source,
         predicate_sources,
@@ -92,33 +91,7 @@ pub(super) fn cugraph_execution_config_after_staging(
         execution_config,
         exact_edge_source_gpu_plan,
         task_context,
-    )?;
-    let execution_config = if reused_invocation_ticket {
-        execution_config
-    } else {
-        bind_cugraph_ticket_to_attempt(execution_config, task_context)?
-    };
-    Ok((execution_config, graph_execution_plan))
-}
-
-fn bind_cugraph_ticket_to_attempt(
-    execution_config: AlgeonNativeExecutionConfig,
-    task_context: &TaskContext,
-) -> Result<AlgeonNativeExecutionConfig> {
-    let Some(attempt) = task_context.session_config().options().extensions.get::<AlgeonAttemptExtension>() else {
-        return Ok(execution_config);
-    };
-    let Some(ticket) = execution_config.query_admission_ticket() else {
-        return Ok(execution_config);
-    };
-    let ticket = QueryAdmissionTicket::new_attempt_bound(
-        ticket.source(),
-        ticket.attempt_capability_evidence_for_rebind(),
-        attempt.ticket_binding(),
-        ticket.metrics_capture(),
-    );
-    attempt.bind_ticket(Arc::clone(&ticket))?;
-    Ok(execution_config.with_existing_query_admission_ticket(ticket))
+    )
 }
 
 #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
@@ -132,7 +105,7 @@ fn compile_cugraph_admission_ticket(
     execution_config: AlgeonNativeExecutionConfig,
     exact_edge_source_gpu_plan: Option<&QueryPlan>,
     task_context: &TaskContext,
-) -> Result<(AlgeonNativeExecutionConfig, QueryPlan, bool)> {
+) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
     let edge_row_upper_bound = if execution_config.query_admission_source().is_none() {
         None
     } else {
@@ -172,14 +145,33 @@ fn compile_cugraph_admission_ticket(
     for predicate_source in predicate_sources {
         collect_native_fragment_capability_evidences(predicate_source.as_ref(), &mut fragment_evidence_items)?;
     }
-    let ambient_ticket = query_admission_ticket_from_task_context(task_context).or_else(|| {
-        task_context
-            .session_config()
-            .options()
-            .extensions
-            .get::<AlgeonAttemptExtension>()
-            .and_then(AlgeonAttemptExtension::bound_ticket)
-    });
+    let ambient_ticket = match invocation_admission_ticket(task_context) {
+        Some(ticket) => Some(ticket),
+        None => match (Invocation::of_task(task_context), execution_config.query_admission_source()) {
+            (Some(invocation), Some(source)) if invocation.attempt().is_some() => {
+                let evidence =
+                    AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "algeon_datafusion.cugraph_sql.graph_ticket_ask",
+                            "failed to compute cuGraph SQL graph-aware query admission ticket ask",
+                            error,
+                        ))
+                    })?;
+                match invocation.attempt_admission_ticket(source, Some(evidence)) {
+                    Some((ticket, true)) => {
+                        return Ok((
+                            execution_config.with_existing_query_admission_ticket(ticket),
+                            graph_execution_plan,
+                        ));
+                    },
+                    // Another fragment of this invocation minted the ticket first.
+                    Some((ticket, false)) => Some(ticket),
+                    None => None,
+                }
+            },
+            _ => None,
+        },
+    };
     if let Some(ticket) = ambient_ticket {
         if let Some(source) = execution_config.query_admission_source()
             && !source.same_backend(&ticket.source())
@@ -220,7 +212,7 @@ fn compile_cugraph_admission_ticket(
                 ))
             })?;
         }
-        return Ok((execution_config.with_existing_query_admission_ticket(ticket), graph_execution_plan, true));
+        return Ok((execution_config.with_existing_query_admission_ticket(ticket), graph_execution_plan));
     }
     let execution_config =
         execution_config.with_graph_aware_plan_query_admission_ticket(fragment_evidence_items).map_err(|error| {
@@ -230,7 +222,7 @@ fn compile_cugraph_admission_ticket(
                 error,
             ))
         })?;
-    Ok((execution_config, graph_execution_plan, false))
+    Ok((execution_config, graph_execution_plan))
 }
 
 pub(super) fn validate_cugraph_graph_owner_preflight(

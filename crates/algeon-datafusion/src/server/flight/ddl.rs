@@ -90,29 +90,25 @@ impl DatafusionAlgeonFlightSqlService {
         drop(_query_enter);
 
         let native_cancellation = ExecutionCancellation::new();
-        let planning = match coordinator_capture {
-            Some((observation, activity_factory)) => self.coordinated_query_planning(
+        let execution = match coordinator_capture {
+            Some((observation, activity_factory)) => self.coordinated_invocation_execution(
                 &query_id,
                 correlation_id.as_deref(),
                 native_cancellation.clone(),
                 observation,
                 activity_factory,
             ),
-            None => self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone()),
+            None => self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
         };
-        let query_ctx = match attempt.as_ref() {
-            Some(attempt) => match attempt.planning_context(&planning.ctx) {
-                Ok(context) => context,
-                Err(error) => {
-                    let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, statement_kind.sql_operation());
-                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("planning", &status, captured);
-                    coordinator_terminal.wait_finished().await;
-                    return Err(status);
-                },
+        let query_ctx = match self.data_query_context(attempt.as_ref(), execution) {
+            Ok(context) => context,
+            Err(error) => {
+                let (status, captured) = datafusion_error_to_status_and_capture(error, statement_kind.sql_operation());
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                coordinator_terminal.finish_captured("planning", &status, captured);
+                coordinator_terminal.wait_finished().await;
+                return Err(status);
             },
-            None => planning.ctx,
         };
         let state = query_ctx.state();
         let plan = tokio::select! {

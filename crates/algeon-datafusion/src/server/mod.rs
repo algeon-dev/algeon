@@ -202,14 +202,7 @@ impl FlightSqlServerBuilder {
         );
         admission.log_query_service_state(None, "server_startup");
 
-        let mut native_optimizer_config = effective_config.native_optimizer_config.clone();
         let io_lifecycle = Arc::new(io_lifecycle::ServerIoLifecycle::new());
-        let native_execution_config = native_optimizer_config
-            .native_execution_config()
-            .clone()
-            .with_io_lifecycle(io_lifecycle.handle())
-            .with_host_output_memory_pool_accounting(true);
-        native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
 
         let ctx = match self.session_context {
             Some(ctx) => {
@@ -223,7 +216,6 @@ impl FlightSqlServerBuilder {
         log_auth_mode_snapshot(&effective_config.auth.mode);
         let service = flight::DatafusionAlgeonFlightSqlService::new_with_io_lifecycle(
             Arc::clone(&ctx),
-            native_optimizer_config.clone(),
             admission,
             effective_config.statement_ticket_ttl,
             auth_interceptor,

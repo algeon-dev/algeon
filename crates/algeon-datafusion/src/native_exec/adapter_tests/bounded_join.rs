@@ -13,7 +13,7 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     let fixture = backend_fixture();
     let rule = AlgeonNativePhysicalOptimizerRule::new(template_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized
         .downcast_ref::<AlgeonNativeExec>()
@@ -24,7 +24,7 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));

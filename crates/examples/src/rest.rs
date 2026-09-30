@@ -3,13 +3,10 @@
 //! This module exposes health, pipeline execution, planning-report, and GPU
 //! admission/memory status endpoints for the shared backend.
 
-use std::sync::Arc;
-
 use algeon_datafusion::{
     error::{DataFusionErrorExt, Error, ErrorKind, ErrorStatus},
-    planner::AlgeonNativePhysicalOptimizerRule,
+    planner::plan_with_native_diagnostics,
     report::PlanningReport,
-    session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{error::ArrowError, record_batch::RecordBatch};
 use arrow_json::{WriterBuilder, writer::JsonArray};
@@ -20,7 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use datafusion::{common::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext};
+use datafusion::common::DataFusionError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -142,23 +139,14 @@ async fn execute_pipeline(state: &AppState, rendered: RenderedPipeline) -> Resul
 }
 
 async fn planning_report(state: &AppState, rendered: RenderedPipeline) -> Result<PlanningReport, AppError> {
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(state.backend.optimizer_config().clone()));
-    let planning_state = SessionStateBuilder::new_from_existing(state.ctx.state())
-        .with_algeon_native_rule(Arc::clone(&native_rule))
-        .build();
-    let planning_ctx = SessionContext::new_with_state(planning_state);
-    let mut df = planning_ctx.sql(&rendered.sql).await.map_err(AppError::from_datafusion)?;
+    let mut df = state.ctx.sql(&rendered.sql).await.map_err(AppError::from_datafusion)?;
     if !rendered.param_values.is_empty() {
         df = df.with_param_values(rendered.param_values).map_err(AppError::from_datafusion)?;
     }
-    let _plan = df.create_physical_plan().await.map_err(AppError::from_datafusion)?;
-    native_rule.last_report().ok_or_else(|| {
-        AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "planning_report_missing",
-            "native optimizer did not retain a planning report",
-        )
-    })
+    let (planning_state, logical) = df.into_parts();
+    let (_plan, diagnostics) =
+        plan_with_native_diagnostics(&planning_state, &logical).await.map_err(AppError::from_datafusion)?;
+    Ok(diagnostics.report)
 }
 
 fn record_batches_to_json(batches: &[RecordBatch]) -> Result<Value, AppError> {

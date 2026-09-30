@@ -1,17 +1,17 @@
-use std::{fmt::Write, sync::Arc};
+use std::fmt::Write;
 
 use query_engine::mode::StatisticalAggregateExecutionMode;
 
 #[cfg(feature = "server")]
 use super::NativeDataFusionExecutionMetrics;
 use super::{
-    AlgeonNativeExecutionConfig, AlgeonNativePhysicalOptimizerRule, CandidateOutcomeKind, ExecutionPlan,
-    FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
-    NativeDataFusionRuntimeSummary, NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem, TsvRow,
-    WorkloadDatasetMetadata, datafusion_execution_rows_for_item, datafusion_planning_rows_for_item,
-    report_rows_for_item, write_metric_detail_completeness, write_workload_dataset_metadata,
+    AlgeonNativeExecutionConfig, CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
+    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureRow,
+    NativeFallbackPressureWorkloadItem, TsvRow, WorkloadDatasetMetadata, datafusion_execution_rows_for_item,
+    datafusion_planning_rows_for_item, report_rows_for_item, write_metric_detail_completeness,
+    write_workload_dataset_metadata,
 };
 
 /// In-memory fallback-pressure report.
@@ -119,25 +119,6 @@ impl NativeDataFusionPlanningReport {
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionPlanningWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_planning_rows_for_item).collect();
         Self { rows, workload_dataset: None }
-    }
-
-    /// Builds a one-query report from a native rule that retained diagnostics.
-    ///
-    /// Missing retained diagnostics are represented as a planning-failure row.
-    pub fn from_retained_rule(
-        query_id: impl Into<String>,
-        planned_plan: Arc<dyn ExecutionPlan>,
-        native_rule: &AlgeonNativePhysicalOptimizerRule,
-    ) -> Self {
-        let Some(diagnostics) = native_rule.last_planning_diagnostics() else {
-            return Self::collect([NativeDataFusionPlanningWorkloadItem::planning_failure(
-                query_id,
-                "native_diagnostics",
-                "missing_native_diagnostics",
-                "native optimizer rule did not retain planning diagnostics",
-            )]);
-        };
-        Self::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, planned_plan, diagnostics)])
     }
 
     /// Attaches fixture metadata to comment lines before the TSV header.

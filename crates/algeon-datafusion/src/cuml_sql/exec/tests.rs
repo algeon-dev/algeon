@@ -21,9 +21,7 @@ use crate::{
     capability::CapabilityReason,
     cuml_sql::CumlOperation,
     native_exec::{AlgeonNativeGpuProducerExec, gpu_resident_producer},
-    planner::{
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition, classify_final_plan,
-    },
+    planner::{AlgeonNativeOptimizerConfig, FinalPlanDisposition, classify_final_plan, plan_with_native_diagnostics},
     report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
 };
@@ -102,22 +100,21 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
     }
 }
 
-fn native_cuml_context(schema: Arc<Schema>) -> (Arc<AlgeonNativePhysicalOptimizerRule>, SessionContext) {
-    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(AlgeonNativeOptimizerConfig::default()));
+fn native_cuml_context(schema: Arc<Schema>) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_algeon_native_rule(Arc::clone(&rule))
+        .with_algeon_native(AlgeonNativeOptimizerConfig::default())
         .try_with_cuml_sql()
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
     let batch = RecordBatch::new_empty(Arc::clone(&schema));
     ctx.register_table("t", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
-    (rule, ctx)
+    ctx
 }
 
 #[tokio::test]
 async fn final_native_rule_lowers_a_relation_input_into_a_gpu_resident_producer() {
-    let (_rule, ctx) = native_cuml_context(Arc::new(Schema::new(vec![
+    let ctx = native_cuml_context(Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("d0", DataType::Float32, false),
         Field::new("d1", DataType::Float32, false),
@@ -132,18 +129,19 @@ async fn final_native_rule_lowers_a_relation_input_into_a_gpu_resident_producer(
 
 #[tokio::test]
 async fn unlowerable_relation_input_stays_host_staged_with_a_structured_reason() {
-    let (rule, ctx) = native_cuml_context(Arc::new(Schema::new(vec![
+    let ctx = native_cuml_context(Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("d0", DataType::Float32, false),
         Field::new("d1", DataType::Float32, false),
         Field::new("h", DataType::Float16, true),
     ])));
     let sql = "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM t WHERE h IS NOT NULL), n_components => 1)";
-    let physical = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
+    let (state, logical) = ctx.sql(sql).await.unwrap().into_parts();
+    let (physical, diagnostics) = plan_with_native_diagnostics(&state, &logical).await.unwrap();
     let exec = find_cuml_exec(physical.as_ref()).expect("cuML physical node");
     let [input] = exec.children()[..] else { panic!("one relation input") };
     assert!(gpu_resident_producer(input.as_ref()).is_none(), "input must stay a DataFusion plan");
-    let report = rule.last_report().expect("final native planning report");
+    let report = &diagnostics.report;
     let detail = report
         .outcomes()
         .iter()

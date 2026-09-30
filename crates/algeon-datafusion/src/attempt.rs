@@ -26,10 +26,7 @@ use std::{
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
-    common::{
-        DataFusionError, Result as DataFusionResult,
-        config::{ConfigEntry, ConfigExtension, ExtensionOptions},
-    },
+    common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionState, SessionStateBuilder, context::TaskContext},
     physical_plan::{
         ExecutionPlan, RecordBatchStream, SendableRecordBatchStream, execute_stream as execute_physical_stream,
@@ -64,13 +61,13 @@ use crate::{
     final_plan_observation::observe_final_plan,
     native_exec::{
         SealedAttemptMetricsTarget,
-        admission::{
-            AttemptTicketBinding, NativeAdmissionExec, QueryAdmissionTicket, task_context_with_query_admission_ticket,
-        },
+        admission::{AttemptTicketBinding, NativeAdmissionExec, task_context_with_query_admission_ticket},
         native_execution_metrics, sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{FinalPlanCoverage, FinalPlanDisposition, classify_final_plan, native::Invocation},
+    planner::{
+        FinalPlanCoverage, FinalPlanDisposition, NativePlanningDiagnostics, classify_final_plan, native::Invocation,
+    },
 };
 
 /// Inputs used to create an execution attempt before DataFusion planning.
@@ -131,7 +128,6 @@ struct AttemptExecutionState {
     query_id: Option<AttemptQueryId>,
     query_cap_bytes: Option<u64>,
     cancellation: AttemptCancellation,
-    ticket: Mutex<Option<Arc<QueryAdmissionTicket>>>,
     /// The one elected native root that may receive the fixed-cardinality
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
@@ -181,14 +177,14 @@ impl AttemptExecutionState {
     }
 }
 
-/// Config extension carrying attempt-local state.  It intentionally has no SQL
-/// settings: attempts are installed only into invocation-local session states.
+/// The attempt an [`Invocation`] belongs to, as planning and execution see it
+/// through the invocation's config extension.
 #[derive(Debug, Clone)]
-pub(crate) struct AlgeonAttemptExtension {
+pub(crate) struct InvocationAttempt {
     state: Arc<AttemptExecutionState>,
 }
 
-impl AlgeonAttemptExtension {
+impl InvocationAttempt {
     fn new(state: Arc<AttemptExecutionState>) -> Self {
         Self { state }
     }
@@ -233,58 +229,6 @@ impl AlgeonAttemptExtension {
         let _ = self.state.handle.record_planning_finished();
         self.state.set_sealed_metrics_target(plan);
     }
-
-    /// Retain the planner-created ticket so every execution path in this
-    /// invocation can bind it to its task context.
-    pub(crate) fn bind_ticket(&self, ticket: Arc<QueryAdmissionTicket>) -> Result<()> {
-        let mut slot = self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match slot.as_ref() {
-            Some(existing) if Arc::ptr_eq(existing, &ticket) => Ok(()),
-            Some(_) => Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.attempt.bind_ticket",
-                "one invocation cannot replace its canonical GPU admission ticket",
-            )
-            .with_log_safe_fact("reason", "attempt_admission_ticket_conflict")),
-            None => {
-                *slot = Some(ticket);
-                Ok(())
-            },
-        }
-    }
-
-    /// Recover the opaque ticket from an invocation-local session config.
-    ///
-    /// DataFusion executes CTAS inside `execute_logical_plan`, before the
-    /// adapter receives a physical plan to decorate. The inner DataFrame
-    /// inherits this extension but not an `ActiveQueryAdmissionTicket`, so
-    /// native admission must be able to promote this exact planner-created
-    /// ticket into that task context.
-    pub(crate) fn bound_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
-        self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
-    }
-}
-
-impl ConfigExtension for AlgeonAttemptExtension {
-    const PREFIX: &'static str = "algeon_datafusion_attempt";
-}
-
-impl ExtensionOptions for AlgeonAttemptExtension {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-    fn cloned(&self) -> Box<dyn ExtensionOptions> {
-        Box::new(self.clone())
-    }
-    fn set(&mut self, _key: &str, _value: &str) -> DataFusionResult<()> {
-        Err(DataFusionError::Configuration("execution-attempt extension has no options".to_string()))
-    }
-    fn entries(&self) -> Vec<ConfigEntry> {
-        Vec::new()
-    }
 }
 
 /// Owner of one adapter invocation attempt.
@@ -298,6 +242,7 @@ impl ExtensionOptions for AlgeonAttemptExtension {
 pub struct AlgeonAttempt {
     owner: Mutex<Option<AttemptOwner>>,
     state: Arc<AttemptExecutionState>,
+    invocation: Invocation,
     completion_factory: AttemptCompletionFactory,
     session: GpuBackendSession,
 }
@@ -353,7 +298,6 @@ impl AlgeonGpuBackend {
             query_id: state_query_id,
             query_cap_bytes,
             cancellation: begin.owner.cancellation(),
-            ticket: Mutex::new(None),
             sealed_metrics_target: Mutex::new(None),
             sealed_graph_claim_calibration: Mutex::new(None),
             sealed_native_execution: Mutex::new(None),
@@ -368,6 +312,7 @@ impl AlgeonGpuBackend {
         });
         Ok(AlgeonAttempt {
             owner: Mutex::new(Some(begin.owner)),
+            invocation: Invocation::for_attempt(InvocationAttempt::new(Arc::clone(&state))),
             state,
             completion_factory,
             session: self.session_capability().clone(),
@@ -420,6 +365,14 @@ impl AlgeonAttempt {
     }
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()
+    }
+
+    /// Native planning diagnostics of this attempt's latest planning pass.
+    ///
+    /// `None` means the attempt has not planned, or planned on a session
+    /// without the native optimizer rule.
+    pub fn planning_diagnostics(&self) -> Option<NativePlanningDiagnostics> {
+        self.invocation.planning_diagnostics()
     }
 
     /// Registers a read-only handoff for the immutable report produced at the
@@ -495,9 +448,7 @@ impl AlgeonAttempt {
 
     fn invocation_state(&self, state: SessionState) -> SessionState {
         let mut builder = SessionStateBuilder::new_from_existing(state);
-        let config = builder.config().get_or_insert_with(Default::default);
-        config.options_mut().extensions.insert(AlgeonAttemptExtension::new(Arc::clone(&self.state)));
-        config.options_mut().extensions.insert(Invocation::new());
+        self.invocation.install(builder.config().get_or_insert_with(Default::default));
         builder.build()
     }
 
@@ -650,30 +601,20 @@ impl AlgeonAttempt {
         }
     }
 
+    /// Binds the invocation's admission ticket to `task_context` when `plan`
+    /// admits native work. A plan planned outside this attempt carries its own
+    /// ticket; its source and evidence mint the invocation's ticket instead.
     fn task_context_with_attempt_ticket(
         &self,
         plan: &dyn ExecutionPlan,
         task_context: Arc<TaskContext>,
     ) -> Arc<TaskContext> {
         let Some(admission) = native_admission_plan(plan) else { return task_context };
-        let ticket = {
-            let mut state = self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(state.get_or_insert_with(|| {
-                let donor = admission.ticket();
-                QueryAdmissionTicket::new_attempt_bound(
-                    donor.source(),
-                    donor.attempt_capability_evidence_for_rebind(),
-                    AttemptTicketBinding {
-                        handle: self.state.handle.clone(),
-                        admission_rejection: self.state.admission_rejection.clone(),
-                        admission_binding: self.state.admission_binding.clone(),
-                        cancellation: self.state.cancellation.clone(),
-                        requested_query_cap_bytes: self.state.query_cap_bytes,
-                    },
-                    donor.metrics_capture(),
-                )
-            }))
-        };
+        let planned = admission.ticket();
+        let (ticket, _) = self
+            .invocation
+            .attempt_admission_ticket(planned.source(), planned.attempt_capability_evidence_for_rebind())
+            .expect("an attempt's invocation carries its attempt");
         task_context_with_query_admission_ticket(task_context, ticket)
     }
 }
@@ -900,7 +841,10 @@ pub(crate) mod server_internal {
     use query_engine::observability::RuntimeTerminalOutcome;
 
     use super::{AlgeonAttempt, commit_adapter_error, disposition_for};
-    use crate::{error::Error, planner::classify_final_plan};
+    use crate::{
+        error::Error,
+        planner::{classify_final_plan, native::InvocationExecution},
+    };
 
     /// Server hooks for attempt phases before, or instead of, a result stream.
     ///
@@ -912,12 +856,16 @@ pub(crate) mod server_internal {
     /// these hooks ignore, so the first committed outcome stands.
     pub trait AlgeonAttemptServerExt {
         /// Records that planning started and returns a session context bound to
-        /// this attempt.
+        /// this attempt, whose planning copies `execution` into every GPU node.
         ///
         /// Fails, after committing the matching terminal outcome, when the
         /// attempt is already cancelled or past its deadline, or when the
         /// backend is closing.
-        fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext>;
+        fn planning_context(
+            &self,
+            ctx: &SessionContext,
+            execution: InvocationExecution,
+        ) -> DataFusionResult<SessionContext>;
 
         /// Commits the terminal outcome for a DataFusion planning error.
         ///
@@ -948,12 +896,17 @@ pub(crate) mod server_internal {
     }
 
     impl AlgeonAttemptServerExt for AlgeonAttempt {
-        fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
+        fn planning_context(
+            &self,
+            ctx: &SessionContext,
+            execution: InvocationExecution,
+        ) -> DataFusionResult<SessionContext> {
             if self.cancellation().check("algeon_datafusion.attempt.flight_planning").is_err() {
                 return Err(self.cancelled_error("algeon_datafusion.attempt.flight_planning"));
             }
             self.fail_if_backend_closing("algeon_datafusion.attempt.flight_planning")?;
             let _ = self.state.handle.record_planning_started();
+            self.invocation.set_execution(execution);
             Ok(self.invocation_context(ctx))
         }
 

@@ -35,11 +35,12 @@ use super::{
     validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
 };
 use crate::{
-    attempt::AlgeonAttemptExtension,
+    attempt::InvocationAttempt,
     native_exec::{
         GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
         gpu_function_occurrence_from_task_context,
     },
+    planner::native::Invocation,
 };
 
 #[derive(Clone, Debug)]
@@ -439,12 +440,8 @@ impl CugraphAlgoExec {
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
         let correlation_fingerprint =
             native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
-        let attempt_id = task_context
-            .session_config()
-            .options()
-            .extensions
-            .get::<AlgeonAttemptExtension>()
-            .map(AlgeonAttemptExtension::attempt_id);
+        let attempt_id =
+            Invocation::of_task(&task_context).and_then(Invocation::attempt).map(InvocationAttempt::attempt_id);
         loop {
             match coordinator.join_with_attempt(key.clone(), correlation_fingerprint.clone(), attempt_id)? {
                 GraphBfsSingleflightJoin::Leader(mut leader) => {
@@ -694,12 +691,8 @@ impl CugraphAlgoExec {
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
         let correlation_fingerprint =
             native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
-        let attempt_id = task_context
-            .session_config()
-            .options()
-            .extensions
-            .get::<AlgeonAttemptExtension>()
-            .map(AlgeonAttemptExtension::attempt_id);
+        let attempt_id =
+            Invocation::of_task(&task_context).and_then(Invocation::attempt).map(InvocationAttempt::attempt_id);
         let mut staged_inputs = Some(staged_inputs);
         loop {
             match coordinator.join_with_attempt(key.clone(), correlation_fingerprint.clone(), attempt_id)? {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use datafusion::{
     catalog::Session,
     common::Result as DataFusionResult,

@@ -53,10 +53,9 @@ pub enum NativeFallbackPressureWorkloadInput {
 
 /// SQL/DataFusion/native planning failure captured as a report row.
 ///
-/// Current helpers use stable stages `sql_to_logical_plan`,
-/// `physical_planning`, and `native_diagnostics`, with reason codes
-/// `sql_planning_failed`, `physical_planning_failed`, and
-/// `missing_native_diagnostics`.
+/// Current helpers use stable stages `sql_to_logical_plan` and
+/// `physical_planning`, with reason codes `sql_planning_failed` and
+/// `physical_planning_failed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlanningFailure {
     /// Planning stage such as `sql_to_logical_plan` or `physical_planning`.

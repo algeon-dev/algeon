@@ -33,7 +33,7 @@ use algeon_datafusion::{
     cugraph_sql::CugraphSqlConfig,
     native_exec::AlgeonNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
-    planner::AlgeonNativePhysicalOptimizerRule,
+    planner::plan_with_native_diagnostics,
     report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -71,9 +71,6 @@ use report::{query_rows_makespan_ms, write_outputs};
 use sampling::device_sample_rows;
 use sampling::spawn_sampler;
 use workload::{catalog, expand_workload};
-
-/// Retained optimizer rules (diagnostic planning-report mode only).
-static PLANNING_RULES: Mutex<Vec<Arc<AlgeonNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone)]
 struct HarnessConfig {
@@ -297,14 +294,6 @@ async fn build_session(
     }
     let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
     let builder = backend.install_on(builder)?.try_with_cugraph_sql(CugraphSqlConfig::default())?;
-    // Retain the rule only when its PlanningReports must outlive optimizer execution.
-    let builder = if std::env::var(ENV_PRINT_PLANNING).is_ok() {
-        let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
-        PLANNING_RULES.lock().unwrap().push(Arc::clone(&rule));
-        builder.with_algeon_native_rule(rule)
-    } else {
-        builder
-    };
     let ctx = SessionContext::new_with_state(builder.build());
 
     ctx.register_parquet("citation_edges", &config.edges_parquet, ParquetReadOptions::default()).await?;
@@ -345,55 +334,50 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
     let started = Instant::now();
     let mut row = QueryRow::new(config, request, iteration, start_epoch_ms);
 
-    let plan: Arc<dyn ExecutionPlan> = match ctx.sql(&request.spec.sql).await {
-        Ok(df) => match df.create_physical_plan().await {
-            Ok(plan) => plan,
-            Err(error) => {
-                return row.finish_failed(started, format!("physical_planning_failed: {error}"));
-            },
-        },
+    let df = match ctx.sql(&request.spec.sql).await {
+        Ok(df) => df,
         Err(error) => {
             return row.finish_failed(started, format!("sql_planning_failed: {error}"));
+        },
+    };
+    let (state, logical) = df.into_parts();
+    let (plan, diagnostics) = match plan_with_native_diagnostics(&state, &logical).await {
+        Ok(planned) => planned,
+        Err(error) => {
+            return row.finish_failed(started, format!("physical_planning_failed: {error}"));
         },
     };
 
     let plan_display = displayable(plan.as_ref()).indent(false).to_string();
     row.native_lowered = plan_display.contains("CugraphAlgoExec") || plan_display.contains("AlgeonNative");
     if std::env::var(ENV_PRINT_PLANNING).is_ok() {
-        for rule in PLANNING_RULES.lock().unwrap().iter() {
-            if let Some(report) = rule.last_report() {
-                for outcome in report.outcomes() {
-                    match outcome {
-                        CandidateOutcome::Selected { candidate } => {
-                            eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
-                        },
-                        CandidateOutcome::Deferred { candidate, planning_stage } => {
-                            eprintln!(
-                                "[planning] {} DEFERRED shape={} stage={} reason={}",
-                                request.spec.label,
-                                candidate.shape,
-                                planning_stage,
-                                DEFERRED_PRODUCER_BINDING_REASON_CODE
-                            );
-                        },
-                        CandidateOutcome::NotSupported { candidate, capability_reason } => {
-                            eprintln!(
-                                "[planning] {} NOT_SUPPORTED shape={} reason={}",
-                                request.spec.label,
-                                candidate.shape,
-                                capability_reason.code()
-                            );
-                        },
-                        CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => {
-                            eprintln!(
-                                "[planning] {} NOT_SELECTED_BY_COST shape={} reason={}",
-                                request.spec.label,
-                                candidate.shape,
-                                cost_reason.code()
-                            );
-                        },
-                    }
-                }
+        for outcome in diagnostics.report.outcomes() {
+            match outcome {
+                CandidateOutcome::Selected { candidate } => {
+                    eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
+                },
+                CandidateOutcome::Deferred { candidate, planning_stage } => {
+                    eprintln!(
+                        "[planning] {} DEFERRED shape={} stage={} reason={}",
+                        request.spec.label, candidate.shape, planning_stage, DEFERRED_PRODUCER_BINDING_REASON_CODE
+                    );
+                },
+                CandidateOutcome::NotSupported { candidate, capability_reason } => {
+                    eprintln!(
+                        "[planning] {} NOT_SUPPORTED shape={} reason={}",
+                        request.spec.label,
+                        candidate.shape,
+                        capability_reason.code()
+                    );
+                },
+                CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => {
+                    eprintln!(
+                        "[planning] {} NOT_SELECTED_BY_COST shape={} reason={}",
+                        request.spec.label,
+                        candidate.shape,
+                        cost_reason.code()
+                    );
+                },
             }
         }
     }

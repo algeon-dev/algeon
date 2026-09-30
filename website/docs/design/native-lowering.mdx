@@ -48,14 +48,16 @@ explicit cuGraph/cuVS execution and the same backend admission authority. See
 [Choose an execution mode](../integration/datafusion-session.mdx#choose-an-execution-mode)
 for configuration and CPU/GPU composition limits.
 
-`with_algeon_native` installs three physical optimizer rules around DataFusion's
+`with_algeon_native` installs two physical optimizer rules around DataFusion's
 own rules:
 
 | Rule | Position | Responsibility |
 | --- | --- | --- |
 | `algeon_datafusion_native_count_only` | Before `aggregate_statistics` | Capture safe zero-column count shapes before DataFusion replaces them with statistics. |
-| `algeon_datafusion_native` | After the other physical optimizer rules | Make the final native selection and retain its structured diagnostics. This public name is also the deduplication key. |
-| `algeon_datafusion_final_plan_requirement` | After native selection, before `SanityCheckPlan` | Enforce optional requirements against the exact completed plan. |
+| `algeon_datafusion_native` | After the other physical optimizer rules, immediately before `SanityCheckPlan` | Make the final native selection. Under `NativeRequired`, its last step rejects the completed plan when it contains DataFusion CPU operators. This public name is also the deduplication key. |
+
+Rules added to the session builder after `with_algeon_native` run after
+`SanityCheckPlan`, so the `NativeRequired` check does not see their output.
 
 The entry points are `crates/algeon-datafusion/src/session.rs` for rule ordering and
 `AlgeonNativePhysicalOptimizerRule::optimize` in `crates/algeon-datafusion/src/planner/native.rs` for the
@@ -133,10 +135,13 @@ outcomes rather than formatted plan text:
 | `NotSupported` | A `CapabilityReason` identifies the unsupported semantic, source, ordering, or execution contract. |
 | `NotSelectedByCost` | The candidate is supported, but the native cost decision retained DataFusion and records its evidence. |
 
-The installed rule instance retains only its most recent completed lowering
-attempt and exposes it through `last_planning_diagnostics`. The bundle pairs
-the report with native optimizer, source, and capability evidence; it is
-diagnostic state, not a planning history.
+The rule keeps no per-query state. Each planning call records its
+diagnostics on its own invocation: `plan_with_native_diagnostics` plans a
+logical plan and returns that call's diagnostics, `AlgeonAttempt::planning_diagnostics`
+returns the latest planning pass of an attempt, and
+`AlgeonNativePhysicalOptimizerRule::optimize_with_diagnostics` applies the rule
+to one physical plan. The bundle pairs the report with native optimizer,
+source, and capability evidence of that one call.
 
 When enabled, relational selection is whole-candidate by default. Explicit GPU
 UDTFs can separately compose with DataFusion CPU operators, including in

@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use datafusion::execution::{SessionState, SessionStateBuilder};
 #[cfg(feature = "qualification")]
@@ -45,10 +45,7 @@ use crate::{
         GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
         QueryServiceDeviceAdmissionSnapshot,
     },
-    planner::{
-        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
-        DataFusionCpuExecutionPolicy,
-    },
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
     session::{AlgeonSessionStateBuilderExt, installed_algeon_native_optimizer_config},
 };
 
@@ -451,8 +448,7 @@ fn install_backend_optimizer_config(
     builder: SessionStateBuilder,
     optimizer_config: &AlgeonNativeOptimizerConfig,
 ) -> Result<SessionStateBuilder> {
-    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    Ok(builder.with_algeon_native_rule(rule))
+    Ok(builder.with_algeon_native(optimizer_config.clone()))
 }
 
 /// Validated backend-builder input shared by production construction and root

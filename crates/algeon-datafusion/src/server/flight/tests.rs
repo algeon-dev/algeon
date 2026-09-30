@@ -31,6 +31,7 @@ use crate::{
             REASON_METADATA_KEY,
         },
     },
+    session::AlgeonSessionStateBuilderExt,
 };
 
 #[derive(Clone, Default)]
@@ -340,23 +341,18 @@ fn statement_execution_domain_classifier_is_fail_closed() {
 }
 
 #[test]
-fn metadata_planning_removes_only_the_three_algeon_physical_rules() {
+fn metadata_planning_removes_only_the_algeon_physical_rules() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));
     let base_rules =
         service.ctx.state().physical_optimizers().iter().map(|rule| rule.name().to_string()).collect::<Vec<_>>();
     let metadata_rules = service
-        .metadata_query_planning()
-        .ctx
+        .metadata_query_context()
         .state()
         .physical_optimizers()
         .iter()
         .map(|rule| rule.name().to_string())
         .collect::<Vec<_>>();
-    let removed = [
-        ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
-        ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
-        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME,
-    ];
+    let removed = [ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME];
 
     assert!(removed.iter().all(|name| base_rules.iter().any(|rule| rule == name)), "{base_rules:?}");
     assert!(removed.iter().all(|name| metadata_rules.iter().all(|rule| rule != name)), "{metadata_rules:?}");
@@ -383,7 +379,6 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
     ctx.register_table("user_table", Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![]]).unwrap())).unwrap();
     let service = DatafusionAlgeonFlightSqlService::new(
         Arc::clone(&ctx),
-        backend.optimizer_config().clone(),
         Arc::new(QueryAdmission::from_backend(&backend)),
         Duration::from_secs(30),
     );
@@ -600,12 +595,8 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
         "glue",
         Arc::new(ReadOnlyCatalog::new("algeon_graph", [("edges_by_src", read_only_edge_table())])),
     );
-    let service = DatafusionAlgeonFlightSqlService::new(
-        ctx,
-        AlgeonNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
-        Duration::from_secs(30),
-    );
+    let service =
+        DatafusionAlgeonFlightSqlService::new(ctx, Arc::new(QueryAdmission::new_for_tests()), Duration::from_secs(30));
     let query_id = "read-only-ddl-target".to_string();
     let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
@@ -640,12 +631,8 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_set_algeon_datafusion_key_is_rejected_loudly() {
     let ctx = Arc::new(SessionContext::new());
-    let service = DatafusionAlgeonFlightSqlService::new(
-        ctx,
-        AlgeonNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
-        Duration::from_secs(30),
-    );
+    let service =
+        DatafusionAlgeonFlightSqlService::new(ctx, Arc::new(QueryAdmission::new_for_tests()), Duration::from_secs(30));
     let query_id = "reject-algeon-set".to_string();
     let sql = "SET algeon_datafusion.request.requested_grant_bytes = '1048576'".to_string();
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
@@ -723,7 +710,6 @@ async fn deduplicated_prepared_update_retains_sealed_attempt_report() {
 async fn prepared_update_shutdown_promotion_preserves_operation_and_request_metadata() {
     let service = DatafusionAlgeonFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        AlgeonNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
     );
@@ -779,7 +765,6 @@ async fn issue_statement_ticket(
 async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
     let service = DatafusionAlgeonFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        AlgeonNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::ZERO,
     );

@@ -104,16 +104,19 @@ async fn plan_native_query_with_resources(
     observation_capture: Option<ObservationCapture>,
 ) -> DataFusionResult<PlannedNativeQuery> {
     let optimizer_config = native_optimizer_config(config, resources, observation_capture);
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
     let builder = resources.install_on(builder)?;
-    let state = builder.with_algeon_native_rule(Arc::clone(&native_rule)).build();
+    let state = builder.with_algeon_native(optimizer_config).build();
     let ctx = SessionContext::new_with_state(state);
     dataset::register_tpch_tables(&ctx, metadata).await?;
     let df = ctx.sql(query.sql).await?;
-    let plan = df.create_physical_plan().await?;
-    let planning_report =
-        NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), native_rule.as_ref());
+    let (state, logical) = df.into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
+    let planning_report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        query.id,
+        Arc::clone(&plan),
+        diagnostics,
+    )]);
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
     Ok(PlannedNativeQuery { plan, planning_row })
 }
