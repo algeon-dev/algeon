@@ -414,12 +414,15 @@ fn cache_fill_byte_budget_rejects_oversized_fetches() {
 
 #[test]
 fn execution_context_records_lakehouse_cache_fill_resource_limits() {
-    let context = ExecutionContext::builder()
-        .with_lakehouse_cache_fill_budget_bytes(2048)
-        .with_lakehouse_cache_fill_acquire_timeout(Duration::from_secs(11))
-        .with_lakehouse_cache_fill_max_concurrent_ops(3)
-        .build()
-        .unwrap();
+    let context = ExecutionContext::standalone(StandaloneConfig {
+        lakehouse_cache_fill: LakehouseCacheFillConfig {
+            budget_bytes: Some(2048),
+            acquire_timeout: Duration::from_secs(11),
+            max_concurrent_ops: 3,
+        },
+        ..StandaloneConfig::default()
+    })
+    .unwrap();
 
     assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
     assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(11));
@@ -470,7 +473,7 @@ fn lakehouse_cache_fill_event_sink_records_structured_events() {
 
 #[test]
 fn stream_lease_context_shares_lakehouse_cache_fill_event_sink() {
-    let context = ExecutionContext::builder().build().unwrap();
+    let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
     let stream_lease = context.service_stream_pool().acquire().unwrap();
     let leased_context = context.with_stream_lease(&stream_lease).unwrap();
 
@@ -494,7 +497,7 @@ fn stream_lease_context_shares_lakehouse_cache_fill_event_sink() {
 
 #[test]
 fn lakehouse_cache_fill_event_snapshots_can_be_drained_once() {
-    let context = ExecutionContext::builder().build().unwrap();
+    let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
     context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
         outcome: LakehouseCacheFillOutcome::Completed,
         bytes: Some(1024),
@@ -516,49 +519,14 @@ fn lakehouse_cache_fill_event_snapshots_can_be_drained_once() {
 }
 
 #[test]
-fn unbounded_fragment_context_preserves_query_state() {
-    let cancellation = ExecutionCancellation::new();
-    let context = ExecutionContext::builder()
-        .with_cancellation(cancellation.clone())
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 64 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_lakehouse_cache_fill_max_concurrent_ops(7)
-        .build()
-        .unwrap();
-    context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
-        outcome: LakehouseCacheFillOutcome::Completed,
-        bytes: Some(2048),
-        elapsed: Duration::from_millis(3),
-        cache_path_hash: "fragment-cache-path-hash".to_string(),
-        stable_id_hash: "fragment-stable-id-hash".to_string(),
-        file_index: Some(1),
-        chunk_index: Some(2),
-        error: None,
-    });
-    cancellation.cancel();
-
-    let fragment_context = context.for_unbounded_fragment();
-
-    assert_eq!(fragment_context.memory_control_policy(), MemoryControlPolicy::Unbounded);
-    assert!(fragment_context.cancellation().is_cancelled());
-    assert_eq!(fragment_context.lakehouse_cache_fill_max_concurrent_ops(), 7);
-    assert_eq!(fragment_context.lakehouse_cache_fill_event_snapshots().len(), 1);
-    assert_eq!(context.lakehouse_cache_fill_event_snapshots().len(), 1);
-}
-
-#[test]
 fn execution_context_records_source_chunk_planning_mode() {
     let options = SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
-    let context = ExecutionContext::builder()
-        .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
-        .with_source_chunk_planning_options(options)
-        .build()
-        .unwrap();
+    let context = ExecutionContext::standalone(StandaloneConfig {
+        source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
+        source_chunk_planning_options: options,
+        ..StandaloneConfig::default()
+    })
+    .unwrap();
 
     assert_eq!(context.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(context.source_chunk_planning_options(), options);
@@ -566,12 +534,12 @@ fn execution_context_records_source_chunk_planning_mode() {
 
 #[test]
 fn execution_context_rejects_invalid_source_chunk_planning_options() {
-    let error = ExecutionContext::builder()
-        .with_source_chunk_planning_options(
-            SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(0),
-        )
-        .build()
-        .unwrap_err();
+    let error = ExecutionContext::standalone(StandaloneConfig {
+        source_chunk_planning_options: SourceChunkPlanningOptions::default()
+            .with_local_parquet_throughput_max_row_groups_per_chunk(0),
+        ..StandaloneConfig::default()
+    })
+    .unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));

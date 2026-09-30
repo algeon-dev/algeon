@@ -1000,7 +1000,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::{
-        ExecutionContext,
+        ExecutionContext, StandaloneConfig,
         backend_metrics::BackendMetricsStore,
         gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
         resident::GpuDataFrame,
@@ -1009,10 +1009,11 @@ mod tests {
     fn source_fixture() -> (Arc<ExecutionContext>, GpuResultHandle, SchemaRef, GpuLocalParquetSourceCacheKey, u64) {
         let runtime = Arc::new(cudf::Runtime::new().expect("test CUDA runtime"));
         let context = Arc::new(
-            ExecutionContext::builder()
-                .with_shared_runtime(Arc::clone(&runtime))
-                .build()
-                .expect("test execution context"),
+            ExecutionContext::standalone(StandaloneConfig {
+                runtime: Some(Arc::clone(&runtime)),
+                ..StandaloneConfig::default()
+            })
+            .expect("test execution context"),
         );
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from_iter_values(0..4096))])

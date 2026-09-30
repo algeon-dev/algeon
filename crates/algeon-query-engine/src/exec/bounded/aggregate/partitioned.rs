@@ -287,7 +287,7 @@ pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::GroupingSetsSpec;
+    use crate::{expr::GroupingSetsSpec, runtime::StandaloneConfig};
 
     #[test]
     fn should_partition_whole_input_grouped_aggregate_requires_real_group_keys() {
@@ -295,16 +295,17 @@ mod tests {
         // group/grouping-set shape can decide the outcome.
         const INPUT_BYTES: u64 = 1024 * 1024 * 1024;
 
-        let context = ExecutionContext::builder()
-            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes: 4 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024,
                 max_row_groups_per_chunk: 1,
                 max_retry_attempts: 1,
                 min_retry_chunk_row_groups: 1,
-            })
-            .build()
-            .expect("execution context builds");
+            },
+            ..StandaloneConfig::default()
+        })
+        .expect("execution context builds");
         assert!(partitioned_aggregate_partition_count(&context, INPUT_BYTES) > 1);
 
         let grouped = AggregateNode {

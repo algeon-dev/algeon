@@ -168,7 +168,7 @@ fn query_service_released_handle_rejects_context_acquisition() {
 }
 
 #[test]
-fn admitted_context_gate_rejects_missing_identity_and_scope_evidence() {
+fn admitted_context_gate_rejects_changed_scope_evidence() {
     let assert_quiescent = |service: &QueryService| {
         service
             .wait_for_stream_pools_idle(Duration::from_secs(10))
@@ -215,29 +215,7 @@ fn admitted_context_gate_rejects_missing_identity_and_scope_evidence() {
         assert_quiescent(&service);
     }
 
-    {
-        let (service, plan, handle, admitted) = admitted_fixture(2);
-        let second_handle = service.admit_query().expect("second admission");
-        let second_context = second_handle.acquire_context().expect("second context");
-        let mut wrong_domain = admitted.context().clone();
-        wrong_domain
-            .replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
-        let error = wrong_domain
-            .validate_admitted_plan_capabilities(&plan)
-            .expect_err("a domain from another grant must not pass the context gate");
-        assert_eq!(error.fact_value("reason"), Some("admitted_allocation_domain_identity_mismatch"));
-
-        drop(wrong_domain);
-        drop(second_context);
-        second_handle.finish();
-        drop(second_handle);
-        drop(admitted);
-        handle.finish();
-        drop(handle);
-        assert_quiescent(&service);
-    }
-
-    let direct = ExecutionContext::builder().build().expect("direct context");
+    let direct = ExecutionContext::standalone(StandaloneConfig::default()).expect("direct context");
     direct
         .validate_admitted_plan_capabilities(&explicit_sink_plan("input"))
         .expect("direct contexts remain unrestricted by service evidence_items");

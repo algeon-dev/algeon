@@ -242,6 +242,7 @@ pub(super) struct SourceObjectStoreRegistry {
 }
 
 impl SourceObjectStoreRegistry {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
         Self {
             profiles: HashMap::new(),

@@ -67,10 +67,9 @@ pub use cache_events::LakehouseCacheFillEventSnapshot;
 pub use cache_events::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
 pub(crate) use cache_fill::CacheFillByteBudget;
 pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
-pub use context::{
-    ExecutionCancellation, ExecutionContext, RuntimeObservationBuildError, RuntimeObservedExecutionContext,
-    RuntimeObservedExecutionContextBuilder,
-};
+pub use context::{ExecutionCancellation, ExecutionContext};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use context::{RuntimeObservationBuildError, RuntimeObservedExecutionContext, StandaloneConfig};
 pub(crate) use gpu::{AlgeonGpuInventory, DeviceContext, DeviceLedger, DeviceRegistry, MemoryGrant};
 pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedgerGrantRow, DeviceLedgerReport,
@@ -105,9 +104,10 @@ pub use query_service::{
 #[doc(hidden)]
 pub use reservation::RetryFacts;
 #[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use service_stream::DEFAULT_SERVICE_STREAM_POOL_SIZE;
 #[doc(hidden)]
 pub use service_stream::{AttemptWorkLease, ServiceStreamPool};
-pub(crate) use service_stream::{StreamLease, StreamPermitClass, default_service_stream_pool_size_for_device};
+pub(crate) use service_stream::{StreamLease, StreamPermitClass};
 #[doc(hidden)]
 pub use supervised_worker::{SupervisedWorker, SupervisedWorkerJoin};

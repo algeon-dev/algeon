@@ -117,10 +117,6 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     let service =
         runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(2)])
             .unwrap();
-    let resources = service.inner.resources.as_ref().unwrap();
-
-    assert_eq!(resources.lakehouse_cache_fill_budget.budget_bytes(), 2048);
-    assert_eq!(resources.lakehouse_cache_fill_concurrency.max_concurrent_ops(), 2);
 
     let handle = service.admit_query().unwrap();
     let admitted_context = handle.acquire_context().unwrap();

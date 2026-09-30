@@ -18,7 +18,7 @@ use query_engine::{
         vector_pca_output_schema,
     },
     runtime::{
-        ExecutionContext, MemoryControlPolicy,
+        ExecutionContext, MemoryControlPolicy, StandaloneConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
@@ -440,11 +440,12 @@ fn unbounded_vector_request_requires_compiled_pipeline_before_source_work() {
         vector_pca_output_schema(DataType::Int64, 1),
     ));
     let plan = builder.finish_with_host_sink(vector);
-    let context = ExecutionContext::builder()
-        .with_runtime(cudf::Runtime::new().expect("GPU runtime for unbounded vector route test"))
-        .with_memory_control_policy(MemoryControlPolicy::Unbounded)
-        .build()
-        .expect("unbounded execution context");
+    let context = ExecutionContext::standalone(StandaloneConfig {
+        runtime: Some(Arc::new(cudf::Runtime::new().expect("GPU runtime for unbounded vector route test"))),
+        memory_control_policy: MemoryControlPolicy::Unbounded,
+        ..StandaloneConfig::default()
+    })
+    .expect("unbounded execution context");
 
     let (result, metrics, _observation) =
         execute_query_plan_direct(&context, QueryExecutionRequest::new(&plan)).into_parts();

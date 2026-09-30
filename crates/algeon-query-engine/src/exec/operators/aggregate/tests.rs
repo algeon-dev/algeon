@@ -20,7 +20,7 @@ use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     error::{QueryError, QueryErrorCode},
     observability::{PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession},
-    runtime::MemoryControlPolicy,
+    runtime::{MemoryControlPolicy, StandaloneConfig},
 };
 
 include!("tests/support.rs");

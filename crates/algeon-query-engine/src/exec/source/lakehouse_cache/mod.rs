@@ -46,7 +46,7 @@ mod tests {
     use crate::{
         chunk::SourceChunkBatch,
         plan::NodeId,
-        runtime::SourceChunkPlanningMode,
+        runtime::{LakehouseCacheFillConfig, SourceChunkPlanningMode, StandaloneConfig},
         source::{
             CredentialMode, LakehouseCacheFillMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn,
             ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
@@ -74,7 +74,7 @@ mod tests {
     fn lakehouse_cache_hit_without_content_identity_is_rejected() {
         let root = unique_temp_cache_root("cache-hit-without-identity");
         let cache_path = write_cache_entry(&root, "v1/s3/bucket/etagless/part-0.parquet", 16);
-        let context = ExecutionContext::builder().build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
         let unidentified = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
             .with_resolved_parquet_source(
@@ -121,7 +121,7 @@ mod tests {
     fn background_fill_without_content_identity_is_skipped() {
         let root = unique_temp_cache_root("background-fill-without-identity");
         let cache_path = root.join("v1/s3/bucket/etagless/part-0.parquet");
-        let context = ExecutionContext::builder().build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
         let resolved_source =
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
@@ -297,7 +297,14 @@ mod tests {
     fn background_lakehouse_cache_fill_enqueue_reports_saturated_gate_without_blocking() {
         let root = unique_temp_cache_root("background-fill-saturated");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(
                 Duration::ZERO,
@@ -332,7 +339,14 @@ mod tests {
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         let lock_path = lakehouse_cache_lock_path(&cache_path);
         fs::write(&lock_path, b"pid=4294967295\n").unwrap();
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(
                 Duration::ZERO,
@@ -368,7 +382,14 @@ mod tests {
         let lock_path = lakehouse_cache_lock_path(&cache_path);
         fs::write(&lock_path, b"").unwrap();
         thread::sleep(LakehouseCachePolicy::DEFAULT_MALFORMED_CACHE_LOCK_STALE_AGE + Duration::from_millis(25));
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(
                 Duration::ZERO,
@@ -400,7 +421,14 @@ mod tests {
     fn background_lakehouse_cache_fill_enqueue_reports_saturated_byte_budget() {
         let root = unique_temp_cache_root("background-fill-byte-budget");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_budget_bytes(512).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                budget_bytes: Some(512),
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let resolved_source =
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
@@ -425,7 +453,14 @@ mod tests {
     fn background_lakehouse_cache_fill_accepts_remote_kvikio_sources() {
         let root = unique_temp_cache_root("background-fill-remote-kvikio");
         let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(
                 Duration::ZERO,

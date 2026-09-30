@@ -368,7 +368,10 @@ pub(in crate::exec) fn assemble_pca_output(
 mod tests {
     use super::*;
     #[cfg(feature = "cuvs")]
-    use crate::plan::{NodeId, VectorDistanceMetric, VectorRowIdBinding};
+    use crate::{
+        plan::{NodeId, VectorDistanceMetric, VectorRowIdBinding},
+        runtime::StandaloneConfig,
+    };
 
     #[test]
     fn libcudf_row_count_contract_is_structured_without_gpu_work() {
@@ -382,7 +385,7 @@ mod tests {
     #[cfg(feature = "cuvs")]
     #[test]
     fn knn_assembly_sorts_ties_and_preserves_duplicate_logical_ids_on_device() {
-        let context = ExecutionContext::builder().build().expect("execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context");
         let runtime = context.runtime().expect("runtime");
         let dataset = GpuDataFrame::new(
             runtime
@@ -449,7 +452,7 @@ mod tests {
     #[cfg(feature = "cuvs")]
     #[test]
     fn knn_assembly_omits_native_sentinels_and_ranks_valid_neighbors() {
-        let context = ExecutionContext::builder().build().expect("execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context");
         let runtime = context.runtime().expect("runtime");
         let dataset = GpuDataFrame::new(
             runtime.empty_dataframe().assign([("id", runtime.series(&[10_i64, 20]).unwrap())]).unwrap(),
@@ -484,7 +487,7 @@ mod tests {
     #[cfg(feature = "cuvs")]
     #[test]
     fn knn_assembly_preserves_the_empty_query_contract() {
-        let context = ExecutionContext::builder().build().expect("execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context");
         let runtime = context.runtime().expect("runtime");
         let dataset = GpuDataFrame::new(
             runtime
@@ -526,7 +529,7 @@ mod tests {
     #[cfg(feature = "cuvs")]
     #[test]
     fn kmeans_and_pca_assembly_emit_stable_ordinals_and_input_ids() {
-        let context = ExecutionContext::builder().build().expect("execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context");
         let runtime = context.runtime().expect("runtime");
         let input = GpuDataFrame::new(
             runtime

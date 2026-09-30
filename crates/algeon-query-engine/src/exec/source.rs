@@ -904,6 +904,7 @@ mod tests {
             PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
         },
         rapids_backend::rapids_analysis_context,
+        runtime::{LakehouseCacheFillConfig, StandaloneConfig},
         source::{CredentialMode, LakehouseCacheFillMode, MissingColumn, ResolvedParquetSource},
     };
 
@@ -1015,7 +1016,14 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let cache_path = root.join("objects/v1/s3/bucket/content/a.parquet");
-        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                max_concurrent_ops: 1,
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(
                 Duration::ZERO,

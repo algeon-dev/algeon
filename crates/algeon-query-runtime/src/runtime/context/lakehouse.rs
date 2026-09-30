@@ -24,50 +24,50 @@ use super::{
         cache_fill::CacheFillOperationPermit,
         object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey},
     },
-    ExecutionContext, QueryServiceStreamPool,
+    ExecutionContext, QueryScope, QueryServiceStreamPool,
 };
 
 impl ExecutionContext {
     /// Returns the service-level CUDA stream pool used by source-read workers.
     pub fn service_stream_pool(&self) -> QueryServiceStreamPool {
         QueryServiceStreamPool {
-            pool: self.service_stream_pool.clone(),
-            service_epoch: self.service_epoch.clone(),
-            query_anchor: self.query_anchor.clone(),
+            pool: self.device.service_stream_pool.clone(),
+            service_epoch: self.admitted().map(|attempt| attempt.service_epoch.clone()),
+            query_anchor: self.plan.query_anchor.clone(),
         }
     }
 
     /// Timeout used by blocking lakehouse cache maintenance resource acquisition.
     pub fn lakehouse_cache_fill_acquire_timeout(&self) -> Duration {
-        self.lakehouse_cache_fill_config.acquire_timeout
+        self.device.lakehouse_cache_fill_config.acquire_timeout
     }
 
     /// Returns the service-wide background lakehouse cache-fill byte budget.
     pub fn lakehouse_cache_fill_budget(&self) -> CacheFillByteBudget {
-        self.lakehouse_cache_fill_budget.clone()
+        self.device.lakehouse_cache_fill_budget.clone()
     }
 
     /// Maximum background lakehouse cache-fill operations admitted concurrently.
     #[cfg(test)]
     pub(crate) fn lakehouse_cache_fill_max_concurrent_ops(&self) -> usize {
-        self.lakehouse_cache_fill_concurrency.max_concurrent_ops()
+        self.device.lakehouse_cache_fill_concurrency.max_concurrent_ops()
     }
 
     /// Structured asynchronous lakehouse cache-fill completion/failure events.
     #[doc(hidden)]
     pub fn lakehouse_cache_fill_events(&self) -> LakehouseCacheFillEventSink {
-        self.lakehouse_cache_fill_events.clone()
+        self.query_lakehouse_cache_fill_events().clone()
     }
 
     /// Returns credential-free background cache-fill events observed by this context so far.
     #[cfg(test)]
     pub(crate) fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
-        self.lakehouse_cache_fill_events.events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
+        self.query_lakehouse_cache_fill_events().events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
     }
 
     /// Drains credential-free background cache-fill events observed by this context so far.
     pub fn drain_lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
-        self.lakehouse_cache_fill_events.drain().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
+        self.query_lakehouse_cache_fill_events().drain().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
     }
 
     #[doc(hidden)]
@@ -76,7 +76,7 @@ impl ExecutionContext {
         timeout: Duration,
         operation: &'static str,
     ) -> Result<Option<CacheFillOperationPermit>> {
-        self.lakehouse_cache_fill_concurrency.acquire_with_timeout(&self.cancellation, timeout, operation)
+        self.device.lakehouse_cache_fill_concurrency.acquire_with_timeout(self.cancellation(), timeout, operation)
     }
 
     #[doc(hidden)]
@@ -86,17 +86,17 @@ impl ExecutionContext {
         timeout: Duration,
         operation: &'static str,
     ) -> Result<Option<CacheFillBytePermit>> {
-        self.lakehouse_cache_fill_budget.acquire_with_timeout(&self.cancellation, bytes, timeout, operation)
+        self.device.lakehouse_cache_fill_budget.acquire_with_timeout(self.cancellation(), bytes, timeout, operation)
     }
 
     #[doc(hidden)]
     pub fn s3_object_store(&self, key: S3ObjectStoreKey) -> Result<Arc<dyn ::object_store::ObjectStore>> {
-        self.source_object_stores.s3_store(key)
+        self.device.source_object_stores.s3_store(key)
     }
 
     #[doc(hidden)]
     pub fn source_storage_profile(&self, id: &str) -> Result<&SourceStorageProfile> {
-        self.source_object_stores.profile(id)
+        self.device.source_object_stores.profile(id)
     }
 
     /// Resolves default-chain AWS credentials from the object-store provider.
@@ -111,13 +111,13 @@ impl ExecutionContext {
         key: S3ObjectStoreKey,
         operation: &'static str,
     ) -> Result<Arc<AwsCredential>> {
-        if let Some(credential) = self.source_object_stores.recently_resolved_s3_credential(&key) {
+        if let Some(credential) = self.device.source_object_stores.recently_resolved_s3_credential(&key) {
             return Ok(credential);
         }
         let storage_profile_id = key.storage_profile_id.clone();
-        let provider = self.source_object_stores.s3_credential_provider(key.clone())?;
+        let provider = self.device.source_object_stores.s3_credential_provider(key.clone())?;
         let (sender, receiver) = sync::mpsc::channel();
-        self.object_store_control_runtime.spawn(async move {
+        self.device.object_store_control_runtime.spawn(async move {
             let credential = provider.get_credential().await;
             let _ = sender.send(credential);
         });
@@ -148,7 +148,7 @@ impl ExecutionContext {
                 .with_source(error),
             )
         })?;
-        self.source_object_stores.record_resolved_s3_credential(key, Arc::clone(&credential));
+        self.device.source_object_stores.record_resolved_s3_credential(key, Arc::clone(&credential));
         Ok(credential)
     }
 
@@ -160,7 +160,7 @@ impl ExecutionContext {
         on_result: impl FnOnce(ObjectStoreFetchResult) + Send + 'static,
     ) {
         Self::spawn_cache_maintenance_fetch_on_runtime(
-            self.object_store_control_runtime.as_ref(),
+            self.device.object_store_control_runtime.as_ref(),
             store,
             location,
             on_result,
@@ -183,7 +183,7 @@ impl ExecutionContext {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        self.object_store_control_runtime.spawn(async move {
+        self.device.object_store_control_runtime.spawn(async move {
             let timer = Instant::now();
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
@@ -202,11 +202,18 @@ impl ExecutionContext {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
-        self.object_store_control_runtime.spawn(async move {
+        self.device.object_store_control_runtime.spawn(async move {
             let timer = Instant::now();
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
         })
+    }
+
+    fn query_lakehouse_cache_fill_events(&self) -> &LakehouseCacheFillEventSink {
+        match &self.query {
+            QueryScope::Standalone(query) => &query.lakehouse_cache_fill_events,
+            QueryScope::Admitted(attempt) => &attempt.lakehouse_cache_fill_events,
+        }
     }
 
     #[cfg(any(test, feature = "test-hooks"))]

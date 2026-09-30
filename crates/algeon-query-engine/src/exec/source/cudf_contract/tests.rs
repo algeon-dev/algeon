@@ -54,17 +54,18 @@ fn remote_direct_test_source() -> LocalParquetSource {
 const UNREACHABLE_FOOTER_PROFILE_ID: &str = "unreachable-footer";
 
 fn context_with_unreachable_footer_store() -> ExecutionContext {
-    ExecutionContext::builder()
-        .with_source_storage_profiles([runtime::SourceStorageProfile::s3(
+    ExecutionContext::standalone(runtime::StandaloneConfig {
+        source_storage_profiles: vec![runtime::SourceStorageProfile::s3(
             UNREACHABLE_FOOTER_PROFILE_ID,
             runtime::S3SourceStorageProfile::default_chain()
                 .with_region("us-east-1")
                 .with_endpoint("http://127.0.0.1:9")
                 .with_path_style_access(true)
                 .with_unsigned_requests(),
-        )])
-        .build()
-        .expect("execution context builds")
+        )],
+        ..runtime::StandaloneConfig::default()
+    })
+    .expect("execution context builds")
 }
 
 fn remote_direct_with_unreachable_footer_store(uri: &str) -> source::ResolvedParquetSource {
@@ -81,7 +82,7 @@ fn assert_required_footer_fetch_temporary_failure(error: &QueryError) {
 
 #[test]
 fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let cases = [
         source::ResolvedParquetSource::local_kvikio("/tmp/local.parquet"),
         source::ResolvedParquetSource::local_cache_kvikio(
@@ -106,7 +107,7 @@ fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
 
 #[test]
 fn missing_remote_profile_is_structured_and_cannot_fallback() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/private/part.parquet?signature=secret",
         source::CredentialMode::ScopedResolved,
@@ -216,7 +217,7 @@ fn remote_parquet_profile_treats_region_override_as_scoped_hint() {
 
 #[test]
 fn typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let cudf_file = CudfLocalParquetFile::object_store_uri("s3://bucket/part.parquet", "part", [])
         .expect("valid object store file");
     let resolved = source::ResolvedParquetSource::remote_kvikio(
@@ -260,7 +261,7 @@ fn datasource_probe_cudf_failures_preserve_facts_without_source_text() {
 
 #[test]
 fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
         .expect("source contract lowers through algeon conversion path");
@@ -282,7 +283,7 @@ fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode()
 
 #[test]
 fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
     let plan = chunk::plan_local_parquet_source_chunks(
         plan::NodeId::from_index_for_internal_use(1),
@@ -327,7 +328,7 @@ fn local_test_file(path: &str, stable_id: &str, row_group_count: usize) -> Local
 
 #[test]
 fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     // The same path appears as two source files with distinct identities; the
     // batch must keep them apart instead of merging by path.
     let source = local_test_source(vec![
@@ -364,7 +365,7 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
 
 #[test]
 fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = local_test_source(vec![
         local_test_file("/tmp/sparse-payload.parquet", "sparse", 2)
             .with_row_group_null_counts(1, vec![Some(10), Some(4)]),
@@ -391,7 +392,7 @@ fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() 
 
 #[test]
 fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source().with_reader_predicate(expr::Expr::binary(
         expr::Expr::column("filter_only"),
         expr::BinaryOp::Eq,
@@ -487,7 +488,7 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
 
 #[test]
 fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
     let reader_decimal_types =
         vec![source::ParquetReaderDecimalType::new("discount", source::ParquetReaderDecimalTypeId::Decimal64, -2)];
@@ -560,7 +561,7 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
 
 #[test]
 fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
     let file = &source.files[0];
     let mut chunk = SourceChunk {
@@ -678,7 +679,7 @@ fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverifie
 
 #[test]
 fn remote_direct_cudf_contract_errors_redact_object_store_locations() {
-    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
     let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("payload", ArrowDataType::Utf8, true)]));
     let resolved =

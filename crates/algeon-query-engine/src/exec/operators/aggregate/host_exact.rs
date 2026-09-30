@@ -634,6 +634,7 @@ fn add_filtered_materialization_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::StandaloneConfig;
 
     #[test]
     fn filtered_materialization_facts_preserve_original_filter_count_for_exact_host_rows() {
@@ -658,7 +659,7 @@ mod tests {
     }
 
     fn run_exact_host_aggregate(spec: &AggregateSpec, batch: &RecordBatch, output_fields: Vec<Field>) -> RecordBatch {
-        let context = ExecutionContext::builder().build().expect("execution context builds");
+        let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context builds");
         let output_schema = Arc::new(Schema::new(output_fields));
         let metrics = ExecutionMetrics::detached("exact-host-aggregate");
         execute_datafusion_exact_host_aggregate_batch(&context, None, spec, batch, &output_schema, &metrics, None)

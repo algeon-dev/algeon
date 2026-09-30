@@ -1000,7 +1000,10 @@ mod tests {
     use super::*;
     use crate::{
         observability::AdmissionRequestId,
-        runtime::gpu::ledger::{DeviceLedger, MemoryGrant},
+        runtime::{
+            StandaloneConfig,
+            gpu::ledger::{DeviceLedger, MemoryGrant},
+        },
     };
 
     fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {
@@ -1061,7 +1064,11 @@ mod tests {
             .expect("foreign grant must fit");
         let (frame, bytes) = frame_with_resident_owner(&runtime, &owner, "id", vec![1, 2, 3]);
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let handle = GpuResultHandle::new(&context, frame, Arc::clone(&schema)).unwrap();
 
         assert_eq!(handle.retained_owner_identity_for(&owner).map(|(_, value)| value), Some(bytes));
@@ -1081,11 +1088,12 @@ mod tests {
     fn host_batch_cursor_observes_cancellation_before_starting_the_next_device_to_host_copy() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_cancellation(cancellation.clone())
-            .build()
-            .unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            cancellation: cancellation.clone(),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
         let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
@@ -1106,7 +1114,11 @@ mod tests {
     #[test]
     fn host_output_schema_binding_preserves_duplicate_names_metadata_and_values() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
-        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let internal_schema = Arc::new(Schema::new(vec![
             Field::new("left_first", DataType::Utf8, true),
             Field::new("right_first", DataType::Utf8, true),
@@ -1179,7 +1191,11 @@ mod tests {
     fn host_batch_cursor_preserves_structured_hard_limit_facts() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let value = "x".repeat(16 * 1024 * 1024);
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
         let batch = RecordBatch::try_new(
@@ -1211,11 +1227,12 @@ mod tests {
     fn host_batch_cursor_reports_clean_eof_when_cancelled_after_final_chunk() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_cancellation(cancellation.clone())
-            .build()
-            .unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            cancellation: cancellation.clone(),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1]));
         let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
@@ -1240,11 +1257,12 @@ mod tests {
     fn host_batch_cursor_prepares_each_chunk_without_early_success() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_cancellation(cancellation.clone())
-            .build()
-            .unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            cancellation: cancellation.clone(),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
         let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
@@ -1274,11 +1292,12 @@ mod tests {
     fn host_batch_cursor_prepare_reports_cancellation_before_any_copy() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_cancellation(cancellation.clone())
-            .build()
-            .unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            cancellation: cancellation.clone(),
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
         let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
