@@ -33,7 +33,7 @@ use crate::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit,
-        AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationClock,
+        AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport, RuntimeObservationClock,
         RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
         RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
         SystemRuntimeObservationClock,
@@ -127,6 +127,15 @@ pub struct AttemptAdmissionBinding {
 /// it is the only way to establish finalization and therefore report-ready for
 /// an admitted attempt.
 pub(crate) struct AttemptFinalizer(Arc<AttemptCore>);
+
+/// The attempt's one admission right, taken by
+/// [`AttemptAdmissionBinding::claim`] before the admission request touches a
+/// queue, ledger, stream, or the attempt lifecycle.
+///
+/// It owns the attempt's finalizer, so while it exists the attempt owner only
+/// records a terminal outcome; the admission finishes the attempt, either as
+/// not admitted or after GPU cleanup.
+pub(crate) struct AttemptAdmission(AttemptFinalizer);
 
 /// Shared routing for one [`AttemptFinalizer`]. Cloning an admission binding
 /// clones this routing handle, never the finalizer itself. Before admission,
@@ -334,7 +343,7 @@ impl AttemptCore {
             alternate_device_eligibility,
         );
         QueryAttemptReport {
-            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
+            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
             attempt_id: self.attempt_id,
             query_id: self.query_id.clone(),
             trace_context: self.trace_context.clone(),
@@ -670,42 +679,37 @@ impl AttemptOwner {
     /// attempts) cleanup-complete and report-ready are deferred to the
     /// post-GPU-cleanup seal; otherwise the commit completes immediately.
     pub fn commit_terminal(&self, outcome: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
-        let admitted = self.0.core.lock_lifecycle().admitted.is_some();
         let terminal = self.0.core.terminalize_for_release(outcome)?;
-        self.commit_resolved_terminal(terminal, admitted)
+        self.commit_resolved_terminal(terminal)
     }
 
     /// Publishes an already-linearized terminal outcome without attempting a
     /// second terminal lifecycle write. Borrowed-error capture records the
     /// primary summary and terminal outcome together before reaching this
     /// common finalization path.
-    fn commit_resolved_terminal(
-        &self,
-        terminal: RuntimeTerminalOutcome,
-        admitted: bool,
-    ) -> Result<(), AttemptLifecycleError> {
-        if !admitted {
-            match self.0.finalizer_slot.finalize_not_admitted(terminal) {
-                Ok(terminal) => {
-                    let _ = self.0.observation_owner.finish_query(Some(terminal));
+    fn commit_resolved_terminal(&self, terminal: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
+        match self.0.finalizer_slot.finalize_not_admitted(terminal) {
+            Ok(terminal) => {
+                let _ = self.0.observation_owner.finish_query(Some(terminal));
+            },
+            // An admission claim holds the finalizer, or a not-admitted
+            // commit already consumed it. Either way the terminal outcome is
+            // recorded and its holder publishes the report.
+            Err(AttemptLifecycleError::FinalizationUnavailable) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        // Seal-observer delivery is the primary completion path; finish
+        // here as an idempotent backstop so no delivery ordering can lose
+        // the report.
+        let report_ready = self.0.core.lock_lifecycle().ready.is_some();
+        if !report_ready {
+            match self.0.observation_owner.sealed_snapshot() {
+                Some(snapshot) => {
+                    let _ = self.0.core.finish_with_footer(snapshot.footer())?;
                 },
-                Err(AttemptLifecycleError::FinalizationUnavailable) if self.0.core.lock_lifecycle().ready.is_some() => {
+                None => {
+                    let _ = self.0.core.finish_without_observation()?;
                 },
-                Err(error) => return Err(error),
-            }
-            // Seal-observer delivery is the primary completion path; finish
-            // here as an idempotent backstop so no delivery ordering can lose
-            // the report.
-            let report_ready = self.0.core.lock_lifecycle().ready.is_some();
-            if !report_ready {
-                match self.0.observation_owner.sealed_snapshot() {
-                    Some(snapshot) => {
-                        let _ = self.0.core.finish_with_footer(snapshot.footer())?;
-                    },
-                    None => {
-                        let _ = self.0.core.finish_without_observation()?;
-                    },
-                }
             }
         }
         Ok(())
@@ -715,27 +719,23 @@ impl AttemptOwner {
     /// closed terminal outcome. The caller retains the untouched error and
     /// its complete source chain.
     pub fn commit_query_error(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
-        let (admitted, operation) = {
-            let lifecycle = self.0.core.lock_lifecycle();
-            (lifecycle.admitted.is_some(), lifecycle.failure_operation())
-        };
+        let operation = self.0.core.lock_lifecycle().failure_operation();
         let outcome = RuntimeTerminalOutcome::from_query_error(error);
         let terminal = match RuntimeTerminalOutcome::primary_failure_from_query_error(error, operation) {
             Some(summary) => self.0.core.terminalize_for_release_with_primary_failure(outcome, summary)?,
             None => self.0.core.terminalize_for_release(outcome)?,
         };
-        self.commit_resolved_terminal(terminal, admitted)
+        self.commit_resolved_terminal(terminal)
     }
 
     /// Commits a closed adapter fallback without retaining adapter display or
     /// source-chain text in the engine-owned report.
     pub fn commit_failure_summary(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
-        let admitted = self.0.core.lock_lifecycle().admitted.is_some();
         let terminal = self
             .0
             .core
             .terminalize_for_release_with_primary_failure(RuntimeTerminalOutcome::failed(&summary), summary)?;
-        self.commit_resolved_terminal(terminal, admitted)
+        self.commit_resolved_terminal(terminal)
     }
 }
 
@@ -779,6 +779,12 @@ impl fmt::Debug for AttemptFinalizer {
     }
 }
 
+impl fmt::Debug for AttemptAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("AttemptAdmission").field("attempt_id", &self.0.0.attempt_id).finish_non_exhaustive()
+    }
+}
+
 impl fmt::Debug for AttemptFinalizerSlot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("AttemptFinalizerSlot").finish_non_exhaustive()
@@ -815,8 +821,17 @@ impl AttemptAdmissionBinding {
         self.observation_owner.register_seal_observer(observer);
     }
 
-    pub(crate) fn into_parts(self) -> (RuntimeObservationOwner, AttemptFinalizerSlot) {
-        (self.observation_owner, self.finalizer_slot)
+    /// Takes the attempt's only admission right. It must be the first step of
+    /// an admission request, before any queue, ledger, stream, or lifecycle
+    /// change. A rejected claim changes nothing and returns
+    /// [`AttemptLifecycleError::AdmissionAlreadyClaimed`] once the right is
+    /// consumed.
+    pub(crate) fn claim(&self) -> Result<AttemptAdmission, AttemptLifecycleError> {
+        self.finalizer_slot.claim()
+    }
+
+    pub(crate) fn into_observation_owner(self) -> RuntimeObservationOwner {
+        self.observation_owner
     }
 }
 
@@ -847,10 +862,15 @@ impl AttemptAdmissionRejection {
             };
             (RuntimeTerminalOutcome::from_query_error(error), summary)
         };
-        if let Some(summary) = summary {
-            self.core.lock_lifecycle().primary_failure(summary);
+        {
+            let mut lifecycle = self.core.lock_lifecycle();
+            // A claimed admission, including one whose second claim was just
+            // rejected, is finished by its claim; this rejection changes nothing.
+            if lifecycle.admission_requested.is_some() {
+                return Ok(());
+            }
+            lifecycle.terminalize_admission_rejection(outcome.clone(), summary, self.core.monotonic_ns())?;
         }
-        self.core.lock_lifecycle().terminalize_admission_rejection(outcome.clone(), self.core.monotonic_ns())?;
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
         self.observation_owner.finish_query(Some(outcome));
         Ok(())
@@ -870,19 +890,14 @@ impl AttemptFinalizerSlot {
             .ok_or(AttemptLifecycleError::FinalizationUnavailable)
     }
 
-    pub(crate) fn take_for_admission(&self) -> Result<AttemptFinalizer, AttemptLifecycleError> {
-        self.take()
-    }
-
-    /// Captures a primary failure before the queued admission path reduces the
-    /// borrowed error to its transport-safe terminal outcome. This does not
-    /// consume the finalizer: an unadmitted path still consumes it with
-    /// `NotRequired`, while an admitted envelope consumes it after cleanup.
-    pub(crate) fn record_primary_failure(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
-        let guard = self.0.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        let finalizer = guard.as_ref().ok_or(AttemptLifecycleError::FinalizationUnavailable)?;
-        finalizer.record_primary_failure(summary);
-        Ok(())
+    /// Takes the finalizer as the attempt's admission right. The slot lock is
+    /// held while the lifecycle validates the claim, so a rejected claim
+    /// leaves both the slot and the lifecycle unchanged.
+    fn claim(&self) -> Result<AttemptAdmission, AttemptLifecycleError> {
+        let mut slot = self.0.lock().unwrap_or_else(sync::PoisonError::into_inner);
+        let core = &slot.as_ref().ok_or(AttemptLifecycleError::AdmissionAlreadyClaimed)?.0;
+        core.lock_lifecycle().admission_requested(core.monotonic_ns())?;
+        Ok(AttemptAdmission(slot.take().expect("the claimed finalizer is present")))
     }
 
     pub(crate) fn finalize_not_admitted(
@@ -946,6 +961,59 @@ impl AttemptFinalizer {
     }
 }
 
+impl AttemptAdmission {
+    pub(crate) fn monotonic_ns(&self) -> u64 {
+        self.0.monotonic_ns()
+    }
+
+    pub(crate) fn record_primary_failure(&self, summary: AttemptFailureSummary) {
+        self.0.record_primary_failure(summary);
+    }
+
+    /// Records the published grant and final queue state. The query service
+    /// calls this under its admission mutex while publishing the envelope;
+    /// it fails when the attempt owner committed a terminal outcome first.
+    pub(crate) fn record_admitted(
+        &self,
+        fact: AttemptAdmissionFact,
+        wait: Option<AttemptAdmissionWaitFact>,
+    ) -> Result<(), AttemptLifecycleError> {
+        let mut lifecycle = self.0.0.lock_lifecycle();
+        lifecycle.admitted(fact, self.0.monotonic_ns())?;
+        match wait {
+            Some(wait) => lifecycle.admission_wait(wait),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn is_admitted(&self) -> bool {
+        self.0.0.lock_lifecycle().admitted.is_some()
+    }
+
+    pub(crate) fn terminalize_for_release(
+        &self,
+        fallback: RuntimeTerminalOutcome,
+    ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
+        self.0.terminalize_for_release(fallback)
+    }
+
+    /// Finishes an admission that ended without a grant: rejection,
+    /// cancellation, or queue timeout. A terminal outcome the owner already
+    /// committed wins over `fallback`.
+    pub(crate) fn finish_not_admitted(
+        self,
+        fallback: RuntimeTerminalOutcome,
+    ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
+        self.0.finalize_not_admitted(fallback)
+    }
+
+    /// Consumes the admission after GPU cleanup with its capacity and health
+    /// facts.
+    pub(crate) fn finish_admitted(self, commit: AttemptTerminalCommit) -> Result<(), AttemptLifecycleError> {
+        self.0.finalize_admitted(commit)
+    }
+}
+
 impl AttemptHandle {
     /// The engine-minted identity of this invocation.
     pub fn attempt_id(&self) -> AttemptId {
@@ -977,20 +1045,6 @@ impl AttemptHandle {
 
     pub fn set_disposition(&self, disposition: AttemptDisposition) -> Result<(), AttemptLifecycleError> {
         self.0.lock_lifecycle().disposition(disposition)
-    }
-
-    pub fn record_admission_requested(&self) -> Result<(), AttemptLifecycleError> {
-        self.0.lock_lifecycle().admission_requested(self.0.monotonic_ns())
-    }
-
-    pub fn record_admitted(&self, fact: AttemptAdmissionFact) -> Result<(), AttemptLifecycleError> {
-        self.0.lock_lifecycle().admitted(fact, self.0.monotonic_ns())
-    }
-
-    /// Records the immutable final queue/overtake state emitted by the owning
-    /// query-service admission controller.
-    pub fn record_admission_wait(&self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
-        self.0.lock_lifecycle().admission_wait(fact)
     }
 
     /// Publishes the engine-owned composed schedule into this attempt's
@@ -1145,6 +1199,12 @@ mod tests {
         handle.set_disposition(AttemptDisposition::Native).unwrap();
     }
 
+    fn claim_admitted(begin: &AttemptBegin, fact: AttemptAdmissionFact) -> AttemptAdmission {
+        let admission = begin.owner.admission_binding().claim().unwrap();
+        admission.record_admitted(fact, None).unwrap();
+        admission
+    }
+
     #[test]
     fn non_admitted_commit_publishes_immediately_in_order() {
         let (begin, clock, counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
@@ -1240,16 +1300,10 @@ mod tests {
         let completion = begin.completion.completion();
         native_disposition(&begin);
         let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 3,
-                admission_wait_ns: 1,
-                device_ordinal: 1,
-                grant_bytes: 1024,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
+        );
         handle.record_physical_execution_started().unwrap();
         handle.record_gpu_execution_started().unwrap();
         clock.set_monotonic_ns(20);
@@ -1274,10 +1328,8 @@ mod tests {
             failed_allocation_count: 2,
             largest_failed_allocation_bytes: 64,
         });
-        finalizer_slot
-            .take_for_admission()
-            .expect("one finalizer is transferred after admission")
-            .finalize_admitted(AttemptTerminalCommit::new(
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 Some(final_domain_usage),
                 AttemptHealthTransition::HealthyReuse,
@@ -1302,17 +1354,10 @@ mod tests {
     fn admitted_terminal_commit_projects_typed_native_fault_evidence() {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         native_disposition(&begin);
-        let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 3,
-                admission_wait_ns: 1,
-                device_ordinal: 1,
-                grant_bytes: 1024,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
+        );
         let native_fault_evidence = AttemptNativeFaultEvidence {
             isolation: AttemptFaultIsolation::DeviceLocal,
             teardown_health: AttemptTeardownHealth::Completed,
@@ -1330,10 +1375,8 @@ mod tests {
             }),
         };
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
-        finalizer_slot
-            .take_for_admission()
-            .expect("admitted finalizer")
-            .finalize_admitted(
+        admission
+            .finish_admitted(
                 AttemptTerminalCommit::new(
                     AttemptCapacityDisposition::RetainedQuarantine,
                     None,
@@ -1355,32 +1398,23 @@ mod tests {
         let (begin, clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         let completion = begin.completion.completion();
         native_disposition(&begin);
-        let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 3,
-                admission_wait_ns: 1,
-                device_ordinal: 1,
-                grant_bytes: 1024,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 3, admission_wait_ns: 1, device_ordinal: 1, grant_bytes: 1024 },
+        );
         clock.set_monotonic_ns(20);
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         clock.set_monotonic_ns(30);
-        finalizer_slot
-            .take_for_admission()
-            .expect("one finalizer is transferred after admission")
-            .finalize_admitted(AttemptTerminalCommit::new(
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::RetainedQuarantine,
                 None,
                 AttemptHealthTransition::BackendUnhealthy,
             ))
             .unwrap();
         assert!(
-            matches!(finalizer_slot.take_for_admission(), Err(AttemptLifecycleError::FinalizationUnavailable)),
-            "the post-cleanup finalizer is linear and cannot commit a second fact"
+            matches!(begin.owner.admission_binding().claim(), Err(AttemptLifecycleError::AdmissionAlreadyClaimed)),
+            "the admission right is linear and cannot be claimed a second time"
         );
         begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report");
@@ -1517,26 +1551,18 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         native_disposition(&begin);
         let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 1,
-                admission_wait_ns: 0,
-                device_ordinal: 0,
-                grant_bytes: 1,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
+        );
         let primary_error =
             QueryError::new(QueryErrorCode::CudfTemporaryFailure, "test.primary", "primary native failure");
         begin.owner.commit_query_error(&primary_error).unwrap();
         let cleanup_error = QueryError::new(QueryErrorCode::Internal, "test.cleanup", "injected cleanup failure");
         handle.record_cleanup_failure(CleanupFailurePhase::QueryServiceCleanup, &cleanup_error);
         handle.record_cleanup_failure(CleanupFailurePhase::QueryServiceCleanup, &cleanup_error);
-        finalizer_slot
-            .take_for_admission()
-            .expect("admitted finalizer")
-            .finalize_admitted(AttemptTerminalCommit::new(
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::HealthyReuse,
@@ -1595,16 +1621,10 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         native_disposition(&begin);
         let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 1,
-                admission_wait_ns: 0,
-                device_ordinal: 0,
-                grant_bytes: 1,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
+        );
 
         // This models synchronous `input.execute` failure: the adapter still
         // borrows the native error while dropping the admitted handle starts
@@ -1619,10 +1639,9 @@ mod tests {
         .with_source(std::io::Error::other("original source cause"));
         handle.record_native_failure(&error);
 
-        let finalizer = finalizer_slot.take_for_admission().expect("admitted finalizer");
-        let terminal = finalizer.terminalize_for_release(RuntimeTerminalOutcome::Dropped).unwrap();
-        finalizer
-            .finalize_admitted(AttemptTerminalCommit::new(
+        let terminal = admission.terminalize_for_release(RuntimeTerminalOutcome::Dropped).unwrap();
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::HealthyReuse,
@@ -1654,16 +1673,10 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         native_disposition(&begin);
         let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 1,
-                admission_wait_ns: 0,
-                device_ordinal: 0,
-                grant_bytes: 1,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
+        );
 
         let error = QueryError::new(
             QueryErrorCode::CudfTemporaryFailure,
@@ -1672,10 +1685,9 @@ mod tests {
         );
         handle.record_native_failure(&error);
 
-        let finalizer = finalizer_slot.take_for_admission().expect("admitted finalizer");
-        let terminal = finalizer.terminalize_for_release(RuntimeTerminalOutcome::Dropped).unwrap();
-        finalizer
-            .finalize_admitted(AttemptTerminalCommit::new(
+        let terminal = admission.terminalize_for_release(RuntimeTerminalOutcome::Dropped).unwrap();
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::HealthyReuse,
@@ -1693,23 +1705,15 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::bounded(0, 0), None);
         native_disposition(&begin);
         let handle = begin.owner.handle();
-        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
-        handle.record_admission_requested().unwrap();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 1,
-                admission_wait_ns: 0,
-                device_ordinal: 0,
-                grant_bytes: 1,
-            })
-            .unwrap();
+        let admission = claim_admitted(
+            &begin,
+            AttemptAdmissionFact { admission_sequence: 1, admission_wait_ns: 0, device_ordinal: 0, grant_bytes: 1 },
+        );
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let cleanup_error = QueryError::new(QueryErrorCode::Internal, "test.cleanup", "ring-full cleanup failure");
         handle.record_cleanup_failure(CleanupFailurePhase::QueryServiceCleanup, &cleanup_error);
-        finalizer_slot
-            .take_for_admission()
-            .expect("admitted finalizer")
-            .finalize_admitted(AttemptTerminalCommit::new(
+        admission
+            .finish_admitted(AttemptTerminalCommit::new(
                 AttemptCapacityDisposition::Released,
                 None,
                 AttemptHealthTransition::HealthyReuse,
@@ -1819,7 +1823,6 @@ mod terminalize_race_tests {
         handle.record_planning_started().unwrap();
         handle.record_planning_finished().unwrap();
         handle.set_disposition(AttemptDisposition::Native).unwrap();
-        handle.record_admission_requested().unwrap();
         // The admission binding terminalizes the rejection at its source.
         admission_rejection
             .reject(&QueryError::new(
@@ -1848,7 +1851,7 @@ mod terminalize_race_tests {
                 if *error_code == AttemptFailureCode::ServiceOverloaded
         ));
         assert_eq!(report.disposition, AttemptDisposition::Native);
-        assert_eq!(report.timestamps.admission_requested_ns, Some(0));
+        assert_eq!(report.timestamps.admission_requested_ns, None);
         assert_eq!(report.timestamps.admitted_ns, None);
         assert_eq!(report.timestamps.physical_execution_started_ns, None);
     }

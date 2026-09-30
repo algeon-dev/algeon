@@ -18,7 +18,7 @@ pub use attempt_report::{
     AttemptFailureFactValue, AttemptFailureOperation, AttemptFailureStatus, AttemptFailureSummary,
     AttemptFinalDomainUsage, AttemptHealthTransition, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
     AttemptRetryRecovery, AttemptTimestamps, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
-    MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
+    MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport,
     RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels, SealedAttemptProjection,
 };
 pub(crate) use attempt_report::{

@@ -101,6 +101,22 @@ impl QueryService {
         self.enqueue_admission_with_request_and_permits(request, None, None, None)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn enqueue_admission_with_backend_permits(
+        &self,
+        request: QueryAdmissionRequest,
+        observation_permit: ObservationPermit,
+        gpu_resource_permit: GpuResourcePermit,
+        completion_dispatcher: ObservationCompletionDispatcher,
+    ) -> Result<QueryAdmissionWaiter> {
+        self.enqueue_admission_with_request_and_permits(
+            request,
+            Some(observation_permit),
+            Some(gpu_resource_permit),
+            Some(completion_dispatcher),
+        )
+    }
+
     fn enqueue_admission_with_request_and_permits(
         &self,
         request: QueryAdmissionRequest,

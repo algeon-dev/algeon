@@ -27,6 +27,10 @@ use crate::{
     },
 };
 
+/// Ledger health reason recorded when a released grant cannot publish its
+/// prepared frozen resident bytes.
+const FROZEN_RESIDENT_PUBLISH_FAILED_REASON: &str = "frozen_resident_publish_failed";
+
 pub(super) fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
     match owned.lock() {
         Ok(mut owned) => owned.take(),
@@ -328,10 +332,12 @@ impl QueryHandleRelease {
         if let Some(grant) = frozen_resident_grant {
             self.pending_frozen_resident_publish.store(false, Ordering::Release);
             if let Err(error) = grant.publish_frozen_resident() {
-                if let Some(service) = self.service.as_ref() {
-                    service.close_unknown_isolation_admission(format!(
-                        "failed to publish prepared frozen resident accounting: {error}"
-                    ));
+                // Only this device's resident accounting is unknown; the
+                // other devices keep admitting.
+                if let Err(close_error) = grant.close_device_admission(FROZEN_RESIDENT_PUBLISH_FAILED_REASON) {
+                    eprintln!(
+                        "[query-engine] warning: failed to close device admission after frozen resident publish failure: {close_error}"
+                    );
                 }
                 eprintln!("[query-engine] warning: failed to publish frozen resident accounting after report: {error}");
             }

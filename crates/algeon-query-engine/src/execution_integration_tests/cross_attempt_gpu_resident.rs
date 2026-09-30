@@ -110,7 +110,6 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     producer_observation.record_planning_started().unwrap();
     producer_observation.record_planning_finished().unwrap();
     producer_observation.set_disposition(observability::AttemptDisposition::Native).unwrap();
-    producer_observation.record_admission_requested().unwrap();
     let producer = service
         .admit_query_with_request(
             QueryAdmissionRequest::new()
@@ -118,14 +117,6 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
                 .with_query_plan_capability_evidence(producer_evidence),
         )
         .expect("producer admission");
-    producer_observation
-        .record_admitted(observability::AttemptAdmissionFact {
-            admission_sequence: producer.admission_sequence(),
-            admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: producer.device_ordinal(),
-            grant_bytes: producer.device_budget_bytes(),
-        })
-        .unwrap();
     producer_observation.record_physical_execution_started().unwrap();
     producer_observation.record_gpu_execution_started().unwrap();
     let producer_context = producer.acquire_context().expect("producer context");
@@ -397,7 +388,6 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let attempt = service
         .admit_query_with_request(
             QueryAdmissionRequest::new()
@@ -405,14 +395,6 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
                 .with_query_plan_capability_evidence(evidence),
         )
         .expect("admission");
-    attempt_handle
-        .record_admitted(observability::AttemptAdmissionFact {
-            admission_sequence: attempt.admission_sequence(),
-            admission_wait_ns: attempt.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: attempt.device_ordinal(),
-            grant_bytes: attempt.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
     let runtime = context.runtime().expect("attempt runtime");
@@ -770,7 +752,6 @@ fn execute_pagerank_attempt(
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let mut request = QueryAdmissionRequest::new()
         .with_attempt_binding(attempt_owner.admission_binding())
         .with_query_plan_capability_evidence(evidence);
@@ -778,14 +759,6 @@ fn execute_pagerank_attempt(
         request = request.with_query_cap_bytes(cap_bytes);
     }
     let attempt = service.admit_query_with_request(request).expect("attempt admits");
-    attempt_handle
-        .record_admitted(observability::AttemptAdmissionFact {
-            admission_sequence: attempt.admission_sequence(),
-            admission_wait_ns: attempt.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: attempt.device_ordinal(),
-            grant_bytes: attempt.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
     let runtime = context.runtime().expect("attempt runtime");
@@ -958,7 +931,6 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     attempt_observation.record_planning_started().unwrap();
     attempt_observation.record_planning_finished().unwrap();
     attempt_observation.set_disposition(observability::AttemptDisposition::Native).unwrap();
-    attempt_observation.record_admission_requested().unwrap();
     let evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     let producer = service
         .admit_query_with_request(
@@ -967,14 +939,6 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
                 .with_query_plan_capability_evidence(evidence),
         )
         .expect("producer admission");
-    attempt_observation
-        .record_admitted(observability::AttemptAdmissionFact {
-            admission_sequence: producer.admission_sequence(),
-            admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: producer.device_ordinal(),
-            grant_bytes: producer.device_budget_bytes(),
-        })
-        .unwrap();
     attempt_observation.record_physical_execution_started().unwrap();
     attempt_observation.record_gpu_execution_started().unwrap();
     let producer_context = producer.acquire_context().expect("producer context");

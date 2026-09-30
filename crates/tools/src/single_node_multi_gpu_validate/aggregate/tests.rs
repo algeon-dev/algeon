@@ -480,27 +480,21 @@ fn physical_allocator_pressure_requires_sidecar_pressure_exact_physical_event_ca
 #[test]
 fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     let devices = vec![device(0, 1 << 30, 1), device(1, 1 << 30, 1)];
-    let mut protected = attempt(0, 0, Some(1), Some(10), 0, 2_000, 2_000, SchedulePhase::Measurement);
-    protected.admission_sequence = Some(4);
-    protected.admission_wait_ns = Some(900);
-    protected.admission_requested_ns = Some(100);
-    protected.admitted_ns = Some(1_000);
-    protected.admission_wait = Some(AdmissionWaitEvidence {
-        submission_sequence: 21,
-        overtake_limit: 0,
-        overtakes_consumed: 0,
-        overtakes_remaining: 0,
-        protection_device_ordinal: None,
-    });
+    let mut queued = attempt(0, 0, Some(1), Some(10), 0, 2_000, 2_000, SchedulePhase::Measurement);
+    queued.admission_sequence = Some(4);
+    queued.admission_wait_ns = Some(900);
+    queued.admission_requested_ns = Some(100);
+    queued.admitted_ns = Some(1_000);
+    queued.admission_wait = Some(AdmissionWaitEvidence { submission_sequence: 21 });
 
-    let mut unrelated = attempt(1, 1, Some(2), Some(11), 200, 500, 300, SchedulePhase::Measurement);
-    unrelated.admission_sequence = Some(3);
-    unrelated.admission_requested_ns = Some(200);
-    unrelated.admitted_ns = Some(300);
+    let mut other_device = attempt(1, 1, Some(2), Some(11), 200, 500, 300, SchedulePhase::Measurement);
+    other_device.admission_sequence = Some(3);
+    other_device.admission_requested_ns = Some(200);
+    other_device.admitted_ns = Some(300);
 
     let mut observations = vec![
-        protected,
-        unrelated,
+        queued,
+        other_device,
         attempt(2, 0, Some(3), Some(12), 0, 300, 300, SchedulePhase::Measurement),
         attempt(3, 1, Some(4), Some(13), 0, 400, 400, SchedulePhase::Measurement),
     ];
@@ -510,16 +504,11 @@ fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     let evidence = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
     assert!(evidence.is_evidenced());
     assert_eq!(evidence.status, ClauseStatus::Evidenced);
-    assert_eq!(evidence.configured_overtake_limit, 0);
-    assert_eq!(evidence.protection_device_ordinal, None);
-    assert_eq!(evidence.unrelated_device_progress_count, 0);
-    assert_eq!(evidence.unrelated_device_completion_count, 0);
 
     let aggregate =
         MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000).with_overload_fairness(evidence);
     let artifact_projection = serde_json::to_value(&aggregate).unwrap();
     assert_eq!(artifact_projection["scenarios"]["overload_fairness"]["status"], "evidenced");
-    assert!(artifact_projection["attempts"][0]["admission_wait"]["protection_device_ordinal"].is_null());
     assert_eq!(artifact_projection["attempts"][0]["admission_requested_ns"], 100);
     assert_eq!(artifact_projection["attempts"][0]["admitted_ns"], 1_000);
 
@@ -530,12 +519,6 @@ fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     let queue_exceeded = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 3, 0, 0, 0);
     assert!(!queue_exceeded.is_evidenced());
     assert_eq!(queue_exceeded.status, ClauseStatus::Failed);
-
-    observations[0].admission_wait.as_mut().unwrap().overtakes_remaining = 1;
-    let malformed = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
-    assert!(!malformed.is_evidenced());
-    assert_eq!(malformed.status, ClauseStatus::Failed);
-    assert!(!malformed.wait_facts_exact);
 }
 
 #[test]

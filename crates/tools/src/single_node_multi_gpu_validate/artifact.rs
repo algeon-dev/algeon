@@ -831,7 +831,6 @@ pub(super) struct BackendEvidence {
     pub(super) shared_session_count: usize,
     pub(super) queue_max_queued_attempts: usize,
     pub(super) queue_max_queue_wait_ms: u64,
-    pub(super) queue_max_overtakes_per_waiter: u32,
     pub(super) device_startup_records: Value,
     /// The close result retains both pre- and post-close snapshots. It is
     /// never omitted: the close result needs to distinguish a quiescent result from a

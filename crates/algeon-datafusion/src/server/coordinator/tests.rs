@@ -18,7 +18,7 @@ use query_engine::{
     observability::{
         AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureOperation,
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
-        AttemptRetryRecovery, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
+        AttemptRetryRecovery, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport,
         RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
         SealedRuntimeObservationSnapshot,
     },
@@ -117,7 +117,7 @@ fn register(coordinator: &Arc<QueryCoordinator>, query_id: &str) -> QueryPlannin
 
 fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
     QueryAttemptReport {
-        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
+        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
         attempt_id: AttemptId::mint(),
         query_id: Some(AttemptQueryId::new(query_id).expect("test query id is a valid attempt correlation")),
         trace_context: None,

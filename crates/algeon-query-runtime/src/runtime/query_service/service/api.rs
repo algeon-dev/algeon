@@ -49,7 +49,7 @@ use query_planning::admission::AttemptRequirement;
 #[cfg(test)]
 use crate::runtime::query_service::config::QueueBounds;
 use crate::{
-    attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
+    attempt::{AttemptAdmission, AttemptAdmissionBinding, AttemptLifecycleError},
     observability::{AttemptId, RuntimeObservationHandle, RuntimeObservationOwner},
     runtime::ExecutionCancellation,
 };
@@ -397,10 +397,6 @@ pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     pub(in crate::runtime::query_service::service) owner: Option<RuntimeObservationOwner>,
     pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
     pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
-    /// The owner-held finalizer routing handle. It remains here while the
-    /// request is queued or rejected and moves its unique token into the
-    /// admitted envelope only after admission succeeds.
-    pub(in crate::runtime::query_service::service) attempt_finalizer_slot: Option<AttemptFinalizerSlot>,
     /// Present only for an engine-minted attempt binding. This is the identity
     /// that may receive a post-callback allocator correlation after a physical
     /// domain has been admitted.
@@ -552,17 +548,30 @@ impl QueryAdmissionRequest {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let (handle, owner, attempt_finalizer_slot, attempt_id) = match mem::take(&mut self.runtime_observation) {
-            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None, None),
-            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None, None),
-            RuntimeObservationAttachment::Handle(handle) => (handle, None, None, None),
+        let (handle, owner, attempt_id) = match mem::take(&mut self.runtime_observation) {
+            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None),
+            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None),
+            RuntimeObservationAttachment::Handle(handle) => (handle, None, None),
             RuntimeObservationAttachment::Attempt(binding) => {
                 let attempt_id = binding.attempt_id();
-                let (owner, finalizer_slot) = binding.into_parts();
-                (owner.handle(), Some(owner), Some(finalizer_slot), Some(attempt_id))
+                let owner = binding.into_observation_owner();
+                (owner.handle(), Some(owner), Some(attempt_id))
             },
         };
-        AdmissionObservation { handle, owner, activity, activity_error, attempt_finalizer_slot, attempt_id }
+        AdmissionObservation { handle, owner, activity, activity_error, attempt_id }
+    }
+
+    /// Claims the bound attempt's only admission right. Requests without an
+    /// attempt binding have nothing to claim.
+    pub(in crate::runtime::query_service::service) fn claim_attempt_admission(
+        &self,
+    ) -> std::result::Result<Option<AttemptAdmission>, AttemptLifecycleError> {
+        match &self.runtime_observation {
+            RuntimeObservationAttachment::Attempt(binding) => binding.claim().map(Some),
+            RuntimeObservationAttachment::Disabled
+            | RuntimeObservationAttachment::StandaloneOwner(_)
+            | RuntimeObservationAttachment::Handle(_) => Ok(None),
+        }
     }
 }
 
@@ -579,7 +588,7 @@ mod tests {
     use super::*;
     use crate::{
         attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
-        observability::RuntimeObservationConfig,
+        observability::{AttemptDisposition, RuntimeObservationConfig},
         runtime::BackendLifecycle,
     };
 
@@ -608,10 +617,11 @@ mod tests {
             None,
             RuntimeObservationConfig::bounded(8, 8 * 1024),
         );
-        let observation = QueryAdmissionRequest::new().with_runtime_observation_owner(owner).into_runtime_observation();
+        let request = QueryAdmissionRequest::new().with_runtime_observation_owner(owner);
 
+        assert!(matches!(request.claim_attempt_admission(), Ok(None)));
+        let observation = request.into_runtime_observation();
         assert!(observation.owner.is_some());
-        assert!(observation.attempt_finalizer_slot.is_none());
         assert!(observation.attempt_id.is_none());
     }
 
@@ -628,12 +638,13 @@ mod tests {
             None,
         );
         let attempt_id = attempt.owner.attempt_id();
-        let observation = QueryAdmissionRequest::new()
-            .with_attempt_binding(attempt.owner.admission_binding())
-            .into_runtime_observation();
+        attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
+        let request = QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding());
 
+        assert!(matches!(request.claim_attempt_admission(), Ok(Some(_))));
+        assert!(matches!(request.claim_attempt_admission(), Err(AttemptLifecycleError::AdmissionAlreadyClaimed)));
+        let observation = request.into_runtime_observation();
         assert!(observation.owner.is_some());
-        assert!(observation.attempt_finalizer_slot.is_some());
         assert_eq!(observation.attempt_id, Some(attempt_id));
     }
 }

@@ -281,8 +281,6 @@ impl QueryService {
             #[cfg(test)]
             admission_transaction_probe: Mutex::new(None),
             #[cfg(test)]
-            unknown_isolation_closure_pause: Mutex::new(None),
-            #[cfg(test)]
             direct_placement_resolution_failure: AtomicBool::new(false),
             #[cfg(test)]
             direct_provisional_cleanup_pause: Mutex::new(None),

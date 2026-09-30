@@ -60,7 +60,6 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
     attempt_handle.record_planning_started().unwrap();
     attempt_handle.record_planning_finished().unwrap();
     attempt_handle.set_disposition(AttemptDisposition::Native).unwrap();
-    attempt_handle.record_admission_requested().unwrap();
 
     let handle = service
         .service
@@ -68,14 +67,6 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
         .expect("attempt-bound request admits");
 
     assert_eq!(handle.grant_identity().unwrap().attempt_id, attempt_id);
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .unwrap();
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     handle.finish();
     drop(handle);

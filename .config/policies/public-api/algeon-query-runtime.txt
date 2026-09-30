@@ -60,9 +60,6 @@ pub fn query_runtime::attempt::AttemptHandle::attempt_id(&self) -> query_plannin
 pub fn query_runtime::attempt::AttemptHandle::cancellation(&self) -> query_runtime::attempt::AttemptCancellation
 pub fn query_runtime::attempt::AttemptHandle::disposition(&self) -> core::option::Option<query_runtime::observability::AttemptDisposition>
 pub fn query_runtime::attempt::AttemptHandle::is_terminal(&self) -> bool
-pub fn query_runtime::attempt::AttemptHandle::record_admission_requested(&self) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
-pub fn query_runtime::attempt::AttemptHandle::record_admission_wait(&self, query_runtime::observability::AttemptAdmissionWaitFact) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
-pub fn query_runtime::attempt::AttemptHandle::record_admitted(&self, query_runtime::observability::AttemptAdmissionFact) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptHandle::record_composed_schedule_projection(&self, query_planning::schedule_projection::AttemptComposedScheduleProjection) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptHandle::record_gpu_execution_started(&self) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptHandle::record_native_failure(&self, &query_planning::error::QueryError)
@@ -848,10 +845,6 @@ pub query_runtime::observability::AttemptAdmissionFact::admission_wait_ns: u64
 pub query_runtime::observability::AttemptAdmissionFact::device_ordinal: usize
 pub query_runtime::observability::AttemptAdmissionFact::grant_bytes: u64
 pub struct query_runtime::observability::AttemptAdmissionWaitFact
-pub query_runtime::observability::AttemptAdmissionWaitFact::overtake_limit: u32
-pub query_runtime::observability::AttemptAdmissionWaitFact::overtakes_consumed: u32
-pub query_runtime::observability::AttemptAdmissionWaitFact::overtakes_remaining: u32
-pub query_runtime::observability::AttemptAdmissionWaitFact::protection_device_ordinal: core::option::Option<usize>
 pub query_runtime::observability::AttemptAdmissionWaitFact::submission_sequence: u64
 pub struct query_runtime::observability::AttemptFailureSummary
 impl query_runtime::observability::AttemptFailureSummary
@@ -1452,7 +1445,7 @@ pub query_runtime::observability::WorkerDefinitionRow::worker_id: query_runtime:
 pub query_runtime::observability::WorkerDefinitionRow::worker_kind: alloc::string::String
 pub const query_runtime::observability::MAX_ATTEMPT_QUERY_ID_BYTES: usize
 pub const query_runtime::observability::MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize
-pub const query_runtime::observability::QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str
+pub const query_runtime::observability::QUERY_ATTEMPT_REPORT_SCHEMA_V2: &str
 pub const query_runtime::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA: &str
 pub const query_runtime::observability::SEALED_ATTEMPT_PROJECTION_SCHEMA_V1: &str
 pub fn query_runtime::observability::stage_context_from_execution(&impl query_runtime::observability::operator_stage::RuntimeExecutionStageContext) -> (query_runtime::observability::RuntimeObservationHandle, core::option::Option<query_runtime::observability::PlanExecutionId>, core::option::Option<query_runtime::observability::RuntimeSpanId>)
@@ -1932,7 +1925,6 @@ pub fn query_runtime::runtime::GpuBackendSession::is_closing(&self) -> bool
 pub fn query_runtime::runtime::GpuBackendSession::max_device_total_memory_bytes(&self) -> query_planning::error::Result<u64>
 pub fn query_runtime::runtime::GpuBackendSession::same_backend(&self, &Self) -> bool
 pub fn query_runtime::runtime::GpuBackendSession::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<query_runtime::observability::QueryAttemptReport>>
-pub fn query_runtime::runtime::GpuBackendSession::try_admit_query_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<core::option::Option<query_runtime::runtime::QueryHandle>>
 #[non_exhaustive] pub struct query_runtime::runtime::GpuDeviceCapacityProbe
 pub query_runtime::runtime::GpuDeviceCapacityProbe::cuda_free_bytes: u64
 pub query_runtime::runtime::GpuDeviceCapacityProbe::cuda_total_bytes: u64

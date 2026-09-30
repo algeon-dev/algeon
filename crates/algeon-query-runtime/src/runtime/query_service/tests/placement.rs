@@ -1,6 +1,5 @@
 use cudf::testing::device_safety::injected_device_id;
 use query_planning::{plan::QueryPlanBuilder, source::{GpuResidentSource, SourceNode}};
-use crate::observability::AttemptId;
 
 #[test]
 fn evidence_device_entries_are_retained_through_admission() {
@@ -125,10 +124,10 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
 }
 
 #[test]
-fn direct_placement_missing_resolution_cleans_up_before_waking_a_close_waiter() {
+fn placement_missing_resolution_cleans_up_before_waking_a_close_waiter() {
     let service = test_service(1, 8);
-    service.service.fail_next_direct_placement_resolution_for_test();
-    let pause = service.service.pause_next_direct_provisional_cleanup_for_test();
+    service.service.fail_next_placement_resolution_for_test();
+    let pause = service.service.pause_next_provisional_cleanup_for_test();
     let admission_service = service.service.clone();
     let admission = std::thread::spawn(move || admission_service.try_admit_query());
     pause.wait_until_entered(Duration::from_secs(2));
@@ -153,13 +152,13 @@ fn direct_placement_missing_resolution_cleans_up_before_waking_a_close_waiter() 
     pause.release();
     let error = admission
         .join()
-        .expect("direct placement thread does not panic")
-        .expect_err("the injected post-placement resolution failure rejects the direct admission");
+        .expect("admission thread does not panic")
+        .expect_err("the injected post-placement resolution failure rejects the admission");
     assert_eq!(error.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
     close_receiver
         .recv_timeout(Duration::from_secs(2))
         .expect("close wakes after unpublished provisional cleanup")
-        .expect("direct placement defensive failure leaves the service quiescent");
+        .expect("the defensive placement failure leaves the service quiescent");
     close.join().expect("close thread does not panic");
 
     assert_eq!(service.admission_snapshot().expect("admission snapshot").active_queries, 0);
@@ -194,79 +193,6 @@ fn dropping_admission_ticket_wakes_a_close_waiter_after_cleanup() {
         .expect("close wakes after the ticket is removed")
         .expect("ticket cleanup leaves the service quiescent");
     close.join().expect("close thread does not panic");
-}
-
-#[test]
-fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
-    let service = QueryService::new_with_device_ordinals(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
-        vec![0],
-    )
-    .expect("one-device runtime-backed service");
-    let pause = service.pause_next_direct_placement_after_snapshot_for_test();
-    let placement_service = service.clone();
-    let placement = std::thread::spawn(move || placement_service.try_admit_query());
-    pause.wait_until_entered(Duration::from_secs(2));
-
-    service
-        .close_device_admission_for_test(0, "post-snapshot-direct-placement-closure")
-        .expect("close the only ledger after it was ranked");
-    pause.release();
-
-    let error = placement
-        .join()
-        .expect("direct placement thread does not panic")
-        .expect_err("closed fleet cannot be classified as a capacity shortage");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
-    assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
-    assert_ne!(error.fact_value("reason"), Some("required_floor_exceeds_device_capacity"));
-
-    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
-}
-
-#[test]
-#[ignore = "requires at least 2 GPUs"]
-fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
-    let service = QueryService::new_with_device_ordinals(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
-        vec![0, 1],
-    )
-    .expect("two-device runtime-backed service");
-    let closure_pause = service.pause_unknown_isolation_closure_after_first_ledger_for_test();
-    let direct_pause = service.pause_next_direct_placement_after_snapshot_for_test();
-    let closing_service = service.clone();
-    let closing = std::thread::spawn(move || {
-        closing_service.force_backend_unhealthy_for_test("test-mid-fleet-closure");
-    });
-    closure_pause.wait_until_entered(Duration::from_secs(2));
-
-    let candidate_service = service.clone();
-    let candidate = std::thread::spawn(move || candidate_service.try_admit_query());
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !matches!(service.inner.admission.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
-        assert!(Instant::now() < deadline, "candidate admission did not reach the fleet gate before the deadline");
-        std::thread::yield_now();
-    }
-    let entered_before_fleet_closure = direct_pause.entered_within(Duration::from_millis(200));
-
-    // Always release both worker rendezvous before asserting so a regression
-    // fails cleanly instead of stranding a test thread.
-    direct_pause.release();
-    closure_pause.release();
-    closing.join().expect("fleet closure thread does not panic");
-    let result = candidate.join().expect("candidate admission thread does not panic");
-
-    assert!(
-        !entered_before_fleet_closure,
-        "a candidate must not reach its ledger snapshot while fleet closure holds the admission gate"
-    );
-    let error = result.expect_err("the fleet closure wins before a later device can admit work");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
-    assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
-
-    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
 #[test]
@@ -324,24 +250,4 @@ fn all_device_entry_resolution_failures_return_capability_reason_before_queueing
     assert_eq!(error.fact_value("reason"), Some("sort_capability_unavailable"));
     assert_eq!(error.fact_value("candidate_count"), Some("2"));
     assert_eq!(service.inner.admission.lock().expect("admission state").queued.len(), 0);
-}
-
-#[test]
-fn missing_selected_entry_is_a_typed_invariant_error() {
-    let service = test_service(1, 8).service;
-    let mut notifications = PendingDeviceSlotNotifications::default();
-    let error = service
-        .try_place_query(
-            AdmissionRequestId::new(91),
-            AttemptId::mint(),
-            &DeviceAdmissionEntries::new(),
-            &[0],
-            None,
-            &mut notifications,
-        )
-        .expect_err("placement cannot fall back when the selected entry is absent");
-
-    assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
-    assert_eq!(error.fact_value("device_ordinal"), Some("0"));
 }

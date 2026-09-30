@@ -638,9 +638,6 @@ async fn run_measured(
             shared_session_count: profile.session.shared_session_count,
             queue_max_queued_attempts: profile.backend.queue.max_queued_attempts,
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,
-            // Retain the historical artifact field as an explicit zero fact;
-            // queue admission no longer has a configurable overtake budget.
-            queue_max_overtakes_per_waiter: 0,
             // `GpuBackendDeviceStartupRecord` is not one of the nine
             // `Serialize` snapshot types and transitively holds a cuDF type, so
             // the artifact records the same startup facts through the

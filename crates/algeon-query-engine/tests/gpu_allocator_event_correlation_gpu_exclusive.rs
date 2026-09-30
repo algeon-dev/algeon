@@ -12,8 +12,8 @@ use query_engine::{
     error::QueryErrorCode,
     native_error::cudf_query_error,
     observability::{
-        AttemptAdmissionFact, AttemptAllocatorEventSource, AttemptCapacityDisposition, AttemptCleanupDisposition,
-        AttemptDisposition, AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
+        AttemptAllocatorEventSource, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition,
+        AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
     },
     runtime::{
         AdmittedQueryContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
@@ -62,20 +62,11 @@ fn admit_attempt(core: &GpuBackendCore) -> AdmittedAttempt {
     attempt.record_planning_started().expect("planning starts");
     attempt.record_planning_finished().expect("planning finishes");
     attempt.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt.record_admission_requested().expect("admission request records");
 
     let handle = core
         .session_capability()
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(owner.admission_binding()))
         .expect("same-device attempt admits");
-    attempt
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("admission fact records");
     attempt.record_physical_execution_started().expect("physical execution starts");
     attempt.record_gpu_execution_started().expect("GPU execution starts");
     let context = handle.acquire_context().expect("admitted context binds its immutable domain");

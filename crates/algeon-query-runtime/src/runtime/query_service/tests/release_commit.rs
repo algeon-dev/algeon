@@ -45,7 +45,6 @@ fn assert_legal_resident_output(
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let admitted = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
@@ -59,14 +58,6 @@ fn assert_legal_resident_output(
             .expect("resident result");
     drop(runtime);
     drop(context);
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: admitted.admission_sequence(),
-            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: admitted.device_ordinal(),
-            grant_bytes: admitted.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
@@ -184,7 +175,6 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let admitted = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
@@ -209,14 +199,6 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
             .expect("resident result");
     drop(runtime);
     drop(context);
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: admitted.admission_sequence(),
-            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: admitted.device_ordinal(),
-            grant_bytes: admitted.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
@@ -261,18 +243,9 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("first admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: first.admission_sequence(),
-            admission_wait_ns: first.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: first.device_ordinal(),
-            grant_bytes: first.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminalizes admitted attempt");
     // Hold normal observer delivery after the terminal commit. A replacement
     // must still see capacity only after the attempt completion is published.
@@ -370,18 +343,9 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission succeeds");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
 
     // Deliberately omit `AttemptOwner::commit_terminal`: this is the
     // no-EOF/drop fallback that previously tried to commit cleanup first.
@@ -422,18 +386,9 @@ async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission succeeds");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
 
     let pool = service
         .inner
@@ -719,7 +674,6 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
         handle.record_planning_started().expect("planning starts");
         handle.record_planning_finished().expect("planning finishes");
         handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-        handle.record_admission_requested().expect("admission requested");
     }
 
     let cancelled = service
@@ -740,16 +694,8 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
         .expect("surviving attempt admits");
     assert_eq!(cancelled.device_budget_bytes(), CANCELLED_CAP_BYTES);
     assert_eq!(surviving.device_budget_bytes(), SURVIVING_CAP_BYTES);
-    for (owner, admitted) in [(&cancelled_owner, &cancelled), (&surviving_owner, &surviving)] {
+    for owner in [&cancelled_owner, &surviving_owner] {
         let handle = owner.handle();
-        handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: admitted.admission_sequence(),
-                admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-                device_ordinal: admitted.device_ordinal(),
-                grant_bytes: admitted.device_budget_bytes(),
-            })
-            .expect("attempt admission fact");
         handle.record_physical_execution_started().expect("physical execution starts");
         handle.record_gpu_execution_started().expect("GPU execution starts");
     }
@@ -909,20 +855,11 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let owner = attempt_owner.observation_owner_for_test();
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
     drop(first.acquire_context().expect("context"));
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: first.admission_sequence(),
-            admission_wait_ns: first.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: first.device_ordinal(),
-            grant_bytes: first.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
@@ -1017,7 +954,6 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let admitted = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
@@ -1047,14 +983,6 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     std::mem::forget(leaked_frame);
     drop(leaked_runtime);
     drop(leaked_context);
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: admitted.admission_sequence(),
-            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: admitted.device_ordinal(),
-            grant_bytes: admitted.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
@@ -1078,9 +1006,9 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     drop(grant);
 }
 
-/// The finalizer is a one-time transfer from its owner into the admitted
+/// The admission claim is a one-time transfer from its owner into the admitted
 /// envelope. A second admission binding can carry observation identity but
-/// cannot manufacture competing cleanup/capacity facts.
+/// cannot claim again or manufacture competing cleanup/capacity facts.
 #[test]
 fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     let service = QueryService::new_for_admission_tests(
@@ -1106,21 +1034,12 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     assert!(matches!(
-        attempt_owner.admission_binding().into_parts().1.take_for_admission(),
-        Err(AttemptLifecycleError::FinalizationUnavailable)
+        attempt_owner.admission_binding().claim(),
+        Err(AttemptLifecycleError::AdmissionAlreadyClaimed)
     ));
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
@@ -1131,21 +1050,7 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     assert!(report.timestamps.report_ready_ns.is_some());
 }
 
-/// A duplicate attempt binding rejects the second admission with a typed
-/// error and leaves every ledger open: missing finalizer bookkeeping never
-/// closes the fleet, which only CUDA fault evidence can do. An independent
-/// attempt admitted afterwards still gets a grant.
-#[test]
-fn duplicate_attempt_binding_rejects_second_admission_without_closing_ledgers() {
-    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let device = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime-backed service")
-        .devices
-        .context_by_ordinal(0)
-        .expect("device context");
+fn begin_native_attempt() -> (AttemptOwner, AttemptCompletion) {
     let backend_lifecycle = BackendLifecycle::new();
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest {
@@ -1156,46 +1061,112 @@ fn duplicate_attempt_binding_rejects_second_admission_without_closing_ledgers() 
         Arc::new(AttemptBackendCounters::default()),
         None,
     );
-    let attempt_owner = attempt.owner;
+    let handle = attempt.owner.handle();
+    handle.record_planning_started().expect("planning starts");
+    handle.record_planning_finished().expect("planning finishes");
+    handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let completion = attempt.completion.completion();
-    let attempt_handle = attempt_owner.handle();
-    attempt_handle.record_planning_started().expect("planning starts");
-    attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
+    (attempt.owner, completion)
+}
+
+/// The second admission claim of an attempt is rejected with a typed error
+/// before any queue or ledger change. The first admission keeps its grant and
+/// its lifecycle, no ledger closes, and an independent attempt still admits.
+#[test]
+fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let device = service
+        .inner
+        .resources
+        .as_ref()
+        .expect("runtime-backed service")
+        .devices
+        .context_by_ordinal(0)
+        .expect("device context");
+    let (attempt_owner, completion) = begin_native_attempt();
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("first admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: first.admission_sequence(),
-            admission_wait_ns: first.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: first.device_ordinal(),
-            grant_bytes: first.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
-    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
-    first.finish();
-    drop(first);
-    wait_until(
-        Instant::now() + Duration::from_secs(10),
-        || device.ledger().snapshot().map(|snapshot| snapshot.active_attempts == 0).unwrap_or(false),
-        "first admission releases its grant",
-    );
 
     let error = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
-        .expect_err("duplicate binding cannot manufacture a second finalizer");
-    assert_eq!(error.fact_value("reason"), Some("attempt_finalizer_unavailable"));
-    assert!(
-        matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)),
-        "rejected duplicate admission must not close the ledger"
-    );
+        .expect_err("an attempt has one admission claim");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("attempt_admission_already_claimed"));
+    assert!(matches!(
+        error.source_error().and_then(|source| source.downcast_ref::<AttemptLifecycleError>()),
+        Some(AttemptLifecycleError::AdmissionAlreadyClaimed)
+    ));
+    let ledger = device.ledger().snapshot().expect("ledger snapshot");
+    assert_eq!(ledger.active_attempts, 1, "the rejected claim never reached the ledger");
+    assert!(matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)));
+    assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0);
+    assert!(!completion.is_ready(), "the rejected claim leaves the first admission's attempt running");
+    // The adapter reports every failed admission through the rejection view;
+    // for a claimed attempt it must change nothing.
+    attempt_owner.admission_rejection().reject(&error).expect("a claimed attempt ignores the rejection");
+    assert!(!completion.is_ready());
 
-    let third = service.admit_query().expect("fleet still admits independent attempts");
-    third.finish();
-    drop(third);
-    drop(completion);
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+    first.finish();
+    drop(first);
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("the first admission publishes the report");
+    assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+    assert!(report.primary_failure.is_none(), "the rejected claim records no primary failure");
+
+    let independent = service.admit_query().expect("the fleet still admits independent attempts");
+    independent.finish();
+    drop(independent);
+}
+
+/// The attempt owner commits a terminal outcome while its admission is
+/// assembling the envelope. The admission then cannot publish a grant that
+/// would never run: it rolls back, and the attempt publishes exactly one
+/// not-admitted report with the owner's outcome. No ledger closes.
+#[test]
+fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let device = service
+        .inner
+        .resources
+        .as_ref()
+        .expect("runtime-backed service")
+        .devices
+        .context_by_ordinal(0)
+        .expect("device context");
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterWorkerScope);
+    service.set_admission_transaction_probe(probe);
+    let (attempt_owner, completion) = begin_native_attempt();
+    let binding = attempt_owner.admission_binding();
+    let admission_service = service.clone();
+    let admission = std::thread::spawn(move || {
+        admission_service.admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(binding))
+    });
+
+    pause.wait_until_entered(Duration::from_secs(10));
+    attempt_owner
+        .commit_failure_summary(AttemptFailureSummary::backend_closing())
+        .expect("the owner commits its terminal outcome");
+    assert!(!completion.is_ready(), "the claimed admission publishes the report, not the owner");
+    pause.release();
+
+    let error = admission.join().expect("admission thread joins").expect_err("a terminal attempt is not admitted");
+    assert_eq!(error.fact_value("reason"), Some("attempt_terminal_before_admission"));
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("the attempt publishes one report");
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::NotAdmitted);
+    assert_eq!(report.primary_failure, Some(AttemptFailureSummary::backend_closing()));
+    assert!(report.admission.is_none());
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || device.ledger().snapshot().map(|snapshot| snapshot.active_attempts == 0).unwrap_or(false),
+        "the rolled-back envelope releases its provisional grant",
+    );
+    assert!(matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)));
+    service.set_admission_transaction_probe(AdmissionTransactionProbe::disabled());
+    let independent = service.admit_query().expect("the fleet still admits independent attempts");
+    independent.finish();
+    drop(independent);
 }
 
 /// A stream synchronization failure during cleanup is device-local fault
@@ -1285,19 +1256,10 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("first admission");
     assert_eq!(handle.device_ordinal(), 0, "equal-profile placement uses ordinal zero deterministically");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     drop(handle.acquire_context().expect("root context"));
     device_zero.stream_pool().fail_next_synchronization_for_test();
     let execution_error = QueryError::new(
@@ -1361,18 +1323,9 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     let context = handle.acquire_context().expect("root context");
     handle.lifetime.install_foreign_root_stream_cleanup_completion_for_test();
     drop(context);
@@ -1527,19 +1480,10 @@ fn oom_release_projects_truthful_resource_evidence() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
     let grant_bytes = handle.device_budget_bytes();
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes,
-        })
-        .expect("attempt admission fact");
     let requested_bytes = grant_bytes.checked_add(1).expect("grant leaves one byte above its immutable cap");
     let requested_bytes = usize::try_from(requested_bytes).expect("test device allocation size fits usize");
     let context = handle.acquire_context().expect("context");
@@ -1804,18 +1748,9 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let producer = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("producer admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: producer.admission_sequence(),
-            admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: producer.device_ordinal(),
-            grant_bytes: producer.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
 

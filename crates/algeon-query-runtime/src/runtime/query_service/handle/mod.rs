@@ -61,9 +61,9 @@ impl QueryHandle {
         self.admission_wait
     }
 
-    /// Returns the final controller-owned finite-overtake state for this
-    /// queued admission, when the handle was admitted through the bounded
-    /// queue. Direct non-queued admission intentionally has no such fact.
+    /// Returns the final controller-owned queue state for this queued
+    /// admission, when the handle was admitted through the bounded queue.
+    /// Direct non-queued admission intentionally has no such fact.
     pub fn admission_wait_fact(&self) -> Option<AttemptAdmissionWaitFact> {
         self.admission_wait_fact
     }

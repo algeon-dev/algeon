@@ -1160,6 +1160,12 @@ impl MemoryGrant {
         })
     }
 
+    /// Closes new admission on this grant's device only, when it is still
+    /// open. Returns whether this call closed it.
+    pub(crate) fn close_device_admission(&self, reason: &'static str) -> Result<bool> {
+        DeviceLedger { inner: Arc::clone(&self.inner.ledger) }.close_admission_if_open(reason)
+    }
+
     pub(crate) fn publish_frozen_resident(&self) -> Result<()> {
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         let mut state = ledger.lock_state("publish_frozen_resident")?;

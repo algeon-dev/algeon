@@ -1,6 +1,6 @@
 {
-  "schema": "algeon_tools.single_node_multi_gpu.run_artifact.v6",
-  "version": 6,
+  "schema": "algeon_tools.single_node_multi_gpu.run_artifact.v7",
+  "version": 7,
   "status": "measured_run",
   "profile": {"sha256": "PROFILE_SHA256"},
   "provenance": {

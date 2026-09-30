@@ -99,24 +99,17 @@ impl QueryHandleReportCommit {
             resident_cleanup_failure,
         } = settled;
         self.record_terminal_cleanup_failure(evidence, resident_cleanup_failure);
-        if let Err(error) = self.commit_terminal_report(
+        let committed = self.commit_terminal_report(
             &mut external_completion,
             &disposition,
             usage,
             native_fault_evidence,
             allocator_event_evidence.as_ref(),
             cache_scope_allocator_event,
-        ) {
-            // A linear finalizer can never be replaced with a second set of
-            // facts. Suppress the untruthful report, and let the normal
-            // post-accounting tail release activity after capacity. Missing
-            // bookkeeping never closes the fleet, which only CUDA fault
-            // evidence can do.
-            eprintln!(
-                "[query-engine] warning: failed to consume attempt finalizer after cleanup; suppressing report publication: {error}"
-            );
-            return external_completion.map(QueryCompletion::discard_unfinalized_after_gpu_cleanup);
-        }
+        );
+        // Publication records the admission facts under the admission mutex,
+        // so an admitted claim always accepts its one terminal commit.
+        debug_assert!(committed.is_ok(), "admitted attempt rejected its terminal commit: {committed:?}");
         // The release is committed: record the terminal admission lifecycle
         // event before the seal so the sealed report retains it. The
         // mechanical capacity release still happens only after the seal.
@@ -636,17 +629,17 @@ mod tests {
     use super::*;
     use crate::{
         attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
-        observability::RuntimeObservationConfig,
+        observability::{AttemptCapacityDisposition, AttemptDisposition, RuntimeObservationConfig},
         runtime::{
             BackendLifecycle, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile, gpu::DeviceLedger,
         },
     };
 
-    /// A completion whose finalizer never arrived (no admission handoff) must
-    /// suppress the report and leave every ledger open: missing bookkeeping
-    /// never closes the fleet, which only CUDA fault evidence can do.
+    /// An attempt-bound admission whose caller never records admission facts
+    /// still publishes exactly one report after cleanup, with released
+    /// capacity and every ledger open: publication records the facts itself.
     #[test]
-    fn finalize_failure_after_cleanup_keeps_device_ledgers_open() {
+    fn admitted_attempt_publishes_its_report_without_caller_admission_facts() {
         let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 0,
             configured_limit_bytes: 64 * 1024 * 1024,
@@ -677,28 +670,20 @@ mod tests {
             Arc::new(AttemptBackendCounters::default()),
             None,
         );
-        // The binding never passes through admission, so the slot still holds
-        // the finalizer outside the completion: finalization is unavailable.
-        let slot = attempt.owner.admission_binding().into_parts().1;
-        let completion = QueryCompletion::new(None, Some(slot), None, None, None, None);
-        let commit = QueryHandleReportCommit {
-            service: Some(Arc::clone(&service.inner)),
-            admission_request_id: AdmissionRequestId::new(7),
-            observation: RuntimeObservationHandle::disabled(),
-            device_ordinal: 0,
-            admitted_device_requirements: BTreeMap::new(),
-            compatible_devices: Vec::new(),
-            domain: None,
-            memory_grant: None,
-            allocator_domain_attempt: None,
-            cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation::default(),
-            outcome_terminal_domain_usage: None,
-            pending_frozen_resident_publish: Arc::new(AtomicBool::new(false)),
-            release_commit_gate: None,
-            terminal_domain_usage: None,
-        };
-        let tail = commit.run(Some(completion), RuntimeTerminalOutcome::Succeeded, CleanupEvidence::Completed);
-        assert!(tail.is_some(), "suppressed report still releases activity after capacity");
+        attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
+        let completion = attempt.completion.completion();
+        let handle = service
+            .admit_query_with_request(
+                QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding()),
+            )
+            .expect("attempt-bound admission");
+        attempt.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+        handle.finish();
+        drop(handle);
+
+        let report = completion.wait_timeout(Duration::from_secs(10)).expect("the claim publishes after cleanup");
+        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+        assert!(report.admission.is_some(), "publication recorded the admission fact");
         let health = service
             .inner
             .fallback_device_ledger
@@ -706,9 +691,6 @@ mod tests {
             .expect("fallback ledger")
             .health()
             .expect("ledger health readable");
-        assert!(
-            matches!(health, DeviceAdmissionHealth::Open),
-            "missing finalizer bookkeeping must not close the ledger: {health:?}"
-        );
+        assert!(matches!(health, DeviceAdmissionHealth::Open), "{health:?}");
     }
 }

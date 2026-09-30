@@ -497,6 +497,7 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
         Arc::new(AttemptBackendCounters::default()),
         None,
     );
+    attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
     let mut waiter = service
         .enqueue_admission_with_request(
             QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding()),

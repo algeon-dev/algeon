@@ -11,7 +11,11 @@ use serde::{
     de::{self, SeqAccess, Visitor},
 };
 
-pub const QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str = "query_engine.query_attempt_report.v1";
+/// Schema label of [`QueryAttemptReport`]. Decoding rejects every other label.
+///
+/// V2 samples `admission_requested_ns` when the attempt claims its one
+/// admission and drops the finite-overtake queue facts.
+pub const QUERY_ATTEMPT_REPORT_SCHEMA_V2: &str = "query_engine.query_attempt_report.v2";
 /// Schema label for the bounded public projection of a sealed attempt report.
 ///
 /// The projection deliberately omits correlations, diagnostics, allocator
@@ -1351,27 +1355,23 @@ pub struct AttemptAdmissionFact {
     pub grant_bytes: u64,
 }
 
-/// Final finite-overtake state captured when a queued admission receives its
-/// immutable grant.
+/// Final queue state captured when a queued admission receives its immutable
+/// grant.
 ///
-/// This is intentionally a sealed controller fact rather than a runner-side
-/// estimate. `submission_sequence` is FIFO identity, independent of the
-/// later admission sequence. `protection_device_ordinal` records the
-/// ledger-local protection that was held at placement, if finite overtakes
-/// had exhausted the waiter's allowance.
+/// This is a sealed controller fact rather than a runner-side estimate.
+/// `submission_sequence` is FIFO identity, independent of the later
+/// admission sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAdmissionWaitFact {
     pub submission_sequence: u64,
-    pub overtake_limit: u32,
-    pub overtakes_consumed: u32,
-    pub overtakes_remaining: u32,
-    pub protection_device_ordinal: Option<usize>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptTimestamps {
     pub submitted_ns: u64,
     pub planning_started_ns: Option<u64>,
     pub planning_finished_ns: Option<u64>,
+    /// Sampled when the attempt claims its one admission, the first step of
+    /// the query-service admission request.
     pub admission_requested_ns: Option<u64>,
     pub admitted_ns: Option<u64>,
     pub physical_execution_started_ns: Option<u64>,
@@ -1380,8 +1380,20 @@ pub struct AttemptTimestamps {
     pub cleanup_complete_ns: Option<u64>,
     pub report_ready_ns: Option<u64>,
 }
+fn deserialize_query_attempt_report_schema<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where D: serde::Deserializer<'de> {
+    let schema = String::deserialize(deserializer)?;
+    if schema != QUERY_ATTEMPT_REPORT_SCHEMA_V2 {
+        return Err(de::Error::custom(format!(
+            "unsupported attempt report schema {schema:?}; expected {QUERY_ATTEMPT_REPORT_SCHEMA_V2:?}"
+        )));
+    }
+    Ok(schema)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryAttemptReport {
+    #[serde(deserialize_with = "deserialize_query_attempt_report_schema")]
     pub schema: String,
     pub attempt_id: AttemptId,
     pub query_id: Option<AttemptQueryId>,
@@ -1397,7 +1409,7 @@ pub struct QueryAttemptReport {
     pub retry_advice: AttemptRetryAdvice,
     pub device_ordinal: Option<usize>,
     pub admission: Option<AttemptAdmissionFact>,
-    /// Final queue/overtake facts for an admitted request. `None` means the
+    /// Final queue facts for an admitted request. `None` means the
     /// execution path did not retain a queue-backed admission handle; it is
     /// never reconstructed from snapshots after the report is sealed.
     pub admission_wait: Option<AttemptAdmissionWaitFact>,
