@@ -305,7 +305,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     for partial_strategy in &partial_strategy_rows {
         assert_eq!(partial_strategy.node_id, aggregate.to_string());
         assert_eq!(partial_strategy.facts.get("selected_strategy").map(String::as_str), Some("libcudf_groupby"));
-        assert_eq!(partial_strategy.facts.get("memory_mode").map(String::as_str), Some("bounded"));
         assert_eq!(partial_strategy.facts.get("group_key_count").map(String::as_str), Some("1"));
         assert_eq!(partial_strategy.facts.get("group_key_dtypes").map(String::as_str), Some("Int32"));
         assert_eq!(partial_strategy.facts.get("aggregate_functions").map(String::as_str), Some("sum"));

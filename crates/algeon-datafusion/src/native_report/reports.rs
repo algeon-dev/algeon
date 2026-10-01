@@ -240,7 +240,8 @@ struct NativeDataFusionExecutionTsvTemplateRow {
 }
 
 impl NativeDataFusionExecutionTsvTemplate {
-    const RUNTIME_FIELD_START: usize = 15;
+    const QUERY_ID_FIELD: usize = 1;
+    const RUNTIME_FIELD_START: usize = 16;
 
     pub fn from_report(report: NativeDataFusionExecutionReport) -> Self {
         let rows = report
@@ -307,7 +308,7 @@ impl NativeDataFusionExecutionTsvTemplate {
             } else {
                 runtime_summary.clone()
             };
-            let runtime_fields = runtime_fields(row.prefix[0].as_ref(), summary);
+            let runtime_fields = runtime_fields(row.prefix[Self::QUERY_ID_FIELD].as_ref(), summary);
             for field in runtime_fields {
                 output.push('\t');
                 output.push_str(&field);
@@ -398,6 +399,10 @@ mod tests {
         let row = lines.next().expect("TSV row").split('\t').collect::<Vec<_>>();
 
         assert_eq!(header.len(), row.len(), "server template row must preserve the execution TSV width");
+        assert_eq!(
+            NativeDataFusionExecutionTsvTemplate::QUERY_ID_FIELD,
+            header.iter().position(|column| *column == "query_id").expect("query id column")
+        );
         assert_eq!(
             NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START,
             header.iter().position(|column| *column == "admission_sequence").expect("runtime segment start column")

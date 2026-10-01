@@ -14,7 +14,6 @@ use crate::{
     plan::{NodeId, PlanNode, QueryPlan},
 };
 
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompiledBoundedPipelineSupport {
     /// A compiled-execution contract rejects the graph. The projection names
@@ -24,7 +23,6 @@ pub enum CompiledBoundedPipelineSupport {
     Supported,
 }
 
-#[doc(hidden)]
 /// Checks compiled graph shape only; it does not perform capability admission.
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
     match join_task_groups(pipeline) {
@@ -59,7 +57,6 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     Ok(CompiledBoundedPipelineSupport::Supported)
 }
 
-#[doc(hidden)]
 /// Checks graph shape plus plan-node compatibility for compiled execution.
 ///
 /// `analysis` is the capability analysis the pipeline was compiled from; the

@@ -1,6 +1,6 @@
 //! Capability-first bounded-pipeline admission with one decision path.
 
-use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
+use super::support::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
 use crate::{
     backend::AnalysisContext,
     capability::CapabilityRejectionProjection,

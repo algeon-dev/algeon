@@ -63,7 +63,7 @@ its columns. When planning produces no executable plan, the summary
 | `gpu_path` | `native`, `partial_native`, `cpu`, or terminal `rejected`. |
 | `gpu_fragments`, `cpu_boundaries` | Summary-row counts for GPU fragments and DataFusion CPU boundaries. |
 | `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots. `physical_root` is the authoritative pre-native root captured by the retained optimizer diagnostics (null when no native optimizer diagnostic exists); `post_native_plan_root` is the completed executable plan's root. |
-| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `deferred`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
+| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
 | `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. Kinds include `user_action`, `config_action`, `engine_gap`, `cudf_rs_gap`, and `cpu_preferred`. |
 | `detail_json` | Summary metadata or candidate detail and cost evidence. |
@@ -104,7 +104,6 @@ values:
 | Outcome | Meaning | Evidence |
 | --- | --- | --- |
 | `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind`, and `category` are absent. |
-| `deferred` | Selection is pending producer binding: the candidate waits on unresolved producer facts. | Candidate shape (`detail`) plus the producer-binding `reason_code`. |
 | `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
 | `not_selected_by_cost` | The candidate is native-capable, but an enabled preference rule retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 

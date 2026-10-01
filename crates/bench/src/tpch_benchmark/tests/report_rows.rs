@@ -118,8 +118,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             hash_join_build_count: 51,
             filtered_join_build_count: 52,
             one_shot_join_count: 53,
-            hash_join_cache_hits: 54,
-            hash_join_cache_misses: 55,
             hash_join_hash_table_bytes: 59,
             filtered_join_hash_table_bytes: 60,
             filtered_join_probe_state_bytes: 61,
@@ -132,7 +130,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 node_id: "n3".to_string(),
                 selected_strategy: "libcudf_groupby".to_string(),
                 execution_stage: "partial".to_string(),
-                memory_mode: "bounded".to_string(),
                 group_key_count: 1,
                 group_key_exprs: "l_returnflag".to_string(),
                 group_key_dtypes: "Utf8".to_string(),
@@ -419,7 +416,7 @@ fn benchmark_report_accepted_join_rows_emit_compiled_graphs_without_decision_row
 
     let contract_rows_index = header_index(&header_fields, "capability_decision_rows");
     let graph_index = header_index(&header_fields, "capability_compiled_graphs");
-    assert_eq!(fields[0], "q15");
+    assert_eq!(fields[header_index(&header_fields, "query_id")], "q15");
     assert_eq!(fields[contract_rows_index], "none");
     assert!(fields[graph_index].contains("sink_kind=host_arrow_materialization"));
     assert!(text.contains("\tmatched\t"));

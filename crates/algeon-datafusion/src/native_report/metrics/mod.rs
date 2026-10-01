@@ -185,10 +185,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub filtered_join_build_count: usize,
     /// Count of one-shot keyed equality joins executed.
     pub one_shot_join_count: usize,
-    /// Query-scoped reusable hash-join cache hits.
-    pub hash_join_cache_hits: usize,
-    /// Query-scoped reusable hash-join cache misses.
-    pub hash_join_cache_misses: usize,
     /// Unique device bytes retained by reusable hash-join build artifacts.
     pub hash_join_hash_table_bytes: usize,
     /// Unique device bytes retained by reusable filtered-join build artifacts.
@@ -300,8 +296,6 @@ impl NativeDataFusionExecutionMetrics {
             hash_join_build_count: metric_count(metrics, "hash_join_build_count"),
             filtered_join_build_count: metric_count(metrics, "filtered_join_build_count"),
             one_shot_join_count: metric_count(metrics, "one_shot_join_count"),
-            hash_join_cache_hits: metric_count(metrics, "hash_join_cache_hits"),
-            hash_join_cache_misses: metric_count(metrics, "hash_join_cache_misses"),
             hash_join_hash_table_bytes: metric_count(metrics, "hash_join_hash_table_bytes"),
             filtered_join_hash_table_bytes: metric_count(metrics, "filtered_join_hash_table_bytes"),
             filtered_join_probe_state_bytes: metric_count(metrics, "filtered_join_probe_state_bytes"),
@@ -388,8 +382,6 @@ impl NativeDataFusionExecutionMetrics {
             hash_join_build_count,
             filtered_join_build_count,
             one_shot_join_count,
-            hash_join_cache_hits,
-            hash_join_cache_misses,
             hash_join_hash_table_bytes,
             filtered_join_hash_table_bytes,
             filtered_join_probe_state_bytes,
@@ -509,8 +501,6 @@ impl NativeDataFusionExecutionMetrics {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(hash_join_build_count);
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(filtered_join_build_count);
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(one_shot_join_count);
-        self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(hash_join_cache_hits);
-        self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(hash_join_cache_misses);
         self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(hash_join_hash_table_bytes);
         self.filtered_join_hash_table_bytes =
             self.filtered_join_hash_table_bytes.saturating_add(filtered_join_hash_table_bytes);

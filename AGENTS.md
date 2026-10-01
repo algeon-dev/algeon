@@ -111,7 +111,9 @@ compatibility belong in `crates/algeon-query-engine`.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
 - Keep one truth source; consolidate redundant constructors, flags, matchers, or ledgers within the requested change, preserving supported callers and contracts.
 - Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
-- `PlanningReport` distinguishes accepted, deferred, and rejected candidates with structured reasons.
+- `PlanningReport` records each candidate once as selected, not supported
+  (with the first contract it misses), or not selected by cost, with
+  structured reasons.
 - Keep backend memory models in component owners and IR, facts, schedules, and admission backend neutral.
 - Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners from existing code. Ask only if unresolved ownership affects the contract.
 - The ledger is integer accounting, not a residency oracle; model aggregate partial/final state explicitly.

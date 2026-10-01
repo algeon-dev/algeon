@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use query_planning::{execution_contracts::MemoryControlPolicy, graph_observation::GraphMeasuredPeakRow};
+use query_planning::graph_observation::GraphMeasuredPeakRow;
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -10,6 +10,9 @@ use super::{
     TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
 };
 
+/// Identifies the layout of the JSON document [`QueryMetrics::to_json`] emits.
+pub const QUERY_METRICS_JSON_SCHEMA: &str = "query_engine.query_metrics.v2";
+
 impl QueryMetrics {
     /// Serializes query metrics as a nested, self-describing JSON document.
     ///
@@ -17,11 +20,10 @@ impl QueryMetrics {
     /// scalar JSON field names and descriptor names share one catalog.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "query_engine.query_metrics.v1",
+            "schema": QUERY_METRICS_JSON_SCHEMA,
             "query_id": self.query_id.as_str(),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
-            "memory_control_policy": MemoryControlPolicy::NAME,
             "completeness": self.completeness_json(),
             "descriptors": Self::descriptors().iter().map(|descriptor| descriptor.to_json()).collect::<Vec<_>>(),
             "metrics": self.described_metrics_json(),
@@ -168,8 +170,6 @@ impl QueryMetrics {
             "hash_join_build_count" => json!(self.hash_join_build_count),
             "filtered_join_build_count" => json!(self.filtered_join_build_count),
             "one_shot_join_count" => json!(self.one_shot_join_count),
-            "hash_join_cache_hits" => json!(self.hash_join_cache_hits),
-            "hash_join_cache_misses" => json!(self.hash_join_cache_misses),
             "hash_join_hash_table_bytes" => json!(self.hash_join_hash_table_bytes),
             "filtered_join_hash_table_bytes" => json!(self.filtered_join_hash_table_bytes),
             "filtered_join_probe_state_bytes" => json!(self.filtered_join_probe_state_bytes),

@@ -694,22 +694,6 @@ pub(crate) const QUERY_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
         None,
     ),
     metric(
-        "hash_join_cache_hits",
-        MetricUnit::Count,
-        MetricAggregation::Sum,
-        "Query-scoped reusable hash-join cache hits.",
-        Some(MetricDirection::HigherIsBetter),
-        None,
-    ),
-    metric(
-        "hash_join_cache_misses",
-        MetricUnit::Count,
-        MetricAggregation::Sum,
-        "Query-scoped reusable hash-join cache misses.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
         "hash_join_hash_table_bytes",
         MetricUnit::DeviceBytes,
         MetricAggregation::Sum,

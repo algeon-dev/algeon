@@ -119,7 +119,6 @@ fn record_partitioned_final_merge_strategy(
         metrics,
         Some(bounded.aggregate_id.to_string()),
         AggregateExecutionStage::FinalMerge,
-        context.memory_control_policy().as_str(),
         context.aggregate_strategy_execution_options(),
         &bounded.aggregate.0.spec,
         bounded.aggregate_input_schema,

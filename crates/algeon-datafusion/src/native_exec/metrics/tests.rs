@@ -88,7 +88,7 @@ fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     assert_eq!(recording_names, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES);
     assert_eq!(
         recording_names.len(),
-        101,
+        99,
         "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
     );
 
@@ -142,7 +142,6 @@ fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "stddev_samp_gpu_native_tolerant".to_string());
     facts.insert("execution_stage", "single".to_string());
-    facts.insert("memory_mode", "bounded".to_string());
     facts.insert("group_key_count", "4".to_string());
     facts.insert("group_key_exprs", "w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy".to_string());
     facts.insert("group_key_dtypes", "Utf8View,Int64,Int64,Int64".to_string());
@@ -223,7 +222,6 @@ fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "filtered_global_segmented_state".to_string());
     facts.insert("execution_stage", "single".to_string());
-    facts.insert("memory_mode", "bounded".to_string());
     facts.insert("group_key_count", "0".to_string());
     facts.insert("group_key_exprs", "none".to_string());
     facts.insert("group_key_dtypes", "none".to_string());
@@ -274,7 +272,6 @@ fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "filtered_grouped_segmented_state".to_string());
     facts.insert("execution_stage", "partial".to_string());
-    facts.insert("memory_mode", "bounded".to_string());
     facts.insert("group_key_count", "1".to_string());
     facts.insert("group_key_exprs", "key".to_string());
     facts.insert("group_key_dtypes", "Int64".to_string());

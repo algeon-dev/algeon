@@ -217,8 +217,6 @@ impl_query_count_recording! {
     hash_join_build_count => hash_join_build_count,
     filtered_join_build_count => filtered_join_build_count,
     one_shot_join_count => one_shot_join_count,
-    hash_join_cache_hits => hash_join_cache_hits,
-    hash_join_cache_misses => hash_join_cache_misses,
     hash_join_hash_table_bytes => hash_join_hash_table_bytes,
     filtered_join_hash_table_bytes => filtered_join_hash_table_bytes,
     filtered_join_probe_state_bytes => filtered_join_probe_state_bytes,

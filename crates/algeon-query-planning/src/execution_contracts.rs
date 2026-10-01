@@ -85,14 +85,6 @@ pub struct MemoryControlPolicy {
 }
 
 impl MemoryControlPolicy {
-    /// The policy kind metrics and strategy facts record; every execution is
-    /// bounded by its device budget.
-    pub const NAME: &'static str = "bounded";
-
-    pub const fn as_str(self) -> &'static str {
-        Self::NAME
-    }
-
     pub fn validate(self) -> Result<()> {
         let Self {
             device_budget_bytes,

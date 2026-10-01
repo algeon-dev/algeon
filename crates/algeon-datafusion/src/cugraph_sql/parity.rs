@@ -35,7 +35,10 @@ pub enum ParityComparator {
     /// Seeded random output; sequence + grouping must match plus the
     /// distribution baseline.
     SeededSequence,
-    /// Approximate ranking results compared by Spearman correlation.
+    /// Run-order-sensitive layouts compared by structure instead of points:
+    /// the RMS radius stays within `tolerance.rel` of the oracle's and the
+    /// Spearman correlation between layout and graph distances is at least
+    /// `1 - tolerance.abs`.
     RankCorrelation,
     /// Edge sets canonicalized as unordered `(min, max)` pairs.
     EdgeSubgraph,
@@ -456,12 +459,12 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/force_atlas2__default.json"),
-        comparator: ParityComparator::Numeric,
-        // ForceAtlas2 is iterative and GPU scheduling produces small
-        // run-to-run coordinate drift even with a fixed random seed. The
-        // comparator first applies the optimal rigid transform, then bounds
-        // residual point displacement relative to the layout RMS radius.
-        tolerance: ParityTolerance { abs: 1.0e-3, rel: 5.0e-3 },
+        // cuGraph accumulates ForceAtlas2 forces with float atomics and has
+        // no deterministic mode, so coordinates vary between runs under the
+        // same seed (`GraphForceAtlas2Params::seed`). Compare the RMS radius
+        // within 2% and a layout-to-graph-distance Spearman of at least 0.80.
+        comparator: ParityComparator::RankCorrelation,
+        tolerance: ParityTolerance { abs: 0.20, rel: 0.02 },
     },
     // Explicit-pair similarity is a relation-preserving contract. The
     // `toy_graph` fixture has reciprocal edges, and these inputs retain a

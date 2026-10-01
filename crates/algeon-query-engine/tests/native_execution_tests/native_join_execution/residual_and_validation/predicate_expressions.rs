@@ -63,7 +63,6 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
-    assert_eq!(metrics.hash_join_cache_misses, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");

@@ -701,7 +701,6 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     metrics: &ExecutionMetrics,
     node_id: Option<String>,
     stage: AggregateExecutionStage,
-    memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -714,7 +713,6 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
         metrics,
         node_id,
         stage,
-        memory_mode,
         aggregate_strategy_options,
         spec,
         input_schema,
@@ -738,7 +736,6 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     metrics: &ExecutionMetrics,
     node_id: Option<String>,
     stage: AggregateExecutionStage,
-    memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -758,7 +755,6 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     facts
         .entry("aggregate_structural_key")
         .or_insert_with(|| aggregate_structural_key(spec, input_schema.as_ref(), input_evidence));
-    facts.insert("memory_mode", memory_mode.to_string());
     facts.insert("input_rows", input_rows.to_string());
     facts.insert("chunk_row_count", if stage == AggregateExecutionStage::Partial { input_rows } else { 0 }.to_string());
     let progress = metrics.progress();
