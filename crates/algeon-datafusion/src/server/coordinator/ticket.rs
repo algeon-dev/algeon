@@ -6,12 +6,9 @@ use std::{
     time::Instant,
 };
 
-use query_engine::observability::RuntimeTerminalOutcome;
+use query_engine::observability::{RuntimeObservationConfig, RuntimeTerminalOutcome};
 #[cfg(test)]
-use query_engine::{
-    observability::{RuntimeObservationHandle, RuntimeObservationOwner},
-    runtime::QueryActivityLease,
-};
+use query_engine::observability::{RuntimeObservationHandle, RuntimeObservationOwner};
 
 #[cfg(test)]
 use super::types::ObservationId;
@@ -24,11 +21,6 @@ use super::{
     },
 };
 use crate::server::attempt::AlgeonAttempt;
-
-/// Acquires the coordinator activity lease a test holds in place of native
-/// cleanup work.
-#[cfg(test)]
-pub(crate) type NativeObservationActivityFactory = Arc<dyn Fn() -> Option<QueryActivityLease> + Send + Sync + 'static>;
 
 impl QueryCoordinator {
     pub(crate) fn consume_ticket(
@@ -133,37 +125,6 @@ impl QueryCoordinator {
     }
 
     #[cfg(test)]
-    pub(crate) fn acquire_activity(
-        self: &Arc<Self>,
-        key: &QueryKey,
-        observation_id: &ObservationId,
-    ) -> Result<ObservationActivityLease, QueryCoordinatorError> {
-        let mut state = self.lock_state();
-        let record = Self::record_mut(&mut state, key)?;
-        if &record.observation_id != observation_id {
-            return Err(QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::StaleGeneration,
-                "observation identity does not match the query generation",
-            ));
-        }
-        if record.terminal_outcome.is_some()
-            || matches!(record.phase, QueryPhase::Finalizing | QueryPhase::Retained | QueryPhase::Tombstone)
-        {
-            return Err(QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::InvalidTransition,
-                "terminal query cannot acquire observation activity",
-            ));
-        }
-        record.active_activities = record.active_activities.checked_add(1).ok_or_else(|| {
-            QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::InvalidTransition,
-                "query observation activity count overflowed",
-            )
-        })?;
-        Ok(ObservationActivityLease { coordinator: Arc::downgrade(self), key: key.clone(), released: false })
-    }
-
-    #[cfg(test)]
     pub(crate) fn observation_handle(
         &self,
         key: &QueryKey,
@@ -198,9 +159,7 @@ impl QueryCoordinator {
             if record.active_leases > 0 {
                 record.active_leases -= 1;
             }
-            record.active_leases == 0
-                && record.active_activities == 0
-                && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
+            record.active_leases == 0 && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
         };
         self.notify.notify_waiters();
         if should_finalize {
@@ -235,28 +194,7 @@ impl QueryCoordinator {
             if record.active_leases > 0 {
                 record.active_leases -= 1;
             }
-            record.active_leases == 0
-                && record.active_activities == 0
-                && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
-        };
-        self.notify.notify_waiters();
-        if should_finalize {
-            self.finalize_ready();
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn release_activity(&self, key: &QueryKey) {
-        let should_finalize = {
-            let mut state = self.lock_state();
-            let Ok(record) = Self::record_mut(&mut state, key) else { return };
-            if matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone) {
-                return;
-            }
-            if record.active_activities > 0 {
-                record.active_activities -= 1;
-            }
-            record.terminal_outcome.is_some() && record.active_leases == 0 && record.active_activities == 0
+            record.active_leases == 0 && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
         };
         self.notify.notify_waiters();
         if should_finalize {
@@ -272,6 +210,9 @@ pub(crate) struct QueryPlanningLease {
     #[cfg(test)]
     pub(crate) observation_id: ObservationId,
     pub(crate) hot: Arc<QueryHotCounters>,
+    /// The runtime observation this query's attempt records: the configured
+    /// capture, or none when the active capture budget could not hold it.
+    pub(crate) observation_config: RuntimeObservationConfig,
     /// Set exactly when a native attempt has registered its immutable report
     /// handoff. Until then a planning failure is not allowed to leave the
     /// coordinator waiting for an attempt that was never created.
@@ -310,6 +251,10 @@ impl QueryPlanningLease {
         &self.key
     }
 
+    pub(crate) fn observation_config(&self) -> RuntimeObservationConfig {
+        self.observation_config
+    }
+
     /// Creates the generation-bound report-delivery hook that remains valid
     /// across this lease's transition to a ticket or its terminal release.
     pub(crate) fn attempt_report_delivery_terminal(&self) -> QueryPlanningReportDeliveryTerminal {
@@ -333,11 +278,6 @@ impl QueryPlanningLease {
             .upgrade()
             .ok_or_else(|| QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "coordinator dropped"))?
             .observation_handle(&self.key, &self.observation_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
-        observation_activity_factory(Weak::clone(&self.coordinator), self.key.clone(), self.observation_id.clone())
     }
 
     pub(crate) fn issue_ticket(mut self, payload: CoordinatorTicketPayload) -> Result<QueryKey, QueryCoordinatorError> {
@@ -444,11 +384,6 @@ impl QueryExecutionLease {
             .observation_handle(&self.key, &self.observation_id)
     }
 
-    #[cfg(test)]
-    pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
-        observation_activity_factory(Weak::clone(&self.coordinator), self.key.clone(), self.observation_id.clone())
-    }
-
     pub(crate) fn succeed(mut self) {
         self.finish_success();
     }
@@ -522,38 +457,5 @@ impl Drop for QueryExecutionLease {
     fn drop(&mut self) {
         let terminal = if std::thread::panicking() { QueryTerminal::Panicked } else { QueryTerminal::Dropped };
         self.finish(terminal);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn observation_activity_factory(
-    coordinator: Weak<QueryCoordinator>,
-    key: QueryKey,
-    observation_id: ObservationId,
-) -> NativeObservationActivityFactory {
-    Arc::new(move || {
-        let coordinator = coordinator.upgrade()?;
-        coordinator.acquire_activity(&key, &observation_id).ok().map(QueryActivityLease::new)
-    })
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct ObservationActivityLease {
-    pub(crate) coordinator: Weak<QueryCoordinator>,
-    pub(crate) key: QueryKey,
-    pub(crate) released: bool,
-}
-
-#[cfg(test)]
-impl Drop for ObservationActivityLease {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        if let Some(coordinator) = self.coordinator.upgrade() {
-            coordinator.release_activity(&self.key);
-        }
     }
 }

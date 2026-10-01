@@ -190,14 +190,22 @@ Every live Flight SQL query reserves logical capture bytes from
 `active_logical_capture_max_bytes` until it finishes: twice
 `per_query_max_bytes`, plus `per_query_max_bytes`, plus its sealed artifact
 (twice `per_query_max_bytes`, capped at `global_sealed_max_bytes`), which is
-40 MiB with the defaults. The budget must cover every attempt admission can
-hold at once, the sum of each device profile's `max_active_attempts` and
-`admission.max_queued_attempts`; otherwise queries are refused as overloaded
-before they reach the admission queue. A query also holds its reservation
-while it plans and finalizes, outside its admission slot. When the field is
-unset, the server sets it to that requirement plus 1 GiB for such queries. An
-explicit value below the requirement fails server startup with
-`below_admission_live_attempts`.
+40 MiB with the defaults. A query also holds its reservation while it plans
+and finalizes, outside its admission slot. The budget never refuses a query.
+One that does not fit runs without capture: the server keeps none of its SQL
+text, and its query stats report `unavailable_reason=active_capture_budget`.
+Admission alone decides overload.
+
+When the field is unset, the server sets it to the capture of every attempt
+admission can hold at once (the sum of each device profile's
+`max_active_attempts` and `admission.max_queued_attempts`) plus 1 GiB, so every
+query within the admission bounds keeps a full capture. The server logs the
+budget and that admission requirement at startup.
+
+The server registers at most 1024 live Flight SQL queries. Startup fails with
+`admission_exceeds_live_query_capacity` when the admission bounds hold 1024
+attempts or more, so registration never refuses a query that admission would
+accept.
 
 ## GPU SQL UDTFs
 

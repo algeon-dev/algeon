@@ -1,6 +1,5 @@
 use std::{
-    sync::{Arc, Barrier},
-    thread,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -140,78 +139,24 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
         &config.observability,
         config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
     ));
-    let planning = coordinator
+    let _planning = coordinator
         .register_with_id("shutdown-order", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
-    let activity_factory = planning.activity_factory();
+    let register_probe = |query_id: &str| {
+        coordinator.register_with_id(query_id, "select 2", None, None, RuntimeObservationConfig::bounded(16, 4096))
+    };
 
     let coordinator_live = after_closing_admission(&admission, || {
         let error = backend
             .begin_attempt(attempt::AttemptOptions::default())
             .expect_err("native QueryService must be closed before coordinator shutdown begins");
         assert_eq!(error.code(), ErrorCode::Cancelled);
-        let activity = activity_factory().expect("coordinator remains live until admission is closed");
-        drop(activity);
+        drop(register_probe("before-shutdown").expect("coordinator remains live until admission is closed"));
         coordinator.begin_shutdown(Instant::now())
     });
 
     assert_eq!(coordinator_live.live_count(), 1);
-    assert!(activity_factory().is_none(), "coordinator rejects new activity after terminalization");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity() {
-    let config = bounded_config(1);
-    let backend = runtime_backend(1);
-    let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
-    let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
-        &config.observability,
-        config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
-    ));
-    let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
-    let execution = coordinator
-        .register_with_id("shutdown-race", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
-        .unwrap()
-        .into_execution()
-        .unwrap();
-    let activity_factory = execution.activity_factory();
-    let prior_activity = activity_factory().expect("activity acquired before shutdown");
-    let barrier = Arc::new(Barrier::new(2));
-
-    let (coordinator_live, racing_activity) = thread::scope(|scope| {
-        let shutdown_admission = Arc::clone(&admission);
-        let shutdown_coordinator = Arc::clone(&coordinator);
-        let shutdown_barrier = Arc::clone(&barrier);
-        let shutdown = scope.spawn(move || {
-            after_closing_admission(&shutdown_admission, || {
-                shutdown_barrier.wait();
-                shutdown_coordinator.begin_shutdown(Instant::now())
-            })
-        });
-
-        barrier.wait();
-        let error = backend
-            .begin_attempt(attempt::AttemptOptions::default())
-            .expect_err("native admission is closed before the coordinator race begins");
-        assert_eq!(error.code(), ErrorCode::Cancelled);
-        let racing_activity = activity_factory();
-        (shutdown.join().unwrap(), racing_activity)
-    });
-
-    assert_eq!(coordinator_live.live_count(), 1);
-    drop(execution);
-    let mut finish = tokio::spawn(maintenance.finish(coordinator_live));
-    assert!(
-        timeout(Duration::from_millis(20), &mut finish).await.is_err(),
-        "maintenance cannot drain while pre-shutdown activity is live"
-    );
-    drop(racing_activity);
-    assert!(
-        timeout(Duration::from_millis(20), &mut finish).await.is_err(),
-        "racing acquisition cannot release the prior activity"
-    );
-    drop(prior_activity);
-    assert!(!timeout(Duration::from_secs(1), finish).await.unwrap().unwrap().unwrap());
+    assert!(register_probe("after-shutdown").is_err(), "coordinator rejects registration after shutdown begins");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -234,7 +179,6 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
         .unwrap()
         .into_execution()
         .unwrap();
-    let activity = execution.activity_factory()().expect("activity lease");
     let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
     let mut supervisor = ShutdownSupervisor::start(
         admission,
@@ -251,7 +195,6 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
 
     assert_eq!(error.operation(), "algeon_datafusion.server.shutdown");
     assert_eq!(error.fact_value("reason"), Some("coordinator_shutdown_timeout"));
-    drop(activity);
     drop(execution);
 }
 

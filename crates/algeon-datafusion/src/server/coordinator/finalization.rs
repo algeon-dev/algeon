@@ -37,7 +37,8 @@ pub(crate) struct FinalizationInputs {
     pub(crate) claim: u64,
     pub(crate) terminal_outcome: QueryTerminalOutcome,
     pub(crate) attempt_outcome: Option<RuntimeTerminalOutcome>,
-    pub(crate) captured: CapturedQuery,
+    /// `None` when the query registered without a capture.
+    pub(crate) captured: Option<CapturedQuery>,
     pub(crate) observation_owner: Option<RuntimeObservationOwner>,
     pub(crate) attempt_report: Option<Arc<QueryAttemptReport>>,
     pub(crate) attempt_snapshot: Option<SealedRuntimeObservationSnapshot>,
@@ -160,7 +161,6 @@ impl QueryCoordinator {
         let key = state.records.iter().find_map(|(key, record)| {
             (record.terminal_outcome.is_some()
                 && record.active_leases == 0
-                && record.active_activities == 0
                 && (!record.requires_attempt_report || record.attempt_report.is_some())
                 && record.finalization_claim.is_none()
                 && matches!(record.phase, QueryPhase::Planning | QueryPhase::Executing | QueryPhase::Finalizing))
@@ -181,7 +181,7 @@ impl QueryCoordinator {
             claim,
             terminal_outcome,
             attempt_outcome: record.attempt_outcome.clone(),
-            captured: record.captured.take().expect("finalizing live query retains captured stats inputs"),
+            captured: record.captured.take(),
             observation_owner: record.observation_owner.take(),
             attempt_report: record.attempt_report.take(),
             attempt_snapshot: record.attempt_snapshot.take(),
@@ -204,13 +204,6 @@ impl QueryCoordinator {
         }
         #[cfg(test)]
         run_coordinator_render_probe("finalization projection");
-        inputs.captured.set_output_metrics(
-            inputs.hot.output_batches,
-            inputs.hot.output_rows,
-            inputs.hot.output_bytes,
-            inputs.hot.overflow,
-        );
-        inputs.captured.seal(Instant::now());
         let delivery_outcome = inputs.terminal_outcome.stats_outcome();
         let stats_outcome = inputs.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
         let stats_delivery_outcome = (stats_outcome != delivery_outcome).then_some(delivery_outcome);
@@ -222,7 +215,7 @@ impl QueryCoordinator {
             None if inputs.attempt_report.is_some() => inputs.attempt_snapshot.take(),
             None => None,
         };
-        let Some(snapshot) = snapshot else {
+        let (Some(snapshot), Some(mut captured)) = (snapshot, inputs.captured.take()) else {
             return FinalizationOutput::unavailable(
                 inputs.key,
                 inputs.claim,
@@ -233,6 +226,13 @@ impl QueryCoordinator {
                 inputs.artifact_max_bytes,
             );
         };
+        captured.set_output_metrics(
+            inputs.hot.output_batches,
+            inputs.hot.output_rows,
+            inputs.hot.output_bytes,
+            inputs.hot.overflow,
+        );
+        captured.seal(Instant::now());
         let mut incomplete_reason = snapshot
             .footer()
             .counter_overflow
@@ -276,7 +276,7 @@ impl QueryCoordinator {
         let jsonl = Arc::<[u8]>::from(jsonl.bytes);
         let Some(mut composed) =
             compose_terminal_artifact(control, Some(Arc::clone(&jsonl)), inputs.artifact_max_bytes, |remaining| {
-                inputs.captured.to_query_stats_payload(remaining)
+                captured.to_query_stats_payload(remaining)
             })
         else {
             return FinalizationOutput::unavailable(
@@ -298,7 +298,7 @@ impl QueryCoordinator {
             );
             let Some(recomposed) =
                 compose_terminal_artifact(control, Some(jsonl), inputs.artifact_max_bytes, |remaining| {
-                    inputs.captured.to_query_stats_payload(remaining)
+                    captured.to_query_stats_payload(remaining)
                 })
             else {
                 return FinalizationOutput::unavailable(

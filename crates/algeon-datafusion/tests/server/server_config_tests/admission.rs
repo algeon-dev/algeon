@@ -47,7 +47,7 @@ max_queue_wait_ms = 1000
 }
 
 #[test]
-fn server_config_rejects_a_logical_capture_budget_below_the_admission_bounds() {
+fn server_config_accepts_a_logical_capture_budget_below_the_admission_bounds() {
     let (_dir, env) = env_with_server_toml(
         r#"
 [admission]
@@ -62,11 +62,31 @@ max_active_attempts = 1
 "#,
     );
 
+    // A budget for 25 live captures: queries beyond it run without capture.
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned())
+        .expect("the capture budget does not bound admission");
+    assert_eq!(config.observability.active_logical_capture_max_bytes, Some(1_073_741_824));
+}
+
+#[test]
+fn server_config_rejects_admission_bounds_the_coordinator_cannot_register() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+max_queued_attempts = 1023
+
+[[admission.device_profiles]]
+device_ordinal = 0
+max_active_attempts = 1
+"#,
+    );
+
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned())
-        .expect_err("a budget for 25 live queries cannot register 65 admitted or queued attempts");
-    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV));
-    assert_eq!(error.fact_value("reason"), Some("below_admission_live_attempts"));
-    assert_eq!(error.fact_value("admission_live_attempts"), Some("65"));
+        .expect_err("1024 admitted or queued attempts fill every registration slot");
+    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV));
+    assert_eq!(error.fact_value("reason"), Some("admission_exceeds_live_query_capacity"));
+    assert_eq!(error.fact_value("admission_live_attempts"), Some("1024"));
+    assert_eq!(error.fact_value("max_live_queries"), Some("1024"));
 }
 
 #[test]

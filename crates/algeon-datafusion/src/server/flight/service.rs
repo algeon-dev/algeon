@@ -406,6 +406,17 @@ impl std::ops::Deref for BoundedTestFlightSqlService {
 
 #[cfg(test)]
 pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTestFlightSqlService {
+    bounded_test_service_with_capture_budget(
+        statement_ticket_ttl,
+        ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn bounded_test_service_with_capture_budget(
+    statement_ticket_ttl: Duration,
+    max_active_logical_capture_bytes: u64,
+) -> BoundedTestFlightSqlService {
     let backend = default_test_backend();
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
@@ -413,6 +424,10 @@ pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTes
         .build();
     let ctx = Arc::new(SessionContext::new_with_state(state));
     let admission = Arc::new(QueryAdmission::from_backend(&backend));
-    let service = DatafusionAlgeonFlightSqlService::new(ctx, admission, statement_ticket_ttl);
+    let mut service = DatafusionAlgeonFlightSqlService::new(ctx, admission, statement_ticket_ttl);
+    service.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(
+        &ServerObservabilityConfig::default(),
+        max_active_logical_capture_bytes,
+    ));
     BoundedTestFlightSqlService { service, _backend: backend }
 }

@@ -453,6 +453,31 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
 }
 
+/// Admission, not the capture budget, decides overload: a statement the
+/// active capture budget cannot hold runs without capture.
+#[tokio::test]
+async fn statement_beyond_the_capture_budget_runs_and_reports_the_budget_as_unavailable() {
+    let service = super::service::bounded_test_service_with_capture_budget(Duration::from_secs(30), 0);
+    let response = service
+        .get_flight_info_statement(
+            CommandStatementQuery {
+                query: "SELECT x FROM (VALUES (1), (2)) AS t(x)".to_string(),
+                transaction_id: None,
+            },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("registration does not depend on the capture budget");
+    let query_id = query_id_from_flight_info(&response);
+
+    let batches = execute_ticket_batches(&service, query_id.clone()).await;
+
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let payload = query_stats_payload(&service, &query_id);
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+    assert!(payload.contains("# unavailable_reason=active_capture_budget"), "{payload}");
+}
+
 #[tokio::test]
 async fn explain_gpu_success_retains_one_sealed_attempt_report() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));

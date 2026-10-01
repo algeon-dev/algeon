@@ -30,8 +30,8 @@ pub struct ServerObservabilityConfig {
     /// Logical capture bytes all live queries may reserve together. `None`
     /// covers every attempt the admission bounds can hold at once plus 1 GiB
     /// for queries outside admission (planning, finalizing, or never
-    /// admitted); an explicit budget below the admission requirement is
-    /// rejected.
+    /// admitted). A query the budget cannot hold runs without capture, and
+    /// its stats report `active_capture_budget`.
     pub active_logical_capture_max_bytes: Option<u64>,
     pub global_sealed_max_count: usize,
     pub global_sealed_max_bytes: u64,
@@ -67,36 +67,33 @@ impl ServerObservabilityConfig {
         self.per_query_max_bytes.saturating_mul(2).min(self.global_sealed_max_bytes)
     }
 
-    /// Logical capture budget the query coordinator enforces when admission
-    /// can hold `admission_live_attempts` attempts at once: enough to register
-    /// all of them beside queries outside admission, so queries reach the
-    /// admission queue bound before the coordinator refuses them as overloaded.
-    pub(crate) fn active_logical_capture_budget_bytes(&self, admission_live_attempts: u64) -> Result<u64> {
-        let overflow = || {
-            ServerError::invalid_config(
-                ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV,
-                "overflows the logical capture budget of the admission bounds",
-            )
-            .with_fact("admission_live_attempts", admission_live_attempts)
-        };
-        let required_bytes = logical_capture_reservation_bytes(
+    /// Logical capture bytes of `admission_live_attempts` live queries, the
+    /// attempts admission can hold at once, saturating at `u64::MAX`.
+    pub(crate) fn admission_logical_capture_bytes(&self, admission_live_attempts: u64) -> u64 {
+        logical_capture_reservation_bytes(
             self.runtime_observation_config().limits().max_retained_bytes,
             self.per_query_max_bytes,
             self.per_query_artifact_max_bytes(),
         )
-        .and_then(|bytes| bytes.checked_mul(admission_live_attempts))
-        .ok_or_else(overflow)?;
+        .map_or(u64::MAX, |bytes| bytes.saturating_mul(admission_live_attempts))
+    }
+
+    /// Logical capture budget the query coordinator enforces: the configured
+    /// value, or, when unset, the capture of every attempt admission can hold
+    /// at once plus 1 GiB for queries planning or finalizing beside them.
+    pub(crate) fn active_logical_capture_budget_bytes(&self, admission_live_attempts: u64) -> Result<u64> {
         match self.active_logical_capture_max_bytes {
-            None => required_bytes.checked_add(Self::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES).ok_or_else(overflow),
-            Some(configured_bytes) if configured_bytes >= required_bytes => Ok(configured_bytes),
-            Some(configured_bytes) => Err(ServerError::invalid_config(
-                ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
-                "must cover the logical capture of every attempt admission can hold at once",
-            )
-            .with_fact("reason", "below_admission_live_attempts")
-            .with_fact("configured_bytes", configured_bytes)
-            .with_fact("required_bytes", required_bytes)
-            .with_fact("admission_live_attempts", admission_live_attempts)),
+            Some(configured_bytes) => Ok(configured_bytes),
+            None => self
+                .admission_logical_capture_bytes(admission_live_attempts)
+                .checked_add(Self::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES)
+                .ok_or_else(|| {
+                    ServerError::invalid_config(
+                        ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV,
+                        "overflows the logical capture budget of the admission bounds",
+                    )
+                    .with_fact("admission_live_attempts", admission_live_attempts)
+                }),
         }
     }
 }

@@ -772,7 +772,6 @@ fn forced_shutdown_with_undersized_cap_installs_stats_free_tombstone() {
     tiny.per_query_artifact_max_bytes = u64::try_from(minimum - 1).unwrap();
     let coordinator = QueryCoordinator::new(tiny);
     let execution = register(&coordinator, query_id).into_execution().unwrap();
-    let activity = execution.activity_factory()().expect("activity lease");
     let now = Instant::now();
     coordinator.begin_shutdown(now);
 
@@ -789,37 +788,7 @@ fn forced_shutdown_with_undersized_cap_installs_stats_free_tombstone() {
     assert_eq!(state.tombstone_count, 1);
     assert_eq!(state.tombstone_bytes, 0);
     drop(state);
-    drop(activity);
     drop(execution);
-}
-
-#[test]
-fn terminal_waits_for_last_activity_then_finalizes_without_access() {
-    let coordinator = QueryCoordinator::new(config());
-    let planning = register(&coordinator, "delayed");
-    let execution = planning.into_execution().unwrap();
-    let activity = execution.activity_factory()().expect("activity factory acquires an opaque native token");
-
-    execution.succeed();
-    assert!(matches!(coordinator.artifact("delayed"), Some(CoordinatorArtifact::Active)));
-
-    drop(activity);
-    assert_eq!(
-        coordinator
-            .state
-            .lock()
-            .unwrap()
-            .records
-            .values()
-            .find(|record| record.key.query_id() == "delayed")
-            .map(|record| record.phase),
-        Some(QueryPhase::Retained),
-        "dropping the last native activity must finalize without retrieval traffic"
-    );
-    let Some(CoordinatorArtifact::Retained(bundle)) = coordinator.artifact("delayed") else {
-        panic!("last activity must trigger finalization");
-    };
-    assert!(bundle.runtime_jsonl.is_some());
 }
 
 #[test]
@@ -914,8 +883,6 @@ fn stale_generation_and_observation_identity_cannot_mutate_replacement() {
         )
         .expect("replacement attempt-owned generation registers");
 
-    let error = coordinator.acquire_activity(&first_key, &first_observation).unwrap_err();
-    assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
     let error = coordinator
         .attach_attempt_report(&first_key, Arc::new(cpu_attempt_report("same-id")), None, None)
         .expect_err("a delayed report cannot attach to a reused query id");
@@ -1068,7 +1035,7 @@ fn high_churn_reuse_keeps_registry_metadata_bounded_and_rejects_stale_key() {
     for generation in 1..=256 {
         let planning = register(&coordinator, "00000000-0000-0000-0000-000000000001");
         if generation == 1 {
-            stale = Some((planning.key().clone(), planning.observation_id().clone()));
+            stale = Some(planning.key().clone());
         }
         planning.into_execution().unwrap().succeed();
         coordinator.maintenance_at(Instant::now());
@@ -1078,8 +1045,15 @@ fn high_churn_reuse_keeps_registry_metadata_bounded_and_rejects_stale_key() {
     }
 
     let replacement = register(&coordinator, "00000000-0000-0000-0000-000000000001");
-    let (stale_key, stale_observation) = stale.unwrap();
-    let error = coordinator.acquire_activity(&stale_key, &stale_observation).unwrap_err();
+    let stale_key = stale.unwrap();
+    let error = coordinator
+        .attach_attempt_report(
+            &stale_key,
+            Arc::new(cpu_attempt_report("00000000-0000-0000-0000-000000000001")),
+            None,
+            None,
+        )
+        .unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
     let state = coordinator.state.lock().unwrap();
     assert_eq!(state.next_generation, 257);
@@ -1271,30 +1245,6 @@ fn execution_lease_unwind_records_panicked_once_and_does_not_poison_registry() {
 }
 
 #[test]
-fn activity_lease_unwind_cannot_overwrite_first_terminal_or_poison_registry() {
-    let coordinator = QueryCoordinator::new(config());
-    let execution = register(&coordinator, "activity-panic").into_execution().unwrap();
-    let key = execution.key.clone();
-    let activity = execution.activity_factory()().unwrap();
-    execution.succeed();
-
-    assert!(
-        catch_unwind(AssertUnwindSafe(move || {
-            let _activity = activity;
-            panic!("activity lease unwind probe");
-        }))
-        .is_err()
-    );
-
-    let state = coordinator.state.lock().expect("activity unwind must not poison registry mutex");
-    let record = state.records.get(&key).unwrap();
-    assert_eq!(record.terminal_outcome, Some(QueryTerminalOutcome::Succeeded));
-    assert!(record.terminal.is_none(), "retained records keep only the compact terminal outcome");
-    assert_eq!(record.phase, QueryPhase::Retained);
-    assert_eq!(record.active_activities, 0);
-}
-
-#[test]
 fn shutdown_race_into_execution_is_structured_cancelled_and_preserves_terminal() {
     let coordinator = QueryCoordinator::new(config());
     let planning = register(&coordinator, "do-put-shutdown-race");
@@ -1386,16 +1336,24 @@ fn maintenance_retained_expiry_batch_enforces_tombstone_cap_immediately() {
 }
 
 #[tokio::test]
-async fn maintenance_shutdown_joins_after_last_execution_and_activity_release() {
+async fn maintenance_shutdown_joins_after_last_execution_and_attempt_report() {
     let coordinator = QueryCoordinator::new(config());
     let clock = TestMaintenanceClock::new(Instant::now());
     let maintenance = QueryCoordinatorMaintenance::start_with_clock(
         Arc::clone(&coordinator),
         Arc::<TestMaintenanceClock>::clone(&clock),
     );
-    let planning = register(&coordinator, "graceful-shutdown");
+    let planning = coordinator
+        .register_with_id_with_attempt_observation(
+            "graceful-shutdown",
+            "select 1",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .unwrap();
+    let key = planning.key().clone();
     let execution = planning.into_execution().unwrap();
-    let activity = execution.activity_factory()().expect("activity lease");
 
     let plan = coordinator.begin_shutdown(clock.now());
     assert_eq!(plan.live_count(), 1);
@@ -1406,8 +1364,9 @@ async fn maintenance_shutdown_joins_after_last_execution_and_activity_release() 
     let finish = tokio::spawn(maintenance.finish(plan));
 
     drop(execution);
-    assert!(!coordinator.is_drained(), "native activity keeps finalization live during grace");
-    drop(activity);
+    assert!(!coordinator.is_drained(), "the pending attempt report keeps finalization live during grace");
+    let (report, snapshot) = sealed_attempt_report_snapshot(cpu_attempt_report("graceful-shutdown"));
+    coordinator.attach_attempt_report(&key, Arc::new(report), Some(snapshot), None).unwrap();
 
     assert!(!finish.await.unwrap().unwrap());
     assert!(matches!(coordinator.artifact("graceful-shutdown"), Some(CoordinatorArtifact::Retained(_))));
@@ -1422,14 +1381,12 @@ async fn maintenance_rejects_quiescence_first_observed_at_absolute_deadline() {
         Arc::<TestMaintenanceClock>::clone(&clock),
     );
     let execution = register(&coordinator, "late-graceful-shutdown").into_execution().unwrap();
-    let activity = execution.activity_factory()().expect("activity lease");
 
     let plan = coordinator.begin_shutdown(clock.now());
     let finish = tokio::spawn(maintenance.finish(plan));
     clock.wait_for_sleepers(1).await;
     clock.advance_without_notifying(config().shutdown_grace);
     drop(execution);
-    drop(activity);
 
     assert!(finish.await.unwrap().unwrap(), "quiescence at the deadline cannot report graceful success");
     assert!(matches!(coordinator.artifact("late-graceful-shutdown"), Some(CoordinatorArtifact::Retained(_))));
@@ -1458,7 +1415,6 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         .expect("sealed cancelled attempt report attaches before shutdown delivery times out");
     let execution = planning.into_execution().unwrap();
     execution.hot_counters().record_output(3, 64);
-    let activity = execution.activity_factory()().expect("activity lease");
 
     let plan = coordinator.begin_shutdown(clock.now());
     assert_eq!(plan.live_count(), 1);
@@ -1490,7 +1446,6 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         assert!(record.captured.is_none());
         assert!(record.observation_owner.is_none());
         assert_eq!(record.active_leases, 0);
-        assert_eq!(record.active_activities, 0);
         let bundle = record.retained.as_ref().expect("forced shutdown retains its bounded fallback bundle");
         assert_eq!(
             bundle.charge_bytes,
@@ -1504,7 +1459,6 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         assert!(bundle.charge_bytes <= config().per_query_artifact_max_bytes);
     }
 
-    drop(activity);
     drop(execution);
     assert_eq!(coordinator.query_stats("forced-shutdown").unwrap().as_ref(), before.as_ref());
 }
@@ -1538,20 +1492,46 @@ fn ticket_and_logical_capture_byte_caps_reject_before_expensive_work() {
     assert!(stats.contains("kind=resource_exhausted"), "{stats}");
     assert!(stats.contains("status=temporary"), "{stats}");
     assert!(stats.contains("operation=algeon_datafusion.server.query_coordinator.issue_ticket"), "{stats}");
+}
 
+#[test]
+fn a_query_beyond_the_active_capture_budget_runs_without_capture() {
     let mut capture_limited = config();
-    capture_limited.max_live_queries = 3;
-    capture_limited.per_query_capture_max_bytes = 1;
-    capture_limited.per_query_artifact_max_bytes = 1;
-    capture_limited.max_active_logical_capture_bytes = 8194;
+    capture_limited.per_query_capture_max_bytes = 1024;
+    capture_limited.per_query_artifact_max_bytes = 4096;
+    // Exactly one reservation: twice the 4096-byte runtime capture, plus the
+    // per-query capture and artifact limits.
+    capture_limited.max_active_logical_capture_bytes = 2 * 4096 + 1024 + 4096;
     let coordinator = QueryCoordinator::new(capture_limited);
-    let _first = coordinator
+    let first = coordinator
         .register_with_id("first-capture", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
-    let error = coordinator
-        .register_with_id("second-capture", "select 2", None, None, RuntimeObservationConfig::bounded(16, 1))
-        .unwrap_err();
-    assert_eq!(error.kind(), QueryCoordinatorErrorKind::LogicalCaptureBytes);
+    let second = coordinator
+        .register_with_id(
+            "second-capture",
+            "select secret_literal",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("admission, not the capture budget, decides overload");
+
+    assert_eq!(first.observation_config(), RuntimeObservationConfig::bounded(16, 4096));
+    assert_eq!(second.observation_config(), RuntimeObservationConfig::bounded(0, 0));
+    {
+        let state = coordinator.state.lock().unwrap();
+        assert_eq!(state.active_logical_capture_bytes, 2 * 4096 + 1024 + 4096);
+        let record = state.records.get(second.key()).unwrap();
+        assert!(record.captured.is_none(), "a query without capture keeps no SQL text");
+        assert_eq!(record.logical_capture_bytes, 0);
+    }
+
+    second.into_execution().unwrap().succeed();
+    let stats = String::from_utf8(coordinator.query_stats("second-capture").unwrap().to_vec()).unwrap();
+    assert!(stats.contains("# outcome=succeeded\n"), "{stats}");
+    assert!(stats.contains("# unavailable_reason=active_capture_budget\n"), "{stats}");
+    assert!(!stats.contains("secret_literal"), "{stats}");
+    drop(first);
 }
 
 #[test]
