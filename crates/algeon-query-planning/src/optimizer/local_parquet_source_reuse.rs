@@ -12,7 +12,8 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, CaseWhen, Expr},
     plan::{
-        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
+        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan,
+        RewrittenNodes, SchemaBehavior,
     },
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef,
@@ -157,9 +158,7 @@ pub(crate) fn optimize_local_parquet_source_reuse(
 
     let mut rewriter = LocalParquetSourceReuseRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan)
-        .with_advisory_outputs_from(&plan);
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
     LocalParquetSourceReuseResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,

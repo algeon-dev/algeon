@@ -11,6 +11,7 @@ use query_engine::{
     },
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -71,7 +72,8 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         match requested_lanes {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial union branches should execute");
@@ -82,6 +84,7 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    admission.policy(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -252,7 +255,8 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("scan/filter/aggregate admission should not error");
-    let pipeline = decision.admission().expect("scan/filter/aggregate uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("scan/filter/aggregate uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
     assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Aggregate).count(), 1);
 
@@ -272,11 +276,13 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("aggregate pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let mut support = LaneDispatchSupport::new(
             Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
+            admission.policy(),
             pipeline.clone(),
             gpu_inputs.clone(),
             metrics.clone(),
@@ -494,7 +500,8 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("overflow aggregate admission should not error");
-    let pipeline = decision.admission().expect("overflow aggregate uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("overflow aggregate uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
 
     let runtime = lane_shared_runtime(runtime);
@@ -507,11 +514,13 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("overflow pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
+            admission.policy(),
             pipeline.clone(),
             gpu_inputs.clone(),
             metrics.clone(),
@@ -594,7 +603,8 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let observed = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
         let completed = match requested_lanes {
             None => {
@@ -607,6 +617,7 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    admission.policy(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -740,11 +751,8 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
         let decision =
             bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
                 .expect("join admission should not error");
-        let pipeline = decision
-            .admission()
-            .unwrap_or_else(|| panic!("join {join_type} uses compiled admission"))
-            .pipeline()
-            .clone();
+        let admission = decision.admission().unwrap_or_else(|| panic!("join {join_type} uses compiled admission"));
+        let pipeline = admission.pipeline().clone();
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
         let test_context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
         let route = test_context.attempt_stream_provider_route().expect("join scaling route");
@@ -753,12 +761,20 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
             let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
             let gpu_inputs = GpuResidentInputMap::new();
             let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join scaling schedulable");
-            let mut executor =
-                CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            let mut executor = CompiledGpuTaskExecutor::new(
+                &metrics_context,
+                &plan,
+                admission.policy(),
+                &pipeline,
+                &gpu_inputs,
+                &metrics,
+            )
+            .unwrap();
             let support = LaneDispatchSupport::new(
                 Arc::clone(&route),
                 metrics_context.clone(),
                 plan.clone(),
+                admission.policy(),
                 pipeline.clone(),
                 gpu_inputs.clone(),
                 metrics.clone(),
@@ -942,7 +958,8 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("chained join admission should not error");
-    let pipeline = decision.admission().expect("chained joins use compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("chained joins use compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert_eq!(
         pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinBuild).count(),
         2,
@@ -957,7 +974,8 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("chained pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let batch = match width {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial chained joins should execute");
@@ -969,6 +987,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    admission.policy(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1116,7 +1135,8 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("partitioned chain admission should not error");
-    let pipeline = decision.admission().expect("partitioned chain uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("partitioned chain uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("partitioned chain context");
     let route = test_context.attempt_stream_provider_route().expect("partitioned chain route");
@@ -1126,7 +1146,8 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("partitioned pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let batch = match width {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial partitioned chain should execute");
@@ -1138,6 +1159,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    admission.policy(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1246,8 +1268,15 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(pipeline).expect("parity pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, plan, pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            plan,
+            PlanningPolicy::default(),
+            pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         let mut run = |width: Option<usize>| match width {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial parity should execute");
@@ -1259,6 +1288,7 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    PlanningPolicy::default(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1471,7 +1501,8 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("cancel admission should not error");
-    let pipeline = decision.admission().expect("cancel join uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("cancel join uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("cancel context");
     let route = test_context.attempt_stream_provider_route().expect("cancel route");
@@ -1480,7 +1511,9 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
     let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("cancel pipeline is schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor =
+        CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+            .unwrap();
     // Park the first two lane completions (holding uncommitted branch
     // outputs) until the canceller fires; later rounds are unaffected. The
     // Condvar timeouts turn a lost rendezvous into a test failure instead
@@ -1494,6 +1527,7 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
         Arc::clone(&route),
         metrics_context.clone(),
         plan.clone(),
+        admission.policy(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -1602,7 +1636,8 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("pruning admission should not error");
-    let pipeline = decision.admission().expect("pruning shape uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("pruning shape uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("pruning context");
     let route = test_context.attempt_stream_provider_route().expect("pruning route");
@@ -1612,7 +1647,8 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pruning pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let batch = match width {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial pruning should execute");
@@ -1624,6 +1660,7 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    admission.policy(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1827,7 +1864,8 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("sort/top-k admission should not error");
-    let pipeline = decision.admission().expect("union sort/top-k uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("union sort/top-k uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "union sort/top-k dispatches on lanes");
     let sort_task = pipeline
         .tasks()
@@ -1849,12 +1887,14 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("sort pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         if let Some(width) = requested_lanes {
             let mut support = LaneDispatchSupport::new(
                 Arc::clone(&route),
                 metrics_context.clone(),
                 plan.clone(),
+                admission.policy(),
                 pipeline.clone(),
                 gpu_inputs.clone(),
                 metrics.clone(),
@@ -1929,7 +1969,8 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("saturation admission should not error");
-    let pipeline = decision.admission().expect("literal union uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("literal union uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "literal union dispatches on lanes");
 
     let runtime = lane_shared_runtime(runtime);
@@ -1951,12 +1992,14 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("union pipeline is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         let lanes = Arc::clone(lanes);
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
+            admission.policy(),
             pipeline.clone(),
             gpu_inputs.clone(),
             metrics.clone(),
@@ -2018,7 +2061,8 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("offset sort admission should not error");
-    let pipeline = decision.admission().expect("offset sort uses compiled admission").pipeline().clone();
+    let admission = decision.admission().expect("offset sort uses compiled admission");
+    let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "single-frame sort dispatches on lanes");
 
     let runtime = lane_shared_runtime(runtime);
@@ -2033,6 +2077,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
             Arc::clone(&route),
             (*test_context).clone(),
             plan.clone(),
+            admission.policy(),
             pipeline.clone(),
             GpuResidentInputMap::new(),
             metrics,
@@ -2073,6 +2118,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
             Arc::clone(&route),
             (*test_context).clone(),
             full_plan,
+            PlanningPolicy::default(),
             full_pipeline,
             GpuResidentInputMap::new(),
             metrics,
@@ -2085,12 +2131,14 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("offset sort is schedulable");
         let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
+                .unwrap();
         if let Some(width) = requested_lanes {
             let support = LaneDispatchSupport::new(
                 Arc::clone(&route),
                 metrics_context.clone(),
                 plan.clone(),
+                admission.policy(),
                 pipeline.clone(),
                 gpu_inputs.clone(),
                 metrics.clone(),

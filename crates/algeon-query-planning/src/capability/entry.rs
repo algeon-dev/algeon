@@ -81,6 +81,7 @@ pub(crate) fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<
         nodes,
         edges,
         invariants,
+        policy: ctx.policy(),
         reachable_node_ids,
         root_join_admission,
         multi_join_aggregate_over_join_subplan_topk_admission,

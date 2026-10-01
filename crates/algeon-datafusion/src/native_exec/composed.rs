@@ -649,14 +649,18 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                 // artifact to execution instead of deciding again there.
                 let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                 let bounded_admission = if execution_config.memory_control_policy().is_bounded() {
-                    preflight_bounded_query_plan(&gpu_plan, execution_config.statistical_aggregate_execution_mode())
-                        .map_err(|error| {
-                            DataFusionError::from(Error::from_native(
-                                "algeon_datafusion.native_composed.bounded_preflight",
-                                "failed to preflight the resolved bounded native executable plan before admission",
-                                error,
-                            ))
-                        })?
+                    preflight_bounded_query_plan(
+                        &gpu_plan,
+                        execution_config.statistical_aggregate_execution_mode(),
+                        execution_config.planning_policy(),
+                    )
+                    .map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "algeon_datafusion.native_composed.bounded_preflight",
+                            "failed to preflight the resolved bounded native executable plan before admission",
+                            error,
+                        ))
+                    })?
                 } else {
                     None
                 };

@@ -72,16 +72,14 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     }
 
     let root_id = scalar_derivation.plan.root_id();
-    let sink = scalar_derivation.plan.sink().clone();
     let mut rewriter =
         SharedSubplanMaterializationRewriter::new(&scalar_derivation.plan, discovery.families, discovery.diagnostics);
     let new_root = rewriter.rewrite_subtree(root_id);
     let mut diagnostics = scalar_derivation.diagnostics;
     diagnostics.merge(rewriter.diagnostics);
     let changed = rewriter.changed;
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink)
-        .with_keyed_hash_join_strategy_options_from(&scalar_derivation.plan)
-        .with_advisory_outputs_from(&scalar_derivation.plan);
+    let rewritten_plan =
+        scalar_derivation.plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
     let change = if changed || scalar_derivation.change.changed() {
         super::NativeOptimizerChange::Changed
     } else {

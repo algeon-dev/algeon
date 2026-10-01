@@ -8,7 +8,9 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 use super::rewrite;
 use crate::{
     expr::{AggregateExpr, AggregateFunction, Expr, LiteralValue},
-    plan::{AggregateNode, FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan},
+    plan::{
+        AggregateNode, FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes,
+    },
     source::{LocalParquetFile, LocalParquetSource, MissingColumn, PartitionColumn, SourceColumnRef, SourceNode},
 };
 
@@ -126,11 +128,9 @@ pub(crate) fn optimize_count_non_null_column_pruning(
         return CountNonNullColumnPruningResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let (compacted, remap) = rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink());
+    let origin = rewriter.single_image_origin();
     CountNonNullColumnPruningResult {
-        plan: compacted
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from_remapped(&plan, &remap),
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, origin)),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }
@@ -341,6 +341,20 @@ impl<'a> CountNonNullColumnPruningRewriter<'a> {
         let id = NodeId::from_index_for_internal_use(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
+    }
+
+    /// Source nodes rewritten to exactly one new node. A node visited under
+    /// different required-column sets has several images and no single one.
+    fn single_image_origin(&self) -> BTreeMap<NodeId, NodeId> {
+        let mut origin = BTreeMap::new();
+        let mut several_images = BTreeSet::new();
+        for ((old_id, _), new_id) in &self.memo {
+            if origin.insert(*old_id, *new_id).is_some_and(|previous| previous != *new_id) {
+                several_images.insert(*old_id);
+            }
+        }
+        origin.retain(|old_id, _| !several_images.contains(old_id));
+        origin
     }
 }
 

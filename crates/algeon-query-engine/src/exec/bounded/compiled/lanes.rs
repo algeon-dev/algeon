@@ -56,6 +56,7 @@ use crate::{
         SortStrategy,
     },
     plan::QueryPlan,
+    policy::PlanningPolicy,
     runtime::{
         AttemptStreamProviderRoute, AttemptWorkLease, ExecutionContext, GpuExecutionJobKind, PoolBlockingWork,
         resident::{GpuResidentInputMap, GpuResultHandle},
@@ -150,6 +151,7 @@ pub struct LaneDispatchSupport {
     pub requested_lanes: usize,
     pub(crate) context: Arc<ExecutionContext>,
     pub(crate) plan: Arc<QueryPlan>,
+    pub(crate) policy: PlanningPolicy,
     pub(crate) pipeline: Arc<CompiledPipeline>,
     pub(crate) gpu_inputs: Arc<GpuResidentInputMap>,
     pub(crate) metrics: Arc<ExecutionMetrics>,
@@ -169,6 +171,7 @@ impl LaneDispatchSupport {
         route: Arc<AttemptStreamProviderRoute>,
         context: ExecutionContext,
         plan: QueryPlan,
+        policy: PlanningPolicy,
         pipeline: CompiledPipeline,
         gpu_inputs: GpuResidentInputMap,
         metrics: ExecutionMetrics,
@@ -192,6 +195,7 @@ impl LaneDispatchSupport {
             requested_lanes,
             context: Arc::new(context),
             plan: Arc::new(plan),
+            policy,
             pipeline: Arc::new(pipeline),
             gpu_inputs: Arc::new(gpu_inputs),
             metrics: Arc::new(metrics),
@@ -310,6 +314,7 @@ pub(super) fn run_resident_lane_borrow(
     let mut executor = CompiledGpuTaskExecutor::new(
         &support.context,
         &support.plan,
+        support.policy,
         &support.pipeline,
         &support.gpu_inputs,
         &support.metrics,
@@ -822,6 +827,7 @@ fn run_lane_claims(
         let scratch = claim.take_scratch();
         let lane_lease = Arc::clone(&lane_leases[lane].lease);
         let plan = Arc::clone(&support.plan);
+        let policy = support.policy;
         let pipeline = Arc::clone(&support.pipeline);
         let gpu_inputs = Arc::clone(&support.gpu_inputs);
         let metrics = Arc::clone(&support.metrics);
@@ -831,7 +837,7 @@ fn run_lane_claims(
         let observation = support.context.runtime_observation().clone();
         match pool.submit_blocking(GpuExecutionJobKind::AttemptWork, observation, move || {
             let context = lane_lease.context();
-            match CompiledGpuTaskExecutor::new(context, &plan, &pipeline, &gpu_inputs, &metrics) {
+            match CompiledGpuTaskExecutor::new(context, &plan, policy, &pipeline, &gpu_inputs, &metrics) {
                 Ok(mut lane_executor) => {
                     lane_executor.dynamic_filters = dynamic_filter_snapshot;
                     let completion =
@@ -909,6 +915,7 @@ fn run_lane_claim_inline(
     match CompiledGpuTaskExecutor::new(
         &support.context,
         &support.plan,
+        support.policy,
         &support.pipeline,
         &support.gpu_inputs,
         &support.metrics,

@@ -6,7 +6,7 @@ use super::rewrite;
 use crate::{
     capability::capability_shape_contract_projection_ids,
     expr::{ColumnRef, Expr},
-    plan::{NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan},
+    plan::{NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -111,9 +111,7 @@ pub(crate) fn optimize_projection_simplification(
     }
 
     ProjectionSimplificationResult {
-        plan: rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan),
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo)),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

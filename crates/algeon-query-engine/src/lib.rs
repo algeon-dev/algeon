@@ -71,7 +71,7 @@ pub use query_planning::plan;
 /// Backend materialized-output sizing, applying the component's formula.
 #[doc(hidden)]
 pub mod materialization_sizing;
-pub use query_planning::{mode, optimizer, pipeline, source, triage, validate_query_plan};
+pub use query_planning::{mode, optimizer, pipeline, policy, source, triage, validate_query_plan};
 /// Native cuDF expression, aggregate, and sort lowering.
 pub(crate) mod prepared;
 #[doc(hidden)]

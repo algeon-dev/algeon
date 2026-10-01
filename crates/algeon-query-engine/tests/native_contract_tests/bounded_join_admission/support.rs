@@ -18,6 +18,7 @@ use query_engine::{
         ResidentDataForm, ResourceSharing, SinkBoundaryKind, SortStrategy, compile_pipeline,
     },
     plan::{EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphEdgeColumnBindings},
+    policy::PlanningPolicy,
 };
 
 fn assert_rejection_reason_is_family_free(reason: &str, label: &str) {
@@ -37,6 +38,7 @@ fn bounded_preflight_rejection_reports_caller_visible_sink() {
     let error = preflight_bounded_query_plan(
         &plan,
         StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
     )
     .expect_err("edge normalization must not preflight");
     assert_eq!(error.fact_value("caller_visible_sink"), Some("host_arrow"));

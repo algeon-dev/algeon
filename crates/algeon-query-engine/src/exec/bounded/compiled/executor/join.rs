@@ -90,7 +90,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node_id,
                     node,
                     strategy.strategy,
-                    self.plan.keyed_hash_join_strategy_options(),
+                    self.policy.keyed_hash_join,
                     input_frame,
                 )
             }
@@ -115,7 +115,7 @@ impl CompiledGpuTaskExecutor<'_> {
             node_id,
             node,
             strategy.strategy,
-            self.plan.keyed_hash_join_strategy_options(),
+            self.policy.keyed_hash_join,
             input_frame,
         )
     }
@@ -172,10 +172,11 @@ impl CompiledGpuTaskExecutor<'_> {
         estimate: JoinBuildStreamEstimate,
     ) -> Result<BoundedCompiledJoinBuildState> {
         let plan = self.plan;
+        let options = self.policy.keyed_hash_join;
         let keyed_hash_inputs = keyed_hash_join_capable(node);
         let mut settle = |execution: &mut BoundedExecutionAttempt<'_>,
                           observation: Option<BoundedJoinBuildStreamObservation>| {
-            settle_partitioned_join_build(plan, task, node_id, node, estimate, execution, observation)
+            settle_partitioned_join_build(plan, options, task, node_id, estimate, execution, observation)
         };
         let outcome = consume_bounded_join_build_input_stream(
             &mut self.execution,

@@ -4,11 +4,12 @@ use super::{source::record_bounded_parquet_source_metrics, *};
 use crate::{
     admission::{
         BoundedPipelineAdmission, bounded_join_unsupported_shape_facts_with_projection, bounded_pipeline_decision,
-        canonical_execution_scope_fingerprint, insert_bounded_join_rejection_projection_error_facts,
+        insert_bounded_join_rejection_projection_error_facts,
     },
     mode::StatisticalAggregateExecutionMode,
     observability::RuntimeExecutionObservationScope,
     plan::ResultSink,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -25,6 +26,7 @@ mod facts;
 mod final_sort;
 mod generic;
 pub(in crate::exec) mod join;
+mod operator;
 mod partition_row_policy;
 mod partition_target_policy;
 pub(in crate::exec) mod pipeline;
@@ -40,18 +42,7 @@ use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 use final_sort::*;
-#[cfg(feature = "cugraph")]
-pub(in crate::exec::bounded) use generic::execute_bounded_graph_algorithm_from_inputs;
-pub(in crate::exec::bounded) use generic::{
-    execute_bounded_edge_normalize_from_input, execute_bounded_generic_projection,
-    execute_bounded_generic_projection_from_frame, execute_bounded_generic_unary,
-    execute_bounded_generic_unary_from_frame,
-};
-use generic::{
-    execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
-    execute_bounded_generic_local_parquet_source, execute_bounded_generic_query_plan,
-    execute_bounded_generic_unary_consuming_input, execute_bounded_generic_union,
-};
+use generic::execute_bounded_generic_query_plan;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
@@ -66,6 +57,16 @@ pub(in crate::exec::bounded) use join::{
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_probe_state,
     stateless_streaming_probe_supported, stream_bounded_join_leaf_local_parquet_source_chunks,
     try_start_bounded_join_leaf_local_parquet_source_prefetch,
+};
+#[cfg(feature = "cugraph")]
+pub(in crate::exec::bounded) use operator::execute_bounded_graph_algorithm_from_inputs;
+pub(in crate::exec::bounded) use operator::{
+    execute_bounded_edge_normalize_from_input, execute_bounded_projection, execute_bounded_projection_from_frame,
+    execute_bounded_unary, execute_bounded_unary_from_frame,
+};
+use operator::{
+    execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source, execute_bounded_local_parquet_source,
+    execute_bounded_union,
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;
@@ -133,10 +134,10 @@ pub(super) fn execute_bounded_query_plan(
 
     record_device_memory_observation(&frame.frame, execution.metrics())?;
     match plan.sink() {
-        ResultSink::GpuResident { .. } => {
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
             let output_bytes = frame.frame.device_allocated_size_bytes()?;
             let resident_owner = execution.context().retain_resident_output_owner(output_bytes)?;
-            let output_frame = frame.frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(plan));
+            let output_frame = frame.frame.with_producer_execution_scope(plan.execution_fingerprint());
             let handle = match GpuResultHandle::new_with_resident_owner(
                 execution.context(),
                 output_frame,
@@ -172,51 +173,47 @@ pub(super) fn execute_bounded_query_plan(
 pub(super) fn preflight_bounded_join_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    policy: PlanningPolicy,
 ) -> Result<Option<BoundedPipelineAdmission>> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         let mut error = unsupported_bounded_shape(
             "bounded native join execution requires an executable compiled pipeline",
             "bounded_join_plan_shape_unsupported",
         );
-        let decision =
-            match bounded_pipeline_decision(plan, statistical_aggregate_execution_mode, rapids_analysis_context()) {
-                Ok(decision) => decision,
-                Err(projection_error) => {
-                    let mut facts =
-                        bounded_join_unsupported_shape_facts_with_projection(plan, None, rapids_analysis_context());
-                    insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
-                    for (key, value) in facts {
-                        error = error.with_fact(key, value);
-                    }
-                    return Err(error.with_source(projection_error));
-                },
-            };
+        let ctx = rapids_analysis_context().with_policy(policy);
+        let decision = match bounded_pipeline_decision(plan, statistical_aggregate_execution_mode, ctx) {
+            Ok(decision) => decision,
+            Err(projection_error) => {
+                let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
+                insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+                for (key, value) in facts {
+                    error = error.with_fact(key, value);
+                }
+                return Err(error.with_source(projection_error));
+            },
+        };
         let Some(rejection_projection) = decision.rejection_projection() else {
             return Ok(decision.admission().cloned());
         };
-        let facts = bounded_join_unsupported_shape_facts_with_projection(
-            plan,
-            Some(rejection_projection),
-            rapids_analysis_context(),
-        );
+        let facts = bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection_projection), ctx);
         for (key, value) in facts {
             error = error.with_fact(key, value);
         }
-        let caller_visible_sink = plan.clone_with_caller_visible_sink_contract();
-        error = error.with_fact("caller_visible_sink", caller_visible_sink_kind(&caller_visible_sink));
+        error = error.with_fact("caller_visible_sink", caller_visible_sink_kind(plan.sink()));
         return Err(error);
     }
 
     Ok(None)
 }
 
-fn caller_visible_sink_kind(plan: &QueryPlan) -> &'static str {
-    match plan.sink() {
-        ResultSink::HostArrow { .. } => "host_arrow",
+fn caller_visible_sink_kind(sink: &ResultSink) -> &'static str {
+    match sink {
+        ResultSink::HostArrow { .. } | ResultSink::DeferredHostArrow { .. } => "host_arrow",
         ResultSink::GpuResident { .. } => "gpu_resident",
     }
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
-    preflight_bounded_join_plan(plan, context.statistical_aggregate_execution_mode()).map(|_| ())
+    preflight_bounded_join_plan(plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+        .map(|_| ())
 }

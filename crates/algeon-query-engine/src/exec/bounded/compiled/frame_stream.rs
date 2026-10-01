@@ -11,10 +11,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{
         ExecutionMetrics,
-        bounded::{
-            BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection,
-            execute_bounded_generic_unary,
-        },
+        bounded::{BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_projection, execute_bounded_unary},
         operators::execute_filter_with_budget,
     },
     plan::{FilterNode, NodeId, ProjectionNode},
@@ -432,7 +429,7 @@ impl UnaryMappedResidentFrameStreamSource {
     ) -> Result<ResidentGpuFrame> {
         match &self.operator {
             UnaryMappedResidentFrameStreamOperator::Filter(filter)
-            | UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, .. } => execute_bounded_generic_unary(
+            | UnaryMappedResidentFrameStreamOperator::DynamicFilter { filter, .. } => execute_bounded_unary(
                 execution,
                 self.node_id,
                 "compiled_filter",
@@ -449,7 +446,7 @@ impl UnaryMappedResidentFrameStreamSource {
                 },
             ),
             UnaryMappedResidentFrameStreamOperator::Projection(projection) => {
-                execute_bounded_generic_projection(execution, self.node_id, "compiled_projection", projection, input)
+                execute_bounded_projection(execution, self.node_id, "compiled_projection", projection, input)
             },
         }
     }

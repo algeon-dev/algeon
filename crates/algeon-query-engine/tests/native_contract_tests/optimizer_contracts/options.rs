@@ -59,50 +59,6 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
 }
 
 #[test]
-fn native_optimizer_captures_keyed_hash_join_strategy_options_in_plan() {
-    let keyed_hash_join_strategy =
-        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
-    let options = NativeOptimizerOptions { keyed_hash_join_strategy, ..NativeOptimizerOptions::disabled() };
-
-    let result = optimize_query_plan(
-        single_source_plan(),
-        &options,
-        rapids_analysis_context(),
-        local_dimension_pruning_resolver(),
-    );
-
-    assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
-}
-
-#[test]
-fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projection_rewrite() {
-    let plan_schema = schema(&["key"]);
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&plan_schema))));
-    let projection =
-        builder.add_projection(source, projection_outputs(vec![Expr::column("key")], Arc::clone(&plan_schema)));
-    let plan = builder.finish_gpu_resident(projection);
-    let keyed_hash_join_strategy =
-        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
-    let options = NativeOptimizerOptions {
-        projection_simplification: ProjectionSimplificationOptions::default(),
-        keyed_hash_join_strategy,
-        ..NativeOptimizerOptions::disabled()
-    };
-
-    let result = optimize_query_plan(
-        plan,
-        &options,
-        rapids_analysis_context(),
-        local_dimension_pruning_resolver(),
-    );
-
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
-    assert_eq!(result.diagnostics.projection_simplification.applied_count, 1);
-    assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
-}
-
-#[test]
 fn projection_simplification_options_and_rule_name_are_stable() {
     assert_eq!(PROJECTION_SIMPLIFICATION_RULE_NAME, "projection_simplification");
     assert!(ProjectionSimplificationOptions::default().enabled);
@@ -282,9 +238,7 @@ fn shared_subplan_materialization_options_and_rule_name_are_stable() {
 fn dynamic_filter_route_discovery_options_and_rule_name_are_stable() {
     assert_eq!(DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, "dynamic_filter_route_discovery");
     assert!(DynamicFilterRouteDiscoveryOptions::default().enabled);
-    assert_eq!(DynamicFilterRouteDiscoveryOptions::default().execution, DynamicFilterExecutionOptions::default());
     assert!(!DynamicFilterRouteDiscoveryOptions::disabled().enabled);
-    assert_eq!(DynamicFilterRouteDiscoveryOptions::disabled().execution, DynamicFilterExecutionOptions::default());
 }
 
 #[test]

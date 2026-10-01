@@ -47,20 +47,18 @@ pub const DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME: &str = "dynamic_filter_route
 pub struct DynamicFilterRouteDiscoveryOptions {
     /// Whether the pass may discover native dynamic-filter routes.
     pub enabled: bool,
-    /// Runtime policy captured into plans that carry discovered dynamic-filter routes.
-    pub execution: DynamicFilterExecutionOptions,
 }
 
 impl DynamicFilterRouteDiscoveryOptions {
     /// Returns options with route discovery disabled.
     pub fn disabled() -> Self {
-        Self { enabled: false, execution: DynamicFilterExecutionOptions::default() }
+        Self { enabled: false }
     }
 }
 
 impl Default for DynamicFilterRouteDiscoveryOptions {
     fn default() -> Self {
-        Self { enabled: true, execution: DynamicFilterExecutionOptions::default() }
+        Self { enabled: true }
     }
 }
 

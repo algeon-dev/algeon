@@ -51,6 +51,23 @@ impl GraphBfsParams {
     pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
     }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        let predicates = &mut self.predicates;
+        let inputs = self
+            .source_vertices
+            .iter_mut()
+            .chain(predicates.include_vertices.iter_mut())
+            .chain(predicates.exclude_vertices.iter_mut())
+            .chain(predicates.target_vertices.iter_mut())
+            .chain(predicates.include_edge_ids.iter_mut())
+            .map(|input| &mut input.input)
+            .chain(predicates.include_edges.iter_mut().map(|input| &mut input.input));
+        for input in inputs {
+            *input = remap(*input);
+        }
+    }
 }
 
 /// Hard bounds required to extract one BFS path on device.
@@ -201,5 +218,12 @@ impl GraphSsspParams {
             GraphSsspSource::Input(input) => Some(input.input),
         }
         .into_iter()
+    }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        if let GraphSsspSource::Input(input) = &mut self.source_vertex {
+            input.input = remap(input.input);
+        }
     }
 }

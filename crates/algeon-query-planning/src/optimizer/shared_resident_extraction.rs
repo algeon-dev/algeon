@@ -1,10 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use super::rewrite;
 use crate::{
-    admission::canonical_execution_scope_fingerprint,
     plan::{
-        NodeId, PlanFacts, PlanNode, QueryPlan, ResultSink, SchemaBehavior, row_bounds::query_plan_hard_row_upper_bound,
+        NodeId, PlanFacts, PlanFingerprint, PlanNode, QueryPlan, RewrittenNodes, SchemaBehavior,
+        row_bounds::query_plan_hard_row_upper_bound,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -47,8 +46,8 @@ pub enum SharedResidentExtractionReason {
 pub struct SharedResidentExtractionCandidateDiagnostics {
     /// Candidate root node.
     pub node_id: NodeId,
-    /// Canonical fingerprint of the exact candidate subplan.
-    pub subplan_fingerprint: String,
+    /// Execution fingerprint of the exact candidate subplan.
+    pub subplan_fingerprint: PlanFingerprint,
     /// Plan nodes that consume the candidate root.
     pub consumer_occurrences: Vec<NodeId>,
     /// Extraction disposition.
@@ -137,7 +136,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         candidates: Vec::with_capacity(plan.node_count()),
     };
     for node in plan.nodes().iter().rev() {
-        let producer = producer_plan_for_root(&plan, node.id);
+        let producer = plan.resident_subplan(node.id);
         let reason = if parents[node.id.index()].len() < 2 {
             SharedResidentExtractionReason::NotRepeated
         } else if !plan.dynamic_filter_routes().is_empty() {
@@ -156,7 +155,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         };
         diagnostics.candidates.push(SharedResidentExtractionCandidateDiagnostics {
             node_id: node.id,
-            subplan_fingerprint: canonical_execution_scope_fingerprint(&producer),
+            subplan_fingerprint: producer.execution_fingerprint(),
             consumer_occurrences: parents[node.id.index()].clone(),
             decision: match reason {
                 SharedResidentExtractionReason::Extracted => SharedResidentExtractionDecision::Extracted,
@@ -189,7 +188,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         .collect::<BTreeSet<_>>();
     let mut input_index = 0;
     for root in selected {
-        let producer = producer_plan_for_root(&plan, root);
+        let producer = plan.resident_subplan(root);
         let input_name = loop {
             let candidate = format!("__algeon_shared_resident_{input_index}");
             input_index += 1;
@@ -214,16 +213,9 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         diagnostics.extracted_count += 1;
     }
 
-    let (consumer, remap) = rewrite::finish_compacted_rewritten_plan(nodes, plan.root_id(), plan.sink());
-    let consumer = consumer.with_rewrite_state_from_remapped(&plan, &remap);
+    let consumer = plan.rewrite(RewrittenNodes::in_place(nodes, plan.root_id()));
     diagnostics.candidates.sort_by_key(|candidate| candidate.node_id);
     SharedResidentPlan { consumer, producers, diagnostics }
-}
-
-fn producer_plan_for_root(plan: &QueryPlan, root: NodeId) -> QueryPlan {
-    let (producer, remap) =
-        rewrite::finish_compacted_rewritten_plan(plan.nodes().to_vec(), root, &ResultSink::GpuResident { input: root });
-    producer.with_rewrite_state_from_remapped(plan, &remap)
 }
 
 fn parents_by_node(plan: &QueryPlan) -> Vec<Vec<NodeId>> {

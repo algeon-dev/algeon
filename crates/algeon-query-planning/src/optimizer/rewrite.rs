@@ -1,37 +1,9 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::BTreeSet;
 
-use crate::plan::{NodeId, NodeRemap, QueryNode, QueryPlan, ResultSink};
 // Canonical home is `crate::plan`; re-exported while optimizer rules still
 // spell node-input remapping through this module.
-pub(super) use crate::plan::{clone_plan_node_with_inputs, remap_plan_node_inputs};
-
-pub(super) fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: Arc::clone(schema) },
-    }
-}
-
-pub(super) fn rewrite_sink(sink: &ResultSink, input: NodeId) -> ResultSink {
-    sink_with_input(sink, input)
-}
-
-pub(super) fn finish_rewritten_plan(nodes: Vec<QueryNode>, root: NodeId, sink: &ResultSink) -> QueryPlan {
-    let sink = rewrite_sink(sink, root);
-    QueryPlan::from_rewritten_parts(nodes, root, sink)
-}
-
-pub(super) fn finish_compacted_rewritten_plan(
-    nodes: Vec<QueryNode>,
-    root: NodeId,
-    sink: &ResultSink,
-) -> (QueryPlan, NodeRemap) {
-    let (nodes, root, remap) = compact_reachable_rewritten_nodes(nodes, root);
-    (finish_rewritten_plan(nodes, root, sink), remap)
-}
+pub(super) use crate::plan::clone_plan_node_with_inputs;
+use crate::plan::{NodeId, QueryPlan};
 
 pub(super) fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
     let mut reachable = BTreeSet::new();
@@ -57,40 +29,9 @@ pub(crate) fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
     counts
 }
 
-pub(super) fn compact_reachable_rewritten_nodes(
-    nodes: Vec<QueryNode>,
-    root: NodeId,
-) -> (Vec<QueryNode>, NodeId, NodeRemap) {
-    let mut reachable = vec![false; nodes.len()];
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        let node = &nodes[id.index()];
-        if reachable[id.index()] {
-            continue;
-        }
-        reachable[id.index()] = true;
-        stack.extend(node.input_ids().iter().copied());
-    }
-
-    let mut forward = BTreeMap::new();
-    for node in nodes.iter().filter(|node| reachable[node.id.index()]) {
-        forward.insert(node.id, NodeId::from_index_for_internal_use(forward.len()));
-    }
-    let new_root = *forward.get(&root).expect("rewritten root must be reachable");
-    let compacted = nodes
-        .into_iter()
-        .filter(|node| reachable[node.id.index()])
-        .map(|node| {
-            let id = *forward.get(&node.id).expect("reachable node must have a remapped id");
-            QueryNode { id, kind: remap_plan_node_inputs(node.kind, &forward), facts: node.facts }
-        })
-        .collect::<Vec<_>>();
-    (compacted, new_root, NodeRemap::new(forward))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeMap, sync::Arc};
 
     use arrow::datatypes::{DataType, Field, Schema};
 
@@ -102,11 +43,11 @@ mod tests {
             EdgeNormalizeSpec, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
             GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
             GraphConstructionOptions, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinKey,
-            JoinNode, JoinSpec, JoinType, LimitNode, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput,
-            QueryPlanBuilder, SchemaBehavior, SortNode, UnionNode, VectorAlgorithm, VectorAlgorithmNode,
+            JoinNode, JoinSpec, JoinType, LimitNode, PlanNode, ProjectionNode, ProjectionOutput, QueryPlanBuilder,
+            ResultSink, RewrittenNodes, SortNode, UnionNode, VectorAlgorithm, VectorAlgorithmNode,
             VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
             VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec,
-            vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
+            remap_plan_node_inputs, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -137,33 +78,18 @@ mod tests {
     #[test]
     fn finish_compacted_rewritten_plan_remaps_root_sink_and_drops_unreachable_nodes() {
         let schema = test_schema(&["x"]);
-        let source = QueryNode {
-            id: node_id(0),
-            kind: PlanNode::Source(Box::new(SourceNode::GpuResident(GpuResidentSource::new(
-                "reachable",
-                Arc::clone(&schema),
-            )))),
-            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::SourceOutput),
-        };
-        let unreachable = QueryNode {
-            id: node_id(1),
-            kind: PlanNode::Source(Box::new(SourceNode::GpuResident(GpuResidentSource::new(
-                "unreachable",
-                Arc::clone(&schema),
-            )))),
-            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::SourceOutput),
-        };
-        let projection = QueryNode {
-            id: node_id(2),
-            kind: PlanNode::Projection(ProjectionNode::new(
-                node_id(0),
-                vec![ProjectionOutput::new(Expr::column("x"), Field::new("x", DataType::Int32, false))],
-            )),
-            facts: PlanFacts::device(Arc::clone(&schema), SchemaBehavior::Projection),
-        };
-        let sink = ResultSink::HostArrow { input: node_id(2), schema };
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("reachable", Arc::clone(&schema))));
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("unreachable", Arc::clone(&schema))));
+        let projection = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("x"), Field::new("x", DataType::Int32, false))],
+        );
+        let source_plan = builder.finish_with_host_sink(projection);
+        assert_eq!(projection, node_id(2));
 
-        let (plan, _) = finish_compacted_rewritten_plan(vec![source, unreachable, projection], node_id(2), &sink);
+        let plan = source_plan.rewrite(RewrittenNodes::in_place(source_plan.nodes().to_vec(), node_id(2)));
 
         assert_eq!(plan.node_count(), 2);
         assert_eq!(plan.root_id(), node_id(1));
@@ -206,9 +132,7 @@ mod tests {
         let source = builder.finish_with_host_sink(join);
         assert_eq!(b, node_id(2));
 
-        let (compacted, remap) =
-            finish_compacted_rewritten_plan(source.nodes().to_vec(), source.root_id(), source.sink());
-        let rewritten = compacted.with_advisory_outputs_from_remapped(&source, &remap);
+        let rewritten = source.rewrite(RewrittenNodes::in_place(source.nodes().to_vec(), source.root_id()));
 
         assert_eq!(rewritten.node_count(), 3);
         let bindings = rewritten.advisory_outputs();

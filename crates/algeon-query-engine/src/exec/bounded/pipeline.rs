@@ -33,14 +33,34 @@ pub(in crate::exec) fn try_execute_bounded_pipeline(
         if let Some(projection) = admission.binding_rejection(plan, context.statistical_aggregate_execution_mode()) {
             return Err(artifact_binding_error(plan, Some(admission.pipeline()), &projection));
         }
-        return execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics, observation_scope)
-            .map(Some);
+        return execute_compiled_pipeline(
+            context,
+            plan,
+            admission.policy(),
+            admission.pipeline(),
+            gpu_inputs,
+            metrics,
+            observation_scope,
+        )
+        .map(Some);
     }
-    let admission =
-        bounded_pipeline_decision(plan, context.statistical_aggregate_execution_mode(), rapids_analysis_context())?
-            .into_execution_admission()?;
+    let admission = bounded_pipeline_decision(
+        plan,
+        context.statistical_aggregate_execution_mode(),
+        rapids_analysis_context().with_policy(context.planning_policy()),
+    )?
+    .into_execution_admission()?;
     let Some(admission) = admission else {
         return Ok(None);
     };
-    execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics, observation_scope).map(Some)
+    execute_compiled_pipeline(
+        context,
+        plan,
+        admission.policy(),
+        admission.pipeline(),
+        gpu_inputs,
+        metrics,
+        observation_scope,
+    )
+    .map(Some)
 }

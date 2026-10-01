@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use query_planning::{
-    admission::{AttemptCapabilityEvidence, canonical_execution_scope_fingerprint, log_safe_fingerprint},
+    admission::AttemptCapabilityEvidence,
     error::{QueryError, QueryErrorCode, Result},
-    plan::QueryPlan,
+    plan::{QueryPlan, SchemaFingerprint},
 };
 
 use super::{
@@ -33,7 +33,7 @@ impl ExecutionContext {
                 "a query-service context requires its admitted capability evidence",
             )
             .with_fact("reason", "admitted_capability_evidence_missing")
-            .with_fact("plan_scope", canonical_execution_scope_fingerprint(plan))
+            .with_fact("plan_scope", plan.execution_fingerprint())
         })?;
         let immutable_grant = self.admitted_memory_grant(attempt, "query_engine.runtime.context.memory_grant")?;
         Ok(Some((evidence, immutable_grant)))
@@ -45,9 +45,8 @@ impl ExecutionContext {
         plan: &QueryPlan,
     ) -> Result<()> {
         evidence.validate_covers_plan(plan)?;
-        let execution_scope = canonical_execution_scope_fingerprint(plan);
-        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
-        let expected_schema = log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
+        let execution_scope = plan.execution_fingerprint();
+        let expected_schema = SchemaFingerprint::of(plan.caller_visible_output_schema());
         let scope_matches = evidence.execution_scopes().iter().filter(|shape| shape.matches(plan)).collect::<Vec<_>>();
         let matching_shapes = scope_matches
             .iter()
@@ -98,9 +97,7 @@ impl ExecutionContext {
         // activation (`with_admitted_gpu_inputs`); every other plan validates
         // against the evidence submitted at admission.
         let evidence = match &self.plan.activated_deferred_resident_phase {
-            Some(activated)
-                if activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan) =>
-            {
+            Some(activated) if activated.consumer_execution_scope_fingerprint == plan.execution_fingerprint() => {
                 if activated.grant_identity != immutable_grant.identity() {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedPlanShape,
@@ -147,7 +144,7 @@ impl ExecutionContext {
         // frames actually presented: one execution context legitimately runs a
         // plan more than once, and a later round may carry a different frame.
         if let Some(activated) = &self.plan.activated_deferred_resident_phase
-            && activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+            && activated.consumer_execution_scope_fingerprint == plan.execution_fingerprint()
             && activated.grant_identity != immutable_grant.identity()
         {
             return Err(QueryError::new(
@@ -180,7 +177,7 @@ impl ExecutionContext {
                     let Some(actual_scope) = input.producer_execution_scope() else {
                         return false;
                     };
-                    let actual_schema = log_safe_fingerprint(&format!("{:?}", input.schema()));
+                    let actual_schema = SchemaFingerprint::of(input.schema());
                     (actual_scope == expected.execution_scope_fingerprint()
                         || input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan)))
                         && actual_schema == expected.output_schema_fingerprint()
@@ -212,7 +209,7 @@ impl ExecutionContext {
                     .with_fact("reason", "deferred_resident_input_scope_missing")
                     .with_fact("input_name", input_name)
                 })?;
-                let actual_schema = log_safe_fingerprint(&format!("{:?}", input.schema()));
+                let actual_schema = SchemaFingerprint::of(input.schema());
                 if actual_scope != expected.execution_scope_fingerprint()
                     && !input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan))
                     || actual_schema != expected.output_schema_fingerprint()
@@ -250,7 +247,7 @@ impl ExecutionContext {
                     .with_fact("input_name", input_name)
                 })?;
                 Ok(ActivatedDeferredResidentInput {
-                    producer_execution_scope_fingerprint: actual_scope.to_owned(),
+                    producer_execution_scope_fingerprint: actual_scope,
                     input_name: input_name.to_owned(),
                     input_schema: Arc::clone(input.schema()),
                     input_memory_identity: input.frame().memory_identity(),
@@ -259,7 +256,7 @@ impl ExecutionContext {
             })
             .collect::<Result<Vec<_>>>()?;
         let activated = ActivatedDeferredResidentPhase {
-            consumer_execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
+            consumer_execution_scope_fingerprint: plan.execution_fingerprint(),
             inputs,
             capability_evidence,
             grant_identity: immutable_grant.identity(),
@@ -275,9 +272,12 @@ impl ExecutionContext {
         gpu_inputs: &GpuResidentInputMap,
     ) -> Result<()> {
         self.validate_admitted_plan_capabilities(plan)?;
-        let Some(activated) = self.plan.activated_deferred_resident_phase.as_ref().filter(|activated| {
-            activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
-        }) else {
+        let Some(activated) = self
+            .plan
+            .activated_deferred_resident_phase
+            .as_ref()
+            .filter(|activated| activated.consumer_execution_scope_fingerprint == plan.execution_fingerprint())
+        else {
             return Ok(());
         };
         let immutable_grant = self.memory_grant()?.ok_or_else(|| {

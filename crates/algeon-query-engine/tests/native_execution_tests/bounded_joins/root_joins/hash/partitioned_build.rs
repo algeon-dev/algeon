@@ -191,7 +191,13 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
 
 #[test]
 fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a_misestimated_build() {
-    let runtime = backend_runtime();
+    let context = backend_context_with_grant_and_planning_policy(30 * 1024 * 1024, PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(100)
+            .with_large_keyed_hash_build_row_threshold(300),
+        ..PlanningPolicy::default()
+    });
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-build-misestimated");
     let build_path = dir.join("build.parquet");
     let probe_path = dir.join("probe.parquet");
@@ -224,12 +230,7 @@ fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
     );
-    let plan = builder.finish_with_host_sink(join).with_keyed_hash_join_strategy_options(
-        KeyedHashJoinStrategyOptions::default()
-            .with_small_reusable_hash_build_row_threshold(100)
-            .with_large_keyed_hash_build_row_threshold(300),
-    );
-    let context = backend_context_with_grant(30 * 1024 * 1024);
+    let plan = builder.finish_with_host_sink(join);
 
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();
@@ -258,7 +259,16 @@ fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a
 
 #[test]
 fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build() {
-    let runtime = backend_runtime();
+    // Eagerly collecting the 16 MiB inner output, concatenating it for the
+    // outer build, and partitioning that frame needs three copies at once;
+    // the lazy inner output feeds the outer partitions one chunk at a time.
+    let context = backend_context_with_grant_and_planning_policy(30 * 1024 * 1024, PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_bytes_threshold(1024 * 1024)
+            .with_large_keyed_hash_build_bytes_threshold(3 * 1024 * 1024),
+        ..PlanningPolicy::default()
+    });
+    let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-join-fed-build");
     let fact_path = dir.join("fact.parquet");
     let first_dim_path = dir.join("first_dim.parquet");
@@ -316,15 +326,7 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
     // The inner join output has no plan estimate; the lazy inner stream
     // carries its probe leaf's encoded size, which settles the outer build
     // as large before its first chunk arrives.
-    let plan = builder.finish_with_host_sink(outer).with_keyed_hash_join_strategy_options(
-        KeyedHashJoinStrategyOptions::default()
-            .with_small_reusable_hash_build_bytes_threshold(1024 * 1024)
-            .with_large_keyed_hash_build_bytes_threshold(3 * 1024 * 1024),
-    );
-    // Eagerly collecting the 16 MiB inner output, concatenating it for the
-    // outer build, and partitioning that frame needs three copies at once;
-    // the lazy inner output feeds the outer partitions one chunk at a time.
-    let context = backend_context_with_grant(30 * 1024 * 1024);
+    let plan = builder.finish_with_host_sink(outer);
 
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();

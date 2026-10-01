@@ -122,10 +122,11 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
 
     let sink_task = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
     let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_task)?;
-    let (tasks, resources) = match resolve_task_and_resource_contracts(plan, tasks, resources, &edges) {
-        Ok(resolved) => resolved,
-        Err(projection) => return Ok(GraphCompilation::Rejected(projection)),
-    };
+    let (tasks, resources) =
+        match resolve_task_and_resource_contracts(plan, &analysis.policy.keyed_hash_join, tasks, resources, &edges) {
+            Ok(resolved) => resolved,
+            Err(projection) => return Ok(GraphCompilation::Rejected(projection)),
+        };
     let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_task)?;
     let sink = build_sink_boundary(plan, &task_ids, sink_task)?;
 
@@ -712,14 +713,15 @@ fn build_resources(
         }
         consumers.sort_unstable();
         consumers.dedup();
-        let lifetime =
-            if consumers.is_empty() && matches!(plan.sink(), ResultSink::GpuResident { input } if *input == *node_id) {
-                ResidentLifetime::SinkOutput { producer }
-            } else if consumers.is_empty() {
-                ResidentLifetime::TaskLocal { task: producer }
-            } else {
-                ResidentLifetime::BetweenTasks { producer }
-            };
+        let lifetime = if consumers.is_empty()
+            && matches!(plan.sink(), ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } if *input == *node_id)
+        {
+            ResidentLifetime::SinkOutput { producer }
+        } else if consumers.is_empty() {
+            ResidentLifetime::TaskLocal { task: producer }
+        } else {
+            ResidentLifetime::BetweenTasks { producer }
+        };
         resources.push(ResidentResource::new(resource, producer, consumers, lifetime));
     }
     Ok(resources)
@@ -830,7 +832,7 @@ fn build_sink_boundary(
 ) -> Result<SinkBoundary> {
     let kind = match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
-        ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => SinkBoundaryKind::GpuResidentOutput,
     };
     let input = match sink_task {
         Some(task) => task,
@@ -894,7 +896,7 @@ fn edge_consumer_label(consumer: EdgeConsumer) -> String {
 fn sink_consumer_kind(sink: &ResultSink) -> ResultSinkKind {
     match sink {
         ResultSink::HostArrow { .. } => ResultSinkKind::HostArrow,
-        ResultSink::GpuResident { .. } => ResultSinkKind::GpuResident,
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => ResultSinkKind::GpuResident,
     }
 }
 

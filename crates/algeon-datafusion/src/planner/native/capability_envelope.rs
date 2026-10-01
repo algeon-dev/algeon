@@ -133,9 +133,13 @@ pub(super) fn native_bounded_decision(
     if composed_admission_requires_producer_binding(plan) {
         return Ok(None);
     }
-    bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode(), rapids_analysis_context())
-        .map(Some)
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+    bounded_pipeline_decision(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+        rapids_analysis_context().with_policy(execution_config.planning_policy()),
+    )
+    .map(Some)
+    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(
@@ -251,7 +255,7 @@ fn first_blocking_contract_row(
         });
     }
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context().with_policy(execution_config.planning_policy()));
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(report.decision_rows().first().cloned())
@@ -300,4 +304,55 @@ fn stamp_native_error_correlation(mut error: QueryError, execution_config: &Alge
         error = error.with_trace_id(trace_id.clone());
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{ArrayRef, Int32Array},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use query_engine::{
+        capability::KeyedHashJoinStrategyOptions,
+        expr::ColumnRef,
+        plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType, QueryPlanBuilder},
+        source::LiteralBatchSource,
+    };
+
+    use super::*;
+
+    #[test]
+    fn bounded_decision_admits_under_the_configured_planning_policy() {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("literal batch");
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        let right =
+            builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+        let key = |input| ColumnRef::input(input, "k", "k");
+        let join = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(0), key(1))])
+                .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
+            Arc::clone(&schema),
+        );
+        let plan = builder.finish_with_host_sink(join);
+        let execution_config = AlgeonNativeExecutionConfig::bounded(1024 * 1024 * 1024, 512, 1, 3, 1)
+            .with_keyed_hash_join_strategy_options(
+                KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11),
+            );
+
+        let decision = native_bounded_decision(&plan, &execution_config)
+            .expect("the join plan is decidable")
+            .expect("a bounded join plan is decided at planning");
+        let admission = decision.admission().expect("a literal inner join is admitted");
+
+        assert_eq!(admission.policy(), execution_config.planning_policy());
+    }
 }

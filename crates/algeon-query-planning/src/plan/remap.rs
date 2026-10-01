@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{GraphAlgorithmParams, GraphAlgorithmSpec, NodeId, PlanNode};
+use super::{NodeId, PlanNode, QueryNode};
 
 /// Old-to-new node id mapping produced by one renumbering rewrite.
 ///
@@ -37,6 +37,16 @@ impl NodeRemap {
     /// new node has no counterpart in the source plan.
     pub(crate) fn old_id(&self, new: NodeId) -> Option<NodeId> {
         self.backward.get(&new).copied()
+    }
+
+    /// Maps every id below `len` to itself.
+    pub(crate) fn identity(len: usize) -> Self {
+        Self::new((0..len).map(|index| (NodeId(index), NodeId(index))).collect())
+    }
+
+    /// Composes this mapping with the one applied after it.
+    pub(crate) fn then(&self, next: &Self) -> Self {
+        Self::new(self.forward.iter().filter_map(|(old, mid)| Some((*old, next.remap(*mid)?))).collect())
     }
 
     /// Rewrites a source-plan node's input edges through the mapping.
@@ -119,7 +129,9 @@ pub(crate) fn clone_plan_node_with_inputs(
             let input_remap = old_inputs.iter().copied().zip(new_inputs.iter().copied()).collect::<BTreeMap<_, _>>();
             graph.input = new_inputs[0];
             graph.inputs = new_inputs;
-            remap_graph_algorithm_spec_side_inputs(&mut graph.spec, &input_remap);
+            graph.spec.params.remap_side_inputs(|input| {
+                *input_remap.get(&input).expect("graph side-input binding must be present in graph input list")
+            });
             PlanNode::GraphAlgorithm(graph)
         },
         PlanNode::VectorAlgorithm(vector) => {
@@ -137,6 +149,34 @@ pub(crate) fn clone_plan_node_with_inputs(
     }
 }
 
+/// Drops the nodes `root` cannot reach and renumbers the rest in their
+/// current order.
+pub(crate) fn compact_reachable_nodes(nodes: Vec<QueryNode>, root: NodeId) -> (Vec<QueryNode>, NodeId, NodeRemap) {
+    let mut reachable = vec![false; nodes.len()];
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if reachable[id.index()] {
+            continue;
+        }
+        reachable[id.index()] = true;
+        stack.extend(nodes[id.index()].input_ids().iter().copied());
+    }
+    let mut forward = BTreeMap::new();
+    for node in nodes.iter().filter(|node| reachable[node.id.index()]) {
+        forward.insert(node.id, NodeId(forward.len()));
+    }
+    let new_root = *forward.get(&root).expect("rewritten root must be reachable");
+    let compacted = nodes
+        .into_iter()
+        .filter(|node| reachable[node.id.index()])
+        .map(|node| {
+            let id = *forward.get(&node.id).expect("reachable node must have a remapped id");
+            QueryNode { id, kind: remap_plan_node_inputs(node.kind, &forward), facts: node.facts }
+        })
+        .collect::<Vec<_>>();
+    (compacted, new_root, NodeRemap::new(forward))
+}
+
 pub(crate) fn remap_plan_node_inputs(kind: PlanNode, remap: &BTreeMap<NodeId, NodeId>) -> PlanNode {
     clone_plan_node_with_inputs(&kind, |input| remap_node_id(input, remap))
 }
@@ -145,30 +185,119 @@ fn remap_node_id(id: NodeId, remap: &BTreeMap<NodeId, NodeId>) -> NodeId {
     *remap.get(&id).expect("reachable input node must have a remapped id")
 }
 
-fn remap_graph_algorithm_spec_side_inputs(spec: &mut GraphAlgorithmSpec, input_remap: &BTreeMap<NodeId, NodeId>) {
-    let GraphAlgorithmParams::Bfs(params) = &mut spec.params else {
-        return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{
+        GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
+        GraphBetweennessSeeds, GraphConstructionOptions, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
+        GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params, GraphForceAtlas2VertexAttributesInput,
+        GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput, GraphSimilarityParams,
+        GraphSsspParams, GraphSsspSource, GraphVertexPairInput,
     };
-    if let Some(input) = &mut params.source_vertices {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-    if let Some(input) = &mut params.predicates.include_vertices {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-    if let Some(input) = &mut params.predicates.exclude_vertices {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-    if let Some(input) = &mut params.predicates.target_vertices {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-    if let Some(input) = &mut params.predicates.include_edge_ids {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-    if let Some(input) = &mut params.predicates.include_edges {
-        input.input = remap_graph_side_input(input.input, input_remap);
-    }
-}
 
-fn remap_graph_side_input(input: NodeId, input_remap: &BTreeMap<NodeId, NodeId>) -> NodeId {
-    *input_remap.get(&input).expect("graph side-input binding must be present in graph input list")
+    fn graph_node(algorithm: GraphAlgorithm, params: GraphAlgorithmParams) -> PlanNode {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
+            GraphConstructionOptions::default(),
+            params,
+        );
+        let side_inputs = spec.params.side_input_node_ids().collect::<Vec<_>>();
+        let inputs = std::iter::once(NodeId(0)).chain(side_inputs).collect();
+        PlanNode::GraphAlgorithm(GraphAlgorithmNode { input: NodeId(0), inputs, spec })
+    }
+
+    fn side_input_cases() -> Vec<(&'static str, PlanNode)> {
+        let side = |index| GraphPredicateInput::new(NodeId(index), "vertex");
+        vec![
+            (
+                "personalized_pagerank",
+                graph_node(
+                    GraphAlgorithm::PersonalizedPageRank,
+                    GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
+                        personalization: GraphPageRankPersonalizationInput::new(NodeId(1), "vertex", "value"),
+                        ..GraphPersonalizedPageRankParams::default()
+                    }),
+                ),
+            ),
+            (
+                "similarity",
+                graph_node(
+                    GraphAlgorithm::Jaccard,
+                    GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+                        NodeId(1),
+                        "first",
+                        "second",
+                    ))),
+                ),
+            ),
+            (
+                "sssp",
+                graph_node(
+                    GraphAlgorithm::Sssp,
+                    GraphAlgorithmParams::Sssp(GraphSsspParams {
+                        source_vertex: GraphSsspSource::Input(side(1)),
+                        cutoff: None,
+                    }),
+                ),
+            ),
+            (
+                "betweenness",
+                graph_node(
+                    GraphAlgorithm::BetweennessCentrality,
+                    GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                        seeds: Some(GraphBetweennessSeeds::Input { input: side(1), row_count_upper_bound: 4 }),
+                        ..GraphBetweennessCentralityParams::default()
+                    }),
+                ),
+            ),
+            (
+                "edge_betweenness",
+                graph_node(
+                    GraphAlgorithm::EdgeBetweennessCentrality,
+                    GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                        seeds: Some(GraphBetweennessSeeds::Input { input: side(1), row_count_upper_bound: 4 }),
+                        ..GraphEdgeBetweennessCentralityParams::default()
+                    }),
+                ),
+            ),
+            (
+                "force_atlas2",
+                graph_node(
+                    GraphAlgorithm::ForceAtlas2,
+                    GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
+                        vertex_attributes: Some(GraphForceAtlas2VertexAttributesInput::new(
+                            NodeId(1),
+                            "vertex",
+                            Some("radius"),
+                            Option::<String>::None,
+                            Option::<String>::None,
+                        )),
+                        initial_positions: Some(GraphForceAtlas2InitialPositionsInput::new(
+                            NodeId(2),
+                            "vertex",
+                            "x",
+                            "y",
+                        )),
+                        ..GraphForceAtlas2Params::default()
+                    }),
+                ),
+            ),
+        ]
+    }
+
+    /// Renumbering a graph node moves its side-input bindings with its input
+    /// list, so a side input never keeps an id of the pre-rewrite plan.
+    #[test]
+    fn renumbering_moves_every_graph_side_input_with_the_input_list() {
+        for (label, node) in side_input_cases() {
+            let renumbered = clone_plan_node_with_inputs(&node, |input| NodeId(input.index() + 10));
+            let PlanNode::GraphAlgorithm(graph) = &renumbered else { unreachable!("{label} stays a graph node") };
+            let side_inputs = graph.spec.params.side_input_node_ids().collect::<Vec<_>>();
+            assert!(!side_inputs.is_empty(), "{label} has side inputs");
+            assert_eq!(side_inputs, graph.inputs[1..], "{label}");
+            assert!(side_inputs.iter().all(|input| input.index() >= 10), "{label}: {side_inputs:?}");
+        }
+    }
 }

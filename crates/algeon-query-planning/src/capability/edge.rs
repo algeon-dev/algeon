@@ -257,7 +257,9 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     let producer = plan.sink().input();
     let consumer = match plan.sink() {
         ResultSink::HostArrow { .. } => EdgeConsumer::Sink(ResultSinkKind::HostArrow),
-        ResultSink::GpuResident { .. } => EdgeConsumer::Sink(ResultSinkKind::GpuResident),
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
+            EdgeConsumer::Sink(ResultSinkKind::GpuResident)
+        },
     };
     let mut contract_kinds = Vec::new();
     if let Some(node) = plan.node(producer) {

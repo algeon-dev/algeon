@@ -10,6 +10,8 @@ use query_planning::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
     mode::StatisticalAggregateExecutionMode,
+    plan::PlanFingerprint,
+    policy::PlanningPolicy,
 };
 
 use super::{
@@ -77,7 +79,7 @@ pub struct ExecutionContext {
 
 #[derive(Debug)]
 pub(super) struct ActivatedDeferredResidentPhase {
-    consumer_execution_scope_fingerprint: String,
+    consumer_execution_scope_fingerprint: PlanFingerprint,
     inputs: Vec<ActivatedDeferredResidentInput>,
     capability_evidence: AttemptCapabilityEvidence,
     grant_identity: GrantIdentity,
@@ -85,7 +87,7 @@ pub(super) struct ActivatedDeferredResidentPhase {
 
 #[derive(Debug)]
 pub(super) struct ActivatedDeferredResidentInput {
-    producer_execution_scope_fingerprint: String,
+    producer_execution_scope_fingerprint: PlanFingerprint,
     input_name: String,
     input_schema: SchemaRef,
     input_memory_identity: cudf::DataFrameMemoryIdentity,
@@ -130,7 +132,7 @@ impl ActivatedDeferredResidentInput {
         if phase.grant_identity != grant.identity()
             || input.schema() != &self.input_schema
             || input.frame().memory_identity() != self.input_memory_identity
-            || input.producer_execution_scope() != Some(&self.producer_execution_scope_fingerprint)
+            || input.producer_execution_scope() != Some(self.producer_execution_scope_fingerprint)
             || row_count != self.input_row_count
             || (physical_bytes > 0 && !retained_by_grant)
         {
@@ -605,6 +607,12 @@ impl ExecutionContext {
     /// Returns grouped aggregate strategy execution policy.
     pub fn aggregate_strategy_execution_options(&self) -> AggregateStrategyExecutionOptions {
         self.device.aggregate_strategy_execution_options
+    }
+
+    /// Join and dynamic-filter thresholds a plan executed without an
+    /// admission artifact is admitted under.
+    pub fn planning_policy(&self) -> PlanningPolicy {
+        self.device.planning_policy
     }
 
     /// Returns expert local-throughput source chunk planning policy.

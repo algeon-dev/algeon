@@ -40,7 +40,7 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use query_engine::{
-    admission::{bounded_pipeline_decision, canonical_execution_scope_fingerprint, log_safe_fingerprint},
+    admission::bounded_pipeline_decision,
     observability::AttemptFinalDomainUsage,
     pipeline::{ShadowBytes, ShadowPipelineEstimate, ShadowTaskEnvelope},
     plan::QueryPlan,
@@ -230,7 +230,7 @@ async fn process_query(
         ));
     };
     let gpu_plan = native_plan.clone_with_deferred_host_materialization_sink();
-    let execution_scope = log_safe_fingerprint(&canonical_execution_scope_fingerprint(&gpu_plan));
+    let execution_scope = format!("blake3:{}", gpu_plan.execution_fingerprint());
     let frontend_outputs = frontend_output_records(&gpu_plan);
     let frontend_coverage = frontend_output_coverage(&gpu_plan);
 

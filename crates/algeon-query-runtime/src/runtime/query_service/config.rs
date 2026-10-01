@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use query_planning::{
-    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
-    dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
     mode::StatisticalAggregateExecutionMode,
+    policy::PlanningPolicy,
 };
 
 use crate::runtime::{LakehouseCacheFillConfig, SourceStorageProfile};
@@ -56,10 +56,9 @@ pub struct QueryExecutionConfig {
     /// Floating statistical aggregate execution contract copied into admitted
     /// contexts.
     pub statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-    /// Dynamic-filter execution policy assigned to native plans using service handles.
-    pub dynamic_filter_execution_options: DynamicFilterExecutionOptions,
-    /// Keyed-hash join strategy policy assigned to native plans using service handles.
-    pub keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
+    /// Join and dynamic-filter thresholds copied into admitted contexts; a
+    /// plan decided without an admission artifact is admitted under it.
+    pub planning_policy: PlanningPolicy,
     /// Grouped aggregate strategy execution policy copied into admitted contexts.
     pub aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert local-throughput source chunk planning policy copied into admitted contexts.
@@ -78,8 +77,7 @@ impl QueryExecutionConfig {
     pub(super) fn validate(&self) -> Result<()> {
         self.lakehouse_cache_fill.validate()?;
         self.source_scheduler_policy.validate()?;
-        self.dynamic_filter_execution_options.validate()?;
-        self.keyed_hash_join_strategy_options.validate()?;
+        self.planning_policy.validate()?;
         self.aggregate_strategy_execution_options.validate()?;
         self.source_chunk_planning_options.validate()?;
         validate_nonzero_config_field("max_source_chunk_bytes", self.max_source_chunk_bytes == 0)?;
@@ -108,8 +106,7 @@ impl Default for QueryExecutionConfig {
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
-            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
-            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+            planning_policy: PlanningPolicy::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             max_source_chunk_bytes: 64 * 1024 * 1024,

@@ -333,8 +333,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
                 join.spec.build_side = build_side;
             }
         }
-        let plan = QueryPlan::from_rewritten_parts(nodes, optimized.plan.root_id(), optimized.plan.sink().clone())
-            .with_rewrite_state_from(&optimized.plan);
+        let plan = optimized.plan.with_nodes_for_test(nodes);
         let analysis = plan.capability_analysis(rapids_analysis_context());
         if matches!(build_side, NativeJoinSide::Right) {
             assert!(

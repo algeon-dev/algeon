@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan};
+use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const STREAM_FANOUT_REPLAY_RULE_NAME: &str = "stream_fanout_replay";
@@ -100,9 +100,7 @@ pub(crate) fn optimize_stream_fanout_replay(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let applied_fanouts = rewriter.applied_fanouts;
     let changed = rewriter.changed;
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan)
-        .with_advisory_outputs_from(&plan);
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
     let direct_consumers = consumers_by_node(&plan);

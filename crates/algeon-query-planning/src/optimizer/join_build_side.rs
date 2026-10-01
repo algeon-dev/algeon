@@ -1,10 +1,9 @@
-use super::rewrite;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnRef, Expr},
     plan::{
-        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, advisory_output_bytes, advisory_output_rows,
-        estimated_output_bytes, estimated_output_rows,
+        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, RewrittenNodes, advisory_output_bytes,
+        advisory_output_rows, estimated_output_bytes, estimated_output_rows,
     },
 };
 
@@ -257,13 +256,7 @@ pub(crate) fn optimize_join_build_side_selection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    JoinBuildSideSelectionResult {
-        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan),
-        change,
-        diagnostics,
-    }
+    JoinBuildSideSelectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root)), change, diagnostics }
 }
 
 fn join_build_side_selection_supported(join: &JoinNode) -> bool {

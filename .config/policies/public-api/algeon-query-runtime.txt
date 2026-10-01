@@ -1772,6 +1772,7 @@ pub fn query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> query_pl
 pub fn query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
 pub fn query_runtime::runtime::ExecutionContext::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
 pub fn query_runtime::runtime::ExecutionContext::memory_grant(&self) -> query_planning::error::Result<core::option::Option<query_runtime::runtime::gpu::ledger::MemoryGrant>>
+pub fn query_runtime::runtime::ExecutionContext::planning_policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn query_runtime::runtime::ExecutionContext::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_runtime::runtime::ExecutionContext::runtime(&self) -> query_planning::error::Result<cudf::runtime::owner::Runtime>
 pub fn query_runtime::runtime::ExecutionContext::runtime_execution_scope(&self) -> core::option::Option<&query_runtime::observability::RuntimeExecutionObservationScope>
@@ -1999,13 +2000,12 @@ pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_h
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_owner(self, query_runtime::observability::RuntimeObservationOwner) -> Self
 pub struct query_runtime::runtime::QueryExecutionConfig
 pub query_runtime::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: query_planning::capability::aggregate::AggregateStrategyExecutionOptions
-pub query_runtime::runtime::QueryExecutionConfig::dynamic_filter_execution_options: query_planning::dynamic_filter::DynamicFilterExecutionOptions
-pub query_runtime::runtime::QueryExecutionConfig::keyed_hash_join_strategy_options: query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub query_runtime::runtime::QueryExecutionConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
 pub query_runtime::runtime::QueryExecutionConfig::max_retry_attempts: usize
 pub query_runtime::runtime::QueryExecutionConfig::max_row_groups_per_chunk: usize
 pub query_runtime::runtime::QueryExecutionConfig::max_source_chunk_bytes: u64
 pub query_runtime::runtime::QueryExecutionConfig::min_retry_chunk_row_groups: usize
+pub query_runtime::runtime::QueryExecutionConfig::planning_policy: query_planning::policy::PlanningPolicy
 pub query_runtime::runtime::QueryExecutionConfig::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_runtime::runtime::QueryExecutionConfig::source_chunk_planning_options: query_planning::chunk::policy::SourceChunkPlanningOptions
 pub query_runtime::runtime::QueryExecutionConfig::source_scheduler_policy: query_planning::execution_contracts::SourceSchedulerPolicy

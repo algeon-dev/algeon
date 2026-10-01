@@ -10,7 +10,7 @@ use crate::{
     optimizer::NativeOptimizerChange,
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
-        ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
+        ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior,
     },
 };
 
@@ -60,11 +60,8 @@ pub(crate) fn optimize_aggregate_join_pushdown(
         return AggregateJoinPushdownResult { plan, change: NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let (compacted, remap) = rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink());
     AggregateJoinPushdownResult {
-        plan: compacted
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from_remapped(&plan, &remap),
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo)),
         change: NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

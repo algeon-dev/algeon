@@ -6,11 +6,11 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::{
-    AggregateNode, AggregateSpec, EdgeNormalizeNode, EdgeNormalizeSpec, Expr, Field, FilterNode, GraphAlgorithmNode,
-    GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec, MlAlgorithmNode,
-    MlAlgorithmSpec, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink,
-    Schema, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode,
-    VectorAlgorithmSpec, WindowNode, WindowSpec, uniqueness::partial_plan_node_is_unique_on,
+    AggregateNode, AggregateSpec, Annotations, EdgeNormalizeNode, EdgeNormalizeSpec, Expr, Field, FilterNode,
+    GraphAlgorithmNode, GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec,
+    MlAlgorithmNode, MlAlgorithmSpec, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
+    QueryPlan, ResultSink, Schema, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
+    VectorAlgorithmNode, VectorAlgorithmSpec, WindowNode, WindowSpec, uniqueness::partial_plan_node_is_unique_on,
 };
 use crate::error::{QueryError, QueryErrorCode, Result};
 
@@ -310,13 +310,9 @@ impl QueryPlanBuilder {
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
         QueryPlan {
             nodes: self.nodes,
-            advisory_outputs: self.advisory_outputs,
+            annotations: Annotations { dynamic_filter_routes: Vec::new(), advisory: self.advisory_outputs },
             root,
             sink,
-            deferred_host_sink_schema: None,
-            dynamic_filter_routes: Vec::new(),
-            dynamic_filter_execution_options: Default::default(),
-            keyed_hash_join_strategy_options: Default::default(),
         }
     }
 

@@ -103,7 +103,7 @@ pub use stream_fanout_replay::{
     StreamFanoutReplayOptions,
 };
 
-use crate::{backend::AnalysisContext, capability::KeyedHashJoinStrategyOptions, error::Result, plan::QueryPlan};
+use crate::{backend::AnalysisContext, error::Result, plan::QueryPlan};
 
 /// Native optimizer pass configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -132,8 +132,6 @@ pub struct NativeOptimizerOptions {
     pub shared_subplan_materialization: SharedSubplanMaterializationOptions,
     /// Options for discovering native dynamic-filter producer/consumer routes.
     pub dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions,
-    /// Keyed-hash join strategy policy captured into optimized plans.
-    pub keyed_hash_join_strategy: KeyedHashJoinStrategyOptions,
 }
 
 impl NativeOptimizerOptions {
@@ -152,7 +150,6 @@ impl NativeOptimizerOptions {
             local_parquet_source_reuse: LocalParquetSourceReuseOptions::disabled(),
             shared_subplan_materialization: SharedSubplanMaterializationOptions::disabled(),
             dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::disabled(),
-            keyed_hash_join_strategy: KeyedHashJoinStrategyOptions::default(),
         }
     }
 
@@ -166,8 +163,6 @@ impl NativeOptimizerOptions {
         self.dimension_derived_row_group_pruning.validate()?;
         self.join_build_side_selection.validate()?;
         self.local_parquet_source_reuse.validate()?;
-        self.dynamic_filter_route_discovery.execution.validate()?;
-        self.keyed_hash_join_strategy.validate()?;
         Ok(())
     }
 }
@@ -279,7 +274,6 @@ pub fn optimize_query_plan(
     ctx: AnalysisContext<'_>,
     resolver: &dyn LocalParquetPruningResolver,
 ) -> NativeOptimizerResult {
-    let plan = plan.with_keyed_hash_join_strategy_options(options.keyed_hash_join_strategy);
     let projection_simplification_result =
         projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification);
     let semijoin_result =

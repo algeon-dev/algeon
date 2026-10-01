@@ -15,8 +15,7 @@ use fnv::FnvHasher;
 /// the entries in key order, which makes the result independent of `HashMap`
 /// iteration order.
 ///
-/// Not collision resistant; use [`log_safe_fingerprint`] where a value must
-/// not be recoverable or forgeable.
+/// Not collision resistant.
 #[derive(Debug, Clone)]
 pub struct StableFnv1a64 {
     state: u64,
@@ -98,10 +97,6 @@ pub fn escape_kv_delimited(value: &str) -> String {
         }
     }
     escaped
-}
-
-pub fn log_safe_fingerprint(value: &str) -> String {
-    format!("blake3:{}", blake3::hash(value.as_bytes()).to_hex())
 }
 
 #[cfg(test)]

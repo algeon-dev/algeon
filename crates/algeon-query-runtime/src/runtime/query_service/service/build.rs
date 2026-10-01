@@ -228,6 +228,7 @@ impl QueryService {
                     source_chunk_planning_options: config.source_chunk_planning_options,
                     statistical_aggregate_execution_mode: config.statistical_aggregate_execution_mode,
                     aggregate_strategy_execution_options: config.aggregate_strategy_execution_options,
+                    planning_policy: config.planning_policy,
                 };
                 Ok((device_ordinal, Arc::new(device_runtime)))
             })

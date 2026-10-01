@@ -9,8 +9,7 @@ use std::collections::HashSet;
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, canonical_execution_scope_fingerprint},
-    util::log_safe_fingerprint,
+    plan::{DeferredGraphExecutionScopeIdentity, PlanFingerprint, QueryPlan, SchemaFingerprint},
 };
 
 /// One GPU UDTF occurrence in a DataFusion-owned execution graph. Every
@@ -20,9 +19,9 @@ use crate::{
 pub struct AttemptExecutionOccurrence {
     occurrence_id: String,
     producer_identity: String,
-    execution_scope_fingerprint: String,
+    execution_scope_fingerprint: PlanFingerprint,
     deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
-    output_schema_fingerprint: String,
+    output_schema_fingerprint: SchemaFingerprint,
     predecessors: Vec<String>,
 }
 
@@ -52,22 +51,21 @@ impl AttemptExecutionOccurrence {
         Self {
             occurrence_id: occurrence_id.into(),
             producer_identity: producer_identity.into(),
-            execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
+            execution_scope_fingerprint: plan.execution_fingerprint(),
             deferred_execution_scope_identity: deferred_graph_facts
                 .then(|| DeferredGraphExecutionScopeIdentity::for_plan(plan)),
-            output_schema_fingerprint: log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
+            output_schema_fingerprint: SchemaFingerprint::of(plan.output_schema()),
             predecessors,
         }
     }
 
     pub(crate) fn matches_plan(&self, plan: &QueryPlan) -> bool {
-        let exact = canonical_execution_scope_fingerprint(plan);
-        self.execution_scope_fingerprint == exact
+        self.execution_scope_fingerprint == plan.execution_fingerprint()
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|expected| expected.matches(plan))
     }
 
     pub(crate) fn matches_schema(&self, plan: &QueryPlan) -> bool {
-        self.output_schema_fingerprint == log_safe_fingerprint(&format!("{:?}", plan.output_schema()))
+        self.output_schema_fingerprint == SchemaFingerprint::of(plan.output_schema())
     }
 }
 
@@ -166,12 +164,6 @@ impl AttemptExecutionManifest {
             if !seen.insert(occurrence.occurrence_id.as_str()) {
                 return Err(manifest_error("duplicate_execution_occurrence_id", Some(&occurrence.occurrence_id)));
             }
-            if occurrence.execution_scope_fingerprint.is_empty() || occurrence.output_schema_fingerprint.is_empty() {
-                return Err(manifest_error(
-                    "incomplete_execution_occurrence_identity",
-                    Some(&occurrence.occurrence_id),
-                ));
-            }
             for predecessor in &occurrence.predecessors {
                 if predecessor == &occurrence.occurrence_id || !seen.contains(predecessor.as_str()) {
                     return Err(manifest_error("invalid_execution_predecessor", Some(&occurrence.occurrence_id)));
@@ -187,23 +179,23 @@ impl AttemptExecutionManifest {
 #[doc(hidden)]
 pub struct AttemptProducerOccurrence {
     occurrence_id: String,
-    execution_scope_fingerprint: String,
+    execution_scope_fingerprint: PlanFingerprint,
     deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
-    output_schema_fingerprint: String,
+    output_schema_fingerprint: SchemaFingerprint,
 }
 
 impl AttemptProducerOccurrence {
     #[doc(hidden)]
     pub fn new(
         occurrence_id: impl Into<String>,
-        execution_scope_fingerprint: impl Into<String>,
-        output_schema_fingerprint: impl Into<String>,
+        execution_scope_fingerprint: PlanFingerprint,
+        output_schema_fingerprint: SchemaFingerprint,
     ) -> Self {
         Self {
             occurrence_id: occurrence_id.into(),
-            execution_scope_fingerprint: execution_scope_fingerprint.into(),
+            execution_scope_fingerprint,
             deferred_execution_scope_identity: None,
-            output_schema_fingerprint: output_schema_fingerprint.into(),
+            output_schema_fingerprint,
         }
     }
 
@@ -219,18 +211,18 @@ impl AttemptProducerOccurrence {
     }
 
     #[doc(hidden)]
-    pub fn execution_scope_fingerprint(&self) -> &str {
-        &self.execution_scope_fingerprint
+    pub fn execution_scope_fingerprint(&self) -> PlanFingerprint {
+        self.execution_scope_fingerprint
     }
 
     #[doc(hidden)]
-    pub fn output_schema_fingerprint(&self) -> &str {
-        &self.output_schema_fingerprint
+    pub fn output_schema_fingerprint(&self) -> SchemaFingerprint {
+        self.output_schema_fingerprint
     }
 
     #[doc(hidden)]
     pub fn matches_execution_plan(&self, plan: &QueryPlan) -> bool {
-        self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+        self.execution_scope_fingerprint == plan.execution_fingerprint()
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|identity| identity.matches(plan))
     }
 }
@@ -239,8 +231,8 @@ impl AttemptProducerOccurrence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct AttemptExecutionScope {
-    execution_scope_fingerprint: String,
-    output_schema_fingerprint: String,
+    execution_scope_fingerprint: PlanFingerprint,
+    output_schema_fingerprint: SchemaFingerprint,
     producer_occurrences: Vec<AttemptProducerOccurrence>,
 }
 
@@ -248,20 +240,20 @@ impl AttemptExecutionScope {
     #[doc(hidden)]
     pub fn for_query_plan(plan: &QueryPlan) -> Self {
         Self {
-            execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
-            output_schema_fingerprint: log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
+            execution_scope_fingerprint: plan.execution_fingerprint(),
+            output_schema_fingerprint: SchemaFingerprint::of(plan.output_schema()),
             producer_occurrences: Vec::new(),
         }
     }
 
     #[doc(hidden)]
-    pub fn execution_scope_fingerprint(&self) -> &str {
-        &self.execution_scope_fingerprint
+    pub fn execution_scope_fingerprint(&self) -> PlanFingerprint {
+        self.execution_scope_fingerprint
     }
 
     #[doc(hidden)]
-    pub fn output_schema_fingerprint(&self) -> &str {
-        &self.output_schema_fingerprint
+    pub fn output_schema_fingerprint(&self) -> SchemaFingerprint {
+        self.output_schema_fingerprint
     }
 
     #[doc(hidden)]
@@ -275,15 +267,15 @@ impl AttemptExecutionScope {
 
     #[doc(hidden)]
     pub fn matches(&self, plan: &QueryPlan) -> bool {
-        self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+        self.execution_scope_fingerprint == plan.execution_fingerprint()
     }
 
     #[doc(hidden)]
-    pub fn matches_execution_scope_fingerprint(&self, execution_scope_fingerprint: &str) -> bool {
+    pub fn matches_execution_scope_fingerprint(&self, execution_scope_fingerprint: PlanFingerprint) -> bool {
         self.execution_scope_fingerprint == execution_scope_fingerprint
     }
 
-    pub(crate) fn producer_occurrence_scope_count(&self, execution_scope_fingerprint: &str) -> usize {
+    pub(crate) fn producer_occurrence_scope_count(&self, execution_scope_fingerprint: PlanFingerprint) -> usize {
         self.producer_occurrences
             .iter()
             .filter(|occurrence| occurrence.execution_scope_fingerprint == execution_scope_fingerprint)
@@ -303,15 +295,6 @@ impl AttemptExecutionScope {
             if !occurrence_ids.insert(&occurrence.occurrence_id) {
                 return Err(manifest_error("duplicate_producer_occurrence_id", Some(&occurrence.occurrence_id)));
             }
-            if occurrence.execution_scope_fingerprint.is_empty() {
-                return Err(manifest_error("missing_producer_occurrence_scope", Some(&occurrence.occurrence_id)));
-            }
-            if occurrence.output_schema_fingerprint.is_empty() {
-                return Err(manifest_error("missing_producer_occurrence_schema", Some(&occurrence.occurrence_id)));
-            }
-        }
-        if self.execution_scope_fingerprint.is_empty() {
-            return Err(manifest_error("missing_consumer_scope", None));
         }
         Ok(())
     }
@@ -344,18 +327,25 @@ mod tests {
     };
 
     fn scope_with_occurrences(occurrences: Vec<AttemptProducerOccurrence>) -> AttemptExecutionScope {
-        AttemptExecutionScope {
-            execution_scope_fingerprint: "consumer".to_string(),
-            output_schema_fingerprint: "consumer-schema".to_string(),
-            producer_occurrences: occurrences,
-        }
+        let mut scope = AttemptExecutionScope::for_query_plan(&resident_plan("consumer", None));
+        scope.producer_occurrences = occurrences;
+        scope
+    }
+
+    fn producer_occurrence(occurrence_id: &str, producer: &str) -> AttemptProducerOccurrence {
+        let plan = resident_plan(producer, None);
+        AttemptProducerOccurrence::new(
+            occurrence_id,
+            plan.execution_fingerprint(),
+            SchemaFingerprint::of(plan.output_schema()),
+        )
     }
 
     #[test]
     fn occurrence_manifest_rejects_duplicate_runtime_identity() {
         let scope = scope_with_occurrences(vec![
-            AttemptProducerOccurrence::new("left", "producer-a", "schema"),
-            AttemptProducerOccurrence::new("left", "producer-b", "schema"),
+            producer_occurrence("left", "producer-a"),
+            producer_occurrence("left", "producer-b"),
         ]);
 
         let error = scope.validate_manifest_core().expect_err("duplicate occurrence identity must be ambiguous");
@@ -364,18 +354,12 @@ mod tests {
     }
 
     #[test]
-    fn occurrence_manifest_rejects_missing_identity_scope_and_schema() {
-        for (occurrence, reason) in [
-            (AttemptProducerOccurrence::new("", "producer", "schema"), "missing_producer_occurrence_id"),
-            (AttemptProducerOccurrence::new("input", "", "schema"), "missing_producer_occurrence_scope"),
-            (AttemptProducerOccurrence::new("input", "producer", ""), "missing_producer_occurrence_schema"),
-        ] {
-            let error = scope_with_occurrences(vec![occurrence])
-                .validate_manifest_core()
-                .expect_err("incomplete occurrence identity must reject");
-            assert_eq!(error.fact_value("reason"), Some(reason));
-            assert_eq!(error.fact_value("validation_stage"), Some("manifest"));
-        }
+    fn occurrence_manifest_rejects_missing_occurrence_id() {
+        let error = scope_with_occurrences(vec![producer_occurrence("", "producer")])
+            .validate_manifest_core()
+            .expect_err("an occurrence without an id must reject");
+        assert_eq!(error.fact_value("reason"), Some("missing_producer_occurrence_id"));
+        assert_eq!(error.fact_value("validation_stage"), Some("manifest"));
     }
 
     fn resident_plan(name: &str, row_bound: Option<u64>) -> QueryPlan {

@@ -26,6 +26,7 @@ use crate::{
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
     pipeline::{CompiledPipeline, PipelineEdgeKind, SinkBoundaryKind},
     plan::{NodeId, PlanNode, QueryPlan, ResultSink},
+    policy::PlanningPolicy,
     prepared::{
         aggregate_spec_has_floating_statistical_aggregate, datafusion_exact_host_accumulator,
         datafusion_exact_host_group_key_supported,
@@ -46,6 +47,7 @@ pub struct BoundedPipelineAdmission {
     pipeline: CompiledPipeline,
     sink_kind: SinkBoundaryKind,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    policy: PlanningPolicy,
     scope: AttemptExecutionScope,
 }
 
@@ -68,6 +70,12 @@ impl BoundedPipelineAdmission {
     /// Execution mode the admission decision was made under.
     pub const fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
         self.statistical_aggregate_execution_mode
+    }
+
+    /// Execution policy the pipeline was admitted under; execution reads its
+    /// join and dynamic-filter thresholds from here.
+    pub const fn policy(&self) -> PlanningPolicy {
+        self.policy
     }
 
     /// Plan-scope identity the admitted pipeline was compiled for.
@@ -158,7 +166,7 @@ fn binding_rejection(
 fn sink_boundary_kind_for_plan(plan: &QueryPlan) -> SinkBoundaryKind {
     match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
-        ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => SinkBoundaryKind::GpuResidentOutput,
     }
 }
 
@@ -230,8 +238,12 @@ pub fn bounded_pipeline_decision(
     }
     match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => {
-            let mut admission =
-                capability_admission_from_capability_first(admission, plan, statistical_aggregate_execution_mode)?;
+            let mut admission = capability_admission_from_capability_first(
+                admission,
+                plan,
+                statistical_aggregate_execution_mode,
+                ctx.policy(),
+            )?;
             // The exact and tolerant statistical envelopes admit the same
             // compiled pipeline; only the diagnostic label differs with the
             // execution mode.
@@ -390,6 +402,7 @@ fn capability_admission_from_capability_first(
     admission: CapabilityFirstPipelineAdmission,
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    policy: PlanningPolicy,
 ) -> Result<BoundedPipelineAdmission> {
     let envelope = admission.envelope().ok_or_else(|| {
         QueryError::new(
@@ -413,6 +426,7 @@ fn capability_admission_from_capability_first(
         sink_kind: sink_boundary_kind_for_plan(plan),
         scope: AttemptExecutionScope::for_query_plan(plan),
         statistical_aggregate_execution_mode,
+        policy,
         envelope,
         pipeline,
     })
@@ -437,7 +451,7 @@ fn compiled_bounded_pipeline_required_error(
     projection: &CapabilityRejectionProjection,
 ) -> QueryError {
     let sink_kind = match plan.sink() {
-        ResultSink::GpuResident { .. } => "gpu_resident",
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => "gpu_resident",
         ResultSink::HostArrow { .. } => "host_arrow",
     };
     let mut error = QueryError::new(

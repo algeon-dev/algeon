@@ -41,6 +41,7 @@ pub mod optimizer;
 pub mod parquet_stats;
 pub mod pipeline;
 pub mod plan;
+pub mod policy;
 #[doc(hidden)]
 pub mod prepared;
 #[doc(hidden)]

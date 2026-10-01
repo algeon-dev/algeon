@@ -51,6 +51,7 @@ use query_engine::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
@@ -159,7 +160,11 @@ mod cudf {
         }
 
         pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
-            preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+            preflight_bounded_query_plan(
+                plan,
+                StatisticalAggregateExecutionMode::default(),
+                PlanningPolicy::default(),
+            )?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             self.acquire_context_with_evidence_items([evidence])
         }
@@ -169,7 +174,11 @@ mod cudf {
             plan: &QueryPlan,
             owner: RuntimeObservationOwner,
         ) -> Result<PipelineTestContext> {
-            preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+            preflight_bounded_query_plan(
+                plan,
+                StatisticalAggregateExecutionMode::default(),
+                PlanningPolicy::default(),
+            )?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;

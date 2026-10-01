@@ -34,7 +34,7 @@ pub const fn rapids_backend() -> &'static RapidsBackend {
 }
 
 /// An analysis context bound to the native engine's backend.
-pub const fn rapids_analysis_context() -> AnalysisContext<'static> {
+pub fn rapids_analysis_context() -> AnalysisContext<'static> {
     AnalysisContext::new(rapids_backend())
 }
 

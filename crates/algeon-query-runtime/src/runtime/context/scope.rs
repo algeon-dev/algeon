@@ -10,7 +10,7 @@ use std::sync::Arc;
 use cudf::{Runtime as CudfRuntime, StreamReservationLease};
 use query_planning::{
     admission::AttemptCapabilityEvidence, capability::AggregateStrategyExecutionOptions,
-    chunk::SourceChunkPlanningOptions, mode::StatisticalAggregateExecutionMode,
+    chunk::SourceChunkPlanningOptions, mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy,
 };
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -66,6 +66,7 @@ pub(in crate::runtime) struct DeviceRuntime {
     pub(in crate::runtime) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(in crate::runtime) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     pub(in crate::runtime) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    pub(in crate::runtime) planning_policy: PlanningPolicy,
 }
 
 /// Query scope: a standalone query, or the admitted attempt that owns the

@@ -215,12 +215,8 @@ impl AdmissionTestHandle {
         self.handle.statistical_aggregate_execution_mode()
     }
 
-    fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
-        self.handle.dynamic_filter_execution_options()
-    }
-
-    fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
-        self.handle.keyed_hash_join_strategy_options()
+    fn planning_policy(&self) -> PlanningPolicy {
+        self.handle.planning_policy()
     }
 
     fn aggregate_strategy_execution_options(

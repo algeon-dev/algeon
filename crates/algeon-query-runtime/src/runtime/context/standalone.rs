@@ -302,6 +302,7 @@ impl StandaloneScopes {
                 source_chunk_planning_options,
                 statistical_aggregate_execution_mode: Default::default(),
                 aggregate_strategy_execution_options: Default::default(),
+                planning_policy: Default::default(),
             },
             runtime,
             memory_control_policy,

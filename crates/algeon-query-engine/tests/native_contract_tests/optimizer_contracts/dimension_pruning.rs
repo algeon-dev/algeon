@@ -1084,16 +1084,11 @@ fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
         Arc::clone(&schema),
     );
     let route = test_dynamic_filter_route(source_node_id);
-    let execution = custom_dynamic_filter_execution_options();
-    let plan = builder
-        .finish_with_host_sink(filter)
-        .with_dynamic_filter_execution_options(execution)
-        .with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(filter).with_dynamic_filter_routes(vec![route.clone()]);
 
     let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context());
 
     assert_eq!(result.dynamic_filter_routes(), &[route]);
-    assert_eq!(result.dynamic_filter_execution_options(), execution);
     let source = local_parquet_source(&result, source_node_id).unwrap();
     assert!(source.reader_predicate.as_ref().is_some_and(|predicate| {
         *predicate == Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))
@@ -1129,11 +1124,7 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
         Arc::clone(&schema),
     );
     let route = test_dynamic_filter_route(fact);
-    let execution = custom_dynamic_filter_execution_options();
-    let plan = builder
-        .finish_with_host_sink(join)
-        .with_dynamic_filter_execution_options(execution)
-        .with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(join).with_dynamic_filter_routes(vec![route.clone()]);
 
     let result = optimize_dimension_derived_row_group_pruning(
         plan,
@@ -1145,7 +1136,6 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.applied_count, 1);
     assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
-    assert_eq!(result.plan.dynamic_filter_execution_options(), execution);
     let source = local_parquet_source(&result.plan, fact).unwrap();
     assert_eq!(source.files[0].row_groups, Some(vec![1]));
 
@@ -1162,10 +1152,6 @@ fn test_dynamic_filter_route(source_node_id: NodeId) -> DynamicFilterRoute {
         vec![DynamicFilterKind::Range],
         DynamicFilterConsumerLowering::ReaderPredicate,
     )
-}
-
-fn custom_dynamic_filter_execution_options() -> DynamicFilterExecutionOptions {
-    DynamicFilterExecutionOptions::default().with_max_build_rows(17)
 }
 
 fn write_i64_parquet(path: &Path, schema: Arc<Schema>, values: &[i64], row_group_rows: usize) {

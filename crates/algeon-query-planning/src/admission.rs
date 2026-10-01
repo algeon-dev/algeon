@@ -36,7 +36,4 @@ pub use support::{
 #[doc(hidden)]
 pub use crate::capability::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 #[doc(hidden)]
-pub use crate::{
-    plan::{DeferredGraphExecutionScopeIdentity, canonical_execution_scope_fingerprint},
-    util::log_safe_fingerprint,
-};
+pub use crate::plan::DeferredGraphExecutionScopeIdentity;

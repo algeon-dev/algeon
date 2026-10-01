@@ -9,6 +9,7 @@ use query_engine::{
     expr::ColumnRef,
     pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId, compile_pipeline},
     plan::NodeId,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -406,8 +407,15 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     let metrics_recorder = ExecutionMetrics::detached("metrics");
     let (state, batch) = {
         let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics_recorder,
+        )
+        .unwrap();
         let state = scheduler.run(&mut executor).unwrap();
         (state, executor.take_host_output().unwrap())
     };
@@ -438,6 +446,7 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
         let mut executor = CompiledGpuTaskExecutor::new(
             &cancellation_metrics_context,
             &plan,
+            PlanningPolicy::default(),
             &pipeline,
             &gpu_inputs,
             &cancellation_metrics_recorder,

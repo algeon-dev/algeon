@@ -11,7 +11,7 @@ use crate::{
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn,
         JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
-        QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
+        QueryPlan, RewrittenNodes, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
     },
     source::SourceNode,
 };
@@ -145,11 +145,8 @@ pub(crate) fn optimize_join_filter_reassociation(
         let diagnostics = rewriter.diagnostics;
         return JoinFilterReassociationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
-    let (compacted, remap) = rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink());
     JoinFilterReassociationResult {
-        plan: compacted
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from_remapped(&plan, &remap),
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo)),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }
@@ -1371,7 +1368,9 @@ mod tests {
     use super::*;
     use crate::{
         expr::LiteralValue,
-        plan::{JoinKey, JoinSpec, QueryPlanBuilder},
+        plan::{
+            AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, JoinKey, JoinSpec, QueryPlanBuilder,
+        },
         source::{GpuResidentSource, SourceNode},
     };
 
@@ -1439,7 +1438,45 @@ mod tests {
         assert_eq!(second.diagnostics.applied_count, 0);
     }
 
+    /// The rule rebuilds the plan in its own visit order, so the right source
+    /// moves to a new id; its advisory binding moves with it unchanged.
+    #[test]
+    fn residual_pushdown_keeps_advisory_on_the_renumbered_unchanged_source() {
+        let (mut builder, join, right) = residual_join_builder(and(left_eq("l_flag", 1), right_gt("r_price", 10)));
+        let statistics =
+            AdvisoryOutputStatistics { rows: AdvisoryStatistic::Inexact(100), bytes: AdvisoryStatistic::Inexact(800) };
+        builder.set_advisory_output(AdvisoryOutputBinding {
+            node: right,
+            schema: schema(vec![field("r_key"), field("r_price")]),
+            frontend: "test frontend".to_owned(),
+            frontend_version: "1".to_owned(),
+            statistics,
+            unknown_reason: None,
+        });
+
+        let result = optimize_join_filter_reassociation(
+            builder.finish_gpu_resident(join),
+            &residual_pushdown_options(),
+            &dimension_pruning::NoDimensionPruningFacts,
+        );
+
+        assert!(result.change.changed());
+        let [binding] = result.plan.advisory_outputs() else {
+            panic!("one advisory binding: {:?}", result.plan.advisory_outputs());
+        };
+        let node = &result.plan.node(binding.node).unwrap().kind;
+        let PlanNode::Source(source) = node else { panic!("binding must stay on a source: {node:?}") };
+        assert!(matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == "right"));
+        assert_eq!(binding.statistics, statistics);
+        assert_eq!(binding.unknown_reason, None);
+    }
+
     fn residual_join_plan(residual: Expr) -> QueryPlan {
+        let (builder, join, _right) = residual_join_builder(residual);
+        builder.finish_gpu_resident(join)
+    }
+
+    fn residual_join_builder(residual: Expr) -> (QueryPlanBuilder, NodeId, NodeId) {
         let mut builder = QueryPlanBuilder::new();
         let left = builder.add_source(source("left", vec![field("l_key"), field("l_flag")]));
         let right = builder.add_source(source("right", vec![field("r_key"), field("r_price")]));
@@ -1459,7 +1496,7 @@ mod tests {
             ]),
             output_schema,
         );
-        builder.finish_gpu_resident(join)
+        (builder, join, right)
     }
 
     fn residual_pushdown_options() -> JoinFilterReassociationOptions {

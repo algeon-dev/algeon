@@ -10,7 +10,7 @@ use crate::{
     expr::{BinaryOp, ColumnRef, Expr},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
-        PlanNode, ProjectionNode, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes,
+        PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior, estimated_output_bytes,
     },
 };
 
@@ -239,13 +239,7 @@ pub(crate) fn optimize_outer_join_null_rejection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    OuterJoinNullRejectionResult {
-        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan),
-        change,
-        diagnostics,
-    }
+    OuterJoinNullRejectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root)), change, diagnostics }
 }
 
 #[derive(Debug, Clone)]
