@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use arrow::{
     array::{Float32Array, Int64Array, UInt32Array},
@@ -8,7 +11,7 @@ use arrow::{
 use cudf::DataFrame;
 use query_engine::{
     error::{QueryError, QueryErrorCode},
-    exec::{QueryExecutionRequest, output::QueryOutput},
+    exec::{QueryExecutionRequest, output::QueryOutput, set_vector_after_index_build_hook_for_tests},
     expr::Expr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
@@ -211,6 +214,118 @@ fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
         assert_attempt_domain_released(&admitted);
         admitted.finish();
     }
+}
+
+static DOMAIN_BYTES_AFTER_INDEX_BUILD: AtomicU64 = AtomicU64::new(0);
+
+/// Installs the after-index-build hook for one test and removes it on drop, so a
+/// failed assertion cannot leave the process-wide hook set.
+struct AfterIndexBuildHook;
+
+impl AfterIndexBuildHook {
+    fn install(hook: fn(&ExecutionContext)) -> Self {
+        set_vector_after_index_build_hook_for_tests(Some(hook));
+        Self
+    }
+}
+
+impl Drop for AfterIndexBuildHook {
+    fn drop(&mut self) {
+        set_vector_after_index_build_hook_for_tests(None);
+    }
+}
+
+fn record_domain_bytes_and_cancel(context: &ExecutionContext) {
+    let usage = context
+        .attempt_allocation_domain_usage()
+        .expect("allocation-domain usage samples")
+        .expect("admitted context owns one allocation domain");
+    DOMAIN_BYTES_AFTER_INDEX_BUILD.store(usage.current_bytes, Ordering::SeqCst);
+    context.cancellation().cancel();
+}
+
+#[test]
+fn ivf_flat_cancellation_after_index_build_releases_query_allocations() {
+    let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
+    let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
+    let dataset_batch = RecordBatch::try_new(
+        Arc::clone(&dataset_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5])),
+            Arc::new(Float32Array::from(vec![0.0, 0.1, 0.2, 10.0, 10.1, 10.2])),
+        ],
+    )
+    .unwrap();
+    let query_batch = RecordBatch::try_new(
+        Arc::clone(&query_schema),
+        vec![Arc::new(Int64Array::from(vec![99])), Arc::new(Float32Array::from(vec![0.0]))],
+    )
+    .unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let dataset =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&dataset_schema))));
+    let queries =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&query_schema))));
+    let mut params = VectorIvfFlatParams::new(
+        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+        1,
+        VectorDistanceMetric::L2Expanded,
+        2,
+    );
+    params.n_probes = 1;
+    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::IvfFlat,
+        VectorAlgorithmParams::IvfFlat(params),
+        vector_knn_output_schema(DataType::Int64, DataType::Int64),
+    ));
+    let plan = builder.finish_with_host_sink(root);
+    let context = backend_context();
+    let admitted = context.admit_plan(&plan).expect("IVF-Flat plan admission");
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for (name, schema, batch) in
+        [("dataset", &dataset_schema, &dataset_batch), ("queries", &query_schema, &query_batch)]
+    {
+        gpu_inputs.insert(
+            name.into(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
+                Arc::clone(schema),
+            )
+            .unwrap(),
+        );
+    }
+    let domain_bytes = |context: &ExecutionContext| {
+        context
+            .attempt_allocation_domain_usage()
+            .expect("allocation-domain usage samples")
+            .expect("admitted context owns one allocation domain")
+            .current_bytes
+    };
+    let bytes_before = domain_bytes(&admitted);
+
+    let hook = AfterIndexBuildHook::install(record_domain_bytes_and_cancel);
+    let (result, _, _) = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+    )
+    .into_parts();
+    drop(hook);
+
+    let error = result.err().expect("cancelled after the index build");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.operation(), "query_engine.vector_algorithm.after_index_build");
+    assert!(
+        DOMAIN_BYTES_AFTER_INDEX_BUILD.load(Ordering::SeqCst) > bytes_before,
+        "the index build allocates inside the attempt domain"
+    );
+    assert_eq!(domain_bytes(&admitted), bytes_before, "the cancelled build releases its index allocations");
+    drop(gpu_inputs);
+    drop(runtime);
+    assert_attempt_domain_released(&admitted);
+    admitted.finish();
 }
 
 #[test]

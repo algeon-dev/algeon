@@ -39,6 +39,30 @@ pub(super) fn write_sorting_columns_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+/// Rows ascend by `key` across 16 row groups, and the footer declares that
+/// order through `sorting_columns`.
+pub(super) fn write_multi_row_group_sorting_columns_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+    ]));
+    let keys = (0..4_096).collect::<Vec<i32>>();
+    let payloads = keys.iter().map(|key| (key * 7_919) % 1_000).collect::<Vec<i32>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(keys)), Arc::new(Int32Array::from(payloads))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(256))
+        .set_sorting_columns(Some(vec![SortingColumn { column_idx: 0, descending: false, nulls_first: false }]))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_filtered_empty_rollup_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

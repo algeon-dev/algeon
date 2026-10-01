@@ -304,6 +304,36 @@ async fn drop_view_on_table_reports_object_type_mismatch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_a_missing_table_or_view_reports_object_not_found() {
+    let (listener, addr) = free_local_addr();
+    let mut config = test_server_config();
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    for sql in ["DROP TABLE drop_missing_probe", "DROP VIEW drop_missing_probe"] {
+        let error = client.execute_update(sql.to_string(), None).await.unwrap_err();
+        let status = unwrap_flight_status(error);
+        assert_eq!(status.code(), Code::NotFound, "{sql}: {status:?}");
+        assert_query_id_metadata(&status);
+        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+
+        let flight_info = client.execute(sql.to_string(), None).await.unwrap();
+        let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+        let status = match client.do_get(ticket).await {
+            Err(error) => unwrap_flight_status(error),
+            Ok(stream) => unwrap_flight_status(stream.try_collect::<Vec<_>>().await.unwrap_err()),
+        };
+        assert_eq!(status.code(), Code::NotFound, "{sql}: {status:?}");
+        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+    }
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_create_external_table_executes_and_persists() {
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();

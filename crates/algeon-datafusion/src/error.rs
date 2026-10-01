@@ -18,7 +18,11 @@ use std::{
 
 use datafusion::common::DataFusionError;
 #[cfg(feature = "server")]
-use datafusion::{common::SchemaError, object_store::Error as ObjectStoreError};
+use datafusion::{
+    common::SchemaError,
+    logical_expr::{DdlStatement, LogicalPlan},
+    object_store::Error as ObjectStoreError,
+};
 #[cfg(feature = "server")]
 use query_engine::object_store_error::query_error_code_for_object_store_error;
 use query_engine::{
@@ -114,15 +118,38 @@ fn find_algeon_error_in<'a>(
     error.source().and_then(|source| find_algeon_error_in(source, depth + 1, visited_nodes))
 }
 
+/// The statement whose DataFusion error [`classify`] maps.
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailedStatement {
+    /// `DROP TABLE` or `DROP VIEW`. Neither reads table data, and DataFusion
+    /// 55 reports every failure of both, including a catalog that cannot
+    /// deregister the object, as its missing-object `Execution` error.
+    DropTableOrView,
+    /// Any other statement, or a failure before a statement was planned.
+    Other,
+}
+
+#[cfg(feature = "server")]
+impl FailedStatement {
+    pub(crate) fn of(plan: &LogicalPlan) -> Self {
+        match plan {
+            LogicalPlan::Ddl(DdlStatement::DropTable(_) | DdlStatement::DropView(_)) => Self::DropTableOrView,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Classifies a DataFusion error into the adapter code the Flight server reports.
 ///
 /// An Algeon error anywhere in the tree decides first. Otherwise a typed
 /// object-store error in the source chain maps to its source code, and the
-/// deepest DataFusion error reached decides the rest. The walk visits at most
-/// `MAX_SOURCE_CHAIN_DEPTH + 1` layers and classifies the deepest DataFusion
-/// error seen, so an arbitrarily deep wrapper tree still yields a defined code.
+/// deepest DataFusion error reached decides the rest, together with the
+/// statement that failed. The walk visits at most `MAX_SOURCE_CHAIN_DEPTH + 1`
+/// layers and classifies the deepest DataFusion error seen, so an arbitrarily
+/// deep wrapper tree still yields a defined code.
 #[cfg(feature = "server")]
-pub(crate) fn classify(error: &DataFusionError) -> ErrorCode {
+pub(crate) fn classify(error: &DataFusionError, statement: FailedStatement) -> ErrorCode {
     if let Some(adapter) = error.find_algeon_error() {
         return adapter.code();
     }
@@ -155,8 +182,9 @@ pub(crate) fn classify(error: &DataFusionError) -> ErrorCode {
         DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
         DataFusionError::ResourcesExhausted(_) => ErrorCode::HostMemoryExhausted,
         DataFusionError::ExecutionJoin(join) if join.is_cancelled() => ErrorCode::Cancelled,
-        // Execution errors may include reader internals, so they stay behind
-        // the generic `Internal` client surface.
+        DataFusionError::Execution(_) if statement == FailedStatement::DropTableOrView => ErrorCode::ObjectNotFound,
+        // Other execution errors may include reader internals, so they stay
+        // behind the generic `Internal` client surface.
         _ => ErrorCode::Internal,
     }
 }

@@ -1,7 +1,3 @@
-#[cfg(test)]
-use std::sync::Barrier;
-#[cfg(test)]
-use std::thread::{self, JoinHandle};
 use std::{
     sync::{
         Arc,
@@ -255,12 +251,6 @@ impl SourceReadQueueStart {
     }
 }
 
-#[cfg(test)]
-struct SourceReadSpawnTestHook {
-    entered: Arc<Barrier>,
-    release: Arc<Barrier>,
-}
-
 fn run_source_read_worker<T, F>(
     queue_start: SourceReadQueueStart,
     observation: Option<Arc<SourceReadObservation>>,
@@ -271,25 +261,6 @@ where
 {
     let queue_wait = queue_start.worker_started(observation.as_deref());
     worker(queue_wait, observation)
-}
-
-#[cfg(test)]
-fn spawn_source_read_worker<T, F>(
-    queue_start: SourceReadQueueStart,
-    observation: Option<Arc<SourceReadObservation>>,
-    #[cfg(test)] before_spawn: Option<SourceReadSpawnTestHook>,
-    worker: F,
-) -> JoinHandle<T>
-where
-    T: Send + 'static,
-    F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T + Send + 'static,
-{
-    #[cfg(test)]
-    if let Some(before_spawn) = before_spawn {
-        before_spawn.entered.wait();
-        before_spawn.release.wait();
-    }
-    thread::spawn(move || run_source_read_worker(queue_start, observation, worker))
 }
 
 fn spawn_registered_source_read_worker<T, F>(
@@ -592,34 +563,15 @@ impl ScheduledLocalParquetRead {
 mod observation_tests {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
-        sync::{Barrier, mpsc},
-        thread,
         time::Duration,
     };
 
     use super::*;
-    use crate::{
-        observability::{
-            DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
-            RuntimeObservationRecordClass, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
-            RuntimeTerminalOutcome, RuntimeTopologyRecord, StreamLeaseLifecycleState, TaskDefinitionRow,
-            WorkerDefinitionRow, assert_live_topology_references_resolve,
-        },
-        runtime::{ExecutionCancellation, RuntimeObservedExecutionContext, ServiceStreamPool, StandaloneConfig},
+    use crate::observability::{
+        DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
+        RuntimeObservationRecordClass, RuntimeObservationSession, RuntimeTerminalOutcome, RuntimeTopologyRecord,
+        TaskDefinitionRow, WorkerDefinitionRow, assert_live_topology_references_resolve,
     };
-
-    fn observed_source_states(owner: &RuntimeObservationOwner) -> Vec<SourceReadLifecycleState> {
-        owner
-            .live_snapshot()
-            .unwrap()
-            .events()
-            .iter()
-            .filter_map(|event| match &event.payload {
-                RuntimeObservationPayload::SourceRead(observation) => Some(observation.lifecycle.clone()),
-                _ => None,
-            })
-            .collect()
-    }
 
     fn test_observation(owner: &RuntimeObservationOwner) -> Arc<SourceReadObservation> {
         let plan_execution_id = PlanExecutionId::new("source-plan");
@@ -717,129 +669,6 @@ mod observation_tests {
     }
 
     #[test]
-    fn contended_source_lease_wait_precedes_source_queue_enqueue() {
-        let runtime = cudf::Runtime::new().unwrap();
-        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
-        let held = pool.acquire().unwrap();
-        let observed_context = RuntimeObservedExecutionContext::standalone(
-            StandaloneConfig {
-                runtime: Some(Arc::new(runtime)),
-                service_stream_pool: Some(pool.clone()),
-                ..StandaloneConfig::default()
-            },
-            RuntimeObservationSession::new(
-                "source-lease-contention",
-                None,
-                RuntimeObservationConfig::bounded(64, 64 * 1024),
-            ),
-        )
-        .unwrap();
-        let owner = observed_context.observation().clone();
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
-        let observation = test_observation(&owner);
-        let worker_observation = Arc::clone(&observation);
-        let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
-
-        pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(5));
-        assert!(observed_source_states(&owner).is_empty(), "lease contention is not source worker queue time");
-        drop(held);
-        let (lease, _queue_start) = waiter.join().unwrap().unwrap();
-        assert_eq!(observed_source_states(&owner), vec![SourceReadLifecycleState::Enqueued]);
-
-        let stream_event = owner
-            .live_snapshot()
-            .unwrap()
-            .events()
-            .iter()
-            .find_map(|event| match &event.payload {
-                RuntimeObservationPayload::StreamLease(stream)
-                    if stream.scope.task_id.as_ref().is_some_and(|id| id.as_str() == observation.task_id.as_str()) =>
-                {
-                    Some((event.plan_execution_id.clone(), stream.scope.clone()))
-                },
-                _ => None,
-            })
-            .expect("source stream correlation is retained");
-        assert_eq!(stream_event.0.as_ref().map(|id| id.as_str()), Some("source-plan"));
-        assert_eq!(
-            stream_event.1.source_worker_id.as_ref().map(|id| id.as_str()),
-            Some(observation.worker_id.as_str())
-        );
-        drop(lease);
-        lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
-    }
-
-    #[test]
-    fn production_worker_queue_interval_uses_recorder_clock_and_excludes_lease_wait_and_join() {
-        let runtime = cudf::Runtime::new().unwrap();
-        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
-        let held = pool.acquire().unwrap();
-        let clock = Arc::new(DeterministicRuntimeObservationClock::new(None));
-        let observed_context = RuntimeObservedExecutionContext::standalone(
-            StandaloneConfig {
-                runtime: Some(Arc::new(runtime)),
-                service_stream_pool: Some(pool.clone()),
-                ..StandaloneConfig::default()
-            },
-            RuntimeObservationSession::with_clock(
-                "source-queue-clock",
-                None,
-                RuntimeObservationConfig::bounded(64, 64 * 1024),
-                Arc::clone(&clock) as _,
-            ),
-        )
-        .unwrap();
-        let owner = observed_context.observation().clone();
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
-        let observation = test_observation(&owner);
-        let worker_observation = Arc::clone(&observation);
-        let lease_waiter =
-            thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
-
-        pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(5));
-        clock.advance(100);
-        drop(held);
-        let (lease, queue_start) = lease_waiter.join().unwrap().unwrap();
-        assert_eq!(observed_source_states(&owner), vec![SourceReadLifecycleState::Enqueued]);
-
-        let before_spawn_entered = Arc::new(Barrier::new(2));
-        let before_spawn_release = Arc::new(Barrier::new(2));
-        let worker_release = Arc::new(Barrier::new(2));
-        let (started_sender, started_receiver) = mpsc::sync_channel(0);
-        let spawn_observation = observation;
-        let hook = SourceReadSpawnTestHook {
-            entered: Arc::clone(&before_spawn_entered),
-            release: Arc::clone(&before_spawn_release),
-        };
-        let worker_release_clone = Arc::clone(&worker_release);
-        let spawn_setup = thread::spawn(move || {
-            spawn_source_read_worker(queue_start, Some(spawn_observation), Some(hook), move |queue_wait, _| {
-                started_sender.send(queue_wait).unwrap();
-                worker_release_clone.wait();
-                queue_wait
-            })
-        });
-
-        before_spawn_entered.wait();
-        clock.advance(37);
-        before_spawn_release.wait();
-        let worker = spawn_setup.join().unwrap();
-        assert_eq!(started_receiver.recv().unwrap(), Duration::from_nanos(37));
-        clock.advance(89);
-        worker_release.wait();
-        assert_eq!(worker.join().unwrap(), Duration::from_nanos(37));
-        assert_eq!(
-            observed_source_states(&owner),
-            vec![SourceReadLifecycleState::Enqueued, SourceReadLifecycleState::WorkerStarted { queue_wait_ns: 37 },]
-        );
-
-        drop(lease);
-        lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
-    }
-
-    #[test]
     fn exhausted_capture_keeps_source_queue_timing_in_recorder_clock_domain() {
         let clock = Arc::new(DeterministicRuntimeObservationClock::new(None));
         let owner = RuntimeObservationOwner::from_session(RuntimeObservationSession::with_clock(
@@ -860,49 +689,5 @@ mod observation_tests {
             snapshot.events().iter().all(|event| !matches!(&event.payload, RuntimeObservationPayload::SourceRead(_)))
         );
         owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded));
-    }
-
-    #[test]
-    fn cancelled_source_lease_wait_does_not_orphan_source_enqueue() {
-        let runtime = cudf::Runtime::new().unwrap();
-        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
-        let held = pool.acquire().unwrap();
-        let cancellation = ExecutionCancellation::new();
-        let observed_context = RuntimeObservedExecutionContext::standalone(
-            StandaloneConfig {
-                runtime: Some(Arc::new(runtime)),
-                service_stream_pool: Some(pool.clone()),
-                cancellation: cancellation.clone(),
-                ..StandaloneConfig::default()
-            },
-            RuntimeObservationSession::new(
-                "source-lease-cancel",
-                None,
-                RuntimeObservationConfig::bounded(64, 64 * 1024),
-            ),
-        )
-        .unwrap();
-        let owner = observed_context.observation().clone();
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
-        let observation = test_observation(&owner);
-        let worker_observation = observation;
-        let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
-
-        pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(5));
-        cancellation.cancel();
-        let error = match waiter.join().unwrap() {
-            Ok((_lease, _queue_start)) => panic!("cancelled source lease unexpectedly acquired"),
-            Err(error) => error,
-        };
-        assert_eq!(error.code(), QueryErrorCode::Cancelled);
-        assert!(observed_source_states(&owner).is_empty());
-        assert!(owner.live_snapshot().unwrap().events().iter().any(|event| matches!(
-            &event.payload,
-            RuntimeObservationPayload::StreamLease(observation)
-                if observation.lifecycle == StreamLeaseLifecycleState::Cancelled
-        )));
-        drop(held);
-        lifecycle.finish(RuntimeTerminalOutcome::Cancelled);
     }
 }

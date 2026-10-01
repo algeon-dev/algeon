@@ -86,17 +86,28 @@ pub(super) fn validate_slice1_parquet_scan(
 }
 
 pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig) -> bool {
-    // DataFusion may use multiple ordered file groups as parallel sorted runs.
-    // Native lowering flattens groups into one sequential file list, which only
-    // preserves the order contract when there is a single group.
-    !file_scan.preserve_order || file_scan.file_groups.len() == 1
+    !file_scan.preserve_order || native_scan_read_order_matches_file_groups(file_scan)
 }
 
 pub(super) fn native_declared_output_ordering_scan_is_supported(file_scan: &FileScanConfig) -> bool {
-    // See `native_preserve_order_scan_is_supported`: flattening multiple file
-    // groups does not merge parallel sorted runs, so it cannot reproduce a
-    // declared scan ordering.
-    file_scan.output_ordering.is_empty() || file_scan.file_groups.len() == 1
+    file_scan.output_ordering.is_empty() || native_scan_read_order_matches_file_groups(file_scan)
+}
+
+/// Whether the native reader reproduces the row order of the scan's file
+/// groups.
+///
+/// Native lowering reads the scan as one sequential file list. One file group
+/// is read in its own order. Groups that are byte ranges of a single file are
+/// coalesced back into that file (`coalesced_local_parquet_scan_files`) and
+/// read in row-group order, which is the file's order. Groups over several
+/// files are parallel sorted runs that a sequential read does not merge.
+fn native_scan_read_order_matches_file_groups(file_scan: &FileScanConfig) -> bool {
+    if file_scan.file_groups.len() == 1 {
+        return true;
+    }
+    let mut locations =
+        file_scan.file_groups.iter().flat_map(|group| group.files()).map(|file| &file.object_meta.location);
+    locations.next().is_some_and(|first| locations.all(|location| location == first))
 }
 
 pub(super) fn native_parquet_object_store_scan_is_supported(file_scan: &FileScanConfig) -> bool {

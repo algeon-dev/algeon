@@ -245,6 +245,7 @@ impl DatafusionAlgeonFlightSqlService {
                                 return Err(datafusion_error_to_status_for_operation(
                                     error,
                                     "algeon_datafusion.server.flight.do_get_tables.table_type",
+                                    FailedStatement::Other,
                                 ));
                             },
                         };

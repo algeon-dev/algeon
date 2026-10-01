@@ -1,3 +1,5 @@
+#[cfg(feature = "test-hooks")]
+use std::sync::{Mutex, PoisonError};
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -433,6 +435,16 @@ struct KnnExecutionOptions<'a, F> {
     build_and_search: F,
 }
 
+#[cfg(feature = "test-hooks")]
+static VECTOR_AFTER_INDEX_BUILD_HOOK: Mutex<Option<fn(&ExecutionContext)>> = Mutex::new(None);
+
+/// Runs `hook` after a kNN index build and before its cancellation checkpoint.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn set_vector_after_index_build_hook_for_tests(hook: Option<fn(&ExecutionContext)>) {
+    *VECTOR_AFTER_INDEX_BUILD_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the observer needs the native call's device shapes and execution identity"
@@ -476,6 +488,10 @@ fn run_knn_native<I, T: DeviceElement>(
             let index = build().map_err(|error| {
                 cuvs_query_error(NATIVE_OPERATION, "failed to build the query-local kNN index", error)
             })?;
+            #[cfg(feature = "test-hooks")]
+            if let Some(hook) = *VECTOR_AFTER_INDEX_BUILD_HOOK.lock().unwrap_or_else(PoisonError::into_inner) {
+                hook(context);
+            }
             context.check_cancellation("query_engine.vector_algorithm.after_index_build")?;
             Ok(index)
         },
@@ -1887,13 +1903,9 @@ fn distance_metric(metric: VectorDistanceMetric) -> DistanceMetric {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
+    use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-    use cudf::{QueryMemoryDomainOptions, Runtime};
 
     use super::*;
     use crate::{
@@ -1901,68 +1913,9 @@ mod tests {
             PlanNode, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorPcaParams, VectorRowIdBinding,
             vector_pca_output_schema,
         },
-        runtime::{ExecutionCancellation, MemoryControlPolicy, StandaloneConfig},
+        runtime::{ExecutionCancellation, StandaloneConfig},
         source::{GpuResidentSource, SourceNode},
     };
-
-    #[test]
-    fn cancellation_after_real_ivf_flat_build_releases_index_allocations() {
-        static NEXT_DOMAIN: AtomicU64 = AtomicU64::new(0xCA_0000);
-        let runtime = Arc::new(Runtime::new().expect("GPU runtime"));
-        let domain_id = NEXT_DOMAIN.fetch_add(1, Ordering::Relaxed);
-        let limit = 256 * 1024 * 1024;
-        let domain = runtime
-            .device_memory_manager()
-            .unwrap()
-            .query_memory_domain(domain_id, QueryMemoryDomainOptions::new(limit))
-            .expect("query domain");
-        let reservation = domain.reserve_stream(runtime.stream(), domain_id, limit).expect("stream reservation");
-        let resources = CuvsResources::for_runtime(Arc::clone(&runtime)).expect("cuVS resources");
-        let coverage = resources.stream_pool_coverage(Some(&reservation)).expect("RAFT pool coverage");
-        let points = (0..256).map(|value| (value % 37) as f32).collect::<Vec<_>>();
-        let dataset = DeviceBuffer::from_slice(&resources, &points).expect("dataset allocation");
-        let tensor = dataset.as_validated_matrix(&resources, 64, 4).expect("validated dataset");
-        let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::standalone(StandaloneConfig {
-            runtime: Some(Arc::clone(&runtime)),
-            memory_control_policy: MemoryControlPolicy::Unbounded,
-            cancellation: cancellation.clone(),
-            ..StandaloneConfig::default()
-        })
-        .expect("execution context");
-        let main_before = reservation.usage().unwrap().current_bytes;
-        let pool_before = coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>();
-        let mut params = IvfFlatIndexParams::new(DistanceMetric::L2Expanded, 2);
-        params.kmeans_n_iters = 2;
-        let mut builder = QueryPlanBuilder::new();
-        let node_id = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-            "dataset",
-            Arc::new(Schema::new(vec![Field::new("x", DataType::Float32, false)])),
-        )));
-        let error = run_knn_native(
-            &context,
-            node_id,
-            VectorAlgorithm::IvfFlat,
-            &resources,
-            cuvs_sys::validate_runtime_version().unwrap(),
-            &tensor,
-            &tensor,
-            1,
-            || {
-                let index = IvfFlatIndex::build(&resources, &tensor, params)?;
-                assert!(reservation.usage().unwrap().current_bytes > main_before);
-                cancellation.cancel();
-                Ok(index)
-            },
-            |_, _, _| panic!("cancelled build must not search"),
-            "IVF-Flat search failed",
-        )
-        .expect_err("after-build cancellation checkpoint");
-        assert_eq!(error.code(), QueryErrorCode::Cancelled);
-        assert_eq!(error.operation(), "query_engine.vector_algorithm.after_index_build");
-        assert_eq!(reservation.usage().unwrap().current_bytes, main_before);
-        assert_eq!(coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>(), pool_before,);
-    }
 
     #[test]
     fn dispatch_rejects_an_element_outside_an_operation_sealed_set() {

@@ -25,7 +25,7 @@ use datafusion::{
     config::ConfigOptions,
     datasource::{
         physical_plan::{
-            FileGroup, FileScanConfigBuilder, ParquetSource,
+            FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource,
             parquet::{ParquetAccessPlan, RowGroupAccess},
         },
         source::DataSourceExec,
@@ -549,6 +549,46 @@ async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
     assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// DataFusion splits one sorted file into byte-range groups under the default
+/// `target_partitions`. The native reader coalesces the ranges back into that
+/// file and reads its row groups in order, so the declared ordering holds.
+#[tokio::test]
+async fn native_runtime_sorted_file_split_into_byte_ranges_matches_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-sorted-byte-ranges");
+    let path = dir.join("input.parquet");
+    write_multi_row_group_sorting_columns_parquet_file(&path);
+    // Lowers the 10 MiB repartition floor so this small file splits like a
+    // large one; `target_partitions` keeps its default.
+    let config = SessionConfig::new().with_repartition_file_min_size(1);
+    let sql = "SELECT key, payload FROM bench WHERE payload >= 500 ORDER BY key LIMIT 7";
+
+    let cpu_plan = sql_plan(&path, config.clone(), sql).await;
+    let scans = collect_file_scans(&cpu_plan);
+    assert_eq!(scans.len(), 1, "one Parquet scan");
+    assert!(scans[0].file_groups.len() > 1, "the scan should split into byte-range groups: {:?}", scans[0].file_groups);
+    assert!(!scans[0].output_ordering.is_empty(), "sorting_columns should declare the scan ordering");
+    let cpu_batches = collect(Arc::clone(&cpu_plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    let native_plan = native_datafusion_sql_plan_with_config(&path, config, sql).await;
+    assert_algeon_native_exec(&native_plan, "a single sorted file split into byte ranges should run natively");
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn collect_file_scans(plan: &Arc<dyn ExecutionPlan>) -> Vec<FileScanConfig> {
+    let mut scans = plan.children().into_iter().flat_map(collect_file_scans).collect::<Vec<_>>();
+    if let Some((file_scan, _parquet_source)) = plan
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|data_source| data_source.downcast_to_file_source::<ParquetSource>())
+    {
+        scans.push(file_scan.clone());
+    }
+    scans
 }
 
 #[tokio::test]

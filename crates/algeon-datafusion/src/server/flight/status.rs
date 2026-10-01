@@ -20,7 +20,7 @@ pub(super) fn datafusion_error_to_flight_error(
     terminal: &CoordinatorExecutionTerminal,
     operation: &'static str,
 ) -> FlightError {
-    let (status, captured) = datafusion_error_to_status_and_capture(error, operation);
+    let (status, captured) = datafusion_error_to_status_and_capture(error, operation, FailedStatement::Other);
     let status = status_with_query_id(status, query_id);
     terminal.finish_captured("stream", &status, captured);
     FlightError::from(status)
@@ -29,9 +29,10 @@ pub(super) fn datafusion_error_to_flight_error(
 pub(super) fn datafusion_error_to_status_and_capture(
     error: DataFusionError,
     operation: &'static str,
+    statement: FailedStatement,
 ) -> (Status, CapturedError) {
-    let captured = datafusion_error_to_captured_error(&error, operation);
-    let status = datafusion_error_to_status_for_operation(error, operation);
+    let captured = datafusion_error_to_captured_error(&error, operation, statement);
+    let status = datafusion_error_to_status_for_operation(error, operation, statement);
     (status, captured)
 }
 
@@ -261,7 +262,7 @@ pub(super) fn arrow_flight_error_to_status_for_operation(
 
 pub(super) fn adapter_error_status(error: Error) -> Status {
     let operation = error.operation();
-    datafusion_error_to_status_for_operation(error.into(), operation)
+    datafusion_error_to_status_for_operation(error.into(), operation, FailedStatement::Other)
 }
 
 pub(super) fn flight_sql_transactions_unsupported_error() -> Error {

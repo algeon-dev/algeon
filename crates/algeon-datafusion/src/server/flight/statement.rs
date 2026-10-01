@@ -306,8 +306,11 @@ impl DatafusionAlgeonFlightSqlService {
             ) {
                 Ok(context) => context,
                 Err(error) => {
-                    let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.create_logical_plan_operation());
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        ticket_kind.create_logical_plan_operation(),
+                        FailedStatement::Other,
+                    );
                     let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     planning_lease.finish_captured("planning", &status, captured);
                     return Err(status);
@@ -330,6 +333,7 @@ impl DatafusionAlgeonFlightSqlService {
                         let (status, captured) = datafusion_error_to_status_and_capture(
                             error,
                             ticket_kind.create_logical_plan_operation(),
+                            FailedStatement::Other,
                         );
                         planning_lease.finish_captured("planning", &status, captured);
                         return Err(status);
@@ -403,8 +407,11 @@ impl DatafusionAlgeonFlightSqlService {
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.planning_failed(&error);
                 }
-                let (status, captured) =
-                    datafusion_error_to_status_and_capture(error, ticket_kind.create_logical_plan_operation());
+                let (status, captured) = datafusion_error_to_status_and_capture(
+                    error,
+                    ticket_kind.create_logical_plan_operation(),
+                    FailedStatement::Other,
+                );
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 planning_lease.finish_captured("planning", &status, captured);
                 return Err(status);

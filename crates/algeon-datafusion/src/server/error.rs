@@ -13,7 +13,7 @@ use tonic::{
 use crate::server::{
     adapter_error::{
         DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
-        Facts, classify, datafusion_error_human_message,
+        Facts, FailedStatement, classify, datafusion_error_human_message,
     },
     observability::CapturedError,
 };
@@ -256,7 +256,7 @@ fn server_error_from_datafusion_error(message: String, source: DataFusionError) 
     {
         return Error::new(code, operation, message).with_preserved_facts(facts).with_source(source);
     }
-    let code = classify(&source);
+    let code = classify(&source, FailedStatement::Other);
     let datafusion_error = datafusion_error_variant(&source);
     Error::new(code, "algeon_datafusion.server.session", message)
         .with_log_safe_fact("datafusion_error", datafusion_error)
@@ -329,18 +329,26 @@ fn quote(value: &str) -> String {
     }
 }
 
-pub fn datafusion_error_to_status_for_operation(error: DataFusionError, operation: &'static str) -> Status {
+pub fn datafusion_error_to_status_for_operation(
+    error: DataFusionError,
+    operation: &'static str,
+    statement: FailedStatement,
+) -> Status {
     if let Some(adapter_error) = error.find_algeon_error() {
         return adapter_error_to_status(adapter_error);
     }
-    adapter_error_to_status(&adapter_error_from_datafusion_error(error, operation))
+    adapter_error_to_status(&adapter_error_from_datafusion_error(error, operation, statement))
 }
 
-pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operation: &'static str) -> CapturedError {
+pub(super) fn datafusion_error_to_captured_error(
+    error: &DataFusionError,
+    operation: &'static str,
+    statement: FailedStatement,
+) -> CapturedError {
     if let Some(adapter_error) = error.find_algeon_error() {
         return CapturedError::from_adapter_error(adapter_error);
     }
-    let code = classify(error);
+    let code = classify(error, statement);
     let message = client_datafusion_error_message(error);
     let datafusion_error = datafusion_error_variant(error);
     let mut facts = Facts::new();
@@ -699,8 +707,12 @@ fn truncate_metadata_value(value: &str, max_bytes: usize) -> (String, bool) {
     (format!("{}{MARKER}", &value[..end]), true)
 }
 
-fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'static str) -> Error {
-    let code = classify(&error);
+fn adapter_error_from_datafusion_error(
+    error: DataFusionError,
+    operation: &'static str,
+    statement: FailedStatement,
+) -> Error {
+    let code = classify(&error, statement);
     let message = client_datafusion_error_message(&error);
     let datafusion_error = datafusion_error_variant(&error);
     Error::new(code, operation, message).with_log_safe_fact("datafusion_error", datafusion_error).with_source(error)
@@ -859,7 +871,7 @@ mod tests {
         let parser_display = parser.to_string();
         let datafusion_error = DataFusionError::SQL(Box::new(parser), None);
 
-        let adapter = adapter_error_from_datafusion_error(datafusion_error, TEST_OPERATION);
+        let adapter = adapter_error_from_datafusion_error(datafusion_error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(adapter.message(), format!("invalid SQL statement: {parser_display}"));
         assert!(!adapter.message().contains("ParserError("), "{}", adapter.message());
@@ -1156,7 +1168,7 @@ mod tests {
             Box::new(None),
         );
 
-        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "field_not_found", "invalid_input", "permanent");
@@ -1172,7 +1184,7 @@ mod tests {
             Box::new(None),
         );
 
-        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
@@ -1186,8 +1198,11 @@ mod tests {
             "table 'does_not_exist' not found",
             "table function 'cugraph_bfs' not found",
         ] {
-            let status =
-                datafusion_error_to_status_for_operation(DataFusionError::Plan(message.to_string()), TEST_OPERATION);
+            let status = datafusion_error_to_status_for_operation(
+                DataFusionError::Plan(message.to_string()),
+                TEST_OPERATION,
+                FailedStatement::Other,
+            );
 
             assert_eq!(status.code(), Code::InvalidArgument, "{message}");
             assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
@@ -1207,7 +1222,7 @@ mod tests {
                 Box::new(Diagnostic::new_error("synthetic planning diagnostic", None)),
                 Box::new(DataFusionError::Plan(message.to_string())),
             );
-            let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+            let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
 
             assert_eq!(status.code(), Code::InvalidArgument, "{message}");
             assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
@@ -1222,7 +1237,7 @@ mod tests {
             .await
             .expect_err("an unregistered relation must fail planning");
 
-        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
@@ -1237,6 +1252,7 @@ mod tests {
             let status = datafusion_error_to_status_for_operation(
                 DataFusionError::Execution(message.to_string()),
                 TEST_OPERATION,
+                FailedStatement::Other,
             );
 
             assert_eq!(status.code(), Code::Internal, "{message}");
@@ -1255,6 +1271,7 @@ mod tests {
                 "Parquet error reading /var/lib/algeon/secret/customers.parquet: invalid magic bytes".to_string(),
             ),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::Internal);
@@ -1275,6 +1292,7 @@ mod tests {
                 Box::new(None),
             ),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::InvalidArgument);
@@ -1294,7 +1312,7 @@ mod tests {
             )),
         );
 
-        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "field_not_found", "invalid_input", "permanent");
@@ -1314,6 +1332,7 @@ mod tests {
             )
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::ResourceExhausted);
@@ -1332,6 +1351,7 @@ mod tests {
             )
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::ResourceExhausted);
@@ -1363,6 +1383,7 @@ mod tests {
             let status = datafusion_error_to_status_for_operation(
                 Error::new(code, TEST_OPERATION, "synthetic resource failure").into(),
                 TEST_OPERATION,
+                FailedStatement::Other,
             );
 
             assert_eq!(status.code(), Code::ResourceExhausted, "unexpected Flight code for {code}");
@@ -1386,6 +1407,7 @@ mod tests {
             )
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::ResourceExhausted);
@@ -1402,6 +1424,7 @@ mod tests {
             )
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::Internal);
@@ -1439,7 +1462,7 @@ mod tests {
             )))),
         );
 
-        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION);
+        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION, FailedStatement::Other);
 
         assert_eq!(captured.operation, TEST_OPERATION);
         assert_eq!(
@@ -1488,6 +1511,7 @@ mod tests {
             .with_fact("unsupported_column_role", "projected")
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::InvalidArgument);
@@ -1515,6 +1539,7 @@ mod tests {
             .with_fact("predicate_role", "source_vertices")
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::InvalidArgument);
@@ -1537,6 +1562,7 @@ mod tests {
             .with_fact("predicate_role", "target_vertices")
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::Unimplemented);
@@ -1571,6 +1597,7 @@ mod tests {
             .with_fact("required_option", "seeds_or_k")
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::InvalidArgument);
@@ -1667,14 +1694,14 @@ mod tests {
             error = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(error));
         }
 
-        assert_eq!(classify(&error), ErrorCode::Internal);
+        assert_eq!(classify(&error, FailedStatement::Other), ErrorCode::Internal);
 
         let mut shallow =
             DataFusionError::SQL(Box::new(ParserError::ParserError("Expected: an SQL statement".into())), None);
         for depth in 0..3 {
             shallow = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(shallow));
         }
-        assert_eq!(classify(&shallow), ErrorCode::SqlParse);
+        assert_eq!(classify(&shallow, FailedStatement::Other), ErrorCode::SqlParse);
     }
 
     #[test]
@@ -1690,22 +1717,26 @@ mod tests {
             DataFusionError::ArrowError(Box::new(ArrowError::ExternalError(Box::new(not_found()))), None);
 
         for error in [direct, wrapped, through_arrow] {
-            assert_eq!(classify(&error), ErrorCode::SourceObjectNotFound, "{error:?}");
+            assert_eq!(classify(&error, FailedStatement::Other), ErrorCode::SourceObjectNotFound, "{error:?}");
         }
 
         let status = datafusion_error_to_status_for_operation(
             DataFusionError::ObjectStore(Box::new(not_found())),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "source_object_not_found", "not_found", "permanent");
 
         let denied = ObjectStoreError::PermissionDenied { path: "bucket/key".to_string(), source: "denied".into() };
-        assert_eq!(classify(&DataFusionError::ObjectStore(Box::new(denied))), ErrorCode::SourceAccessDenied);
+        assert_eq!(
+            classify(&DataFusionError::ObjectStore(Box::new(denied)), FailedStatement::Other),
+            ErrorCode::SourceAccessDenied
+        );
         let unauthenticated =
             ObjectStoreError::Unauthenticated { path: "bucket/key".to_string(), source: "no credentials".into() };
         assert_eq!(
-            classify(&DataFusionError::ObjectStore(Box::new(unauthenticated))),
+            classify(&DataFusionError::ObjectStore(Box::new(unauthenticated)), FailedStatement::Other),
             ErrorCode::SourceUnauthenticated
         );
     }
@@ -1718,10 +1749,10 @@ mod tests {
             DataFusionError::ArrowError(Box::new(ArrowError::ExternalError(Box::new(exhausted()))), None);
 
         for error in [exhausted(), wrapped, through_arrow] {
-            assert_eq!(classify(&error), ErrorCode::HostMemoryExhausted, "{error:?}");
+            assert_eq!(classify(&error, FailedStatement::Other), ErrorCode::HostMemoryExhausted, "{error:?}");
         }
 
-        let status = datafusion_error_to_status_for_operation(exhausted(), TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(exhausted(), TEST_OPERATION, FailedStatement::Other);
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_error_metadata(&status, "host_memory_exhausted", "resource_exhausted", "temporary");
         assert!(status.message().starts_with("host memory pool exhausted"), "{}", status.message());
@@ -1734,7 +1765,7 @@ mod tests {
         task.abort();
         let cancelled = DataFusionError::ExecutionJoin(Box::new(task.await.unwrap_err()));
 
-        assert_eq!(classify(&cancelled), ErrorCode::Cancelled);
+        assert_eq!(classify(&cancelled, FailedStatement::Other), ErrorCode::Cancelled);
     }
 
     #[test]
@@ -1791,7 +1822,9 @@ mod tests {
         assert_eq!(adapter.fact_value("field"), Some(FIELD));
         assert_eq!(adapter.fact_value("actual_type"), Some(ACTUAL_TYPE));
 
-        let (status, logs) = with_captured_logs(|| datafusion_error_to_status_for_operation(error, TEST_OPERATION));
+        let (status, logs) = with_captured_logs(|| {
+            datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other)
+        });
 
         assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");
         assert!(!logs.contains(FIELD), "{logs}");
@@ -1806,11 +1839,11 @@ mod tests {
         let error = DataFusionError::SQL(Box::new(ParserError::ParserError("y".repeat(100_000))), None);
         assert!(error.to_string().len() > 100_000);
 
-        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION);
+        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION, FailedStatement::Other);
         assert!(captured.message.len() <= MAX_CLIENT_DATAFUSION_MESSAGE_BYTES, "{}", captured.message.len());
         assert!(captured.message.ends_with("..."), "{}", &captured.message[captured.message.len() - 10..]);
 
-        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other);
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().len() <= MAX_CLIENT_DATAFUSION_MESSAGE_BYTES, "{}", status.message().len());
         assert!(status.message().ends_with("..."));
@@ -1833,6 +1866,7 @@ mod tests {
             .with_fact("reason", "internal_scheduler_state")
             .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::Internal);
@@ -1849,6 +1883,7 @@ mod tests {
                 .with_fact("native_message", "internal scheduler state corruption marker")
                 .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(internal.message(), "internal server error while processing the request");
@@ -1859,6 +1894,7 @@ mod tests {
                 .with_fact("native_message", "BFS predicate id column dtype must match the graph vertex dtype")
                 .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_metadata_value(
@@ -1875,6 +1911,7 @@ mod tests {
                 .with_fact("reason", "internal_scheduler_state")
                 .into(),
             TEST_OPERATION,
+            FailedStatement::Other,
         );
 
         assert_eq!(status.code(), Code::Internal);
