@@ -34,7 +34,7 @@ use super::{
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
     naming::{sanitize_field_name, unique_name_with_suffix},
-    sort::{lower_sort_ordering_unprojected_with_input, project_sort_output},
+    sort::{SortedNativeInput, lower_sort_ordering_unprojected_with_input, project_sort_output},
 };
 use crate::{
     capability::CapabilityReason,
@@ -42,7 +42,7 @@ use crate::{
         LoweringRejection,
         expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
-        normalize::{NormalizedNativeSort, NormalizedNativeWindow},
+        normalize::{NormalizedNativeInput, NormalizedNativeSort, NormalizedNativeWindow},
         validate::{validate_schema, validate_sort_ordering},
     },
 };
@@ -50,20 +50,31 @@ use crate::{
 pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    _required_output_fields: &RequiredFields,
+    required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, LoweringRejection> {
+    let sorted = lower_unprojected_sort_input(sort, builder, required_output_fields)?;
+    project_sort_output(builder, sort.sort.output_schema(), sorted.input, required_output_fields)
+}
+
+fn lower_unprojected_sort_input(
+    sort: &NormalizedNativeSort<'_>,
+    builder: &mut NativeQueryPlanBuilder,
+    required_output_fields: &RequiredFields,
+) -> Result<SortedNativeInput, LoweringRejection> {
     validate_schema(Arc::clone(sort.sort.output_schema()))?;
     validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
     let mut child_required = BTreeSet::new();
     for sort_expr in sort.sort.ordering() {
         collect_required_field_indices(&sort_expr.expr, sort.sort.input_schema(), &mut child_required)?;
     }
-    child_required.extend(_required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
+    child_required.extend(required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
     let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required))?;
     let sorted =
         lower_sort_ordering_unprojected_with_input(builder, sort.sort.ordering(), sort.sort.input_schema(), input)?;
-    let limited = apply_sort_fetch_limit(builder, sorted, sort.fetch)?;
-    project_sort_output(builder, sort.sort.output_schema(), limited, _required_output_fields)
+    Ok(SortedNativeInput {
+        input: apply_sort_fetch_limit(builder, sorted.input, sort.fetch)?,
+        key_columns: sorted.key_columns,
+    })
 }
 
 fn apply_sort_fetch_limit(
@@ -88,9 +99,30 @@ pub(super) fn lower_window_input(
     validate_schema(Arc::clone(&window_schema))?;
     validate_window_exprs(window.window.window_expr(), &window_input_schema)?;
 
-    let input = lower_native_input(&window.input, builder, &RequiredFields::all())?;
-    let prepared =
-        materialize_window_key_expressions(builder, window.window.window_expr(), &window_input_schema, input)?;
+    // A window key that repeats an expression key of the sort below it reads
+    // the column the sort ordered by. Recomputing the expression above the
+    // sort yields a new column that carries none of the sort's ordering.
+    let (input, sorted_keys) = match window.input.as_ref() {
+        NormalizedNativeInput::Sort(sort) => {
+            let sorted = lower_unprojected_sort_input(sort, builder, &RequiredFields::all())?;
+            let keys = sort
+                .sort
+                .ordering()
+                .iter()
+                .map(|sort_expr| &sort_expr.expr)
+                .zip(sorted.key_columns)
+                .collect::<Vec<_>>();
+            (sorted.input, keys)
+        },
+        input => (lower_native_input(input, builder, &RequiredFields::all())?, Vec::new()),
+    };
+    let prepared = materialize_window_key_expressions(
+        builder,
+        window.window.window_expr(),
+        &window_input_schema,
+        input,
+        &sorted_keys,
+    )?;
     let (output_schema, output_bindings) = native_window_output_schema_and_bindings(&prepared.input, &window_schema)?;
     let spec = lower_window_spec(
         window.window.window_expr(),
@@ -436,11 +468,16 @@ struct PreparedWindowKeys {
     order_by: Vec<NativeSortExpr>,
 }
 
+/// Expression keys of the sort directly below a window, each with the column
+/// that holds it.
+type SortedWindowKeys<'a> = [(&'a Arc<dyn PhysicalExpr>, String)];
+
 fn materialize_window_key_expressions(
     builder: &mut NativeQueryPlanBuilder,
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
     input: LoweredNativeInput,
+    sorted_keys: &SortedWindowKeys<'_>,
 ) -> Result<PreparedWindowInput, LoweringRejection> {
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     let mut materialized_keys = Vec::<MaterializedWindowKey>::new();
@@ -450,14 +487,23 @@ fn materialize_window_key_expressions(
         let partition_by = window_expr
             .partition_by()
             .iter()
-            .map(|expr| window_key_expr(expr, input_schema, &input, &mut used_names, &mut materialized_keys))
+            .map(|expr| {
+                window_key_expr(expr, input_schema, &input, sorted_keys, &mut used_names, &mut materialized_keys)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let order_by = window_expr
             .order_by()
             .iter()
             .map(|sort_expr| {
                 Ok(NativeSortExpr::new(
-                    window_key_expr(&sort_expr.expr, input_schema, &input, &mut used_names, &mut materialized_keys)?,
+                    window_key_expr(
+                        &sort_expr.expr,
+                        input_schema,
+                        &input,
+                        sorted_keys,
+                        &mut used_names,
+                        &mut materialized_keys,
+                    )?,
                     sort_expr.options.descending,
                     sort_expr.options.nulls_first,
                 ))
@@ -500,12 +546,16 @@ fn window_key_expr(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
     input: &LoweredNativeInput,
+    sorted_keys: &SortedWindowKeys<'_>,
     used_names: &mut BTreeSet<String>,
     materialized_keys: &mut Vec<MaterializedWindowKey>,
 ) -> Result<NativeExpr, LoweringRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let binding = input.binding_for_column(column)?;
         return Ok(NativeExpr::column(binding.native_name.as_str()));
+    }
+    if let Some((_, column)) = sorted_keys.iter().find(|(sort_key, _)| sort_key.as_ref() == expr.as_ref()) {
+        return Ok(NativeExpr::column(column.as_str()));
     }
 
     let lowered = lower_physical_expr_with_bindings(expr, input_schema, Some(&input.bindings))?;

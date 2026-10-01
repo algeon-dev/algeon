@@ -873,7 +873,10 @@ pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static 
 
 #[cfg(test)]
 mod tests {
-    use algeon_datafusion::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY;
+    use algeon_datafusion::{
+        native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
+        source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY,
+    };
     use workloads::tpcds::write_tiny_tpcds_parquet_dataset;
 
     use super::*;
@@ -918,6 +921,36 @@ mod tests {
         // Source-scoped evidence must not reach the shared schema namespace,
         // where a join would drop one keyed source's entry for another's.
         assert_eq!(schema.metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// q36, q70, and q86 rank rows within each rollup level. Their window
+    /// partitions by computed expressions (a `grouping()` sum and a CASE) that
+    /// the sort below the window already computed to order its input.
+    #[tokio::test]
+    async fn tpcds_rollup_rank_queries_select_their_native_candidate() {
+        let root =
+            std::env::temp_dir().join(format!("algeon-datafusion-tpcds-rollup-rank-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write_tiny_tpcds_parquet_dataset(&root).unwrap();
+        let state = SessionStateBuilder::new_with_default_features()
+            .with_config(native_tpcds_session_config(tpcds_report_session_config()))
+            .with_algeon_native(tpcds_native_optimizer_config())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
+
+        for query in TPCDS_QUERIES.iter().filter(|query| matches!(query.id, "q36" | "q70" | "q86")) {
+            let (state, logical) = ctx.sql(query.sql).await.unwrap().into_parts();
+            let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await.unwrap();
+            let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+                query.id,
+                plan,
+                diagnostics,
+            )]);
+            let [row] = report.rows.as_slice() else { panic!("{} plans one candidate row", query.id) };
+            assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "{}: {:?}", query.id, row.reason_code);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
