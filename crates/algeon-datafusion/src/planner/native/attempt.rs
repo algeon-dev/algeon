@@ -38,9 +38,8 @@ use crate::{
         wrap_candidate_with_declared_output_ordering_sort,
     },
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
-        AlgeonNativeGpuProducerExec, gpu_resident_producer, gpu_resident_producer_input_name,
-        rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
+        AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, gpu_resident_producer,
+        gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
 };
@@ -522,57 +521,38 @@ fn native_datafusion_exec_for_plan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
+    let output = match sink {
+        NativeReplacementSink::HostArrow => NativeOutput::Host,
+        NativeReplacementSink::GpuResidentProducer { input_name } => NativeOutput::GpuResident { input_name },
+    };
     let gpu_input_names = native_plan_gpu_resident_source_names(admitted.plan());
     if gpu_input_names.is_empty() {
-        return match sink {
-            NativeReplacementSink::HostArrow => {
-                AlgeonNativeExec::try_new_with_equivalence_properties(admitted, native_execution_config, eq_properties)
-                    .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            },
-            NativeReplacementSink::GpuResidentProducer { input_name } => {
-                AlgeonNativeGpuProducerExec::try_new_for_shared_plan(
-                    input_name,
-                    admitted,
-                    &native_execution_config,
-                    Some(eq_properties),
-                )
-                .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            },
-        };
+        return AlgeonNativeExec::try_new(admitted, Vec::new(), output, native_execution_config, Some(eq_properties))
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>);
     }
 
     let shared_input_names = shared_producers.iter().map(|(input_name, _)| input_name.clone()).collect::<BTreeSet<_>>();
     let external_gpu_input_names = gpu_input_names.difference(&shared_input_names).cloned().collect();
     let mut gpu_inputs = gpu_resident_producer_children(&original_plan, &external_gpu_input_names)?;
     for (input_name, producer) in shared_producers {
-        gpu_inputs.push(Arc::new(AlgeonNativeGpuProducerExec::try_new_for_shared_plan(
-            input_name,
+        gpu_inputs.push(Arc::new(AlgeonNativeExec::try_new(
             producer,
-            &native_execution_config,
+            Vec::new(),
+            NativeOutput::GpuResident { input_name },
+            native_execution_config.clone(),
             None,
         )?));
     }
     gpu_inputs.sort_by(|left, right| {
         gpu_resident_producer_input_name(left.as_ref()).cmp(&gpu_resident_producer_input_name(right.as_ref()))
     });
-    if let NativeReplacementSink::GpuResidentProducer { input_name } = sink {
-        return AlgeonNativeComposedGpuProducerExec::try_new_with_equivalence_properties(
-            input_name,
-            admitted,
-            gpu_inputs,
-            native_execution_config,
-            eq_properties,
-        )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>);
-    }
-    let (admitted, gpu_inputs) = remove_subsumed_composed_consumer(admitted, gpu_inputs, &native_execution_config)?;
-    AlgeonNativeComposedExec::try_new_with_equivalence_properties(
-        admitted,
-        gpu_inputs,
-        native_execution_config,
-        eq_properties,
-    )
-    .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+    let (admitted, gpu_inputs) = if output == NativeOutput::Host {
+        remove_subsumed_composed_consumer(admitted, gpu_inputs, &native_execution_config)?
+    } else {
+        (admitted, gpu_inputs)
+    };
+    AlgeonNativeExec::try_new(admitted, gpu_inputs, output, native_execution_config, Some(eq_properties))
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
 }
 
 /// A composed consumer's admitted plan and the producers it reads.
@@ -767,7 +747,10 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
     let [child] = children.as_slice() else {
         return None;
     };
-    child.downcast_ref::<AlgeonNativeExec>().is_some().then(|| Arc::clone(child))
+    child
+        .downcast_ref::<AlgeonNativeExec>()
+        .is_some_and(|native| native.materializes_host() && native.gpu_inputs().is_empty())
+        .then(|| Arc::clone(child))
 }
 
 #[cfg(test)]

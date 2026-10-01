@@ -192,7 +192,7 @@ async fn probe_native_observed(
     // The probe runs the artifact planning decided for the native node, under
     // that decision's mode and policy.
     let admitted_plan = peel_native_admitted_plan(physical.as_ref())
-        .ok_or_else(|| format!("query {query_id} did not lower to AlgeonNativeExec/AlgeonNativeComposedExec"))?;
+        .ok_or_else(|| format!("query {query_id} did not lower to a host AlgeonNativeExec"))?;
 
     let query_dir = config.artifact_dir.join(query_id);
     let live_dir = query_dir.join("live");

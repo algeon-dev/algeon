@@ -639,6 +639,11 @@ impl NativeAdmissionExec {
         Self { input, source, evidence }
     }
 
+    /// The plan this admission node roots.
+    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
     pub(crate) fn source(&self) -> QueryAdmissionSource {
         self.source.clone()
     }
@@ -680,10 +685,6 @@ pub(crate) fn wrap_plan_with_native_admission(
 
 pub(crate) fn plan_is_query_admission_wrapped(plan: &dyn ExecutionPlan) -> bool {
     (plan as &dyn Any).is::<NativeAdmissionExec>()
-}
-
-pub(crate) fn query_admission_wrapped_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
-    (plan as &dyn Any).downcast_ref::<NativeAdmissionExec>().map(|wrapper| &wrapper.input)
 }
 
 impl DisplayAs for NativeAdmissionExec {

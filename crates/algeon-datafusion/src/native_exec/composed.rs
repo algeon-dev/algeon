@@ -4,24 +4,19 @@
 //! The consumer plan then uses those handles as GPU inputs and materializes the
 //! final result back to host Arrow for DataFusion.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
+    common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, PhysicalExpr},
-    physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        metrics::{ExecutionPlanMetricsSet, MetricsSet},
-    },
+    physical_plan::{ExecutionPlan, SendableRecordBatchStream},
 };
-use futures::future::BoxFuture;
 use query_engine::{
-    admission::{AdmittedPlan, AttemptCapabilityEvidence, AttemptExecutionScope, AttemptProducerOccurrence},
+    admission::{AttemptCapabilityEvidence, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
-    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, ResultSink},
+    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan},
     runtime::{
         ExecutionContext,
         resident::{GpuResidentInputMap, GpuResultHandle},
@@ -29,223 +24,22 @@ use query_engine::{
 };
 
 use super::{
-    GpuResidentProducer,
+    AlgeonNativeExec, GpuResidentProducer,
     admission::attempt_execution_required_error,
     common::{
-        NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
-        gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream, native_plan_one_line,
-        native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
+        NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, mark_native_runtime_error,
+        native_host_output_stream, native_query_runtime_error, run_gpu_execution_task,
     },
     config::AlgeonNativeExecutionConfig,
     execute_gpu_resident_producer_with_context, gpu_resident_producer, gpu_resident_producer_input_name,
-    metrics::{
-        AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
-    },
+    metrics::AlgeonNativeMetrics,
     prepare_gpu_resident_producer_for_execution,
     producer::prepared_gpu_resident_producer_admission_tickets,
 };
 use crate::{
     error::{Error, ErrorCode, Result},
-    native_exec::graph::graph_execution_plan,
     planner::native::Invocation,
 };
-
-/// DataFusion wrapper for composed native execution with GPU-resident producer fragments.
-///
-/// Created by Algeon physical optimizer and adapter composition. The public type
-/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
-/// collection, and plan diagnostics.
-///
-/// Construction remains crate-private: constructors validate host sinks, child
-/// producer relationships, equivalence properties, and admission-bound execution
-/// configuration. The wrapper executes producer children into GPU-resident handles,
-/// maps those handles into an input map, and executes a host-sink native consumer
-/// plan that materializes the final result as Arrow for DataFusion streaming.
-#[derive(Debug, Clone)]
-pub struct AlgeonNativeComposedExec {
-    admitted: Arc<AdmittedPlan>,
-    gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-    execution_config: AlgeonNativeExecutionConfig,
-    metrics_capture: Option<NativeExecutionMetricsCapture>,
-    graph_claim_calibration_capture: GraphClaimCalibrationCapture,
-    metrics: ExecutionPlanMetricsSet,
-    cache: Arc<PlanProperties>,
-}
-
-impl AlgeonNativeComposedExec {
-    /// Create composed native execution from GPU-resident producer children.
-    ///
-    /// The final plan must use a host Arrow sink, every child must advertise a
-    /// unique GPU-resident input name, and the child names must match the
-    /// consumer plan's declared GPU sources exactly.
-    #[cfg(test)]
-    pub(crate) fn try_new(
-        plan: QueryPlan,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: AlgeonNativeExecutionConfig,
-    ) -> Result<Self> {
-        let admitted = super::admit_for_test(&plan.clone_with_deferred_host_materialization_sink(), &execution_config)?;
-        Self::try_new_with_cache(admitted, gpu_inputs, execution_config, None)
-    }
-
-    pub(crate) fn try_new_with_equivalence_properties(
-        admitted: Arc<AdmittedPlan>,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: AlgeonNativeExecutionConfig,
-        eq_properties: EquivalenceProperties,
-    ) -> Result<Self> {
-        Self::try_new_with_cache(admitted, gpu_inputs, execution_config, Some(eq_properties))
-    }
-
-    fn try_new_with_cache(
-        admitted: Arc<AdmittedPlan>,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: AlgeonNativeExecutionConfig,
-        eq_properties: Option<EquivalenceProperties>,
-    ) -> Result<Self> {
-        // Constructor validation preserves the composed execution contract: the final consumer must
-        // host-materialize, every child must be a GPU-resident producer, and required/provided GPU
-        // input names must match exactly. The consumer executes in the deferred form it was
-        // admitted in.
-        let plan = admitted.plan();
-        if !matches!(plan.sink(), ResultSink::DeferredHostArrow { .. }) {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed.try_new",
-                "native composed DataFusion execution requires a host-arrow result sink",
-            )
-            .with_fact("result_sink", "gpu_resident"));
-        }
-        if gpu_inputs.is_empty() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed.try_new",
-                "native composed execution requires at least one GPU-resident producer",
-            ));
-        }
-
-        let required_inputs = gpu_resident_source_names(plan);
-        let mut provided_inputs = BTreeSet::new();
-        for child in &gpu_inputs {
-            let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
-                if let Some(rejection) =
-                    graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
-                {
-                    return Err(rejection);
-                }
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_composed.try_new",
-                    "native composed execution children must be GPU-resident native producers",
-                )
-                .with_fact("child_name", child.name()));
-            };
-            if !provided_inputs.insert(input_name.clone()) {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_composed.try_new",
-                    "native composed execution received duplicate GPU-resident producer input names",
-                )
-                .with_fact("input_name", input_name));
-            }
-        }
-
-        let missing_inputs = required_inputs.difference(&provided_inputs).map(String::as_str).collect::<Vec<_>>();
-        if !missing_inputs.is_empty() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed.try_new",
-                "native composed execution is missing GPU-resident producer inputs",
-            )
-            .with_fact("missing_inputs", missing_inputs.join(",")));
-        }
-        let unused_inputs = provided_inputs.difference(&required_inputs).map(String::as_str).collect::<Vec<_>>();
-        if !unused_inputs.is_empty() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed.try_new",
-                "native composed execution received GPU-resident producer inputs the consumer plan does not declare",
-            )
-            .with_fact("unused_inputs", unused_inputs.join(",")));
-        }
-        let cache = match eq_properties {
-            Some(eq_properties) => {
-                properties_with_equivalence(Arc::clone(plan.caller_visible_output_schema()), eq_properties)?
-            },
-            None => conservative_properties(Arc::clone(plan.caller_visible_output_schema())),
-        };
-
-        let metrics_capture = execution_config.new_metrics_capture();
-        let gpu_inputs = gpu_inputs
-            .into_iter()
-            .map(|input| {
-                let Some(producer) = input.as_ref().downcast_ref::<super::producer::AlgeonNativeGpuProducerExec>()
-                else {
-                    return input;
-                };
-                Arc::new(producer.clone().with_metrics_capture(metrics_capture.clone())) as Arc<dyn ExecutionPlan>
-            })
-            .collect();
-        Ok(Self {
-            cache,
-            admitted,
-            gpu_inputs,
-            execution_config,
-            metrics_capture,
-            graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
-            metrics: ExecutionPlanMetricsSet::new(),
-        })
-    }
-
-    pub(crate) fn native_plan(&self) -> &QueryPlan {
-        self.admitted.plan()
-    }
-
-    #[cfg(feature = "bench-support")]
-    #[doc(hidden)]
-    pub fn admitted_plan_for_internal_consumer(&self) -> &Arc<AdmittedPlan> {
-        &self.admitted
-    }
-
-    #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
-    pub(crate) fn gpu_inputs(&self) -> &[Arc<dyn ExecutionPlan>] {
-        &self.gpu_inputs
-    }
-
-    pub(crate) fn execution_metrics(&self) -> &ExecutionPlanMetricsSet {
-        &self.metrics
-    }
-
-    /// Returns the one post-seal attempt projection target for this composed
-    /// root. Producer fragments are intentionally not separate owners.
-    pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
-        let producer_captures = self.gpu_inputs.iter().filter_map(|input| {
-            super::sealed_attempt_metrics_target(input.as_ref())
-                .map(|target| target.graph_claim_calibration_captures().collect::<Vec<_>>())
-        });
-        SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
-            .with_graph_claim_calibration_captures(producer_captures.flatten())
-    }
-
-    #[cfg(any(feature = "cugraph", test))]
-    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: Arc<TaskContext>) -> DataFusionResult<Self> {
-        let mut prepared = self.clone();
-        prepared.admitted = super::lakehouse::resolve_admitted_plan(
-            self.execution_config.lakehouse_footer_pruning(),
-            &self.admitted,
-            task_context.as_ref(),
-        )
-        .await?;
-        let mut prepared_inputs = Vec::with_capacity(self.gpu_inputs.len());
-        for input in &self.gpu_inputs {
-            prepared_inputs
-                .push(prepare_gpu_resident_producer_for_execution(Arc::clone(input), Arc::clone(&task_context)).await?);
-        }
-        prepared.gpu_inputs = prepared_inputs;
-        prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
-        Ok(prepared)
-    }
-}
 
 struct CompletedComposedAdmissionEvidence {
     execution_config: AlgeonNativeExecutionConfig,
@@ -316,7 +110,7 @@ pub(crate) fn composed_admission_capability_evidence(
         .map_err(|error| prepared_composed_admission_error(error, consumer_plan, None))
 }
 
-fn resolve_composed_admission_capability_evidence(
+pub(super) fn resolve_composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
 ) -> QueryEngineResult<AttemptCapabilityEvidence> {
@@ -507,80 +301,13 @@ fn complete_composed_admission_evidence(
     })
 }
 
-impl DisplayAs for AlgeonNativeComposedExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => write!(
-                f,
-                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
-                self.native_plan().node_count(),
-                self.gpu_inputs.len(),
-                self.native_plan().contains_edge_normalize(),
-            ),
-            DisplayFormatType::Verbose => write!(
-                f,
-                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
-                self.native_plan().node_count(),
-                self.gpu_inputs.len(),
-                self.native_plan().contains_edge_normalize(),
-                native_plan_one_line(self.native_plan()),
-            ),
-            DisplayFormatType::TreeRender => {
-                writeln!(f, "native_nodes={}", self.native_plan().node_count())?;
-                writeln!(f, "gpu_input_count={}", self.gpu_inputs.len())?;
-                writeln!(f, "sink=host_arrow")?;
-                writeln!(f, "native_pipeline_execution_mode=bounded")?;
-                writeln!(f, "input_boundary=gpu_resident")?;
-                writeln!(f, "output_boundary=device_to_host")?;
-                writeln!(f, "edge_normalize_inserted={}", self.native_plan().contains_edge_normalize())?;
-                write_native_plan_tree(f, self.native_plan())
-            },
-        }
-    }
-}
-
-impl ExecutionPlan for AlgeonNativeComposedExec {
-    fn name(&self) -> &str {
-        "AlgeonNativeComposedExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.cache
-    }
-
-    fn apply_expressions(
+impl AlgeonNativeExec {
+    /// Streams the host result of a unit that reads GPU-resident producers.
+    pub(super) fn execute_host_composed(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.gpu_inputs.iter().collect()
-    }
-
-    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        // These children are device-handle producers, not DataFusion row
-        // streams. Repartitioning or coalescing one would wrap the producer
-        // in a host execution node and break the composed GPU contract.
-        vec![false; self.gpu_inputs.len()]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        AlgeonNativeComposedExec::try_new_with_equivalence_properties(
-            Arc::clone(&self.admitted),
-            children,
-            self.execution_config.clone(),
-            self.cache.equivalence_properties().clone(),
-        )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from)
-    }
-
-    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -822,115 +549,7 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
         Ok(output)
     }
 
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-}
-
-/// Composed GPU-resident native fragment producer with nested GPU-resident producer inputs.
-///
-/// Created by Algeon physical optimizer and adapter composition. The public type
-/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
-/// collection, and plan diagnostics.
-///
-/// Construction remains crate-private: constructors validate GPU-resident sinks,
-/// nested producer children, equivalence properties, GPU-resident input names,
-/// and admission-bound execution configuration. This node produces device-resident
-/// intermediate data and cannot directly stream Arrow through
-/// [`ExecutionPlan::execute`].
-#[derive(Debug, Clone)]
-pub struct AlgeonNativeComposedGpuProducerExec {
-    input_name: String,
-    admitted: Arc<AdmittedPlan>,
-    gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-    execution_config: AlgeonNativeExecutionConfig,
-    metrics_capture: Option<NativeExecutionMetricsCapture>,
-    prepared: bool,
-    metrics: ExecutionPlanMetricsSet,
-    cache: Arc<PlanProperties>,
-}
-
-impl AlgeonNativeComposedGpuProducerExec {
-    pub(crate) fn try_new_with_equivalence_properties(
-        input_name: impl Into<String>,
-        admitted: Arc<AdmittedPlan>,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: AlgeonNativeExecutionConfig,
-        eq_properties: EquivalenceProperties,
-    ) -> Result<Self> {
-        let metrics_capture = execution_config.new_metrics_capture();
-        Self::try_new(input_name, admitted, gpu_inputs, execution_config, metrics_capture, eq_properties)
-    }
-
-    fn try_new(
-        input_name: impl Into<String>,
-        admitted: Arc<AdmittedPlan>,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: AlgeonNativeExecutionConfig,
-        metrics_capture: Option<NativeExecutionMetricsCapture>,
-        eq_properties: EquivalenceProperties,
-    ) -> Result<Self> {
-        let input_name = input_name.into();
-        if input_name.is_empty() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed_gpu_producer.try_new",
-                "composed GPU-resident producer input name must not be empty",
-            ));
-        }
-        let plan = admitted.plan();
-        if plan.sink().materializes_host_boundary() {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_composed_gpu_producer.try_new",
-                "composed GPU-resident producer requires a GPU-resident sink",
-            )
-            .with_fact("result_sink", "host_arrow"));
-        }
-        validate_composed_gpu_inputs(plan, &gpu_inputs, "algeon_datafusion.native_composed_gpu_producer.try_new")?;
-        let cache = properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?;
-        Ok(Self {
-            input_name,
-            admitted,
-            gpu_inputs,
-            execution_config,
-            metrics_capture,
-            prepared: false,
-            metrics: ExecutionPlanMetricsSet::new(),
-            cache,
-        })
-    }
-
-    pub(crate) fn native_plan(&self) -> &QueryPlan {
-        self.admitted.plan()
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn execution_config(&self) -> &AlgeonNativeExecutionConfig {
-        &self.execution_config
-    }
-}
-
-impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
-    fn gpu_result_input_name(&self) -> &str {
-        &self.input_name
-    }
-
-    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
-        resolve_composed_admission_capability_evidence(self.native_plan(), &self.gpu_inputs).map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.native_composed_gpu_producer.admission_evidence",
-                "failed to derive capability evidence for a composed GPU-resident output",
-                error,
-            )
-        })
-    }
-
-    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
-        Some(&self.metrics)
-    }
-
-    fn prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {
+    pub(super) fn composed_prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {
         let mut tickets = self.execution_config.query_admission_ticket().into_iter().collect::<Vec<_>>();
         for child in &self.gpu_inputs {
             for ticket in prepared_gpu_resident_producer_admission_tickets(child.as_ref()) {
@@ -942,277 +561,103 @@ impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
         tickets
     }
 
-    fn prepare_execution_plan<'a>(
-        &'a self,
-        _plan: Arc<dyn ExecutionPlan>,
-        task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
-        Box::pin(async move {
-            let mut prepared = self.clone();
-            prepared.admitted = super::lakehouse::resolve_admitted_plan(
-                self.execution_config.lakehouse_footer_pruning(),
-                &self.admitted,
-                task_context.as_ref(),
-            )
-            .await?;
-            let mut prepared_inputs = Vec::with_capacity(self.gpu_inputs.len());
-            for input in &self.gpu_inputs {
-                prepared_inputs.push(
-                    prepare_gpu_resident_producer_for_execution(Arc::clone(input), Arc::clone(&task_context)).await?,
-                );
-            }
-            prepared.gpu_inputs = prepared_inputs;
-            prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
-            prepared.prepared = true;
-            Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
-        })
-    }
-
-    fn execute_gpu_result_with_context<'a>(
-        &'a self,
-        native_context: &'a ExecutionContext,
+    /// Executes a GPU-resident unit's producers and plan inside the
+    /// composed root's shared native context, after
+    /// [`GpuResidentProducer::prepare_execution_plan`] resolved them.
+    pub(super) async fn execute_composed_gpu_result(
+        &self,
+        native_context: &ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
-        Box::pin(async move {
-            if partition != 0 {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
-                    "composed GPU-resident producer exposes exactly one output partition",
-                )
-                .with_fact("partition", partition)
-                .into());
-            }
-            if !self.prepared {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
-                    "composed GPU-resident producer was not prepared before native context acquisition",
-                )
-                .with_log_safe_fact("producer_state", "not_prepared")
-                .into());
-            }
+    ) -> DataFusionResult<(String, GpuResultHandle)> {
+        if partition != 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                "composed GPU-resident producer exposes exactly one output partition",
+            )
+            .with_fact("partition", partition)
+            .into());
+        }
+        if !self.prepared {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                "composed GPU-resident producer was not prepared before native context acquisition",
+            )
+            .with_log_safe_fact("producer_state", "not_prepared")
+            .into());
+        }
 
-            // Producers run only after the admitted composed bound matches
-            // this consumer and the order of the occurrences it binds.
-            let runtime_occurrence_ids = self
-                .gpu_inputs
-                .iter()
-                .map(|input| {
-                    gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
-                        DataFusionError::from(
-                            Error::new(
-                                ErrorCode::InvalidExecutionPlan,
-                                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
-                                "a composed GPU-resident producer input is missing its occurrence identity",
-                            )
-                            .with_fact("reason", "composed_admission_occurrence_missing"),
+        // Producers run only after the admitted composed bound matches
+        // this consumer and the order of the occurrences it binds.
+        let runtime_occurrence_ids = self
+            .gpu_inputs
+            .iter()
+            .map(|input| {
+                gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
+                    DataFusionError::from(
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                            "a composed GPU-resident producer input is missing its occurrence identity",
                         )
-                    })
+                        .with_fact("reason", "composed_admission_occurrence_missing"),
+                    )
                 })
-                .collect::<DataFusionResult<Vec<_>>>()?;
-            native_context.validate_admitted_composed_attempt(self.admitted.plan(), &runtime_occurrence_ids).map_err(
-                |error| {
-                    DataFusionError::from(Error::from_native(
-                        "algeon_datafusion.native_composed_gpu_producer.admission",
-                        "the admitted composed bound does not match runtime execution",
-                        error,
-                    ))
-                },
-            )?;
-
-            let mut input_map = GpuResidentInputMap::new();
-            for child in &self.gpu_inputs {
-                let (input_name, handle) = execute_gpu_resident_producer_with_context(
-                    child.as_ref(),
-                    native_context,
-                    partition,
-                    Arc::clone(&task_context),
-                )
-                .await?;
-                input_map.insert(input_name, handle);
-            }
-
-            let metrics = AlgeonNativeMetrics::new_with_capture_and_shape(
-                &self.metrics,
-                partition,
-                self.metrics_capture.clone(),
-                self.execution_config.plan_task_mapping_datafusion_shape(),
-            );
-            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-            let outcome = execute_query_plan(
-                native_context,
-                QueryExecutionRequest::admitted(&self.admitted).with_gpu_inputs(&input_map),
-            );
-            let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
-                DataFusionError::from(native_query_runtime_error(
-                    "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
-                    "algeon composed GPU-resident relational execution failed",
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        native_context.validate_admitted_composed_attempt(self.admitted.plan(), &runtime_occurrence_ids).map_err(
+            |error| {
+                DataFusionError::from(Error::from_native(
+                    "algeon_datafusion.native_composed_gpu_producer.admission",
+                    "the admitted composed bound does not match runtime execution",
                     error,
                 ))
-            })?;
-            let QueryOutput::GpuResident(handle) = output else {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
-                    "composed GPU-resident producer materialized a host result",
-                )
-                .with_fact("result_sink", "host_arrow")
-                .into());
-            };
-            Ok((self.input_name.clone(), handle))
-        })
-    }
-}
-
-impl DisplayAs for AlgeonNativeComposedGpuProducerExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => write!(
-                f,
-                "AlgeonNativeComposedGpuProducerExec: input_name={}, native_nodes={}, gpu_input_count={}, sink=gpu_resident, input_boundary=gpu_resident, output_boundary=device_resident",
-                self.input_name,
-                self.native_plan().node_count(),
-                self.gpu_inputs.len(),
-            ),
-            DisplayFormatType::Verbose => write!(
-                f,
-                "AlgeonNativeComposedGpuProducerExec: input_name={}, native_nodes={}, gpu_input_count={}, sink=gpu_resident, input_boundary=gpu_resident, output_boundary=device_resident, native_plan={}",
-                self.input_name,
-                self.native_plan().node_count(),
-                self.gpu_inputs.len(),
-                native_plan_one_line(self.native_plan()),
-            ),
-            DisplayFormatType::TreeRender => {
-                writeln!(f, "input_name={}", self.input_name)?;
-                writeln!(f, "gpu_input_count={}", self.gpu_inputs.len())?;
-                writeln!(f, "sink=gpu_resident")?;
-                writeln!(f, "input_boundary=gpu_resident")?;
-                writeln!(f, "output_boundary=device_resident")?;
-                write_native_plan_tree(f, self.native_plan())
             },
+        )?;
+
+        let mut input_map = GpuResidentInputMap::new();
+        for child in &self.gpu_inputs {
+            let (input_name, handle) = execute_gpu_resident_producer_with_context(
+                child.as_ref(),
+                native_context,
+                partition,
+                Arc::clone(&task_context),
+            )
+            .await?;
+            input_map.insert(input_name, handle);
         }
-    }
-}
 
-impl ExecutionPlan for AlgeonNativeComposedGpuProducerExec {
-    fn name(&self) -> &str {
-        "AlgeonNativeComposedGpuProducerExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.cache
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        self.gpu_inputs.iter().collect()
-    }
-
-    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        // Keep DataFusion distribution rules from inserting a row-stream
-        // wrapper between this internal producer and its device inputs.
-        vec![false; self.gpu_inputs.len()]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        AlgeonNativeComposedGpuProducerExec::try_new(
-            self.input_name.clone(),
-            Arc::clone(&self.admitted),
-            children,
-            self.execution_config.clone(),
+        let metrics = AlgeonNativeMetrics::new_with_capture_and_shape(
+            &self.metrics,
+            partition,
             self.metrics_capture.clone(),
-            self.cache.equivalence_properties().clone(),
-        )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from)
-    }
-
-    fn execute(
-        &self,
-        _partition: usize,
-        _task_context: Arc<TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "algeon_datafusion.native_composed_gpu_producer.execute",
-            "composed GPU-resident producer cannot stream host Arrow directly",
-        )
-        .with_fact("result_sink", "gpu_resident")
-        .into())
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-}
-
-fn validate_composed_gpu_inputs(
-    plan: &QueryPlan,
-    gpu_inputs: &[Arc<dyn ExecutionPlan>],
-    operation: &'static str,
-) -> Result<()> {
-    if gpu_inputs.is_empty() {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            operation,
-            "composed native execution requires at least one GPU-resident producer",
-        ));
-    }
-    let required_inputs = gpu_resident_source_names(plan);
-    let mut provided_inputs = BTreeSet::new();
-    for child in gpu_inputs {
-        let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
-            if let Some(rejection) =
-                graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
-            {
-                return Err(rejection);
-            }
+            self.execution_config.plan_task_mapping_datafusion_shape(),
+        );
+        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+        let outcome = execute_query_plan(
+            native_context,
+            QueryExecutionRequest::admitted(&self.admitted).with_gpu_inputs(&input_map),
+        );
+        let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
+            DataFusionError::from(native_query_runtime_error(
+                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                "algeon composed GPU-resident relational execution failed",
+                error,
+            ))
+        })?;
+        let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                operation,
-                "composed native execution children must be GPU-resident producers",
+                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                "composed GPU-resident producer materialized a host result",
             )
-            .with_fact("child_name", child.name()));
+            .with_fact("result_sink", "host_arrow")
+            .into());
         };
-        if !provided_inputs.insert(input_name.clone()) {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                operation,
-                "composed native execution received duplicate GPU-resident input names",
-            )
-            .with_fact("input_name", input_name));
-        }
+        Ok((self.gpu_result_input_name().to_string(), handle))
     }
-    let missing_inputs = required_inputs.difference(&provided_inputs).map(String::as_str).collect::<Vec<_>>();
-    if !missing_inputs.is_empty() {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            operation,
-            "composed native execution is missing GPU-resident producer inputs",
-        )
-        .with_fact("missing_inputs", missing_inputs.join(",")));
-    }
-    let unused_inputs = provided_inputs.difference(&required_inputs).map(String::as_str).collect::<Vec<_>>();
-    if !unused_inputs.is_empty() {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            operation,
-            "composed native execution received unused GPU-resident producer inputs",
-        )
-        .with_fact("unused_inputs", unused_inputs.join(",")));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

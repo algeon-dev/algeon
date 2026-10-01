@@ -1,6 +1,6 @@
 use std::{fmt::Write as _, sync::Arc};
 
-use algeon_datafusion::native_exec::{AlgeonNativeComposedExec, AlgeonNativeExec};
+use algeon_datafusion::native_exec::AlgeonNativeExec;
 use datafusion::physical_plan::ExecutionPlan;
 use query_engine::admission::AdmittedPlan;
 
@@ -18,12 +18,8 @@ fn append_compiled_pipelines(output: &mut String, plan: &Arc<dyn ExecutionPlan>,
     let admitted = plan
         .as_ref()
         .downcast_ref::<AlgeonNativeExec>()
-        .map(AlgeonNativeExec::admitted_plan_for_internal_consumer)
-        .or_else(|| {
-            plan.as_ref()
-                .downcast_ref::<AlgeonNativeComposedExec>()
-                .map(AlgeonNativeComposedExec::admitted_plan_for_internal_consumer)
-        });
+        .filter(|native| native.materializes_host())
+        .map(AlgeonNativeExec::admitted_plan_for_internal_consumer);
     if let Some(admitted) = admitted {
         *count += 1;
         append_compiled_pipeline(output, *count, admitted);

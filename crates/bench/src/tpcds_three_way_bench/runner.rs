@@ -15,9 +15,7 @@ use std::{
 
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES,
-    },
+    native_exec::{AlgeonNativeExec, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES},
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::{NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::CandidateOutcome,
@@ -392,8 +390,6 @@ async fn run_query_collect(
 
 fn plan_contains_native_runtime(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_runtime(child.as_ref()))
 }
 

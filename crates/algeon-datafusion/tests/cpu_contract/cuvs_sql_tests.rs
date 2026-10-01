@@ -10,7 +10,7 @@ use std::{
 #[cfg(feature = "cugraph")]
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 #[cfg(feature = "cugraph")]
-use algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec;
+use algeon_datafusion::native_exec::AlgeonNativeExec;
 use algeon_datafusion::{
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
@@ -1440,7 +1440,7 @@ async fn native_rule_lowers_a_cugraph_relation_input_into_a_composed_gpu_produce
     let cuvs = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
     let dataset = cuvs.children()[0];
     assert!(
-        dataset.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some(),
+        dataset.downcast_ref::<AlgeonNativeExec>().is_some(),
         "the projected cuGraph input must lower into a composed GPU producer: {}",
         dataset.name()
     );

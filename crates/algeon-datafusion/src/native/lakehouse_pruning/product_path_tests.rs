@@ -48,10 +48,7 @@ use crate::{
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::DataFusionErrorExt,
     native::S3_STORAGE_PROFILE_ID,
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        SourceChunking,
-    },
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking},
     s3_storage::install_s3_storage,
 };
 
@@ -420,7 +417,8 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
     let (_attempt, config) = admission_execution_config(&backend, &plan);
-    let exec = AlgeonNativeExec::try_new(plan.clone(), config).expect("test native host execution should build");
+    let exec =
+        AlgeonNativeExec::try_new_host_for_test(plan.clone(), config).expect("test native host execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(runtime_env))
@@ -464,7 +462,7 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
             .with_query_admission_source(source)
             .with_existing_query_admission_ticket(Arc::clone(&ticket))
             .with_lakehouse_footer_pruning(true);
-    let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
+    let exec = AlgeonNativeExec::try_new_host_for_test(plan, config).expect("test native host execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
@@ -529,7 +527,8 @@ async fn native_host_refined_after_the_claim_joins_its_grant() {
                 .with_query_admission_source(source.clone())
                 .with_existing_query_admission_ticket(Arc::clone(&ticket))
                 .with_lakehouse_footer_pruning(true);
-        let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
+        let exec =
+            AlgeonNativeExec::try_new_host_for_test(plan, config).expect("test native host execution should build");
         let mut stream = exec
             .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
             .expect("native host execution should return a lazy stream");
@@ -567,7 +566,7 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
             .with_query_admission_source(source)
             .with_existing_query_admission_ticket(Arc::clone(&ticket))
             .with_lakehouse_footer_pruning(true);
-    let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
+    let exec = AlgeonNativeExec::try_new_host_for_test(plan, config).expect("test native host execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
@@ -594,14 +593,9 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let producer_gets = register_tracking_parquet_store(&runtime_env, "s3://producer-source", &bytes).await;
 
     let (producer_plan, _) = prunable_query_plan("s3://producer-source/table/data.parquet", bytes.len(), true);
-    let producer = AlgeonNativeGpuProducerExec::try_new_with_metrics_capture_and_shape(
-        "producer",
-        producer_plan,
-        None,
-        None,
-        true,
-    )
-    .expect("test native producer should build");
+    let producer =
+        AlgeonNativeExec::try_new_producer_with_capture_for_test("producer", producer_plan, None, None, true)
+            .expect("test native producer should build");
 
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -615,7 +609,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema)).unwrap();
     let consumer_plan = builder.finish_with_host_sink(union).unwrap();
     let (_attempt, config) = composed_admission_execution_config(&backend);
-    let exec = AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], config)
+    let exec = AlgeonNativeExec::try_new_composed_for_test(consumer_plan, vec![Arc::new(producer)], config)
         .expect("test native composed execution should build");
 
     let mut stream = exec

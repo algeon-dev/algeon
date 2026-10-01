@@ -46,10 +46,7 @@ use crate::{
     capability::CapabilityReason,
     error::Result,
     native::lower_physical_plan_to_native,
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
-        AlgeonNativeGpuProducerExec,
-    },
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     planner::{NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics},
     report::{CandidateOutcome, GpuCandidate},
 };
@@ -279,21 +276,6 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
 
 fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {
     if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>()
-        && exec.native_plan().contains_edge_normalize()
-    {
-        return true;
-    }
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeComposedExec>()
-        && exec.native_plan().contains_edge_normalize()
-    {
-        return true;
-    }
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>()
-        && exec.native_plan().contains_edge_normalize()
-    {
-        return true;
-    }
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeGpuProducerExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;

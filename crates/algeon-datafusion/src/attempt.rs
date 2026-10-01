@@ -67,11 +67,11 @@ use crate::planner::native::InvocationExecution;
 use crate::{
     backend::AlgeonGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode, Result},
-    final_plan_observation::observe_final_plan,
+    final_plan_observation::NativePlanIndex,
     native_exec::{
         SealedAttemptMetricsTarget,
         admission::{AttemptTicketBinding, NativeAdmissionExec, task_context_with_query_admission_ticket},
-        native_execution_metrics, sealed_attempt_metrics_target, transparent_root_wrapper_input,
+        transparent_root_wrapper_input,
     },
     native_report::NativeDataFusionExecutionMetrics,
     planner::{
@@ -151,14 +151,13 @@ struct AttemptExecutionState {
 }
 
 impl AttemptExecutionState {
-    fn set_sealed_metrics_target(&self, plan: &dyn ExecutionPlan) {
-        let Some(target) = sealed_attempt_metrics_target(plan) else { return };
-        let target = target.with_execution_metrics(native_execution_metrics(plan));
+    fn set_sealed_metrics_target(&self, index: NativePlanIndex) {
+        let Some(target) = index.into_sealed_metrics_target() else { return };
         let mut slot = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Planning supplies a fallback for paths such as CTAS; the actual
         // execution root replaces it before terminal publication so a replan
         // never projects into an unexecuted wrapper.
-        *slot = Some((target, observe_final_plan(plan)));
+        *slot = Some(target);
     }
 
     fn publish_sealed_metrics(&self, report: &QueryAttemptReport) {
@@ -241,10 +240,11 @@ impl InvocationAttempt {
     /// attempt's final-plan disposition at ticket construction so the later
     /// query-service grant always has a valid lifecycle predecessor.
     pub(crate) fn native_admission_planned(&self, plan: &dyn ExecutionPlan) {
-        let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+        let index = NativePlanIndex::build(plan);
+        let _ = self.state.handle.set_disposition(disposition_for(index.disposition()));
         let _ = self.state.handle.record_planning_finished();
         if !self.state.result_stream_started.load(Ordering::Acquire) {
-            self.state.set_sealed_metrics_target(plan);
+            self.state.set_sealed_metrics_target(index);
         }
     }
 }
@@ -611,7 +611,7 @@ impl AlgeonAttempt {
         task_context: Arc<TaskContext>,
     ) -> DataFusionResult<AttemptStream> {
         let owner = self.take_owner()?;
-        self.state.set_sealed_metrics_target(plan.as_ref());
+        self.state.set_sealed_metrics_target(NativePlanIndex::build(plan.as_ref()));
         let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), task_context);
         match execute_physical_stream(plan, task_context) {
             Ok(inner) => Ok(AttemptStream::new(inner, owner, Arc::clone(&self.state))),
@@ -651,9 +651,10 @@ pub(crate) fn execute_in_internal_attempt(
     execute: impl FnOnce(Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream>,
 ) -> DataFusionResult<SendableRecordBatchStream> {
     let attempt = AlgeonAttempt::begin(session, AttemptOptions::default(), None).map_err(DataFusionError::from)?;
-    let _ = attempt.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+    let index = NativePlanIndex::build(plan);
+    let _ = attempt.state.handle.set_disposition(disposition_for(index.disposition()));
     let owner = attempt.take_owner()?;
-    attempt.state.set_sealed_metrics_target(plan);
+    attempt.state.set_sealed_metrics_target(index);
     let mut session_config = task_context.session_config().clone();
     attempt.invocation.install(&mut session_config);
     let task_context = Arc::new(TaskContext::new(

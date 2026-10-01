@@ -49,8 +49,8 @@ pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
     stable_result_schema(algorithm).fields().iter().map(|field| field.as_ref().clone()).collect()
 }
 
-pub(super) fn find_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeComposedExec> {
-    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+pub(super) fn find_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeExec> {
+    if let Some(composed) = plan.downcast_ref::<AlgeonNativeExec>() {
         return Some(composed);
     }
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
@@ -65,9 +65,9 @@ pub(super) fn find_cugraph_algo_exec(plan: &dyn ExecutionPlan) -> Option<&dyn Ex
 
 pub(super) fn plan_contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_exec(child.as_ref()))
 }
 
@@ -75,9 +75,7 @@ pub(super) fn plan_contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
 /// holds the artifact the graph executes, possibly under the scheduling
 /// wrappers DataFusion adds above a leaf.
 pub(super) fn cugraph_input_is_native_gpu_producer(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
-    {
+    if plan.downcast_ref::<AlgeonNativeExec>().is_some() || plan.downcast_ref::<AlgeonNativeExec>().is_some() {
         return true;
     }
     let children = plan.children();

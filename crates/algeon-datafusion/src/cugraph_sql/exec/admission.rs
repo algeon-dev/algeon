@@ -7,11 +7,11 @@ use query_engine::{
 };
 
 use super::{
-    AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, CooperativeExec, CugraphAlgoExec,
-    CugraphAlgorithmSpec, CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionResult,
-    Error, ErrorCode, ExecutionPlan, PlanNode, Precision, RepartitionExec, Result, StatisticsArgs, StatisticsContext,
-    TaskContext, cugraph_execution_capability_evidence, gpu_resident_producer,
-    gpu_resident_producer_hard_output_row_upper_bound, task_context_with_query_admission_ticket,
+    AlgeonNativeExec, AlgeonNativeExecutionConfig, CooperativeExec, CugraphAlgoExec, CugraphAlgorithmSpec,
+    CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionResult, Error, ErrorCode,
+    ExecutionPlan, PlanNode, Precision, RepartitionExec, Result, StatisticsArgs, StatisticsContext, TaskContext,
+    cugraph_execution_capability_evidence, gpu_resident_producer, gpu_resident_producer_hard_output_row_upper_bound,
+    task_context_with_query_admission_ticket,
 };
 use crate::{
     native::{
@@ -19,7 +19,6 @@ use crate::{
         graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
     },
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec,
         admission::{attempt_execution_required_error, invocation_admission_ticket},
         composed_admission_capability_evidence,
     },
@@ -31,7 +30,8 @@ pub(super) fn edge_execution_config(
     default_execution_config: &AlgeonNativeExecutionConfig,
 ) -> AlgeonNativeExecutionConfig {
     native_graph_input_execution_plan(plan)
-        .and_then(|native| native.downcast_ref::<AlgeonNativeComposedGpuProducerExec>())
+        .and_then(|native| native.downcast_ref::<AlgeonNativeExec>())
+        .filter(|native| !native.gpu_inputs().is_empty())
         .map_or_else(|| default_execution_config.clone(), |native| native.execution_config().clone())
 }
 
@@ -206,7 +206,7 @@ fn collect_native_fragment_capability_evidences(
         evidence_items.push(producer.gpu_result_capability_evidence()?);
         return Ok(());
     }
-    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+    if let Some(composed) = plan.downcast_ref::<AlgeonNativeExec>().filter(|native| !native.gpu_inputs().is_empty()) {
         let composed_evidence = composed_admission_capability_evidence(composed.native_plan(), composed.gpu_inputs())
             .map_err(|error| {
             Error::new(
@@ -234,11 +234,7 @@ fn collect_native_fragment_capability_evidences(
 /// a new producer form cannot silently lose pricing evidence while retaining
 /// graph execution authority.
 pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
-    let native = native_graph_input_execution_plan(plan)?;
-    if let Some(native) = native.downcast_ref::<AlgeonNativeGpuProducerExec>() {
-        return Some(native.native_plan());
-    }
-    native.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
+    native_graph_input_execution_plan(plan)?.downcast_ref::<AlgeonNativeExec>().map(AlgeonNativeExec::native_plan)
 }
 
 pub(super) fn edge_source_output_rows(
@@ -375,9 +371,6 @@ pub(super) fn validate_standalone_bounded_source_contains_no_native_child(
 
 pub(super) fn plan_contains_algeon_native(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
         || plan.downcast_ref::<CugraphAlgoExec>().is_some()
         || plan.children().iter().any(|child| plan_contains_algeon_native(child.as_ref()))
 }
@@ -401,8 +394,7 @@ pub(crate) fn native_graph_input_execution_plan(plan: &dyn ExecutionPlan) -> Opt
 }
 
 fn is_native_gpu_producer(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
+    plan.downcast_ref::<AlgeonNativeExec>().is_some_and(|native| !native.materializes_host())
 }
 
 fn graph_input_scheduling_child(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {

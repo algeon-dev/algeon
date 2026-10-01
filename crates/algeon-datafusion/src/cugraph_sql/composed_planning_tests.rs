@@ -21,9 +21,7 @@ use query_engine::{
 use super::{CugraphAlgoExec, CugraphSqlConfig};
 use crate::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, below_native_admission,
-    },
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
     session::AlgeonSessionStateBuilderExt,
 };
 
@@ -133,8 +131,8 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
     ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
 }
 
-fn find_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeComposedExec> {
-    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+fn find_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeExec> {
+    if let Some(composed) = plan.downcast_ref::<AlgeonNativeExec>() {
         return Some(composed);
     }
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
@@ -281,7 +279,7 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     let plan = df.create_physical_plan().await.unwrap();
 
     let composed = below_native_admission(&plan)
-        .downcast_ref::<AlgeonNativeComposedExec>()
+        .downcast_ref::<AlgeonNativeExec>()
         .expect("the canonical graph topology must lower at the root to one composed native consumer");
     let producers = composed.children();
     assert_eq!(producers.len(), 2, "the composed boundary must retain both graph producer occurrences");
@@ -303,7 +301,7 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
         .map(|producer| {
             assert_eq!(producer.children().len(), 1, "each graph producer must have one shared edge relation input");
             let edge_input = producer.children()[0]
-                .downcast_ref::<AlgeonNativeGpuProducerExec>()
+                .downcast_ref::<AlgeonNativeExec>()
                 .expect("graph edge input must be planned as a GPU-resident native producer");
             assert_eq!(
                 edge_input.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>(),
@@ -346,7 +344,7 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         .into_iter()
         .map(|name| {
             Arc::new(
-                AlgeonNativeGpuProducerExec::try_new(name, producer_plan(&schema))
+                AlgeonNativeExec::try_new_producer_for_test(name, producer_plan(&schema))
                     .expect("synthetic GPU producer must satisfy the production constructor contract"),
             ) as Arc<dyn ExecutionPlan>
         })
@@ -361,8 +359,9 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         .collect::<Vec<_>>();
     let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema)).unwrap();
     let consumer = consumer_builder.finish_with_host_sink(union).unwrap();
-    let composed = AlgeonNativeComposedExec::try_new(consumer, producers, AlgeonNativeExecutionConfig::default())
-        .expect("synthetic N=3 topology must reach the composed production boundary");
+    let composed =
+        AlgeonNativeExec::try_new_composed_for_test(consumer, producers, AlgeonNativeExecutionConfig::default())
+            .expect("synthetic N=3 topology must reach the composed production boundary");
 
     let children = composed.children();
     assert_eq!(children.len(), 3, "equal native producer shapes must not be structurally deduplicated");
@@ -370,15 +369,17 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         children
             .iter()
             .map(|child| child
-                .downcast_ref::<AlgeonNativeGpuProducerExec>()
+                .downcast_ref::<AlgeonNativeExec>()
                 .expect("synthetic children must remain native GPU producers")
-                .input_name())
+                .gpu_resident_input_name()
+                .expect("synthetic children produce GPU-resident output")
+                .to_string())
             .collect::<Vec<_>>(),
         vec!["producer-0", "producer-1", "producer-2"]
     );
     let native_producer_plans = children
         .iter()
-        .map(|child| child.downcast_ref::<AlgeonNativeGpuProducerExec>().unwrap().native_plan())
+        .map(|child| child.downcast_ref::<AlgeonNativeExec>().unwrap().native_plan())
         .collect::<Vec<_>>();
     assert_eq!(native_producer_plans[0], native_producer_plans[1]);
     assert_eq!(native_producer_plans[1], native_producer_plans[2]);

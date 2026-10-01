@@ -18,14 +18,13 @@ use query_engine::{
 };
 
 use super::{
-    AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode,
-    CugraphAlgorithmSpec, DataFusionError, DataFusionResult, Error, ErrorCode, ExecutionContext, ExecutionPlan,
-    GpuDataFrame, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics, HostBatchCursorConfig,
-    MemoryConsumer, MemoryReservation, RecordBatch, RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result,
-    SchemaRef, Stream, TaskContext, TryStreamExt, counted_cudf_runtime, edge_source_output_rows,
-    execute_gpu_resident_producer_with_context, get_record_batch_memory_size, gpu_resident_producer,
-    graph_input_native_producer, plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution,
-    resident_side_input_output_rows,
+    AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode, CugraphAlgorithmSpec, DataFusionError,
+    DataFusionResult, Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame, GpuResultHandle,
+    GraphBfsPublishedResult, GraphExecutionMetrics, HostBatchCursorConfig, MemoryConsumer, MemoryReservation,
+    RecordBatch, RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext,
+    TryStreamExt, counted_cudf_runtime, edge_source_output_rows, execute_gpu_resident_producer_with_context,
+    get_record_batch_memory_size, gpu_resident_producer, graph_input_native_producer, plan_contains_algeon_native,
+    prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows,
 };
 use crate::{native::ParquetReadStrategyConfig, native_exec::validate_host_wrapped_gpu_execution};
 
@@ -734,11 +733,6 @@ pub(super) fn prepare_cugraph_source_metadata(
             return prepare_gpu_resident_producer_for_execution(plan, task_context).await;
         }
         if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
-            return Ok(
-                Arc::new(native.prepare_lakehouse_metadata(task_context.as_ref()).await?) as Arc<dyn ExecutionPlan>
-            );
-        }
-        if let Some(native) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
             return Ok(
                 Arc::new(native.prepare_lakehouse_metadata(Arc::clone(&task_context)).await?) as Arc<dyn ExecutionPlan>
             );

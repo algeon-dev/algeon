@@ -286,7 +286,7 @@ ORDER BY value DESC;
       kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
       sub: 'execute_edge_source_to_gpu',
       detail: <>If the edge source is already a native GPU plan
-        (<code>AlgeonNativeExec</code> or <code>AlgeonNativeComposedExec</code>),
+        (an <code>AlgeonNativeExec</code>),
         its GPU-resident frame is handed forward without materializing host
         Arrow. Otherwise DataFusion produces Arrow batches and Algeon imports
         them into cuDF.</>,
