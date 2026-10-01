@@ -8,6 +8,8 @@ use std::{
     },
 };
 
+#[cfg(test)]
+use super::RuntimeObservationDeliveryGate;
 use super::{
     CleanupFailureTally, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, RetainedTopologyRecord,
     RuntimeEventContext, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationConfig,
@@ -76,21 +78,41 @@ pub(crate) struct QueryCleanupSealDelivery {
     pub(super) owner: Option<RuntimeObservationOwner>,
     pub(super) deferred: Option<DeferredRuntimeObservationSeal>,
     pub(super) already_sealed: Option<SealedRuntimeObservationSnapshot>,
+    #[cfg(test)]
+    pub(super) delivery_gate: Option<Arc<RuntimeObservationDeliveryGate>>,
 }
 
 impl QueryCleanupSealDelivery {
     pub(super) fn already_sealed(snapshot: Option<SealedRuntimeObservationSnapshot>) -> Self {
-        Self { owner: None, deferred: None, already_sealed: snapshot }
+        Self {
+            owner: None,
+            deferred: None,
+            already_sealed: snapshot,
+            #[cfg(test)]
+            delivery_gate: None,
+        }
+    }
+
+    /// Holds observer delivery at `gate` until the test opens it.
+    #[cfg(test)]
+    pub(crate) fn with_delivery_gate(mut self, gate: Option<Arc<RuntimeObservationDeliveryGate>>) -> Self {
+        self.delivery_gate = gate;
+        self
     }
 
     /// Runs observer delivery, returning the sealed snapshot.
     pub(crate) fn deliver(self) -> Option<SealedRuntimeObservationSnapshot> {
-        if let Some(owner) = self.owner
-            && let Some(deferred) = self.deferred
-        {
+        let Some(deferred) = self.deferred else { return self.already_sealed };
+        if let Some(owner) = self.owner {
             return owner.complete_observer_delivery(deferred);
         }
-        self.already_sealed
+        // The test gate sits before every observer; the seal has already
+        // committed by this point.
+        #[cfg(test)]
+        if let Some(gate) = self.delivery_gate {
+            gate.hold();
+        }
+        deferred.invoke_observers()
     }
 }
 
@@ -259,6 +281,46 @@ impl RuntimeObservationSession {
         attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> DeferredRuntimeObservationSeal {
         self.handle.seal_owned_deferred(outcome, attempt_report_provider)
+    }
+
+    /// Seals this session with `outcome` and the report `report` builds,
+    /// deferring observer delivery to the returned value. A seal that loses
+    /// to an earlier one returns that seal's snapshot and delivers nothing.
+    ///
+    /// A panic while sealing marks the session degraded, seals it as
+    /// `Panicked`, delivers its observers, and resumes unwinding.
+    pub(crate) fn seal_with_report(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        report: &AttemptReportSealProvider,
+    ) -> QueryCleanupSealDelivery {
+        let deferred =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.seal_deferred(Some(outcome), Some(report))));
+        match deferred {
+            Ok(deferred) => QueryCleanupSealDelivery {
+                owner: None,
+                deferred: Some(deferred),
+                already_sealed: None,
+                #[cfg(test)]
+                delivery_gate: None,
+            },
+            Err(panic) => {
+                self.handle.mark_degraded();
+                let _ = self.seal_deferred(Some(RuntimeTerminalOutcome::Panicked), None).invoke_observers();
+                std::panic::resume_unwind(panic);
+            },
+        }
+    }
+
+    /// Registers an infallible notification for this session's seal. It runs
+    /// once, outside recorder locks: with the seal's deferred delivery, or
+    /// immediately when the session has already sealed.
+    pub(crate) fn register_seal_observer<F>(&self, observer: F)
+    where F: Fn(SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
+        let observer = RuntimeObservationSealObserver { notify: Box::new(observer) };
+        if let Some((observer, snapshot)) = self.handle.register_seal_observer(observer) {
+            observer.invoke(snapshot);
+        }
     }
 
     /// Returns the sealed immutable snapshot when a terminal outcome already won.

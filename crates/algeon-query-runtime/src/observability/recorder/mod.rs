@@ -29,6 +29,8 @@ use digest::{
     OsSourceLocationDigestKeyProvider, SourceLocationDigestKeyProvider, SourceLocationDigestKeyState,
     SourceLocationDigestKeyUnavailable,
 };
+#[cfg(test)]
+pub(crate) use owner::RuntimeObservationDeliveryGate;
 use owner::RuntimeObservationDeliveryGuard;
 pub use owner::RuntimeObservationOwner;
 #[cfg(test)]

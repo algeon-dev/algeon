@@ -51,18 +51,15 @@ impl DatafusionAlgeonFlightSqlService {
         sql: String,
         correlation_id: Option<String>,
     ) -> Result<(String, QueryPlanningLease), (String, Status)> {
-        self.coordinator
-            .register_new(sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
-            .map_err(|error| {
-                let query_id = error
-                    .query_id()
-                    .expect("coordinator-owned registration failures retain their allocated query id")
-                    .to_string();
-                let status = adapter_error_status(
-                    error.adapter_error("algeon_datafusion.server.flight.query_coordinator.register"),
-                );
-                (query_id, status)
-            })
+        self.coordinator.register_new(sql, correlation_id, self.runtime_observation_config).map_err(|error| {
+            let query_id = error
+                .query_id()
+                .expect("coordinator-owned registration failures retain their allocated query id")
+                .to_string();
+            let status =
+                adapter_error_status(error.adapter_error("algeon_datafusion.server.flight.query_coordinator.register"));
+            (query_id, status)
+        })
     }
 
     /// Register a Flight result-stream invocation whose execution attempt
@@ -75,17 +72,12 @@ impl DatafusionAlgeonFlightSqlService {
         correlation_id: Option<String>,
     ) -> Result<(String, QueryPlanningLease), (String, Status)> {
         let registration = if self.admission.has_attempt_backend() {
-            self.coordinator.register_new_with_attempt_observation(
-                sql,
-                correlation_id.clone(),
-                correlation_id,
-                self.runtime_observation_config,
-            )
+            self.coordinator.register_new_with_attempt_observation(sql, correlation_id, self.runtime_observation_config)
         } else {
             // CPU-only unit fixtures intentionally have no runtime backend to
             // begin an attempt against. Production server construction always
             // takes the attempt-owned branch above.
-            self.coordinator.register_new(sql, correlation_id.clone(), correlation_id, self.runtime_observation_config)
+            self.coordinator.register_new(sql, correlation_id, self.runtime_observation_config)
         };
         registration.map_err(|error| {
             let query_id = error
@@ -109,18 +101,11 @@ impl DatafusionAlgeonFlightSqlService {
             self.coordinator.register_with_id_with_attempt_observation(
                 query_id,
                 sql,
-                correlation_id.clone(),
                 correlation_id,
                 self.runtime_observation_config,
             )
         } else {
-            self.coordinator.register_with_id(
-                query_id,
-                sql,
-                correlation_id.clone(),
-                correlation_id,
-                self.runtime_observation_config,
-            )
+            self.coordinator.register_with_id(query_id, sql, correlation_id, self.runtime_observation_config)
         };
         registration.map_err(|error| {
             adapter_error_status(error.adapter_error("algeon_datafusion.server.flight.query_coordinator.register"))

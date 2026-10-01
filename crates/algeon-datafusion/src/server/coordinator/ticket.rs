@@ -7,11 +7,7 @@ use std::{
 };
 
 use query_engine::observability::{RuntimeObservationConfig, RuntimeTerminalOutcome};
-#[cfg(test)]
-use query_engine::observability::{RuntimeObservationHandle, RuntimeObservationOwner};
 
-#[cfg(test)]
-use super::types::ObservationId;
 use super::{
     super::observability::CapturedError,
     QueryCoordinator,
@@ -58,23 +54,13 @@ impl QueryCoordinator {
             }
             (ticket, Arc::clone(&record.hot), expired)
         };
-        #[cfg(test)]
-        let observation_id =
-            state.records.get(&key).expect("current query key must reference a record").observation_id.clone();
         state.ticketed_count = state.ticketed_count.checked_sub(1).expect("consumed ticket count underflow");
         if expired {
             drop(state);
             self.finalize_ready();
             return Err(QueryCoordinatorError::new(QueryCoordinatorErrorKind::TicketExpired, "query ticket expired"));
         }
-        let lease = QueryExecutionLease {
-            coordinator: Arc::downgrade(self),
-            key,
-            #[cfg(test)]
-            observation_id,
-            hot,
-            released: false,
-        };
+        let lease = QueryExecutionLease { coordinator: Arc::downgrade(self), key, hot, released: false };
         Ok((lease, ticket))
     }
 
@@ -122,28 +108,6 @@ impl QueryCoordinator {
         }
         record.phase = QueryPhase::Executing;
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observation_handle(
-        &self,
-        key: &QueryKey,
-        observation_id: &ObservationId,
-    ) -> Result<RuntimeObservationHandle, QueryCoordinatorError> {
-        let state = self.lock_state();
-        let record = state.records.get(key).ok_or_else(|| {
-            QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query generation")
-        })?;
-        if &record.observation_id != observation_id {
-            return Err(QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::StaleGeneration,
-                "observation identity does not match the query generation",
-            ));
-        }
-        Ok(record
-            .observation_owner
-            .as_ref()
-            .map_or_else(RuntimeObservationHandle::disabled, RuntimeObservationOwner::handle))
     }
 
     pub(crate) fn set_terminal(&self, key: &QueryKey, mut terminal: QueryTerminal) {
@@ -207,8 +171,6 @@ impl QueryCoordinator {
 pub(crate) struct QueryPlanningLease {
     pub(crate) coordinator: Weak<QueryCoordinator>,
     pub(crate) key: QueryKey,
-    #[cfg(test)]
-    pub(crate) observation_id: ObservationId,
     pub(crate) hot: Arc<QueryHotCounters>,
     /// The runtime observation this query's attempt records: the configured
     /// capture, or none when the active capture budget could not hold it.
@@ -263,21 +225,8 @@ impl QueryPlanningLease {
     }
 
     #[cfg(test)]
-    pub(crate) fn observation_id(&self) -> &ObservationId {
-        &self.observation_id
-    }
-
-    #[cfg(test)]
     pub(crate) fn hot_counters(&self) -> Arc<QueryHotCounters> {
         Arc::clone(&self.hot)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observation_handle(&self) -> Result<RuntimeObservationHandle, QueryCoordinatorError> {
-        self.coordinator
-            .upgrade()
-            .ok_or_else(|| QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "coordinator dropped"))?
-            .observation_handle(&self.key, &self.observation_id)
     }
 
     pub(crate) fn issue_ticket(mut self, payload: CoordinatorTicketPayload) -> Result<QueryKey, QueryCoordinatorError> {
@@ -310,8 +259,6 @@ impl QueryPlanningLease {
         Ok(QueryExecutionLease {
             coordinator: Weak::clone(&self.coordinator),
             key: self.key.clone(),
-            #[cfg(test)]
-            observation_id: self.observation_id.clone(),
             hot: Arc::clone(&self.hot),
             released: false,
         })
@@ -360,28 +307,13 @@ impl Drop for QueryPlanningLease {
 pub(crate) struct QueryExecutionLease {
     pub(crate) coordinator: Weak<QueryCoordinator>,
     pub(crate) key: QueryKey,
-    #[cfg(test)]
-    pub(crate) observation_id: ObservationId,
     pub(crate) hot: Arc<QueryHotCounters>,
     pub(crate) released: bool,
 }
 
 impl QueryExecutionLease {
-    #[cfg(test)]
-    pub(crate) fn observation_id(&self) -> &ObservationId {
-        &self.observation_id
-    }
-
     pub(crate) fn hot_counters(&self) -> Arc<QueryHotCounters> {
         Arc::clone(&self.hot)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observation_handle(&self) -> Result<RuntimeObservationHandle, QueryCoordinatorError> {
-        self.coordinator
-            .upgrade()
-            .ok_or_else(|| QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "coordinator dropped"))?
-            .observation_handle(&self.key, &self.observation_id)
     }
 
     pub(crate) fn succeed(mut self) {

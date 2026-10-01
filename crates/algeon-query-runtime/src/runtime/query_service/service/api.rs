@@ -52,7 +52,7 @@ use crate::attempt::AttemptOwner;
 use crate::runtime::query_service::config::QueueBounds;
 use crate::{
     attempt::{AttemptAdmission, AttemptAdmissionBinding, AttemptLifecycleError},
-    observability::{AttemptId, RuntimeObservationHandle, RuntimeObservationOwner},
+    observability::{AttemptId, RuntimeObservationHandle},
     runtime::ExecutionCancellation,
 };
 
@@ -388,7 +388,6 @@ pub struct QueryAdmissionRequest {
 
 pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     pub(in crate::runtime::query_service::service) handle: RuntimeObservationHandle,
-    pub(in crate::runtime::query_service::service) owner: RuntimeObservationOwner,
     pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
     pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
     /// The engine-minted attempt identity, which may receive a post-callback
@@ -527,9 +526,12 @@ impl QueryAdmissionRequest {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let attempt_id = self.attempt.attempt_id();
-        let owner = self.attempt.into_observation_owner();
-        AdmissionObservation { handle: owner.handle(), owner, activity, activity_error, attempt_id }
+        AdmissionObservation {
+            handle: self.attempt.observation_handle(),
+            activity,
+            activity_error,
+            attempt_id: self.attempt.attempt_id(),
+        }
     }
 
     /// Claims the bound attempt's only admission right.

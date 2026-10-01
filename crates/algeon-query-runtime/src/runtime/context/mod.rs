@@ -169,24 +169,22 @@ enum RuntimeExecutionObservationLifecycleInner {
 
 impl RuntimeExecutionObservationLifecycle {
     fn for_context(context: &ExecutionContext, plan_execution_id: PlanExecutionId) -> Self {
-        // An admitted attempt's owner seals once for the attempt, so each plan
+        // An admitted attempt seals once for the attempt, so each plan
         // finishes only its own execution; a standalone owner seals the query.
-        let (owner, owns_query) = match &context.query {
-            QueryScope::Admitted(attempt) => (Some(&attempt.observation_owner), false),
-            QueryScope::Standalone(query) => (query.observation_owner.as_ref(), true),
-        };
-        let inner = match owner {
-            Some(owner) if owns_query => RuntimeExecutionObservationLifecycleInner::Query(
-                RuntimeQueryLifecycle::from_owner(owner.clone(), plan_execution_id),
+        let inner = match &context.query {
+            QueryScope::Admitted(admitted) => RuntimeExecutionObservationLifecycleInner::Plan(
+                RuntimePlanExecutionLifecycle::from_attempt(admitted.attempt.clone(), plan_execution_id),
             ),
-            Some(owner) => RuntimeExecutionObservationLifecycleInner::Plan(RuntimePlanExecutionLifecycle::from_owner(
-                owner.clone(),
-                plan_execution_id,
-            )),
-            None => RuntimeExecutionObservationLifecycleInner::Plan(RuntimePlanExecutionLifecycle::from_handle(
-                context.plan.runtime_observation.clone(),
-                plan_execution_id,
-            )),
+            QueryScope::Standalone(query) => match &query.observation_owner {
+                Some(owner) => RuntimeExecutionObservationLifecycleInner::Query(RuntimeQueryLifecycle::from_owner(
+                    owner.clone(),
+                    plan_execution_id,
+                )),
+                None => RuntimeExecutionObservationLifecycleInner::Plan(RuntimePlanExecutionLifecycle::from_handle(
+                    context.plan.runtime_observation.clone(),
+                    plan_execution_id,
+                )),
+            },
         };
         Self { inner }
     }

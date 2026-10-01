@@ -445,7 +445,6 @@ impl QueryCoordinator {
                     let was_ticketed = record.ticket.is_some();
                     let heavy = ShutdownDiscarded {
                         _captured: record.captured.take(),
-                        _observation_owner: record.observation_owner.take(),
                         _terminal: record.terminal.take(),
                         _ticket: record.ticket.take(),
                         _execution_cancellation: record.execution_cancellation.take(),

@@ -2,6 +2,7 @@
 mod cancellation;
 mod execution;
 mod lifecycle;
+mod observation;
 mod owner;
 mod queue;
 pub use cancellation::AttemptCancellation;

@@ -33,8 +33,8 @@ use crate::{
         AttemptFaultIsolation, AttemptHealthTransition, AttemptNativeFaultKind, AttemptNativeStatus, AttemptQueryId,
         AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, AttemptTraceContext,
         CleanupFailurePhase, CleanupFailureSummary, GpuJobLifecycleState, PlanExecutionId, QueryBoundaryKind,
-        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload, RuntimePlanExecutionLifecycle,
-        RuntimeTerminalOutcome, StreamLeaseLifecycleState,
+        RuntimeObservationConfig, RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome,
+        StreamLeaseLifecycleState,
     },
     runtime::{
         BackendLifecycle, DeviceResourceEnvelope, DeviceResourceProfile, GpuBackendDeviceInstallationBounds,

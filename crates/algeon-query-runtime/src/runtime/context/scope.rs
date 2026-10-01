@@ -33,6 +33,7 @@ use super::{
     QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch,
 };
 use crate::{
+    attempt::AttemptHandle,
     metrics::{QueryId, TraceId},
     observability::{
         AttemptId, RuntimeExecutionObservationScope, RuntimeObservationHandle, RuntimeObservationOwner,
@@ -102,7 +103,8 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// Revocable lifetime for this attempt's outward resources.
     pub(in crate::runtime) query_epoch: QueryResourceEpoch,
     pub(in crate::runtime) cancellation: ExecutionCancellation,
-    pub(in crate::runtime) observation_owner: RuntimeObservationOwner,
+    /// Records each plan's outcome as the attempt's release fallback.
+    pub(in crate::runtime) attempt: AttemptHandle,
     /// Carrier for exact resident-cache allocator failures, sealed into the
     /// attempt report.
     #[cfg(feature = "cugraph")]

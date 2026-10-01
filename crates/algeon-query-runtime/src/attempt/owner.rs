@@ -8,7 +8,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync,
-    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, atomic::Ordering},
+    sync::{Arc, Condvar, Mutex, MutexGuard, Weak, atomic::Ordering},
     task::{Context, Poll, Waker},
     thread,
     time::{Duration, Instant},
@@ -18,6 +18,7 @@ use query_planning::error::QueryError;
 
 use super::{
     AttemptBackendCounters, AttemptCancellation, AttemptCompletionQueue, AttemptLifecycle, AttemptLifecycleError,
+    observation::AttemptObservation,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -28,7 +29,8 @@ use crate::observability::{
 };
 #[cfg(test)]
 use crate::observability::{
-    CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeObservationPayload,
+    CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeObservationDeliveryGate,
+    RuntimeObservationPayload,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::runtime::BackendLifecycle;
@@ -38,8 +40,8 @@ use crate::{
         AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptReportSealProvider, AttemptRetryAdvice,
         AttemptTerminalCommit, AttemptTraceContext, CleanupFailureTally, QUERY_ATTEMPT_REPORT_SCHEMA_V2,
-        QueryAttemptReport, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter,
-        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        QueryAttemptReport, QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig,
+        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
         SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
@@ -108,7 +110,6 @@ pub struct AttemptHandle(Arc<AttemptCore>);
 /// terminalize an admitted attempt or record arbitrary lifecycle boundaries.
 pub struct AttemptAdmissionRejection {
     core: Arc<AttemptCore>,
-    observation_owner: RuntimeObservationOwner,
     finalizer_slot: AttemptFinalizerSlot,
 }
 
@@ -120,8 +121,7 @@ pub struct AttemptAdmissionRejection {
 /// authority to the request caller.
 #[derive(Clone)]
 pub struct AttemptAdmissionBinding {
-    attempt_id: AttemptId,
-    observation_owner: RuntimeObservationOwner,
+    core: Arc<AttemptCore>,
     finalizer_slot: AttemptFinalizerSlot,
 }
 
@@ -146,8 +146,20 @@ pub(crate) struct AttemptAdmission(AttemptFinalizer);
 pub(crate) struct AttemptReportPublisher(Arc<AttemptCore>);
 
 impl AttemptReportPublisher {
-    pub(crate) fn seal_provider(&self) -> AttemptReportSealProvider {
-        self.0.report_seal_provider()
+    /// Records that the attempt's cleanup began.
+    pub(crate) fn begin_cleanup(&self) {
+        self.0.observation.begin_cleanup();
+    }
+
+    /// Seals the attempt's observation with `outcome` and its report,
+    /// deferring observer delivery to the returned value.
+    pub(crate) fn seal(&self, outcome: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
+        self.0.observation.seal(outcome, &self.0.report_seal_provider())
+    }
+
+    /// The attempt's record-only capability.
+    pub(crate) fn attempt(&self) -> AttemptHandle {
+        AttemptHandle(Arc::clone(&self.0))
     }
 }
 
@@ -172,11 +184,7 @@ impl Clone for AttemptHandle {
 
 impl Clone for AttemptAdmissionRejection {
     fn clone(&self) -> Self {
-        Self {
-            core: Arc::clone(&self.core),
-            observation_owner: self.observation_owner.clone(),
-            finalizer_slot: self.finalizer_slot.clone(),
-        }
+        Self { core: Arc::clone(&self.core), finalizer_slot: self.finalizer_slot.clone() }
     }
 }
 
@@ -285,6 +293,10 @@ struct AttemptState {
     completion: CompletionState,
     /// Bound when admission publishes a grant; taken by the terminal commit.
     admitted_release: Option<Weak<dyn AdmittedGrantRelease>>,
+    /// The first non-success outcome a native plan of this attempt finished
+    /// with, or `Succeeded`. It stands in for the release fallback when the
+    /// grant is released before the attempt commits its own outcome.
+    plan_outcome: Option<RuntimeTerminalOutcome>,
 }
 
 /// State shared by the attempt core and its completion receivers. Receivers
@@ -324,10 +336,7 @@ struct AttemptCore {
     shared: Arc<AttemptShared>,
     clock: Arc<dyn RuntimeObservationClock>,
     cancellation: AttemptCancellation,
-    // Set once during construction after the observation owner exists. A
-    // `RuntimeObservationHandle` is cloneable record-only state, so holding it
-    // here cannot cycle back into the attempt core.
-    observation: OnceLock<RuntimeObservationHandle>,
+    observation: AttemptObservation,
     counters: Arc<AttemptBackendCounters>,
     completion_queue: Option<Arc<AttemptCompletionQueue>>,
     // The begin-vs-close linearization artifact. It fences observation
@@ -338,7 +347,6 @@ struct AttemptCore {
 
 struct AttemptInner {
     core: Arc<AttemptCore>,
-    observation_owner: RuntimeObservationOwner,
     finalizer_slot: AttemptFinalizerSlot,
 }
 
@@ -633,9 +641,18 @@ impl AttemptOwner {
                     receivers: 0,
                 },
                 admitted_release: None,
+                plan_outcome: None,
             }),
             changed: Condvar::new(),
         });
+        // The observation manifest uses the canonical unassigned sentinel when
+        // the caller supplied no correlation; the attempt id is the identity.
+        let observation_query_id = request
+            .query_id
+            .as_ref()
+            .map(|query_id| RuntimeQueryId::new(query_id.as_str()))
+            .unwrap_or_else(|| RuntimeQueryId::new(""));
+        let trace_id = request.trace_context.as_ref().map(|trace| RuntimeTraceId::new(trace.as_str()));
         let core = Arc::new(AttemptCore {
             attempt_id: AttemptId::mint(),
             query_id: request.query_id,
@@ -643,25 +660,14 @@ impl AttemptOwner {
             shared: Arc::clone(&shared),
             clock: Arc::clone(&clock),
             cancellation: AttemptCancellation::new(request.deadline),
-            observation: sync::OnceLock::new(),
+            observation: AttemptObservation::new(observation_query_id, trace_id, observation, clock),
             counters,
             completion_queue: queue,
-            observation_permit: Mutex::new(None),
+            observation_permit: Mutex::new(Some(permit)),
         });
         let finalizer_slot = AttemptFinalizerSlot::new(AttemptFinalizer(Arc::clone(&core)));
-        // The observation manifest uses the canonical unassigned sentinel when
-        // the caller supplied no correlation; the attempt id is the identity.
-        let query_id = core
-            .query_id
-            .as_ref()
-            .map(|query_id| RuntimeQueryId::new(query_id.as_str()))
-            .unwrap_or_else(|| RuntimeQueryId::new(""));
-        let trace_id = core.trace_context.as_ref().map(|trace| RuntimeTraceId::new(trace.as_str()));
-        let owner = RuntimeObservationOwner::with_clock(query_id, trace_id, observation, clock);
-        core.observation.set(owner.handle()).expect("attempt observation handle is set exactly once");
-        core.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).replace(permit);
         AttemptBegin {
-            owner: Self(Arc::new(AttemptInner { core, observation_owner: owner, finalizer_slot })),
+            owner: Self(Arc::new(AttemptInner { core, finalizer_slot })),
             completion: AttemptCompletionFactory { shared },
         }
     }
@@ -704,24 +710,15 @@ impl AttemptOwner {
     /// Opaque capability that can terminalize only an admission request that
     /// was rejected before an admission grant was published.
     pub fn admission_rejection(&self) -> AttemptAdmissionRejection {
-        AttemptAdmissionRejection {
-            core: Arc::clone(&self.0.core),
-            observation_owner: self.0.observation_owner.clone(),
-            finalizer_slot: self.0.finalizer_slot.clone(),
-        }
+        AttemptAdmissionRejection { core: Arc::clone(&self.0.core), finalizer_slot: self.0.finalizer_slot.clone() }
     }
 
     /// Opaque, atomic attachment for the query-service admission request.
     ///
-    /// Its observation owner and release capability originate from this same
-    /// attempt and are consumed together by admission. Standalone observation
-    /// users continue to attach only a [`RuntimeObservationOwner`].
+    /// Its observation and release capability originate from this same
+    /// attempt and are consumed together by admission.
     pub fn admission_binding(&self) -> AttemptAdmissionBinding {
-        AttemptAdmissionBinding {
-            attempt_id: self.0.core.attempt_id,
-            observation_owner: self.0.observation_owner.clone(),
-            finalizer_slot: self.0.finalizer_slot.clone(),
-        }
+        AttemptAdmissionBinding { core: Arc::clone(&self.0.core), finalizer_slot: self.0.finalizer_slot.clone() }
     }
 
     /// An independent receiver for the terminal report.
@@ -735,14 +732,22 @@ impl AttemptOwner {
         self.0.core.cancellation.clone()
     }
 
-    /// Test-only access to the owner behind an attempt binding.
-    ///
-    /// Production callers receive only the read-only APIs on
-    /// [`AttemptAdmissionBinding`], so they cannot detach observation sealing
-    /// from the corresponding release commitment.
+    /// The sealed observation snapshot, once the attempt has sealed.
     #[cfg(test)]
-    pub(crate) fn observation_owner_for_test(&self) -> RuntimeObservationOwner {
-        self.0.observation_owner.clone()
+    pub(crate) fn sealed_snapshot_for_test(&self) -> Option<SealedRuntimeObservationSnapshot> {
+        self.0.core.observation.sealed_snapshot()
+    }
+
+    /// Recording access to the attempt's observation.
+    #[cfg(test)]
+    pub(crate) fn observation_for_test(&self) -> RuntimeObservationHandle {
+        self.0.core.observation.handle()
+    }
+
+    /// Holds the attempt's seal observer delivery until the gate opens.
+    #[cfg(test)]
+    pub(crate) fn arm_delivery_gate_for_test(&self) -> Arc<RuntimeObservationDeliveryGate> {
+        self.0.core.observation.arm_delivery_gate()
     }
 
     /// The one terminal commit hook: outcome terminal, then (for admitted
@@ -760,7 +765,7 @@ impl AttemptOwner {
     fn commit_resolved_terminal(&self, terminal: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
         match self.0.finalizer_slot.finalize_not_admitted(terminal) {
             Ok(terminal) => {
-                let _ = self.0.observation_owner.finish_attempt(terminal, self.0.core.report_seal_provider());
+                let _ = self.0.core.observation.seal(terminal, &self.0.core.report_seal_provider()).deliver();
                 Ok(())
             },
             // An admission claim holds the finalizer, or a not-admitted
@@ -860,8 +865,8 @@ impl fmt::Debug for AttemptAdmissionBinding {
 impl AttemptAdmissionBinding {
     /// Engine-minted identity retained only for post-callback allocator-event
     /// correlation. Request callers cannot replace or synthesize it.
-    pub(crate) const fn attempt_id(&self) -> AttemptId {
-        self.attempt_id
+    pub(crate) fn attempt_id(&self) -> AttemptId {
+        self.core.attempt_id
     }
 
     /// Returns recording-only access to the attempt observation.
@@ -869,16 +874,14 @@ impl AttemptAdmissionBinding {
     /// The returned handle cannot seal the observation.  Admission must take
     /// this binding as a whole to receive the paired cleanup commitment.
     pub fn observation_handle(&self) -> RuntimeObservationHandle {
-        self.observation_owner.handle()
+        self.core.observation.handle()
     }
 
-    /// Registers a read-only notification for the immutable attempt seal.
-    ///
-    /// This preserves the owner's delivery ordering without exposing any
-    /// terminal-seal authority to callers.
+    /// Registers a read-only notification for the immutable attempt seal,
+    /// without exposing any terminal-seal authority to callers.
     pub fn register_seal_observer<F>(&self, observer: F)
     where F: Fn(SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
-        self.observation_owner.register_seal_observer(observer);
+        self.core.observation.register_seal_observer(observer);
     }
 
     /// Takes the attempt's only admission right. It must be the first step of
@@ -888,10 +891,6 @@ impl AttemptAdmissionBinding {
     /// consumed.
     pub(crate) fn claim(&self) -> Result<AttemptAdmission, AttemptLifecycleError> {
         self.finalizer_slot.claim()
-    }
-
-    pub(crate) fn into_observation_owner(self) -> RuntimeObservationOwner {
-        self.observation_owner
     }
 }
 
@@ -932,7 +931,7 @@ impl AttemptAdmissionRejection {
             lifecycle.terminalize_admission_rejection(outcome.clone(), summary, self.core.monotonic_ns())?;
         }
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
-        self.observation_owner.finish_attempt(outcome, self.core.report_seal_provider());
+        let _ = self.core.observation.seal(outcome, &self.core.report_seal_provider()).deliver();
         Ok(())
     }
 }
@@ -992,6 +991,9 @@ impl AttemptFinalizer {
         // outcome before its owned admission handle begins GPU cleanup. The
         // linear finalizer must resolve that existing outcome, not contend
         // with the public terminal writer and manufacture a second commit.
+        // A finished plan's outcome is more specific than the release
+        // fallback.
+        let fallback = self.0.shared.lock().plan_outcome.clone().unwrap_or(fallback);
         Ok(self.0.canonical_terminal_outcome(fallback))
     }
 
@@ -1098,6 +1100,22 @@ impl AttemptHandle {
         self.0.attempt_id
     }
 
+    /// Recording access to the attempt's observation, without seal authority.
+    pub(crate) fn observation(&self) -> RuntimeObservationHandle {
+        self.0.observation.handle()
+    }
+
+    /// Retains a finished native plan's outcome. The first non-success
+    /// outcome stays; it is the release fallback when the grant is released
+    /// before the attempt commits its own outcome.
+    pub(crate) fn record_plan_outcome(&self, outcome: RuntimeTerminalOutcome) {
+        let mut state = self.0.shared.lock();
+        state.plan_outcome = Some(match state.plan_outcome.take() {
+            None | Some(RuntimeTerminalOutcome::Succeeded) => outcome,
+            Some(existing) => existing,
+        });
+    }
+
     /// The attempt-scoped cooperative cancellation signal and deadline.
     pub fn cancellation(&self) -> AttemptCancellation {
         self.0.cancellation.clone()
@@ -1170,7 +1188,7 @@ impl AttemptHandle {
     #[cfg(test)]
     pub(crate) fn record_cleanup_failure(&self, phase: CleanupFailurePhase, cleanup_error: &QueryError) {
         let summary = CleanupFailureSummary::from_native_error(phase, cleanup_error);
-        let Some(observation) = self.0.observation.get() else { return };
+        let observation = self.0.observation.handle();
         observation.record_attempt_cleanup_failure(summary.clone());
         observation.record(|| {
             RuntimeObservationPayload::CleanupFailure(Box::new(RuntimeCleanupFailureObservation { summary }))
@@ -1280,7 +1298,7 @@ mod tests {
     /// report publisher.
     fn seal_after_cleanup(begin: &AttemptBegin, publisher: &AttemptReportPublisher, fallback: RuntimeTerminalOutcome) {
         let outcome = begin.owner.0.core.canonical_terminal_outcome(fallback);
-        begin.owner.observation_owner_for_test().finish_attempt(outcome, publisher.seal_provider());
+        let _ = publisher.seal(outcome).deliver();
     }
 
     fn claim_admitted(begin: &AttemptBegin, fact: AttemptAdmissionFact) -> AttemptAdmission {
@@ -1308,7 +1326,7 @@ mod tests {
         assert_eq!(report.timestamps.outcome_terminal_ns, 10);
         assert_eq!(counters.snapshot().reports_ready, 1);
         // The sealed observation and completion share one immutable report.
-        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
         let embedded = snapshot.attempt_report().expect("attempt report embedded");
         assert_eq!(embedded, report.as_ref());
         assert!(Arc::ptr_eq(
@@ -1360,15 +1378,14 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         let completion = begin.completion.completion();
         native_disposition(&begin);
-        let observation_owner = begin.owner.observation_owner_for_test();
-        observation_owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
+        begin.owner.handle().record_plan_outcome(RuntimeTerminalOutcome::Failed {
             error_code: AttemptFailureCode::Internal,
             error_status: AttemptFailureStatus::Permanent,
         });
 
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Cancelled).unwrap();
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published");
-        let snapshot = observation_owner.sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
 
         assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
         assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
@@ -1431,7 +1448,7 @@ mod tests {
         assert_eq!(report.final_domain_usage, Some(final_domain_usage), "report preserves every final sample scalar");
         assert_eq!(report.health_transition, Some(AttemptHealthTransition::HealthyReuse));
         assert_eq!(report.admission.as_ref().map(|fact| fact.grant_bytes), Some(1024));
-        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
         assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
     }
 
@@ -1515,7 +1532,7 @@ mod tests {
         assert_eq!(report.health_transition, Some(AttemptHealthTransition::BackendUnhealthy));
         assert_eq!(report.timestamps.cleanup_complete_ns, Some(30));
         assert_eq!(report.timestamps.report_ready_ns, Some(30));
-        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
         assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
     }
 
@@ -1681,7 +1698,7 @@ mod tests {
         assert_eq!(first_cleanup.failure().code(), AttemptFailureCode::Internal);
         assert!(!first_cleanup.complete(), "the first retained summary is incomplete after a later cleanup failure");
         // The bounded timeline carries the same facts when capture allows.
-        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
         let cleanup_events = snapshot
             .events()
             .iter()
@@ -1823,7 +1840,7 @@ mod tests {
             report.first_cleanup_failure.as_ref().map(CleanupFailureSummary::phase),
             Some(CleanupFailurePhase::QueryServiceCleanup)
         );
-        let snapshot = begin.owner.observation_owner_for_test().sealed_snapshot().expect("sealed");
+        let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
         assert!(
             snapshot
                 .events()
@@ -1934,11 +1951,7 @@ mod terminalize_race_tests {
             }),
             Err(AttemptLifecycleError::DoubleTerminalization)
         );
-        // The engine post-rejection seal publishes the truthful outcome.
-        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::ServiceOverloaded,
-            error_status: AttemptFailureStatus::Temporary,
-        }));
+        // The rejection published the truthful outcome.
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(
             report.outcome,

@@ -27,7 +27,7 @@ use crate::runtime::attempt_domain::AttemptAllocationDomain;
 #[cfg(test)]
 use crate::runtime::gpu::DeviceWorkerScope;
 use crate::{
-    attempt::AdmittedGrantRelease,
+    attempt::{AdmittedGrantRelease, AttemptHandle},
     observability::AttemptId,
     runtime::{
         AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
@@ -95,8 +95,8 @@ pub(super) struct LifetimeResources {
 }
 
 impl LifetimeResources {
-    pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
-        self.completion.observation_owner()
+    pub(super) fn attempt(&self) -> Option<AttemptHandle> {
+        self.completion.attempt()
     }
 }
 

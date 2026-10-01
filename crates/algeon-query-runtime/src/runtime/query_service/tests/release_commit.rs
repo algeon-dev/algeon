@@ -248,7 +248,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
         .expect("first admission");
     // Hold normal observer delivery after the terminal commit. A replacement
     // must still see capacity only after the attempt completion is published.
-    let delivery_gate = attempt_owner.observation_owner_for_test().arm_deferred_delivery_gate();
+    let delivery_gate = attempt_owner.arm_delivery_gate_for_test();
 
     let queued_service = service.clone();
     let queued = tokio::spawn(async move { queued_service.admit_async().await });
@@ -898,7 +898,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    let owner = attempt_owner.observation_owner_for_test();
+    let observation = attempt_owner.observation_for_test();
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
@@ -925,7 +925,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
         "residual-usage release reaches the pre-seal barrier",
     );
 
-    let report_before_gate_opens = owner.sealed_snapshot();
+    let report_before_gate_opens = observation.sealed_snapshot();
     let ledger_before_gate_opens = device.ledger().snapshot();
     let service_before_gate_opens = service.admission_snapshot();
     let replacement_before_gate_opens = service.try_admit_query();
