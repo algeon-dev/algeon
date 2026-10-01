@@ -1,18 +1,19 @@
 //! Admitted attempt lifetime and root-context setup coordination.
 
+#[cfg(any(test, feature = "cugraph"))]
+use std::sync;
 #[cfg(test)]
 use std::sync::Barrier;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::BTreeMap,
-    mem, sync,
-    sync::{Arc, Condvar, MutexGuard, Weak, atomic::AtomicBool},
-    time::Duration,
+    mem,
+    sync::{Arc, MutexGuard, Weak, atomic::AtomicBool},
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::{sync::Notify, time::timeout};
+use tokio::sync::watch;
 
 use super::{
     super::{
@@ -30,11 +31,9 @@ use crate::{
     observability::AttemptId,
     runtime::{
         AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
-        query_service::service::transaction::AdmissionEnvelope,
+        deadline::block_until, query_service::service::transaction::AdmissionEnvelope,
     },
 };
-
-const CONTEXT_SETUP_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContextSetupClaim {
@@ -50,20 +49,16 @@ enum RootContextSetupState {
     Ready,
 }
 
+/// The root-context setup state. Each state change wakes the waiting
+/// receivers, and so does a release request, which leaves the state as it is.
 #[derive(Debug)]
 struct RootContextSetupCoordinator {
-    state: Mutex<RootContextSetupState>,
-    changed: Condvar,
-    async_changed: Notify,
+    state: watch::Sender<RootContextSetupState>,
 }
 
 impl RootContextSetupCoordinator {
     fn new() -> Self {
-        Self {
-            state: Mutex::new(RootContextSetupState::Unclaimed),
-            changed: Condvar::new(),
-            async_changed: Notify::new(),
-        }
+        Self { state: watch::Sender::new(RootContextSetupState::Unclaimed) }
     }
 }
 
@@ -393,49 +388,46 @@ impl QueryHandleLifetime {
         self.query_epoch.acquire(owner, operation).map_err(|_error| self.released_error())
     }
 
-    fn lock_root_context_setup(&self, operation: &'static str) -> Result<MutexGuard<'_, RootContextSetupState>> {
-        self.root_context_setup.state.lock().map_err(|_error| {
-            QueryError::new(QueryErrorCode::Internal, operation, "query service root-context setup mutex was poisoned")
-                .with_fact("reason", "root_context_setup_poisoned")
-        })
-    }
-
-    fn reserve_context_setup(&self, operation: &'static str) -> Result<ContextSetupClaim> {
+    fn reserve_context_setup(&self) -> Result<ContextSetupClaim> {
         if !self.is_active() {
             return Err(self.released_error());
         }
-        let mut state = self.lock_root_context_setup(operation)?;
-        Ok(match *state {
+        let mut claim = ContextSetupClaim::Auxiliary;
+        self.root_context_setup.state.send_if_modified(|state| match *state {
             RootContextSetupState::Unclaimed => {
                 *state = RootContextSetupState::InFlight;
-                ContextSetupClaim::Root
+                claim = ContextSetupClaim::Root;
+                true
             },
-            RootContextSetupState::InFlight => ContextSetupClaim::WaitForRoot,
-            RootContextSetupState::Ready => ContextSetupClaim::Auxiliary,
-        })
+            RootContextSetupState::InFlight => {
+                claim = ContextSetupClaim::WaitForRoot;
+                false
+            },
+            RootContextSetupState::Ready => false,
+        });
+        Ok(claim)
     }
 
     fn wait_for_root_context_setup(&self, cancellation: &ExecutionCancellation, operation: &'static str) -> Result<()> {
+        let mut setup = self.root_context_setup.state.subscribe();
         loop {
             cancellation.check(operation)?;
             if !self.is_active() {
                 return Err(self.released_error());
             }
-            let state = self.lock_root_context_setup(operation)?;
-            if *state != RootContextSetupState::InFlight {
+            if *setup.borrow_and_update() != RootContextSetupState::InFlight {
                 return Ok(());
             }
-            let (_state, _timeout) =
-                self.root_context_setup.changed.wait_timeout(state, CONTEXT_SETUP_WAIT_POLL_INTERVAL).map_err(
-                    |_error| {
-                        QueryError::new(
-                            QueryErrorCode::Internal,
-                            operation,
-                            "query service root-context setup mutex was poisoned while waiting",
-                        )
-                        .with_fact("reason", "root_context_setup_poisoned")
-                    },
-                )?;
+            let _ = block_until(
+                async {
+                    tokio::select! {
+                        biased;
+                        _ = setup.changed() => {},
+                        () = cancellation.cancel_requested() => {},
+                    }
+                },
+                cancellation.deadline(),
+            );
         }
     }
 
@@ -444,22 +436,20 @@ impl QueryHandleLifetime {
         cancellation: &ExecutionCancellation,
         operation: &'static str,
     ) -> Result<()> {
+        let mut setup = self.root_context_setup.state.subscribe();
         loop {
             cancellation.check(operation)?;
             if !self.is_active() {
                 return Err(self.released_error());
             }
-            // Register before looking at the state so a transition cannot be
-            // lost between the observation and the await.
-            let changed = self.root_context_setup.async_changed.notified();
-            let root_setup_in_flight = {
-                let state = self.lock_root_context_setup(operation)?;
-                *state == RootContextSetupState::InFlight
-            };
-            if !root_setup_in_flight {
+            if *setup.borrow_and_update() != RootContextSetupState::InFlight {
                 return Ok(());
             }
-            let _ = timeout(CONTEXT_SETUP_WAIT_POLL_INTERVAL, changed).await;
+            tokio::select! {
+                biased;
+                _ = setup.changed() => {},
+                () = cancellation.cancelled_or_expired() => {},
+            }
         }
     }
 
@@ -474,7 +464,7 @@ impl QueryHandleLifetime {
             // begins so an elapsed caller deadline cannot consume the root
             // binding or start a native context.
             cancellation.check(operation)?;
-            match self.reserve_context_setup(operation)? {
+            match self.reserve_context_setup()? {
                 ContextSetupClaim::WaitForRoot => self.wait_for_root_context_setup(cancellation, operation)?,
                 claim => return Ok(claim),
             }
@@ -490,7 +480,7 @@ impl QueryHandleLifetime {
             // See the synchronous path: a queued GPU worker must recheck the
             // one absolute attempt deadline before it consumes context state.
             cancellation.check(operation)?;
-            match self.reserve_context_setup(operation)? {
+            match self.reserve_context_setup()? {
                 ContextSetupClaim::WaitForRoot => {
                     self.wait_for_root_context_setup_async(cancellation, operation).await?
                 },
@@ -500,29 +490,24 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn complete_root_context_setup(&self) {
-        let mut state = self.root_context_setup.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        debug_assert_eq!(*state, RootContextSetupState::InFlight);
-        *state = RootContextSetupState::Ready;
-        // Unlock before notifying so a woken waiter reacquires the state without waiting on this thread.
-        drop(state);
-        self.root_context_setup.changed.notify_all();
-        self.root_context_setup.async_changed.notify_waiters();
+        self.root_context_setup.state.send_modify(|state| {
+            debug_assert_eq!(*state, RootContextSetupState::InFlight);
+            *state = RootContextSetupState::Ready;
+        });
     }
 
     fn rollback_root_context_setup(&self) {
-        let mut state = self.root_context_setup.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        if *state == RootContextSetupState::InFlight {
-            *state = RootContextSetupState::Unclaimed;
-        }
-        // Unlock before notifying so a woken waiter reacquires the state without waiting on this thread.
-        drop(state);
-        self.root_context_setup.changed.notify_all();
-        self.root_context_setup.async_changed.notify_waiters();
+        self.root_context_setup.state.send_if_modified(|state| {
+            let in_flight = *state == RootContextSetupState::InFlight;
+            if in_flight {
+                *state = RootContextSetupState::Unclaimed;
+            }
+            in_flight
+        });
     }
 
     fn wake_root_context_setup_waiters(&self) {
-        self.root_context_setup.changed.notify_all();
-        self.root_context_setup.async_changed.notify_waiters();
+        self.root_context_setup.state.send_modify(|_state| {});
     }
 
     pub(super) fn request_release(&self) {

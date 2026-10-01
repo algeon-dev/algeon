@@ -89,6 +89,16 @@ impl CudaEvent {
         )
     }
 
+    /// Block until this event completes before releasing a resource whose
+    /// work it fences. Unlike [`Self::synchronize`], teardown still enters the
+    /// owner device after it is marked unhealthy, so the caller can retire the
+    /// resource safely or quarantine it.
+    #[doc(hidden)]
+    pub fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
+        let _entry = DeviceEntryGuard::enter_for_teardown(self.device(), operation)?;
+        check_device_status_in(unsafe { cudf_sys::cudf_event_synchronize(self.handle.raw()) }, self.device(), operation)
+    }
+
     /// Check whether this event has completed.
     pub fn is_ready(&self) -> Result<bool> {
         let _entry = DeviceEntryGuard::enter(self.device(), "event::is_ready")?;

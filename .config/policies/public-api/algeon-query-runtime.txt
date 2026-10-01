@@ -1742,6 +1742,7 @@ pub query_runtime::runtime::DeviceTelemetrySnapshot::nvml_used_bytes: core::opti
 pub struct query_runtime::runtime::ExecutionCancellation
 impl query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionCancellation::cancel(&self)
+pub async fn query_runtime::runtime::ExecutionCancellation::cancelled_or_expired(&self)
 pub fn query_runtime::runtime::ExecutionCancellation::check(&self, &'static str) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionCancellation::deadline(&self) -> core::option::Option<std::time::Instant>
 pub fn query_runtime::runtime::ExecutionCancellation::is_cancelled(&self) -> bool

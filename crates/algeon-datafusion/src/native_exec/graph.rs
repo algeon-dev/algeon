@@ -28,7 +28,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 
 #[cfg(feature = "cugraph")]
@@ -46,10 +45,10 @@ use query_engine::{
     plan::ResidentGraphKey,
     runtime::{ExecutionCancellation, cache_observation_fingerprint, resident::GpuResultHandle},
 };
+#[cfg(all(test, feature = "cugraph"))]
+use tokio::sync::Barrier as TokioBarrier;
 #[cfg(feature = "cugraph")]
 use tokio::sync::{Notify, watch};
-#[cfg(feature = "cugraph")]
-use tokio::time::sleep;
 
 use super::native_node::native_node;
 #[cfg(feature = "cugraph")]
@@ -645,16 +644,30 @@ pub(crate) enum GraphBfsSingleflightJoin {
 pub(crate) struct GpuHandoffDrain {
     remaining: AtomicUsize,
     notify: Notify,
+    /// Holds a waiting leader between its count check and its wait: the
+    /// first rendezvous reports the check, the second resumes the wait.
+    #[cfg(test)]
+    count_checked_gate: Option<Arc<TokioBarrier>>,
 }
 
 #[cfg(feature = "cugraph")]
 impl GpuHandoffDrain {
     fn new(follower_count: usize) -> Self {
-        Self { remaining: AtomicUsize::new(follower_count), notify: Notify::new() }
+        Self {
+            remaining: AtomicUsize::new(follower_count),
+            notify: Notify::new(),
+            #[cfg(test)]
+            count_checked_gate: None,
+        }
     }
 
     async fn wait_until_drained(&self, cancellation: &ExecutionCancellation) -> Result<()> {
         loop {
+            // Enabled before the count is read: a follower that settles in
+            // between notifies a registered waiter instead of nobody.
+            let settled = self.notify.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
             if self.remaining.load(Ordering::Acquire) == 0 {
                 return Ok(());
             }
@@ -665,9 +678,14 @@ impl GpuHandoffDrain {
                     error,
                 ));
             }
+            #[cfg(test)]
+            if let Some(gate) = self.count_checked_gate.as_ref() {
+                gate.wait().await;
+                gate.wait().await;
+            }
             tokio::select! {
-                () = self.notify.notified() => {},
-                () = sleep(Duration::from_millis(5)) => {},
+                () = settled => {},
+                () = cancellation.cancelled_or_expired() => {},
             }
         }
     }
@@ -826,7 +844,7 @@ impl GraphBfsFollower {
                         return Ok(GraphBfsFollowerOutcome::Retry);
                     }
                 },
-                () = sleep(Duration::from_millis(5)) => {},
+                () = cancellation.cancelled_or_expired() => {},
             }
         }
     }
@@ -891,7 +909,7 @@ mod tests {
     use super::*;
 
     mod singleflight_tests {
-        use std::sync::Barrier;
+        use std::{sync::Barrier, time::Duration};
 
         use arrow::{
             array::{ArrayRef, Int32Array},
@@ -908,7 +926,10 @@ mod tests {
             },
             source::{LiteralBatchSource, SourceNode},
         };
-        use tokio::task::spawn_blocking;
+        use tokio::{
+            task::spawn_blocking,
+            time::{Instant, sleep},
+        };
 
         use super::*;
         use crate::backend::InstalledTestGpuBackend;
@@ -1083,6 +1104,24 @@ mod tests {
             assert!(!settled.is_finished(), "one outstanding follower still holds the leader");
             drain.signal_copy_settled();
             settled.await.expect("drain wait does not panic").expect("a settled handoff releases the leader");
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn gpu_handoff_drain_observes_a_settle_between_its_count_check_and_its_wait() {
+            let gate = Arc::new(TokioBarrier::new(2));
+            let drain =
+                Arc::new(GpuHandoffDrain { count_checked_gate: Some(Arc::clone(&gate)), ..GpuHandoffDrain::new(1) });
+            let waiter = Arc::clone(&drain);
+            let started = Instant::now();
+            let settled = tokio::spawn(async move { waiter.wait_until_drained(&ExecutionCancellation::new()).await });
+
+            // The leader has read one outstanding follower and not yet waited.
+            gate.wait().await;
+            drain.signal_copy_settled();
+            gate.wait().await;
+
+            settled.await.expect("drain wait does not panic").expect("the settle releases the leader");
+            assert_eq!(started.elapsed(), Duration::ZERO, "the settle wakes the leader without a timer");
         }
 
         #[test]

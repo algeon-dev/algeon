@@ -447,7 +447,7 @@ impl GpuResultHandle {
         } = frame.into_frame_and_residency();
         let resident_owner = resident_owner.or(frame_resident_owner);
         if let Some(owner) = &resident_owner {
-            owner.set_completion_stream(context.runtime()?.stream().clone())?;
+            owner.set_completion_fence(context.runtime()?.stream())?;
             owner.set_backing_allocation_pointers(frame.backing_allocation_pointers().map_err(|error| {
                 cudf_query_error(
                     "query_engine.gpu_result_handle",
@@ -1408,7 +1408,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
-        source.resident_owner.as_ref().unwrap().set_completion_stream(runtime.stream().clone()).unwrap();
+        source.resident_owner.as_ref().unwrap().set_completion_fence(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
@@ -1437,7 +1437,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
-        source.resident_owner.as_ref().unwrap().set_completion_stream(runtime.stream().clone()).unwrap();
+        source.resident_owner.as_ref().unwrap().set_completion_fence(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();

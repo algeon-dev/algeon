@@ -106,6 +106,9 @@ pub(crate) struct AdmissionTransactionProbe {
     force_deadline_at: Mutex<Option<ForcedAdmissionDeadline>>,
     #[cfg(test)]
     rollback_pause: Mutex<Option<Arc<AdmissionTransactionPause>>>,
+    /// Name of the thread that ran the transaction's first probed step.
+    #[cfg(test)]
+    transaction_thread: Mutex<Option<String>>,
 }
 
 #[cfg(test)]
@@ -135,6 +138,7 @@ impl AdmissionTransactionProbe {
             pause_at: Mutex::new(None),
             force_deadline_at: Mutex::new(None),
             rollback_pause: Mutex::new(None),
+            transaction_thread: Mutex::new(None),
         }
     }
 
@@ -145,6 +149,7 @@ impl AdmissionTransactionProbe {
             pause_at: Mutex::new(None),
             force_deadline_at: Mutex::new(None),
             rollback_pause: Mutex::new(None),
+            transaction_thread: Mutex::new(None),
         }
     }
 
@@ -164,6 +169,7 @@ impl AdmissionTransactionProbe {
                 pause_at: Mutex::new(Some((step, pause))),
                 force_deadline_at: Mutex::new(None),
                 rollback_pause: Mutex::new(None),
+                transaction_thread: Mutex::new(None),
             },
             super::TestPauseHandle::new("admission transaction", entered_receiver, release_sender),
         )
@@ -201,9 +207,16 @@ impl AdmissionTransactionProbe {
                 pause_at: Mutex::new(None),
                 force_deadline_at: Mutex::new(Some(ForcedAdmissionDeadline::BeforePublication)),
                 rollback_pause: Mutex::new(Some(pause)),
+                transaction_thread: Mutex::new(None),
             },
             super::TestPauseHandle::new("admission rollback cleanup", entered_receiver, release_sender),
         )
+    }
+
+    /// Name of the thread that ran the transaction's first probed step.
+    #[cfg(test)]
+    pub(crate) fn transaction_thread(&self) -> Option<String> {
+        self.transaction_thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     #[cfg(test)]
@@ -286,6 +299,10 @@ impl AdmissionTransactionProbe {
 
     #[cfg(test)]
     fn check(&self, step: AdmissionStep) -> Result<()> {
+        self.transaction_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| std::thread::current().name().unwrap_or_default().to_string());
         let fail_at = self.fail_at.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,

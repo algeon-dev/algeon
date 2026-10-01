@@ -1,5 +1,8 @@
 use std::{
-    sync::{Mutex, MutexGuard, TryLockError},
+    pin::pin,
+    sync::{Arc, Mutex, MutexGuard, TryLockError},
+    task::{Context, Poll, Wake, Waker},
+    thread::{self, Thread},
     time::{Duration, Instant},
 };
 
@@ -41,6 +44,39 @@ pub(crate) fn mutex_lock_until<T>(
             },
             Err(TryLockError::WouldBlock) => std::thread::yield_now(),
         }
+    }
+}
+
+/// Blocks the calling thread until `future` completes, or returns `None` once
+/// `deadline` passes.
+///
+/// The future's wakers unpark this thread, so the wait ends when the awaited
+/// event fires instead of on a poll interval. The future must not depend on
+/// a Tokio timer; the deadline bounds the wait instead.
+pub(crate) fn block_until<F: Future>(future: F, deadline: Option<Instant>) -> Option<F::Output> {
+    let waker = Waker::from(Arc::new(ThreadUnparker(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return Some(output);
+        }
+        match deadline {
+            None => thread::park(),
+            Some(deadline) => thread::park_timeout(deadline_remaining(deadline)?),
+        }
+    }
+}
+
+struct ThreadUnparker(Thread);
+
+impl Wake for ThreadUnparker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
     }
 }
 

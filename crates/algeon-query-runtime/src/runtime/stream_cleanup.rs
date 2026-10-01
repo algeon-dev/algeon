@@ -950,7 +950,7 @@ impl DeferredStreamCleanup {
                 eprintln!("[query-engine] warning: failed to complete stream cleanup accounting");
             },
         }
-        self.pool.inner.available.notify_all();
+        self.pool.inner.available.notify_waiters();
         self.pool.inner.state_changed.notify_all();
         self.phase = DeferredStreamCleanupPhase::AfterAccounting;
     }
@@ -1006,7 +1006,7 @@ impl DeferredStreamCleanup {
             },
         }
         drop(idle_to_drop);
-        self.pool.inner.available.notify_all();
+        self.pool.inner.available.notify_waiters();
         self.pool.inner.state_changed.notify_all();
         if let Some(mut completion) = self.completion.take() {
             completion.run_remaining_after_abandonment();

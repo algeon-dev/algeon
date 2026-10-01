@@ -826,6 +826,28 @@ impl QueryAdmissionWaiter {
     /// error.
     #[doc(hidden)]
     pub fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
+        match self.try_place()? {
+            Some(commit) => self.service.commit_placed_admission(commit).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::try_admit`] for an async caller: a placed admission builds its
+    /// envelope in a job on the device's GPU pool.
+    ///
+    /// A caller that stops waiting drops the placed commit: the unpublished
+    /// envelope and the ticket roll back on drop, and the completion recovers
+    /// the attempt's terminal outcome.
+    pub(crate) async fn try_admit_async(&mut self) -> Result<Option<QueryHandle>> {
+        match self.try_place()? {
+            Some(commit) => self.service.commit_placed_admission_async(commit).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Places this queued admission if it is runnable, returning the commit
+    /// that builds and publishes its envelope.
+    fn try_place(&mut self) -> Result<Option<super::service::PlacedAdmissionCommit>> {
         if let Some(error) = self.terminal.take() {
             self.queued = false;
             return Err(error);
@@ -1040,28 +1062,25 @@ impl QueryAdmissionWaiter {
             self.queued = false;
             self.service.inner.notify_admission_available();
             drop(state);
-            return self
-                .service
-                .commit_placed_admission(super::service::PlacedAdmissionCommit {
-                    placed_query,
-                    admitted_device_requirements: admitted
-                        .device_entries
-                        .iter()
-                        .map(|(&ordinal, requirement)| (ordinal, requirement.clone()))
-                        .collect(),
-                    submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
-                    admitted_compatible_devices: admitted.compatible_devices.clone(),
-                    observation: admitted.observation,
-                    attempt_id: admitted.attempt_id,
-                    completion: admitted.completion,
-                    admission_request_id: self.admission_request_id,
-                    admission_wait: self.requested_at.elapsed(),
-                    deadline: self.deadline,
-                    execution_cancellation: admitted.execution_cancellation,
-                    admission_wait_fact: Some(admission_wait_fact),
-                    lifecycle_ticket,
-                })
-                .map(Some);
+            return Ok(Some(super::service::PlacedAdmissionCommit {
+                placed_query,
+                admitted_device_requirements: admitted
+                    .device_entries
+                    .iter()
+                    .map(|(&ordinal, requirement)| (ordinal, requirement.clone()))
+                    .collect(),
+                submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
+                admitted_compatible_devices: admitted.compatible_devices.clone(),
+                observation: admitted.observation,
+                attempt_id: admitted.attempt_id,
+                completion: admitted.completion,
+                admission_request_id: self.admission_request_id,
+                admission_wait: self.requested_at.elapsed(),
+                deadline: self.deadline,
+                execution_cancellation: admitted.execution_cancellation,
+                admission_wait_fact: Some(admission_wait_fact),
+                lifecycle_ticket,
+            }));
         }
 
         if Instant::now() >= self.deadline {

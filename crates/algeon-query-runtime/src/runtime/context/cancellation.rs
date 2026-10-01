@@ -1,27 +1,24 @@
-//! Cooperative cancellation flag for native query execution.
+//! Cooperative cancellation token for native query execution.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
-};
+use std::time::Instant;
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::time::sleep_until;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use super::ExecutionContext;
 use crate::observability::{PlanExecutionId, RuntimeExecutionStageContext, RuntimeObservationHandle, RuntimeSpanId};
 
-/// Shared cooperative cancellation flag for native query execution.
+/// Shared cooperative cancellation token for native query execution.
 ///
 /// Cancellation is observed only at native-engine boundaries. It does not
 /// preempt a libcudf/CUDA call already in flight, but it prevents the next
 /// source chunk, pipeline task, operator, or materialization step from starting
-/// once the flag is set.
+/// once it is requested. A wait can also resolve on it through
+/// [`Self::cancelled_or_expired`].
 #[derive(Debug, Clone)]
 pub struct ExecutionCancellation {
-    cancelled: Arc<AtomicBool>,
+    token: CancellationToken,
     deadline: Option<Instant>,
 }
 
@@ -38,12 +35,34 @@ impl ExecutionCancellation {
     /// already in flight, but it prevents the next safe boundary from
     /// starting more native work after the deadline has elapsed.
     pub fn with_deadline(deadline: Option<Instant>) -> Self {
-        Self { cancelled: Arc::new(AtomicBool::new(false)), deadline }
+        Self { token: CancellationToken::new(), deadline }
     }
 
-    /// Marks the execution as cancelled.
+    /// Marks the execution as cancelled and wakes every
+    /// [`Self::cancelled_or_expired`] waiter.
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.token.cancel();
+    }
+
+    /// Resolves once the execution is cancelled or its deadline elapses, so a
+    /// wait with no other wakeup for either can race it. [`Self::check`]
+    /// still tells the two apart. Must run inside a Tokio runtime with the
+    /// time driver enabled when a deadline is set.
+    pub async fn cancelled_or_expired(&self) {
+        match self.deadline {
+            Some(deadline) => tokio::select! {
+                () = self.token.cancelled() => {},
+                () = sleep_until(deadline.into()) => {},
+            },
+            None => self.token.cancelled().await,
+        }
+    }
+
+    /// Resolves once cancellation is requested, ignoring the deadline. It
+    /// needs no Tokio timer, so a blocking wait races it and bounds itself by
+    /// [`Self::deadline`].
+    pub(crate) fn cancel_requested(&self) -> WaitForCancellationFuture<'_> {
+        self.token.cancelled()
     }
 
     /// Returns whether this execution must stop at its next cooperative safe
@@ -86,7 +105,7 @@ impl ExecutionCancellation {
     }
 
     fn cancellation_requested(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.token.is_cancelled()
     }
 }
 

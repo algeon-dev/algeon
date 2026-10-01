@@ -25,9 +25,12 @@ use std::{
 use futures::FutureExt;
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
+    time::sleep_until,
+};
 
-use super::context::QueryServiceResourceEpoch;
+use super::{ExecutionCancellation, context::QueryServiceResourceEpoch};
 use crate::observability::{GpuJobLifecycleState, RuntimeJobId, RuntimeObservationHandle, RuntimeStreamLeaseScope};
 #[cfg(test)]
 use crate::observability::{RuntimeObservationPayload, RuntimeTopologyRecord};
@@ -451,6 +454,53 @@ impl GpuExecutionPool {
         let class_permit = Arc::clone(self.class_semaphore_for_class(class))
             .try_acquire_owned()
             .map_err(|_error| self.class_saturated_error_for_class(kind, class))?;
+        self.run_observed_scoped_with_class_permit(kind, class_permit, observation, build_future).await
+    }
+
+    /// Waits for a free slot of `class`, or returns `None` once `cancellation`
+    /// is requested or `deadline` passes. A free slot is taken without a
+    /// timer, so only a caller that has to wait needs a Tokio context.
+    ///
+    /// Only work whose own count the class width already bounds may wait
+    /// here, so the waiter queue stays bounded: the admission envelope of
+    /// each placed attempt, whose lane caps them at the lifecycle width.
+    pub(crate) async fn wait_for_class_permit(
+        &self,
+        kind: GpuExecutionJobKind,
+        class: GpuExecutionJobClass,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+    ) -> Result<Option<OwnedSemaphorePermit>> {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let semaphore = self.class_semaphore_for_class(class);
+        match Arc::clone(semaphore).try_acquire_owned() {
+            Ok(permit) => return Ok(Some(permit)),
+            Err(TryAcquireError::Closed) => return Err(self.class_saturated_error_for_class(kind, class)),
+            Err(TryAcquireError::NoPermits) => {},
+        }
+        tokio::select! {
+            biased;
+            permit = Arc::clone(self.class_semaphore_for_class(class)).acquire_owned() => {
+                permit.map(Some).map_err(|_closed| self.class_saturated_error_for_class(kind, class))
+            },
+            () = cancellation.cancelled_or_expired() => Ok(None),
+            () = sleep_until(deadline.into()) => Ok(None),
+        }
+    }
+
+    /// Runs one observed job under a class permit the caller already holds.
+    pub(crate) async fn run_observed_scoped_with_class_permit<B, F, T>(
+        self,
+        kind: GpuExecutionJobKind,
+        class_permit: OwnedSemaphorePermit,
+        observation: RuntimeObservationHandle,
+        build_future: B,
+    ) -> Result<T>
+    where
+        B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
         let job = self.new_job_observation(kind, observation);
         if current_pool_id() == Some(self.inner.id) {
             let _class_permit = class_permit;

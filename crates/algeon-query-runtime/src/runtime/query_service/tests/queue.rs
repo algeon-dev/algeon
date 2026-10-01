@@ -195,6 +195,37 @@ async fn query_service_execution_token_cancels_a_queued_async_admission() {
     assert!(service.try_admit_query().unwrap().is_some(), "cancellation must not retain capacity");
 }
 
+/// A queued async admission wakes on its cancellation token, not a timer.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_queued_async_admission_wakes_it_without_a_timer() {
+    let service = test_service(1, 8);
+    let active = service.admit_query().unwrap();
+    let cancellation = ExecutionCancellation::new();
+    let queued_service = service.clone();
+    let queued_cancellation = cancellation.clone();
+    let queued = tokio::spawn(async move {
+        queued_service
+            .admit_async_with_request(
+                QueryAdmissionRequest::test_attempt().with_execution_cancellation(queued_cancellation),
+            )
+            .await
+    });
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
+        yield_now().await;
+    }
+
+    let started = time::Instant::now();
+    cancellation.cancel();
+    let error = queued
+        .await
+        .expect("queued admission task must not panic")
+        .expect_err("cancelled queued admission must not receive a handle");
+
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(started.elapsed(), Duration::ZERO, "cancellation wakes the waiter without a timer");
+    drop(active);
+}
+
 #[test]
 fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() {
     let service = test_service(1, 8);

@@ -20,9 +20,10 @@ use crate::{
         RuntimeObservationHandle,
     },
     runtime::{
-        ExecutionCancellation,
+        ExecutionCancellation, GpuExecutionJobKind,
         backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
         backend_lifecycle::ObservationPermit,
+        gpu_execution_pool::GpuExecutionJobClass,
         query_service::service::{
             placement::required_capabilities_for_placement,
             transaction::{
@@ -50,7 +51,7 @@ use super::{
         handle::{QueryHandle, QueryHandleLifetime},
         record_admission_lifecycle,
     },
-    QueryService,
+    QueryService, QueryServiceInner,
     api::{AdmissionObservation, QueryAdmissionRequest},
 };
 
@@ -161,6 +162,33 @@ struct PreparedSubmission {
     requirement: AttemptRequirement,
     required_capabilities: Vec<ExecutionCapability>,
     candidate_ordinals: Vec<usize>,
+}
+
+/// What an admission envelope is built from.
+struct EnvelopeRequest {
+    placed_query: PlacedQuery,
+    lifecycle_ticket: AdmissionTicket,
+    execution_cancellation: ExecutionCancellation,
+    deadline: Instant,
+    observation: RuntimeObservationHandle,
+}
+
+impl EnvelopeRequest {
+    fn acquire(
+        self,
+        service: &Arc<QueryServiceInner>,
+        probe: Option<&AdmissionTransactionProbe>,
+    ) -> Result<AdmissionEnvelope> {
+        AdmissionEnvelope::acquire(
+            service,
+            self.placed_query,
+            self.lifecycle_ticket,
+            &self.execution_cancellation,
+            self.deadline,
+            &self.observation,
+            probe,
+        )
+    }
 }
 
 struct AdmissionPublication {
@@ -428,6 +456,63 @@ impl QueryService {
         &self,
         commit: PlacedAdmissionCommit,
     ) -> Result<QueryHandle> {
+        let (request, publication, probe) = self.begin_placed_commit(commit)?;
+        let envelope = request.acquire(&self.inner, probe.as_deref());
+        self.finish_placed_commit(envelope, publication, &probe)
+    }
+
+    /// [`Self::commit_placed_admission`] for an async caller. The envelope's
+    /// root stream, allocation domain, and root member are built in a
+    /// context-setup job on the placed device's GPU pool, so the caller's
+    /// Tokio worker neither waits on the stream pool nor creates CUDA state.
+    pub(in crate::runtime::query_service) async fn commit_placed_admission_async(
+        &self,
+        commit: PlacedAdmissionCommit,
+    ) -> Result<QueryHandle> {
+        let (request, publication, probe) = self.begin_placed_commit(commit)?;
+        let envelope = self.acquire_envelope_on_gpu_pool(request, probe.clone()).await;
+        self.finish_placed_commit(envelope, publication, &probe)
+    }
+
+    async fn acquire_envelope_on_gpu_pool(
+        &self,
+        request: EnvelopeRequest,
+        probe: Option<Arc<AdmissionTransactionProbe>>,
+    ) -> Result<AdmissionEnvelope> {
+        // An admission-only service builds no CUDA state.
+        let Some(resources) = self.inner.resources.as_ref() else {
+            return request.acquire(&self.inner, probe.as_deref());
+        };
+        let pool = resources.gpu_execution_pool_for_device(request.placed_query.device_ordinal)?;
+        let kind = GpuExecutionJobKind::ContextSetup;
+        let class_permit = pool
+            .wait_for_class_permit(
+                kind,
+                GpuExecutionJobClass::Lifecycle,
+                &request.execution_cancellation,
+                request.deadline,
+            )
+            .await?;
+        let Some(class_permit) = class_permit else {
+            // Cancelled or past the deadline: the envelope's entry boundary
+            // reports which, before any CUDA work.
+            return request.acquire(&self.inner, probe.as_deref());
+        };
+        let service = Arc::clone(&self.inner);
+        let observation = request.observation.clone();
+        pool.run_observed_scoped_with_class_permit(kind, class_permit, observation, move |_scope| async move {
+            request.acquire(&service, probe.as_deref())
+        })
+        .await
+        .and_then(|envelope| envelope)
+    }
+
+    /// Splits a placed commit into its envelope inputs and its publication.
+    /// A test-injected resolution failure finishes the request here instead.
+    fn begin_placed_commit(
+        &self,
+        commit: PlacedAdmissionCommit,
+    ) -> Result<(EnvelopeRequest, AdmissionPublication, Option<Arc<AdmissionTransactionProbe>>)> {
         let PlacedAdmissionCommit {
             placed_query,
             admitted_device_requirements,
@@ -472,15 +557,37 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        let envelope = AdmissionEnvelope::acquire(
-            &self.inner,
+        let request = EnvelopeRequest {
             placed_query,
             lifecycle_ticket,
-            &execution_cancellation,
+            execution_cancellation: execution_cancellation.clone(),
             deadline,
-            &observation,
-            probe.as_deref(),
-        );
+            observation: observation.clone(),
+        };
+        let publication = AdmissionPublication {
+            observation,
+            attempt_id,
+            completion,
+            admitted_device_requirements,
+            submitted_plan_capability_evidence,
+            admitted_compatible_devices,
+            admission_request_id,
+            admission_wait,
+            deadline,
+            execution_cancellation,
+            admission_wait_fact,
+        };
+        Ok((request, publication, probe))
+    }
+
+    /// Publishes a built envelope, or finishes the request with the error
+    /// that stopped the build.
+    fn finish_placed_commit(
+        &self,
+        envelope: Result<AdmissionEnvelope>,
+        publication: AdmissionPublication,
+        probe: &Option<Arc<AdmissionTransactionProbe>>,
+    ) -> Result<QueryHandle> {
         let state = self.inner.admission.lock().unwrap_or_else(|error| {
             eprintln!("[query-engine] warning: recovering poisoned admission state during admission commit");
             error.into_inner()
@@ -491,30 +598,13 @@ impl QueryService {
                 return Err(self.finish_rejected_envelope(
                     state,
                     primary,
-                    &observation,
-                    admission_request_id,
-                    completion,
+                    &publication.observation,
+                    publication.admission_request_id,
+                    publication.completion,
                 ));
             },
         };
-        self.publish_admission_envelope(
-            state,
-            envelope,
-            AdmissionPublication {
-                observation,
-                attempt_id,
-                completion,
-                admitted_device_requirements,
-                submitted_plan_capability_evidence,
-                admitted_compatible_devices,
-                admission_request_id,
-                admission_wait,
-                deadline,
-                execution_cancellation,
-                admission_wait_fact,
-            },
-            &probe,
-        )
+        self.publish_admission_envelope(state, envelope, publication, probe)
     }
 
     fn finish_rejected_envelope(

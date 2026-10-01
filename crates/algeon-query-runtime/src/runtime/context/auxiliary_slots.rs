@@ -1,17 +1,15 @@
 //! Attempt-owned auxiliary stream slot accounting.
 
-use std::{
-    sync,
-    sync::{Arc, Condvar, Mutex},
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::{sync::Notify, time::timeout};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
+    time::sleep_until,
+};
 
 use super::ExecutionCancellation;
-
-const ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+use crate::runtime::deadline::block_until;
 
 /// Attempt-owned capacity for streams outside the admission envelope's root
 /// binding.
@@ -24,32 +22,20 @@ const ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL: Duration = Duration::from_milli
 pub(crate) struct AttemptAuxiliarySlots {
     device_ordinal: usize,
     capacity: usize,
-    state: Mutex<AttemptAuxiliarySlotState>,
-    available: Condvar,
-    async_available: Notify,
-}
-
-#[derive(Debug)]
-struct AttemptAuxiliarySlotState {
-    in_use: usize,
+    permits: Arc<Semaphore>,
 }
 
 /// RAII ownership of one admitted attempt's auxiliary stream allowance.
 #[derive(Debug)]
 pub(crate) struct AttemptAuxiliaryPermit {
-    slots: Arc<AttemptAuxiliarySlots>,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl AttemptAuxiliarySlots {
     pub(crate) fn new(device_ordinal: usize, capacity: usize) -> Arc<Self> {
         debug_assert!(capacity > 0, "admission profiles normalize auxiliary slot capacity to at least one");
-        Arc::new(Self {
-            device_ordinal,
-            capacity: capacity.max(1),
-            state: Mutex::new(AttemptAuxiliarySlotState { in_use: 0 }),
-            available: Condvar::new(),
-            async_available: Notify::new(),
-        })
+        let capacity = capacity.max(1);
+        Arc::new(Self { device_ordinal, capacity, permits: Arc::new(Semaphore::new(capacity)) })
     }
 
     pub(in crate::runtime) fn capacity(&self) -> usize {
@@ -61,7 +47,7 @@ impl AttemptAuxiliarySlots {
         cancellation: &ExecutionCancellation,
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
-        self.acquire_inner(Some(cancellation), None, operation)
+        self.acquire_blocking(cancellation, None, operation)
     }
 
     pub(crate) fn acquire_with_cancellation_deadline(
@@ -70,7 +56,7 @@ impl AttemptAuxiliarySlots {
         deadline: Instant,
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
-        self.acquire_inner(Some(cancellation), Some(deadline), operation)
+        self.acquire_blocking(cancellation, Some(deadline), operation)
     }
 
     /// Takes one free slot, or reports that none is free right now.
@@ -79,16 +65,11 @@ impl AttemptAuxiliarySlots {
     /// permit of the same attempt, so work that already owns one takes what
     /// is left over instead of waiting for it.
     pub(crate) fn try_acquire(self: &Arc<Self>, operation: &'static str) -> Result<Option<AttemptAuxiliaryPermit>> {
-        let mut state = self.state.lock().map_err(|_error| {
-            QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
-                .with_fact("device_ordinal", self.device_ordinal)
-                .with_fact("reason", "attempt_auxiliary_slots_poisoned")
-        })?;
-        if state.in_use < self.capacity {
-            state.in_use += 1;
-            return Ok(Some(AttemptAuxiliaryPermit { slots: Arc::clone(self) }));
+        match Arc::clone(&self.permits).try_acquire_owned() {
+            Ok(permit) => Ok(Some(AttemptAuxiliaryPermit { _permit: permit })),
+            Err(TryAcquireError::NoPermits) => Ok(None),
+            Err(TryAcquireError::Closed) => Err(self.closed_error(operation)),
         }
-        Ok(None)
     }
 
     /// Asynchronously acquires one attempt-local auxiliary slot without
@@ -101,68 +82,69 @@ impl AttemptAuxiliarySlots {
     ) -> Result<AttemptAuxiliaryPermit> {
         loop {
             cancellation.check(operation)?;
-            // Register before observing availability so a permit return in
-            // this interval cannot be lost.
-            let available = self.async_available.notified();
-            let in_use = {
-                let mut state = self.state.lock().map_err(|_error| {
-                    QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
-                        .with_fact("device_ordinal", self.device_ordinal)
-                        .with_fact("reason", "attempt_auxiliary_slots_poisoned")
-                })?;
-                if state.in_use < self.capacity {
-                    state.in_use += 1;
-                    return Ok(AttemptAuxiliaryPermit { slots: Arc::clone(self) });
-                }
-                state.in_use
-            };
-            if Instant::now() >= deadline {
-                return Err(self.exhausted_error(operation, in_use, true));
+            if let Some(permit) = self.try_acquire(operation)? {
+                return Ok(permit);
             }
-            let wait =
-                deadline.saturating_duration_since(Instant::now()).min(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL);
-            let _ = timeout(wait, available).await;
+            if Instant::now() >= deadline {
+                return Err(self.exhausted_error(operation, true));
+            }
+            tokio::select! {
+                biased;
+                permit = Arc::clone(&self.permits).acquire_owned() => {
+                    return permit
+                        .map(|permit| AttemptAuxiliaryPermit { _permit: permit })
+                        .map_err(|_closed| self.closed_error(operation));
+                },
+                () = cancellation.cancelled_or_expired() => {},
+                () = sleep_until(deadline.into()) => {},
+            }
         }
     }
 
-    fn acquire_inner(
+    /// Blocks the calling thread until a slot frees, cancellation is
+    /// requested, or the earlier of `deadline` and the cancellation deadline
+    /// passes. Each of them wakes the thread directly.
+    fn acquire_blocking(
         self: &Arc<Self>,
-        cancellation: Option<&ExecutionCancellation>,
+        cancellation: &ExecutionCancellation,
         deadline: Option<Instant>,
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
+        let wait_deadline = match (deadline, cancellation.deadline()) {
+            (Some(deadline), Some(cancellation_deadline)) => Some(deadline.min(cancellation_deadline)),
+            (deadline, cancellation_deadline) => deadline.or(cancellation_deadline),
+        };
         loop {
-            if let Some(cancellation) = cancellation {
-                cancellation.check(operation)?;
-            }
-            let mut state = self.state.lock().map_err(|_error| {
-                QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
-                    .with_fact("device_ordinal", self.device_ordinal)
-                    .with_fact("reason", "attempt_auxiliary_slots_poisoned")
-            })?;
-            if state.in_use < self.capacity {
-                state.in_use += 1;
-                return Ok(AttemptAuxiliaryPermit { slots: Arc::clone(self) });
+            cancellation.check(operation)?;
+            if let Some(permit) = self.try_acquire(operation)? {
+                return Ok(permit);
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Err(self.exhausted_error(operation, state.in_use, true));
+                return Err(self.exhausted_error(operation, true));
             }
-            let wait = deadline.map_or(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL, |deadline| {
-                deadline.saturating_duration_since(Instant::now()).min(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL)
-            });
-            let (_state, _timeout) = self.available.wait_timeout(state, wait).map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    operation,
-                    "attempt auxiliary-slot mutex was poisoned while waiting for capacity",
-                )
-                .with_fact("device_ordinal", self.device_ordinal)
-                .with_fact("reason", "attempt_auxiliary_slots_poisoned")
-            })?;
+            let acquired = block_until(
+                async {
+                    tokio::select! {
+                        biased;
+                        permit = Arc::clone(&self.permits).acquire_owned() => Some(permit),
+                        () = cancellation.cancel_requested() => None,
+                    }
+                },
+                wait_deadline,
+            );
+            if let Some(Some(permit)) = acquired {
+                return permit
+                    .map(|permit| AttemptAuxiliaryPermit { _permit: permit })
+                    .map_err(|_closed| self.closed_error(operation));
+            }
         }
     }
 
-    fn exhausted_error(&self, operation: &'static str, in_use: usize, deadline_elapsed: bool) -> QueryError {
+    fn in_use(&self) -> usize {
+        self.capacity.saturating_sub(self.permits.available_permits())
+    }
+
+    fn exhausted_error(&self, operation: &'static str, deadline_elapsed: bool) -> QueryError {
         QueryError::new(
             QueryErrorCode::ServiceOverloaded,
             operation,
@@ -170,7 +152,7 @@ impl AttemptAuxiliarySlots {
         )
         .with_fact("device_ordinal", self.device_ordinal)
         .with_fact("attempt_auxiliary_capacity", self.capacity)
-        .with_fact("attempt_auxiliary_in_use", in_use)
+        .with_fact("attempt_auxiliary_in_use", self.in_use())
         .with_fact("deadline_elapsed", deadline_elapsed)
         .with_fact(
             "reason",
@@ -178,25 +160,25 @@ impl AttemptAuxiliarySlots {
         )
     }
 
+    /// The slots are never closed; a closed semaphore would mean the attempt's
+    /// envelope accounting broke.
+    fn closed_error(&self, operation: &'static str) -> QueryError {
+        QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary slots were closed")
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "attempt_auxiliary_slots_closed")
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate auxiliary-slot tests"))]
     fn in_use_for_test(&self) -> usize {
-        self.state.lock().unwrap_or_else(sync::PoisonError::into_inner).in_use
-    }
-}
-
-impl Drop for AttemptAuxiliaryPermit {
-    fn drop(&mut self) {
-        let mut state = self.slots.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        debug_assert!(state.in_use > 0, "attempt auxiliary-slot permit underflow");
-        state.in_use = state.in_use.saturating_sub(1);
-        self.slots.available.notify_one();
-        self.slots.async_available.notify_one();
+        self.in_use()
     }
 }
 
 #[cfg(test)]
 mod attempt_auxiliary_slots_tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
