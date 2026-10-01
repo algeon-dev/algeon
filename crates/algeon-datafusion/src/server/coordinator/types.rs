@@ -51,17 +51,19 @@ pub(crate) struct QueryCoordinatorConfig {
 }
 
 impl QueryCoordinatorConfig {
-    pub(crate) fn from_observability(config: &ServerObservabilityConfig) -> Self {
+    /// `max_active_logical_capture_bytes` is the budget the server resolved
+    /// from `config` and its admission bounds.
+    pub(crate) fn from_observability(
+        config: &ServerObservabilityConfig,
+        max_active_logical_capture_bytes: u64,
+    ) -> Self {
         let max_live_queries = 1024;
         Self {
             max_live_queries,
             max_ticketed_queries: 1024,
-            max_active_logical_capture_bytes: config.active_logical_capture_max_bytes,
+            max_active_logical_capture_bytes,
             per_query_capture_max_bytes: config.per_query_max_bytes,
-            per_query_artifact_max_bytes: config
-                .per_query_max_bytes
-                .saturating_mul(2)
-                .min(config.global_sealed_max_bytes),
+            per_query_artifact_max_bytes: config.per_query_artifact_max_bytes(),
             retained_max_count: config.global_sealed_max_count.max(1),
             retained_max_bytes: config.global_sealed_max_bytes,
             retained_ttl: config.sealed_ttl,
@@ -70,6 +72,21 @@ impl QueryCoordinatorConfig {
             shutdown_grace: config.shutdown_grace,
         }
     }
+}
+
+/// Logical capture bytes one live query reserves from
+/// `max_active_logical_capture_bytes` while it is registered: twice its runtime
+/// capture limit plus the per-query capture and artifact limits. `None` when the
+/// sum overflows `u64`.
+pub(crate) fn logical_capture_reservation_bytes(
+    runtime_capture_bytes: u64,
+    per_query_capture_max_bytes: u64,
+    per_query_artifact_max_bytes: u64,
+) -> Option<u64> {
+    runtime_capture_bytes
+        .checked_mul(2)?
+        .checked_add(per_query_capture_max_bytes)?
+        .checked_add(per_query_artifact_max_bytes)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

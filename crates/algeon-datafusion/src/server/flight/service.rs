@@ -152,7 +152,10 @@ impl DatafusionAlgeonFlightSqlService {
             admission,
             io_lifecycle,
             cancellations: Arc::default(),
-            coordinator: QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&observability_config)),
+            coordinator: QueryCoordinator::new(QueryCoordinatorConfig::from_observability(
+                &observability_config,
+                ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
+            )),
             runtime_observation_config: RuntimeObservationConfig::native_execution(),
             prepared_statements: Arc::default(),
             ownership: Arc::default(),
@@ -162,9 +165,16 @@ impl DatafusionAlgeonFlightSqlService {
         }
     }
 
-    pub(crate) fn with_server_config_diagnostics(mut self, config: &ServerConfig) -> Self {
+    pub(crate) fn with_server_config_diagnostics(
+        mut self,
+        config: &ServerConfig,
+        active_logical_capture_budget_bytes: u64,
+    ) -> Self {
         self.runtime_observation_config = config.observability.runtime_observation_config();
-        self.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&config.observability));
+        self.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(
+            &config.observability,
+            active_logical_capture_budget_bytes,
+        ));
         self
     }
 

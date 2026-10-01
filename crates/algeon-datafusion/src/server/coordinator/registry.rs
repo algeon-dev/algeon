@@ -27,6 +27,7 @@ use super::{
     types::{
         CoordinatorTicketPayload, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounters, QueryKey,
         QueryPhase, QueryTerminal, QueryTerminalOutcome, RetainedQueryBundle, RetainedUnavailableReason,
+        logical_capture_reservation_bytes,
     },
 };
 #[cfg(test)]
@@ -199,17 +200,17 @@ impl QueryCoordinator {
         observation_config: RuntimeObservationConfig,
         create_runtime_observation_owner: bool,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
-        let runtime_capture_bytes = observation_config.limits().max_retained_bytes;
-        let logical_capture_bytes = runtime_capture_bytes
-            .checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(self.config.per_query_capture_max_bytes))
-            .and_then(|bytes| bytes.checked_add(self.config.per_query_artifact_max_bytes))
-            .ok_or_else(|| {
-                QueryCoordinatorError::new(
-                    QueryCoordinatorErrorKind::LogicalCaptureBytes,
-                    "per-query observation capture reservation overflows u64",
-                )
-            })?;
+        let logical_capture_bytes = logical_capture_reservation_bytes(
+            observation_config.limits().max_retained_bytes,
+            self.config.per_query_capture_max_bytes,
+            self.config.per_query_artifact_max_bytes,
+        )
+        .ok_or_else(|| {
+            QueryCoordinatorError::new(
+                QueryCoordinatorErrorKind::LogicalCaptureBytes,
+                "per-query observation capture reservation overflows u64",
+            )
+        })?;
         if !state.accepting {
             return Err(QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::RegistrationCapacity,

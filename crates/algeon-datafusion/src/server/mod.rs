@@ -166,9 +166,10 @@ impl FlightSqlServerBuilder {
                 "server config is required to build Flight SQL server",
             )
         })?;
-        // `ServerConfig::from_env*` validates this during TOML loading, but
+        // `ServerConfig::from_env*` validates these during TOML loading, but
         // callers can also construct the public config struct directly.
         config.auth.mode.validate()?;
+        let active_logical_capture_budget_bytes = config.active_logical_capture_budget_bytes()?;
         ensure_single_librmm_runtime_mapping()?;
         let listen = match self.listener {
             Some(listener) => Listen::Prebound(listener),
@@ -191,7 +192,7 @@ impl FlightSqlServerBuilder {
         };
         let mut effective_config = config.clone();
         effective_config.native_optimizer_config = backend.optimizer_config().clone();
-        log_server_config_snapshot(&effective_config);
+        log_server_config_snapshot(&effective_config, active_logical_capture_budget_bytes);
         warn_if_cugraph_built_but_disabled(&effective_config);
 
         let admission_init_start = Instant::now();
@@ -221,7 +222,7 @@ impl FlightSqlServerBuilder {
             auth_interceptor,
             io_lifecycle,
         )
-        .with_server_config_diagnostics(&effective_config);
+        .with_server_config_diagnostics(&effective_config, active_logical_capture_budget_bytes);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
         Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend: Some(backend), local_addr })
     }
@@ -802,7 +803,7 @@ fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn log_server_config_snapshot(config: &ServerConfig) {
+fn log_server_config_snapshot(config: &ServerConfig, active_logical_capture_budget_bytes: u64) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let source_chunking = native_execution.source_chunking();
     let source_scheduler = native_execution.source_scheduler_policy();
@@ -811,7 +812,7 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
         observability_per_query_max_records = config.observability.per_query_max_records,
         observability_per_query_max_bytes = config.observability.per_query_max_bytes,
-        observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
+        observability_active_logical_capture_max_bytes = active_logical_capture_budget_bytes,
         observability_global_sealed_max_count = config.observability.global_sealed_max_count,
         observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
