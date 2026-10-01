@@ -32,7 +32,7 @@ use super::{
 };
 #[cfg(test)]
 use crate::attempt::AlgeonAttempt;
-use crate::{attempt::server_internal::AlgeonAttemptServerExt, native_report::NativeDataFusionExecutionMetrics};
+use crate::native_report::NativeDataFusionExecutionMetrics;
 
 #[derive(Debug)]
 pub(crate) struct QueryRecord {

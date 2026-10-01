@@ -190,6 +190,22 @@ impl AttemptCapabilityEvidence {
         Ok(())
     }
 
+    /// Whether every capability, scope, and manifest `fragment` carries is
+    /// already part of this evidence, so admitting this evidence admitted it.
+    #[doc(hidden)]
+    pub fn covers(&self, fragment: &Self) -> bool {
+        fragment.required_capabilities.iter().all(|capability| self.required_capabilities.contains(capability))
+            && fragment
+                .attested_cugraph_graph_execution_scopes
+                .iter()
+                .all(|scope| self.attested_cugraph_graph_execution_scopes.contains(scope))
+            && fragment.execution_scopes.iter().all(|scope| self.execution_scopes.contains(scope))
+            && fragment
+                .execution_manifest
+                .as_ref()
+                .is_none_or(|manifest| self.execution_manifest.as_ref() == Some(manifest))
+    }
+
     /// Merges the evidence of independently lowered fragments of one
     /// invocation. Capabilities are unioned because every fragment executes
     /// under the same attempt.

@@ -20,10 +20,7 @@ use super::{
     retention::checked_deadline,
     types::{QueryPhase, QueryTerminal, QueryTerminalOutcome, RetainedUnavailableReason},
 };
-use crate::{
-    attempt::server_internal::AlgeonAttemptServerExt,
-    server::adapter_error::{Error, ErrorCode},
-};
+use crate::server::adapter_error::{Error, ErrorCode};
 
 pub(crate) trait CoordinatorMaintenanceClock: Send + Sync + 'static {
     fn now(&self) -> Instant;

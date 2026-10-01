@@ -453,7 +453,7 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let (_ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(combined_evidence));
+    let (ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(combined_evidence));
     let config =
         AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
             .with_query_admission_source(source)
@@ -480,13 +480,15 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
     drop(stream);
     drop(exec);
     drop(ticket);
+    // The grant belongs to the attempt, which releases it when it ends.
+    drop(ticket_attempt);
     timeout(Duration::from_secs(5), async {
         while backend.backend().admission_snapshot().unwrap().active_queries != 0 {
             yield_now().await;
         }
     })
     .await
-    .expect("combined ticket cleanup must release its grant");
+    .expect("ending the attempt must release its grant");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
     remove_fixture(dir);
 }

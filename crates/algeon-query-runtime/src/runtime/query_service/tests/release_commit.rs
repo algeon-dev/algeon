@@ -246,7 +246,6 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     let first = service
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("first admission");
-    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminalizes admitted attempt");
     // Hold normal observer delivery after the terminal commit. A replacement
     // must still see capacity only after the attempt completion is published.
     let delivery_gate = attempt_owner.observation_owner_for_test().arm_deferred_delivery_gate();
@@ -259,9 +258,10 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
         yield_now().await;
     }
 
+    // The terminal commit releases the admitted grant.
     let gate = first.lifetime.arm_release_commit_gate();
     let release = std::thread::spawn(move || {
-        first.finish();
+        attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminalizes admitted attempt");
         drop(first);
     });
     wait_until(
@@ -360,6 +360,45 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
     let report_ready = report.timestamps.report_ready_ns.expect("report-ready timestamp");
     assert!(report.timestamps.outcome_terminal_ns <= cleanup_complete, "terminal outcome precedes cleanup");
     assert!(cleanup_complete <= report_ready, "cleanup precedes report-ready");
+}
+
+/// The attempt owns its admission: committing its terminal outcome releases
+/// the grant and publishes the report while the handle is still held.
+#[test]
+fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
+    let service = QueryService::new_for_admission_tests(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
+        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+    )
+    .expect("admission-only service for terminal release");
+    let backend_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        Arc::new(AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
+        .expect("admission succeeds");
+
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome commits");
+
+    let report = completion.wait_timeout(Duration::from_secs(1)).expect("the terminal commit publishes the report");
+    assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0, "the grant is released before the handle drops");
+    drop(handle);
 }
 
 /// The release fallback becomes terminal before its physical cleanup job can
@@ -573,19 +612,19 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     drop(first_executor);
     drop(second_executor);
     drop(first_context);
-    first_owner
-        .commit_terminal(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::CudfTemporaryFailure,
-            error_status: AttemptFailureStatus::Temporary,
-        })
-        .expect("failed first attempt commits its terminal outcome");
 
     // The release gate is after report sealing and before the envelope drops
     // its lane and grant. This is the cleaning window in which capacity must
-    // remain committed to the failed attempt.
+    // remain committed to the failed attempt. The terminal commit releases
+    // the admitted grant.
     let first_gate = first.lifetime.arm_envelope_release_gate();
     let first_release = std::thread::spawn(move || {
-        first.finish();
+        first_owner
+            .commit_terminal(RuntimeTerminalOutcome::Failed {
+                error_code: AttemptFailureCode::CudfTemporaryFailure,
+                error_status: AttemptFailureStatus::Temporary,
+            })
+            .expect("failed first attempt commits its terminal outcome");
         drop(first);
     });
     wait_until(
@@ -763,13 +802,13 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
     cancelled_job.await.expect("cancelled job joins").expect("cancelled GPU job completes");
     drop(cancelled_executor);
     drop(cancelled_context);
-    cancelled_owner.commit_query_error(&cancellation_error).expect("cancelled terminal commit");
 
     // The release gate is after report sealing and before the envelope drops
     // its lane and grant: the cancelled attempt must still own its capacity.
+    // The terminal commit releases the admitted grant.
     let cancelled_gate = cancelled.lifetime.arm_envelope_release_gate();
     let cancelled_release = std::thread::spawn(move || {
-        cancelled.finish();
+        cancelled_owner.commit_query_error(&cancellation_error).expect("cancelled terminal commit");
         drop(cancelled);
     });
     wait_until(
@@ -866,7 +905,6 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     drop(first.acquire_context().expect("context"));
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
-    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
 
     let domain = first.lifetime.envelope_domain_for_test().expect("device-backed domain");
     let mut terminal_usage = domain.usage().expect("domain usage sample for injected terminal state");
@@ -875,9 +913,12 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     terminal_usage.current_bytes = 3;
     terminal_usage.current_aligned_bytes = 4;
     first.lifetime.inject_terminal_domain_usage_for_test(terminal_usage);
+    // The terminal commit releases the admitted grant.
     let gate = first.lifetime.arm_release_commit_gate();
-    first.finish();
-    let release = std::thread::spawn(move || drop(first));
+    let release = std::thread::spawn(move || {
+        attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
+        drop(first);
+    });
     wait_until(
         Instant::now() + Duration::from_secs(10),
         || gate.entered(),
@@ -1790,14 +1831,14 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     .expect("resident result binds its allocation owner");
     drop(producer_runtime);
     drop(producer_context);
-    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
 
     // Stop the producer at the exact point where the report is sealed but the
     // attempt lane, grant, and permit are still held. Any ledger capacity a
-    // consumer can observe here is capacity without a lane.
+    // consumer can observe here is capacity without a lane. The terminal
+    // commit releases the admitted grant.
     let gate = producer.lifetime.arm_envelope_release_gate();
     let release = std::thread::spawn(move || {
-        producer.finish();
+        attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
         drop(producer);
     });
     wait_until(

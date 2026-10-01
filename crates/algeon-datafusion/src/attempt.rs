@@ -19,7 +19,7 @@ use std::{
     future::Future,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
     time::Instant,
 };
@@ -59,6 +59,8 @@ use crate::native_exec::admission::{QueryAdmissionSource, QueryAdmissionTicket};
 pub use crate::native_exec::{
     GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, SealedAttemptGraphClaimCalibrationSnapshot,
 };
+#[cfg(feature = "server")]
+use crate::planner::native::InvocationExecution;
 use crate::{
     backend::AlgeonGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode, Result},
@@ -138,8 +140,8 @@ struct AttemptExecutionState {
     sealed_metrics_target: Mutex<Option<(SealedAttemptMetricsTarget, FinalPlanCoverage)>>,
     /// Typed graph claim/peak rows frozen by the elected target at the same
     /// seal point as the immutable attempt report.
-    sealed_graph_claim_calibration: Mutex<Option<SealedAttemptGraphClaimCalibrationSnapshot>>,
-    sealed_native_execution: Mutex<Option<SealedAttemptNativeExecutionSnapshot>>,
+    sealed_graph_claim_calibration: OnceLock<SealedAttemptGraphClaimCalibrationSnapshot>,
+    sealed_native_execution: OnceLock<SealedAttemptNativeExecutionSnapshot>,
 }
 
 impl AttemptExecutionState {
@@ -159,25 +161,23 @@ impl AttemptExecutionState {
             let (snapshot, metrics) = target.record(report);
             let intermediate_device_to_host_materialization_count =
                 metrics.device_to_host_materializations.saturating_sub(observation.host_materialization_count());
-            *self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(snapshot);
-            *self.sealed_native_execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(SealedAttemptNativeExecutionSnapshot {
-                    attempt_id: report.attempt_id,
-                    coverage: observation,
-                    terminal_host_materialization_count: observation.host_materialization_count(),
-                    intermediate_device_to_host_materialization_count,
-                    metrics,
-                });
+            let _ = self.sealed_graph_claim_calibration.set(snapshot);
+            let _ = self.sealed_native_execution.set(SealedAttemptNativeExecutionSnapshot {
+                attempt_id: report.attempt_id,
+                coverage: observation,
+                terminal_host_materialization_count: observation.host_materialization_count(),
+                intermediate_device_to_host_materialization_count,
+                metrics,
+            });
         }
     }
 
     fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
-        self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.sealed_graph_claim_calibration.get().cloned()
     }
 
     fn sealed_native_execution_snapshot(&self) -> Option<SealedAttemptNativeExecutionSnapshot> {
-        self.sealed_native_execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.sealed_native_execution.get().cloned()
     }
 }
 
@@ -325,8 +325,8 @@ impl AlgeonAttempt {
             query_cap_bytes,
             cancellation: begin.owner.cancellation(),
             sealed_metrics_target: Mutex::new(None),
-            sealed_graph_claim_calibration: Mutex::new(None),
-            sealed_native_execution: Mutex::new(None),
+            sealed_graph_claim_calibration: OnceLock::new(),
+            sealed_native_execution: OnceLock::new(),
         });
         // The attempt object holds the minting factory, not a receiver, so
         // only caller-held receivers count toward the abandoned-report
@@ -470,11 +470,12 @@ impl AlgeonAttempt {
     }
 
     fn cancelled_error(&self, operation: &'static str) -> DataFusionError {
-        let error = self.cancellation().check(operation).expect_err("cancellation was checked after it was requested");
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(owner) = owner.as_ref() {
-            let _ = owner.commit_query_error(&error);
+        let error = match owner.as_ref() {
+            Some(owner) => commit_effective_cancellation(owner, &self.state.cancellation, operation),
+            None => self.state.cancellation.check(operation).err(),
         }
+        .expect("cancellation was checked after it was requested");
         DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
     }
 
@@ -497,39 +498,21 @@ impl AlgeonAttempt {
     }
 
     /// Plans SQL in a fresh invocation-local session state.
+    ///
+    /// DataFusion executes a CTAS input while planning the statement; that
+    /// execution admits under this attempt and shares the grant with the
+    /// statement's result, which [`Self::execute_physical_plan`] runs.
     pub fn plan_sql<'a>(
         &'a self,
         ctx: &'a SessionContext,
         sql: &'a str,
     ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
-            if self.cancellation().check("algeon_datafusion.attempt.plan_sql").is_err() {
-                return Err(self.cancelled_error("algeon_datafusion.attempt.plan_sql"));
-            }
-            self.fail_if_backend_closing("algeon_datafusion.attempt.plan_sql")?;
             let invocation = self.invocation_context(ctx);
-            let handle = self.state.handle.clone();
-            let _ = handle.record_planning_started();
-            let planned = AssertUnwindSafe(async { invocation.sql(sql).await?.create_physical_plan().await })
-                .catch_unwind()
-                .await;
-            let plan = match planned {
-                Ok(Ok(plan)) => plan,
-                Ok(Err(error)) => {
-                    self.commit_datafusion_error(&error);
-                    return Err(error);
-                },
-                Err(panic) => {
-                    self.commit(RuntimeTerminalOutcome::Panicked);
-                    resume_unwind(panic);
-                },
-            };
-            if self.cancellation().check("algeon_datafusion.attempt.plan_sql").is_err() {
-                return Err(self.cancelled_error("algeon_datafusion.attempt.plan_sql"));
-            }
-            let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
-            let _ = handle.record_planning_finished();
-            Ok(plan)
+            self.plan_logical("algeon_datafusion.attempt.plan_sql", async {
+                invocation.sql(sql).await?.create_physical_plan().await
+            })
+            .await
         })
     }
 
@@ -547,19 +530,50 @@ impl AlgeonAttempt {
     /// invocation-local session state so native fragments bind this attempt's
     /// admission handle.
     pub async fn execute_dataframe(&self, df: DataFrame) -> DataFusionResult<AttemptStream> {
-        if self.cancellation().check("algeon_datafusion.attempt.execute_dataframe").is_err() {
-            return Err(self.cancelled_error("algeon_datafusion.attempt.execute_dataframe"));
-        }
-        self.fail_if_backend_closing("algeon_datafusion.attempt.execute_dataframe")?;
-        let handle = self.state.handle.clone();
-        let _ = handle.record_planning_started();
+        let operation = "algeon_datafusion.attempt.execute_dataframe";
         let (state, logical) = df.into_parts();
         let invocation = SessionContext::new_with_state(self.invocation_state(state));
-        let planned =
-            AssertUnwindSafe(async { DataFrame::new(invocation.state(), logical).create_physical_plan().await })
-                .catch_unwind()
-                .await;
-        let plan = match planned {
+        let plan = self
+            .plan_logical(operation, async { DataFrame::new(invocation.state(), logical).create_physical_plan().await })
+            .await?;
+        self.start_stream(plan, invocation.task_ctx())
+    }
+
+    /// Executes an already-optimized physical plan in this attempt's single
+    /// invocation.
+    pub fn execute_physical_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        ctx: &SessionContext,
+    ) -> DataFusionResult<AttemptStream> {
+        self.check_startable("algeon_datafusion.attempt.execute")?;
+        if self.state.handle.disposition().is_none() {
+            let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
+        }
+        let invocation = self.invocation_context(ctx);
+        self.start_stream(plan, invocation.task_ctx())
+    }
+
+    /// Fails, after committing the matching terminal outcome, when the attempt
+    /// is cancelled or past its deadline, or when the backend is closing.
+    fn check_startable(&self, operation: &'static str) -> DataFusionResult<()> {
+        if self.cancellation().check(operation).is_err() {
+            return Err(self.cancelled_error(operation));
+        }
+        self.fail_if_backend_closing(operation)
+    }
+
+    /// Runs `planning` in this attempt's invocation and records the planning
+    /// boundary and the final plan's disposition. A planning error or panic
+    /// commits the attempt's terminal outcome.
+    async fn plan_logical(
+        &self,
+        operation: &'static str,
+        planning: impl Future<Output = DataFusionResult<Arc<dyn ExecutionPlan>>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        self.check_startable(operation)?;
+        let _ = self.state.handle.record_planning_started();
+        let plan = match AssertUnwindSafe(planning).catch_unwind().await {
             Ok(Ok(plan)) => plan,
             Ok(Err(error)) => {
                 self.commit_datafusion_error(&error);
@@ -570,41 +584,24 @@ impl AlgeonAttempt {
                 resume_unwind(panic);
             },
         };
-        if self.cancellation().check("algeon_datafusion.attempt.execute_dataframe").is_err() {
-            return Err(self.cancelled_error("algeon_datafusion.attempt.execute_dataframe"));
+        if self.cancellation().check(operation).is_err() {
+            return Err(self.cancelled_error(operation));
         }
-        let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
-        let _ = handle.record_planning_finished();
-        self.state.set_sealed_metrics_target(plan.as_ref());
-        let owner = self.take_owner()?;
-        let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), invocation.task_ctx());
-        match execute_physical_stream(plan, task_context) {
-            Ok(inner) => Ok(AttemptStream::new(inner, owner, Arc::clone(&self.state))),
-            Err(error) => {
-                commit_datafusion_error(&owner, &error, &self.state.cancellation);
-                Err(error)
-            },
-        }
+        let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
+        let _ = self.state.handle.record_planning_finished();
+        Ok(plan)
     }
 
-    /// Executes an already-optimized physical plan in this attempt's single
-    /// invocation.
-    pub fn execute_physical_plan(
+    /// Moves the terminalization authority into the one stream that executes
+    /// `plan`, then elects the plan's native root for the sealed metrics.
+    fn start_stream(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        ctx: &SessionContext,
+        task_context: Arc<TaskContext>,
     ) -> DataFusionResult<AttemptStream> {
-        if self.cancellation().check("algeon_datafusion.attempt.execute").is_err() {
-            return Err(self.cancelled_error("algeon_datafusion.attempt.execute"));
-        }
-        self.fail_if_backend_closing("algeon_datafusion.attempt.execute")?;
-        if self.state.handle.disposition().is_none() {
-            let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
-        }
-        self.state.set_sealed_metrics_target(plan.as_ref());
         let owner = self.take_owner()?;
-        let invocation = self.invocation_context(ctx);
-        let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), invocation.task_ctx());
+        self.state.set_sealed_metrics_target(plan.as_ref());
+        let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), task_context);
         match execute_physical_stream(plan, task_context) {
             Ok(inner) => Ok(AttemptStream::new(inner, owner, Arc::clone(&self.state))),
             Err(error) => {
@@ -644,8 +641,8 @@ pub(crate) fn execute_in_internal_attempt(
 ) -> DataFusionResult<SendableRecordBatchStream> {
     let attempt = AlgeonAttempt::begin(session, AttemptOptions::default(), None).map_err(DataFusionError::from)?;
     let _ = attempt.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
-    attempt.state.set_sealed_metrics_target(plan);
     let owner = attempt.take_owner()?;
+    attempt.state.set_sealed_metrics_target(plan);
     let mut session_config = task_context.session_config().clone();
     attempt.invocation.install(&mut session_config);
     let task_context = Arc::new(TaskContext::new(
@@ -724,11 +721,7 @@ fn disposition_for(disposition: FinalPlanDisposition) -> AttemptDisposition {
 /// closed terminal outcome. Only native errors contribute a bounded message;
 /// adapter-only errors use the deliberately text-free fallback.
 fn commit_datafusion_error(owner: &AttemptOwner, error: &DataFusionError, cancellation: &AttemptCancellation) {
-    if cancellation.is_cancelled() || cancellation.is_expired() {
-        let cancellation_error = cancellation
-            .check("algeon_datafusion.attempt.terminal_error")
-            .expect_err("an effective cancellation must produce a terminal error");
-        let _ = owner.commit_query_error(&cancellation_error);
+    if commit_effective_cancellation(owner, cancellation, "algeon_datafusion.attempt.terminal_error").is_some() {
         return;
     }
     match error.find_algeon_error() {
@@ -737,6 +730,19 @@ fn commit_datafusion_error(owner: &AttemptOwner, error: &DataFusionError, cancel
             let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
         },
     }
+}
+
+/// Commits an effective cancellation or deadline as the attempt's terminal
+/// error, so the report keeps its bounded reason, and returns that error.
+/// `None` means the attempt is neither cancelled nor past its deadline.
+fn commit_effective_cancellation(
+    owner: &AttemptOwner,
+    cancellation: &AttemptCancellation,
+    operation: &'static str,
+) -> Option<QueryError> {
+    let error = cancellation.check(operation).err()?;
+    let _ = owner.commit_query_error(&error);
+    Some(error)
 }
 
 fn commit_adapter_error(owner: &AttemptOwner, error: &Error) {
@@ -802,12 +808,11 @@ impl AttemptStream {
     /// deadline expiry retains its bounded reason in the immutable report.
     fn finish_cancelled(&mut self) {
         self.terminal = true;
-        let error = self
-            .state
-            .cancellation
-            .check("algeon_datafusion.attempt.result_drain")
-            .expect_err("an effective cancellation must produce a terminal error");
-        let _ = self.owner.commit_query_error(&error);
+        let _ = commit_effective_cancellation(
+            &self.owner,
+            &self.state.cancellation,
+            "algeon_datafusion.attempt.result_drain",
+        );
         drop(self.inner.take());
     }
 
@@ -904,118 +909,82 @@ impl std::fmt::Debug for AttemptStream {
     }
 }
 
+/// Server hooks for attempt phases before, or instead of, a result stream.
+///
+/// An attempt commits one terminal outcome. While [`AlgeonAttempt`] still
+/// holds its terminalization authority, the committing hooks below commit
+/// through it; once that authority has moved into a result stream they
+/// commit nothing and the stream is the only committer. The attempt owner
+/// rejects a later terminal commit with `DoubleTerminalization`, which these
+/// hooks ignore, so the first committed outcome stands.
 #[cfg(feature = "server")]
-pub(crate) mod server_internal {
-    use datafusion::{
-        common::{DataFusionError, Result as DataFusionResult},
-        physical_plan::ExecutionPlan,
-        prelude::SessionContext,
-    };
-    use query_engine::observability::RuntimeTerminalOutcome;
-
-    use super::{AlgeonAttempt, commit_adapter_error, disposition_for};
-    use crate::{
-        error::Error,
-        planner::{classify_final_plan, native::InvocationExecution},
-    };
-
-    /// Server hooks for attempt phases before, or instead of, a result stream.
+impl AlgeonAttempt {
+    /// Records that planning started and returns a session context bound to
+    /// this attempt, whose planning copies `execution` into every GPU node.
     ///
-    /// An attempt commits one terminal outcome. While [`AlgeonAttempt`] still
-    /// holds its terminalization authority, the committing hooks below commit
-    /// through it; once that authority has moved into a result stream they
-    /// commit nothing and the stream is the only committer. The attempt owner
-    /// rejects a later terminal commit with `DoubleTerminalization`, which
-    /// these hooks ignore, so the first committed outcome stands.
-    pub trait AlgeonAttemptServerExt {
-        /// Records that planning started and returns a session context bound to
-        /// this attempt, whose planning copies `execution` into every GPU node.
-        ///
-        /// Fails, after committing the matching terminal outcome, when the
-        /// attempt is already cancelled or past its deadline, or when the
-        /// backend is closing.
-        fn planning_context(
-            &self,
-            ctx: &SessionContext,
-            execution: InvocationExecution,
-        ) -> DataFusionResult<SessionContext>;
-
-        /// Commits the terminal outcome for a DataFusion planning error.
-        ///
-        /// An effective cancellation or deadline takes precedence over `error`.
-        /// Otherwise an Algeon error carried by `error` is committed as by
-        /// [`planning_failed_adapter`](Self::planning_failed_adapter), and any
-        /// other error commits a text-free DataFusion fallback summary.
-        fn planning_failed(&self, error: &DataFusionError);
-
-        /// Commits the terminal outcome for an Algeon DataFusion adapter planning error.
-        ///
-        /// An effective cancellation or deadline takes precedence over `error`.
-        /// Otherwise a `Cancelled` error commits `Cancelled`, an error whose
-        /// source is a native query error commits that error, and any other
-        /// error commits a text-free DataFusion fallback summary.
-        fn planning_failed_adapter(&self, error: &Error);
-
-        /// Records the final physical plan's execution disposition and the end
-        /// of planning without committing a terminal outcome.
-        fn physical_planning_finished(&self, plan: &dyn ExecutionPlan);
-
-        /// Cancels the attempt's cancellation token and commits `Cancelled`.
-        fn cancel_before_stream(&self);
-
-        /// Commits `Succeeded` for a request that finishes without a result
-        /// stream.
-        fn complete_without_result_stream(&self);
+    /// Fails, after committing the matching terminal outcome, when the
+    /// attempt is already cancelled or past its deadline, or when the backend
+    /// is closing.
+    pub(crate) fn planning_context(
+        &self,
+        ctx: &SessionContext,
+        execution: InvocationExecution,
+    ) -> DataFusionResult<SessionContext> {
+        self.check_startable("algeon_datafusion.attempt.flight_planning")?;
+        let _ = self.state.handle.record_planning_started();
+        self.invocation.set_execution(execution);
+        Ok(self.invocation_context(ctx))
     }
 
-    impl AlgeonAttemptServerExt for AlgeonAttempt {
-        fn planning_context(
-            &self,
-            ctx: &SessionContext,
-            execution: InvocationExecution,
-        ) -> DataFusionResult<SessionContext> {
-            if self.cancellation().check("algeon_datafusion.attempt.flight_planning").is_err() {
-                return Err(self.cancelled_error("algeon_datafusion.attempt.flight_planning"));
-            }
-            self.fail_if_backend_closing("algeon_datafusion.attempt.flight_planning")?;
-            let _ = self.state.handle.record_planning_started();
-            self.invocation.set_execution(execution);
-            Ok(self.invocation_context(ctx))
-        }
+    /// Commits the terminal outcome for a DataFusion planning error.
+    ///
+    /// An effective cancellation or deadline takes precedence over `error`.
+    /// Otherwise an Algeon error carried by `error` is committed as by
+    /// [`Self::planning_failed_adapter`], and any other error commits a
+    /// text-free DataFusion fallback summary.
+    pub(crate) fn planning_failed(&self, error: &DataFusionError) {
+        self.commit_datafusion_error(error);
+    }
 
-        fn planning_failed(&self, error: &DataFusionError) {
-            self.commit_datafusion_error(error);
+    /// Commits the terminal outcome for an Algeon DataFusion adapter planning
+    /// error.
+    ///
+    /// An effective cancellation or deadline takes precedence over `error`.
+    /// Otherwise a `Cancelled` error commits `Cancelled`, an error whose source
+    /// is a native query error commits that error, and any other error commits
+    /// a text-free DataFusion fallback summary.
+    pub(crate) fn planning_failed_adapter(&self, error: &Error) {
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owner.as_ref()
+            && commit_effective_cancellation(
+                owner,
+                &self.state.cancellation,
+                "algeon_datafusion.attempt.terminal_error",
+            )
+            .is_none()
+        {
+            commit_adapter_error(owner, error);
         }
+    }
 
-        fn planning_failed_adapter(&self, error: &Error) {
-            let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(owner) = owner.as_ref() {
-                if self.state.cancellation.is_cancelled() || self.state.cancellation.is_expired() {
-                    let cancellation_error = self
-                        .state
-                        .cancellation
-                        .check("algeon_datafusion.attempt.terminal_error")
-                        .expect_err("an effective cancellation must produce a terminal error");
-                    let _ = owner.commit_query_error(&cancellation_error);
-                } else {
-                    commit_adapter_error(owner, error);
-                }
-            }
-        }
+    /// Records the final physical plan's execution disposition and the end of
+    /// planning without committing a terminal outcome.
+    pub(crate) fn physical_planning_finished(&self, plan: &dyn ExecutionPlan) {
+        let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+        let _ = self.state.handle.record_planning_finished();
+    }
 
-        fn physical_planning_finished(&self, plan: &dyn ExecutionPlan) {
-            let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
-            let _ = self.state.handle.record_planning_finished();
-        }
+    /// Cancels the attempt's cancellation token and commits `Cancelled`.
+    pub(crate) fn cancel_before_stream(&self) {
+        self.state.cancellation.cancel();
+        self.commit(RuntimeTerminalOutcome::Cancelled);
+    }
 
-        fn cancel_before_stream(&self) {
-            self.state.cancellation.cancel();
-            self.commit(RuntimeTerminalOutcome::Cancelled);
-        }
-
-        fn complete_without_result_stream(&self) {
-            self.commit(RuntimeTerminalOutcome::Succeeded);
-        }
+    /// Commits `Succeeded` for a request that finishes without a result
+    /// stream, such as DDL. A CTAS input that ran during planning shares the
+    /// attempt's grant, which the attempt releases once this outcome commits.
+    pub(crate) fn complete_without_result_stream(&self) {
+        self.commit(RuntimeTerminalOutcome::Succeeded);
     }
 }
 

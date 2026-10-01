@@ -9,10 +9,13 @@ description: "How Algeon admits one bounded GPU attempt for an executable native
 Algeon admits GPU work once per native query attempt: one admission, one
 selected device, and one immutable memory grant. Embedded DataFusion sessions
 and the Flight SQL server share the same process-scoped `AlgeonGpuBackend`,
-`QueryService`, bounded queue, and per-device ledgers. Planning may create an
-attempt lifecycle and a lazy admission ticket, but it does not reserve a GPU
-slot. Admission happens when execution first needs the device. `EXPLAIN` does
-not admit or execute the plan.
+`QueryService`, bounded queue, and per-device ledgers. Each attempt has one
+lazy admission ticket. Planning does not reserve a GPU slot; the ticket claims
+admission when the attempt's first native stream is polled. Every later native
+fragment of the attempt, such as the result of a CTAS whose input already ran,
+reuses that admission and grant. The grant is released once the attempt is
+terminal and no fragment is running. `EXPLAIN` does not admit or execute the
+plan.
 
 Admission governs device memory. Host memory remains a DataFusion `MemoryPool`
 concern.
@@ -36,7 +39,7 @@ QueryPlan
 | `DeviceLedger` | The per-device integer accounting authority for immutable grants, resident cache charges, and attempt slots. |
 | `MemoryGrant` | The service-configured byte cap committed to one attempt. It becomes the ceiling of the query allocation domain. |
 | `AdmissionEnvelope` | The physical resources built around a committed grant: attempt lane, root stream, allocation domain, and worker scope. |
-| `QueryHandle` | The published admission result used by execution. Releasing it returns the attempt resources after cleanup completes. |
+| `QueryHandle` | The published admission result used by execution. The attempt releases it when it reaches its terminal outcome; the attempt resources return after cleanup completes. |
 
 ## From capability validation to admission
 

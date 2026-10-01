@@ -15,7 +15,7 @@ use super::{
     admission_rejection, record_admission_lifecycle,
 };
 use crate::{
-    attempt::{AttemptAdmission, AttemptLifecycleError, AttemptReportPublisher},
+    attempt::{AdmittedGrantRelease, AttemptAdmission, AttemptLifecycleError, AttemptReportPublisher},
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptAdmissionWaitFact,
         AttemptFailureOperation, AttemptFailureSummary, AttemptId, AttemptTerminalCommit, QueryCleanupSealDelivery,
@@ -518,6 +518,13 @@ impl QueryCompletion {
 
     pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
         self.observation_owner.clone()
+    }
+
+    /// Ties the grant's release to the claimed attempt's terminal outcome.
+    /// Returns whether the outcome is already terminal, so the caller
+    /// requests the release itself.
+    pub(super) fn bind_grant_release(&self, release: Weak<dyn AdmittedGrantRelease>) -> bool {
+        self.attempt_admission.as_ref().is_some_and(|admission| admission.bind_grant_release(release))
     }
 
     /// Samples the query-relative attempt clock only when this completion

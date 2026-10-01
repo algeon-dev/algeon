@@ -26,6 +26,7 @@ use crate::runtime::attempt_domain::AttemptAllocationDomain;
 #[cfg(test)]
 use crate::runtime::gpu::DeviceWorkerScope;
 use crate::{
+    attempt::AdmittedGrantRelease,
     observability::AttemptId,
     runtime::{
         AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
@@ -196,7 +197,10 @@ impl QueryHandleLifetime {
             );
         let attempt_auxiliary_slots = AttemptAuxiliarySlots::new(device_ordinal, attempt_auxiliary_capacity);
         let service_epoch_user = service.service_epoch.retain_existing_user();
-        Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
+        let mut attempt_already_terminal = false;
+        let lifetime = Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
+            let release: Weak<dyn AdmittedGrantRelease> = Weak::<QueryHandleLifetime>::clone(weak);
+            attempt_already_terminal = completion.bind_grant_release(release);
             let weak_lifetime = Weak::clone(weak);
             let on_query_idle = Arc::new(move || {
                 if let Some(lifetime) = weak_lifetime.upgrade() {
@@ -233,7 +237,11 @@ impl QueryHandleLifetime {
                 #[cfg(test)]
                 root_context_binding_gate: Mutex::new(None),
             }
-        })
+        });
+        if attempt_already_terminal {
+            lifetime.request_release();
+        }
+        lifetime
     }
 
     fn lock_state(&self) -> MutexGuard<'_, LifetimeState> {
@@ -645,6 +653,12 @@ impl QueryHandleLifetime {
 
     pub(super) fn service(&self) -> Result<Arc<QueryServiceInner>> {
         self.with_resources(|resources| Ok(Arc::clone(&resources.service)))
+    }
+}
+
+impl AdmittedGrantRelease for QueryHandleLifetime {
+    fn request_release(&self) {
+        QueryHandleLifetime::request_release(self);
     }
 }
 

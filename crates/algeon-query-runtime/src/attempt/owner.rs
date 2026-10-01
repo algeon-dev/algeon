@@ -8,7 +8,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync,
-    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, atomic::Ordering},
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, atomic::Ordering},
     task::{Context, Poll, Waker},
     thread,
     time::{Duration, Instant},
@@ -268,11 +268,23 @@ impl CompletionState {
     }
 }
 
+/// Releases the grant of an admitted attempt.
+///
+/// The attempt owns its admission: every native fragment it executes shares
+/// the one grant, so the grant is released when the attempt's outcome turns
+/// terminal, not when one fragment's stream ends. The release itself waits
+/// for fragments still running.
+pub(crate) trait AdmittedGrantRelease: Send + Sync {
+    fn request_release(&self);
+}
+
 /// The attempt lifecycle and its completion delivery under one lock, so the
 /// report-ready boundary and the report a receiver sees cannot disagree.
 struct AttemptState {
     lifecycle: AttemptLifecycle,
     completion: CompletionState,
+    /// Bound when admission publishes a grant; taken by the terminal commit.
+    admitted_release: Option<Weak<dyn AdmittedGrantRelease>>,
 }
 
 /// State shared by the attempt core and its completion receivers. Receivers
@@ -343,6 +355,16 @@ impl AttemptCore {
 
     fn monotonic_ns(&self) -> u64 {
         self.clock.monotonic_ns()
+    }
+
+    /// Requests the release of the admitted grant once the outcome is
+    /// terminal. The hook is taken under the attempt lock and called after
+    /// it is released.
+    fn release_admitted_grant(&self) {
+        let release = self.shared.lock().admitted_release.take().and_then(|release| release.upgrade());
+        if let Some(release) = release {
+            release.request_release();
+        }
     }
 
     fn register_sealed_report_sink<F>(&self, sink: F)
@@ -610,6 +632,7 @@ impl AttemptOwner {
                     wakers: Vec::new(),
                     receivers: 0,
                 },
+                admitted_release: None,
             }),
             changed: Condvar::new(),
         });
@@ -742,8 +765,12 @@ impl AttemptOwner {
             },
             // An admission claim holds the finalizer, or a not-admitted
             // commit already consumed it. Either way the terminal outcome is
-            // recorded and its holder publishes the report.
-            Err(AttemptLifecycleError::FinalizationUnavailable) => Ok(()),
+            // recorded and its holder publishes the report; an admitted
+            // claim publishes after its grant is released.
+            Err(AttemptLifecycleError::FinalizationUnavailable) => {
+                self.0.core.release_admitted_grant();
+                Ok(())
+            },
             Err(error) => Err(error),
         }
     }
@@ -1027,6 +1054,18 @@ impl AttemptAdmission {
 
     pub(crate) fn is_admitted(&self) -> bool {
         self.0.0.lock_lifecycle().admission_fact().is_some()
+    }
+
+    /// Ties the release of this admission's grant to the attempt's terminal
+    /// outcome. Returns whether the outcome is already terminal, in which case
+    /// the caller requests the release itself.
+    pub(crate) fn bind_grant_release(&self, release: Weak<dyn AdmittedGrantRelease>) -> bool {
+        let mut state = self.0.0.shared.lock();
+        if state.lifecycle.terminal_outcome().is_some() {
+            return true;
+        }
+        state.admitted_release = Some(release);
+        false
     }
 
     pub(crate) fn terminalize_for_release(

@@ -71,8 +71,9 @@ defined here.
   planning-owned evidence for the device capabilities and exact plan scopes
   admitted for one attempt. It carries no memory estimate. See
   [From capability validation to admission](../design/admission.mdx#from-capability-validation-to-admission).
-- `Admission ticket`: a planner-created, lazy admission request; device and
-  grant acquisition wait until the first native stream is polled. See
+- `Admission ticket`: an attempt's one lazy admission request. It claims a
+  device and grant when the attempt's first native stream is polled, and every
+  later native fragment of the attempt reuses that grant. See
   [Admission & Memory Governance](../design/admission.mdx).
 - `Grant (`MemoryGrant`)`: the immutable device-byte budget an attempt
   receives at commit. It is the ceiling of the attempt's allocation domain and

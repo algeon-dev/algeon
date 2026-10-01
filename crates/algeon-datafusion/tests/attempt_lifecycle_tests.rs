@@ -894,14 +894,37 @@ async fn ctas_inner_plan_runs_inside_one_attempt() {
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some());
 
-    // Planned inside an attempt, as the Flight DDL path runs it, the inner
-    // plan admits under that attempt's ticket and begins no internal attempt.
+    // Planned inside an attempt, the inner plan admits under that attempt's
+    // ticket and begins no internal attempt. The admission belongs to the
+    // attempt, not to the inner plan's stream: the attempt stays live until
+    // the statement's own result stream ends.
     let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
-    attempt.plan_sql(&ctx, &format!("CREATE TABLE attempt_totals AS {NATIVE_AGGREGATE_SQL}")).await.unwrap();
+    let plan = attempt.plan_sql(&ctx, &format!("CREATE TABLE attempt_totals AS {NATIVE_AGGREGATE_SQL}")).await.unwrap();
+    assert!(!completion.is_ready(), "the inner plan's end does not end the attempt");
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    drop(stream);
     let report = completion.await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "the inner plan admits under the attempt");
     assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 2);
     assert!(backend.take_abandoned_attempt_reports(8).is_empty());
+    let rows = ctx.sql("SELECT COUNT(*) FROM attempt_totals").await.unwrap().collect().await.unwrap();
+    assert_eq!(rows[0].num_rows(), 1, "the table exists after the statement succeeds");
+
+    // A cancellation between planning and the result reaches the report.
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan =
+        attempt.plan_sql(&ctx, &format!("CREATE TABLE cancelled_totals AS {NATIVE_AGGREGATE_SQL}")).await.unwrap();
+    attempt.cancellation().cancel();
+    let error = attempt.execute_physical_plan(plan, &ctx).err();
+    drop(error);
+    drop(attempt);
+    let report = completion.await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled), "{:?}", report.outcome);
+    assert!(report.admission.is_some(), "the cancelled attempt had admitted its inner plan");
 }

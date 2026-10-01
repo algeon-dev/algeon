@@ -104,10 +104,12 @@ compatibility belong in `crates/algeon-query-engine`.
   DataFusion execution creates an internal attempt at its execution boundary;
   component runtimes may be used independently.
 - Each native fragment runs one compiled schedule. An attempt owns one
-  admission claim and one immutable grant; all native fragments share that
-  grant, and deferred refinement stays inside it. A second admission claim
-  returns a typed error before queue or ledger mutation. Keep one authoritative
-  ledger per device.
+  admission claim and one immutable grant. Every native fragment the attempt
+  executes shares that grant, including sequential executions such as a CTAS
+  input and its result, and deferred refinement stays inside it. The grant is
+  released once the attempt is terminal and no fragment is running. A second
+  admission claim returns a typed error before queue or ledger mutation. Keep
+  one authoritative ledger per device.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
 - Keep one truth source; consolidate redundant constructors, flags, matchers, or ledgers within the requested change, preserving supported callers and contracts.
 - Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
