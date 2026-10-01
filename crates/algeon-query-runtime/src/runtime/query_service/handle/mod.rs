@@ -154,8 +154,7 @@ impl QueryHandle {
     }
 
     fn context_stream_acquire_deadline(&self, cancellation: &ExecutionCancellation) -> Instant {
-        let configured = Instant::now().checked_add(self.queue_bounds.max_wait).unwrap_or_else(Instant::now);
-        cancellation.deadline().map_or(configured, |deadline| deadline.min(configured))
+        self.queue_bounds.wait_deadline(Instant::now(), cancellation.deadline())
     }
 
     /// Acquires an admitted execution context from the service stream pool.

@@ -13,6 +13,20 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
 };
 
+use super::{
+    super::{
+        admission::{
+            AdmissionRequest, AdmissionState, AdmissionTicket, DeviceAdmissionEntries, PendingPreflightReservation,
+            PlacedQuery, QueryCompletion, admission_cancellation_or_deadline_error, admission_queue_full_error,
+            finish_removed_request_error, service_overloaded_error,
+        },
+        admission_rejection,
+        handle::{QueryHandle, QueryHandleLifetime},
+        record_admission_lifecycle,
+    },
+    QueryService, QueryServiceInner,
+    api::{AdmissionObservation, QueryAdmissionRequest},
+};
 use crate::{
     attempt::AttemptLifecycleError,
     observability::{
@@ -34,28 +48,6 @@ use crate::{
     },
 };
 
-// `ExecutionCancellation` is intentionally a lightweight shared flag. The
-// blocking queue has no caller-owned wake handle, so bounded waits observe it
-// at this small fixed interval instead of retaining a stale provisional grant
-// until the full queue deadline.
-const ADMISSION_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-use super::{
-    super::{
-        admission::{
-            AdmissionRequest, AdmissionState, AdmissionTicket, DeviceAdmissionEntries, PendingPreflightReservation,
-            PlacedQuery, QueryCompletion, admission_cancellation_or_deadline_error, admission_queue_full_error,
-            finish_removed_request_error, service_overloaded_error,
-        },
-        admission_rejection,
-        handle::{QueryHandle, QueryHandleLifetime},
-        record_admission_lifecycle,
-    },
-    QueryService, QueryServiceInner,
-    api::{AdmissionObservation, QueryAdmissionRequest},
-};
-
-mod admit;
 mod enqueue;
 
 impl QueryService {
@@ -450,7 +442,9 @@ impl QueryService {
     /// member, worker scope; while the mutex is released, then publishes
     /// admission. Any failure restores the provisional count exactly, releases
     /// every envelope component in reverse order outside the mutex, and
-    /// finishes the request with the primary error.
+    /// finishes the request with the primary error. The envelope is built on
+    /// the calling thread, which only the test-hooks entries allow.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(in crate::runtime::query_service) fn commit_placed_admission(
         &self,
         commit: PlacedAdmissionCommit,
@@ -460,10 +454,11 @@ impl QueryService {
         self.finish_placed_commit(envelope, publication, &probe)
     }
 
-    /// [`Self::commit_placed_admission`] for an async caller. The envelope's
-    /// root stream, allocation domain, and root member are built in a
-    /// context-setup job on the placed device's GPU pool, so the caller's
-    /// Tokio worker neither waits on the stream pool nor creates CUDA state.
+    /// The production commit tail: as `commit_placed_admission`, but
+    /// the envelope's root stream, allocation domain, and root member are
+    /// built in a context-setup job on the placed device's GPU pool, so the
+    /// caller's Tokio worker neither waits on the stream pool nor creates CUDA
+    /// state.
     pub(in crate::runtime::query_service) async fn commit_placed_admission_async(
         &self,
         commit: PlacedAdmissionCommit,

@@ -1,4 +1,5 @@
-//! Waiter-based and async admission entry points.
+//! Admission entry points. Each enqueues one [`QueryAdmissionWaiter`] and
+//! drives it to an admitted handle or a structured rejection.
 
 use query_planning::error::Result;
 use tokio::time;
@@ -22,6 +23,35 @@ use crate::runtime::{
 };
 
 impl QueryService {
+    #[cfg(test)]
+    pub(crate) fn admit_query(&self) -> Result<QueryHandle> {
+        self.admit_query_with_request(QueryAdmissionRequest::test_attempt())
+    }
+
+    /// Admits a query on the calling thread, which parks until the request
+    /// is admitted or rejected.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
+        self.enqueue_admission_with_request_and_permits(request, None, None, None)?.admit_blocking()
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn admit_query_with_backend_permits(
+        &self,
+        request: QueryAdmissionRequest,
+        observation_permit: ObservationPermit,
+        gpu_resource_permit: GpuResourcePermit,
+        completion_dispatcher: ObservationCompletionDispatcher,
+    ) -> Result<QueryHandle> {
+        self.enqueue_admission_with_request_and_permits(
+            request,
+            Some(observation_permit),
+            Some(gpu_resource_permit),
+            Some(completion_dispatcher),
+        )?
+        .admit_blocking()
+    }
+
     /// Enqueues a query admission request without blocking the caller.
     ///
     /// Call [`QueryAdmissionWaiter::try_admit`] until it returns a handle. If
@@ -32,11 +62,6 @@ impl QueryService {
     }
 
     /// Admits a query asynchronously without parking a blocking thread.
-    ///
-    /// This is the async counterpart to [`Self::admit_query`]. It uses the
-    /// same queue, timeout, and overload error taxonomy, but waits on an
-    /// event-driven wakeup instead of polling
-    /// [`QueryAdmissionWaiter::try_admit`].
     #[cfg(test)]
     pub(crate) async fn admit_async(&self) -> Result<QueryHandle> {
         self.admit_async_with_request(QueryAdmissionRequest::test_attempt()).await
@@ -148,8 +173,7 @@ impl QueryService {
             required_capabilities,
             candidate_ordinals,
         } = prepared;
-        let configured_deadline = requested_at.checked_add(self.inner.queue_bounds.max_wait).unwrap_or(requested_at);
-        let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
+        let deadline = self.inner.queue_bounds.wait_deadline(requested_at, queue_deadline);
         let pending = match self.reserve_pending_preflight_for_request(
             &observation,
             admission_request_id,
@@ -206,6 +230,7 @@ impl QueryService {
             deadline,
             execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
+            device_state_validated: false,
         };
         let terminal = request.terminal.clone();
         {

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use query_planning::{
     capability::AggregateStrategyExecutionOptions,
@@ -28,6 +28,14 @@ impl QueueBounds {
     /// makes the runtime controller the sole owner of queue defaults.
     pub(crate) const fn canonical_default() -> Self {
         Self { max_waiters: 64, max_wait: Duration::from_secs(30) }
+    }
+
+    /// The latest instant a wait that starts at `start` may last: `max_wait`
+    /// after `start`, or the caller's `requested` deadline when that is
+    /// earlier.
+    pub(crate) fn wait_deadline(&self, start: Instant, requested: Option<Instant>) -> Instant {
+        let configured = start.checked_add(self.max_wait).unwrap_or(start);
+        requested.map_or(configured, |requested| requested.min(configured))
     }
 
     pub(super) fn validate(&self) -> Result<()> {

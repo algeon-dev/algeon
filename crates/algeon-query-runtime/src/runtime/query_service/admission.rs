@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "test-hooks"))]
+use std::pin::pin;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     mem,
@@ -14,6 +16,8 @@ use super::{
     PendingDeviceSlotNotifications, QueryActivityLease, QueryHandle, QueryService, QueryServiceInner,
     admission_rejection, record_admission_lifecycle,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::deadline::block_until;
 use crate::{
     attempt::{AdmittedGrantRelease, AttemptAdmission, AttemptHandle, AttemptLifecycleError, AttemptReportPublisher},
     observability::{
@@ -31,11 +35,10 @@ use crate::{
 /// Cancel-safe queued admission request.
 ///
 /// Dropping this value before admission removes the queued request from the
-/// service queue. This lets async servers wait without parking a blocking
-/// thread inside [`QueryService::admit_query`].
+/// service queue. Every admission entry drives one waiter: the async entry
+/// awaits its wakeups, and the test-hooks blocking entry parks on them.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryAdmissionWaiter {
+pub(crate) struct QueryAdmissionWaiter {
     pub(super) service: QueryService,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
@@ -429,6 +432,10 @@ pub(super) struct AdmissionRequest {
     /// Terminal result recorded by queue maintenance before it drops this
     /// request's completion payload outside the admission mutex.
     pub(super) terminal: QueuedAdmissionTerminal,
+    /// Whether a queue sweep has checked this request against device health
+    /// and resident capacity since it entered the queue. Later checks follow
+    /// the ledger transitions that can change the answer.
+    pub(super) device_state_validated: bool,
 }
 
 /// One immutable capability/executability requirement resolved for one
@@ -805,9 +812,8 @@ impl QueryAdmissionWaiter {
     /// or a compatible device's current capacity/health constraint. Queue
     /// timeout and service close remove the request and return a structured
     /// error.
-    #[doc(hidden)]
     #[cfg(any(test, feature = "test-hooks"))]
-    pub fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
+    pub(crate) fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
         match self.try_place()? {
             Some(commit) => self.service.commit_placed_admission(commit).map(Some),
             None => Ok(None),
@@ -1094,6 +1100,37 @@ impl QueryAdmissionWaiter {
     /// Remaining time before this queued admission reaches the service timeout.
     pub(crate) fn remaining_wait(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Completes this queued admission on the calling thread.
+    ///
+    /// Each pass is one [`Self::try_admit`]; between passes the thread parks
+    /// until an admission notification, cancellation, or the earlier of this
+    /// request's and its cancellation's deadlines, the same events that end
+    /// an async wait.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn admit_blocking(mut self) -> Result<QueryHandle> {
+        let service = self.service.clone();
+        loop {
+            let notified = service.inner.admission_notify.notified();
+            let mut notified = pin!(notified);
+            notified.as_mut().enable();
+            if let Some(handle) = self.try_admit()? {
+                return Ok(handle);
+            }
+            let wake_deadline =
+                self.execution_cancellation.deadline().map_or(self.deadline, |deadline| deadline.min(self.deadline));
+            let _ = block_until(
+                async {
+                    tokio::select! {
+                        biased;
+                        () = notified.as_mut() => {},
+                        () = self.execution_cancellation.cancel_requested() => {},
+                    }
+                },
+                Some(wake_deadline),
+            );
+        }
     }
 }
 

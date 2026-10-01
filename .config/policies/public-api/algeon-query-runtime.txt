@@ -1880,7 +1880,6 @@ pub struct query_runtime::runtime::GpuBackendSession
 impl query_runtime::runtime::GpuBackendSession
 pub fn query_runtime::runtime::GpuBackendSession::admission_snapshot(&self) -> query_planning::error::Result<query_runtime::runtime::QueryServiceAdmissionSnapshot>
 pub async fn query_runtime::runtime::GpuBackendSession::admit_async_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
-pub fn query_runtime::runtime::GpuBackendSession::admit_query_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
 pub fn query_runtime::runtime::GpuBackendSession::attempt_counters_snapshot(&self) -> query_runtime::attempt::AttemptBackendCountersSnapshot
 pub fn query_runtime::runtime::GpuBackendSession::backend_metrics_snapshot(&self) -> query_runtime::runtime::BackendMetricsSnapshot
 pub fn query_runtime::runtime::GpuBackendSession::begin_attempt(&self, query_runtime::attempt::BeginAttemptRequest) -> query_planning::error::Result<query_runtime::attempt::AttemptBegin>
