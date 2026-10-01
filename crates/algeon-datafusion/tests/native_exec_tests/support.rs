@@ -439,8 +439,7 @@ pub(super) use super::support_core::{
     adapter_error, ilike_filter_over_scan_with_pattern, ilike_filter_plan, ilike_filter_plan_with_pattern, int32_array,
     int64_array, join_aggregate_sort_limit_sql_plan, parquet_file_schema, parquet_scan,
     parquet_scan_with_target_partitions, unique_temp_dir, write_batch, write_ilike_parquet_file,
-    write_ilike_parquet_file_with_labels, write_join_left_parquet_file, write_join_right_parquet_file,
-    write_parquet_file,
+    write_ilike_parquet_file_with_labels, write_parquet_file,
 };
 
 pub(super) fn null_aware_anti_join_left_schema() -> Arc<Schema> {
@@ -480,4 +479,48 @@ pub(super) fn write_null_aware_anti_join_right_parquet_file(path: &Path, keys: V
 
 pub(super) fn ilike_filter_over_scan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     ilike_filter_over_scan_with_pattern(scan, "al%".to_string())
+}
+
+pub(super) fn write_join_left_parquet_file(path: &Path) {
+    let schema = join_left_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 20, 30])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn join_left_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_payload", DataType::Int32, false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]))
+}
+
+pub(super) fn write_join_right_parquet_file(path: &Path) {
+    let schema = join_right_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![10, 10, 10])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn join_right_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_payload", DataType::Int32, false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]))
 }

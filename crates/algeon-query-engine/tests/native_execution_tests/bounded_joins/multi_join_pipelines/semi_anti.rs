@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use query_engine::{
-    admission::bounded_join_unsupported_shape_facts, expr::ColumnRef, rapids_backend::rapids_analysis_context,
+    admission::{admit, bounded_join_unsupported_shape_facts},
+    expr::ColumnRef,
+    rapids_backend::rapids_analysis_context,
     runtime::ExecutionCancellation,
 };
 
@@ -54,8 +56,8 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         Arc::clone(&left_only_join_schema),
     );
     let plan = builder.finish_with_host_sink(anti_join);
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -300,7 +302,8 @@ fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
     let detail_schema = write_shared_leaf_detail_parquet(&detail_path, SHARED_LEAF_ROWS);
     let supplier_schema = write_shared_leaf_supplier_parquet(&supplier_path);
     let plan = shared_leaf_inner_probe_anti_build_plan(&detail_path, &detail_schema, &supplier_path, &supplier_schema);
-    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = backend_context_with_grant(SHARED_LEAF_GRANT_BYTES);
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
@@ -338,9 +341,11 @@ fn bounded_native_query_fails_typed_when_a_shared_leaf_consumer_cannot_shrink_be
     // probe output fit, so the cap rejection surfaces with its typed cause.
     let context = backend_context_with_grant(3 * 1024 * 1024_u64);
     let admitted = context.admit_plan(&plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("the shared leaf consumers cannot fit under the cap");
@@ -388,9 +393,15 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
         )
         .unwrap();
     let admitted = handle.acquire_context_with_cancellation(cancellation).unwrap();
+    let admitted_plan = admit_query_plan(
+        &plan,
+        admitted.context().statistical_aggregate_execution_mode(),
+        admitted.context().planning_policy(),
+    )
+    .unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("the deadline elapses while the leaf streams");

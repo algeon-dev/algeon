@@ -205,20 +205,11 @@ fn format_semijoin_reduction_candidate(candidate: &SemijoinReductionCandidateDia
         candidate.key_mappings.iter().map(format_semijoin_key_mapping).collect::<Vec<_>>().join(";")
     };
     let cost_gate = candidate.cost_gate.as_ref().map(format_semijoin_cost_gate).unwrap_or_else(|| "none".to_string());
-    let admission_decision = candidate
-        .admission_decision
-        .as_ref()
-        .map(|decision| format!("{decision:?}"))
-        .unwrap_or_else(|| "none".to_string());
-    let original_admitted =
-        candidate.original_admitted.map_or_else(|| "not_evaluated".to_string(), |value| value.to_string());
-    let rewritten_admitted =
-        candidate.rewritten_admitted.map_or_else(|| "not_evaluated".to_string(), |value| value.to_string());
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
 
     format!(
-        "rule={},candidate_node_id={},before_root_node_id={},after_root_node_id={},crossed_join_node_ids={},target_subtree_id={},key_mappings={},cost_threshold_multiplier={},admission_mode={:?},cost_gate={},admission_decision={},original_admitted={},rewritten_admitted={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},before_root_node_id={},after_root_node_id={},crossed_join_node_ids={},target_subtree_id={},key_mappings={},cost_threshold_multiplier={},cost_gate={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.before_root_node_id,
@@ -227,11 +218,7 @@ fn format_semijoin_reduction_candidate(candidate: &SemijoinReductionCandidateDia
         target_subtree_id,
         key_mappings,
         candidate.cost_threshold_multiplier,
-        candidate.admission_mode,
         cost_gate,
-        admission_decision,
-        original_admitted,
-        rewritten_admitted,
         candidate.applied,
         rejected_reason,
     )

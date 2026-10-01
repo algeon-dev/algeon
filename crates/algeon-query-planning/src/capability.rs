@@ -14,13 +14,11 @@ use crate::{
         LiteralValue,
     },
     plan::{
-        AggregateNode, GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan,
-        ResultSink, WindowFunction,
+        GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink,
     },
     source::{SourceNode, validate_local_parquet_source},
 };
 
-mod admission;
 mod aggregate;
 mod edge;
 mod entry;
@@ -29,9 +27,9 @@ mod graph;
 mod invariant;
 mod join;
 mod join_strategy;
+mod lineage;
 mod model;
 mod node;
-mod shape;
 
 pub use aggregate::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateStateContract, AggregateStrategyCandidateRejection,
@@ -49,18 +47,15 @@ pub use join::{
 };
 pub(crate) use join::{
     join_residual_requires_post_join_filter, keyed_hash_join_strategy_decision_for_plan,
-    keyed_hash_join_strategy_decision_with_options, multi_join_subtree_join_execution_capability,
-    one_shot_equi_join_supported,
+    keyed_hash_join_strategy_decision_with_options, one_shot_equi_join_supported,
 };
 #[doc(hidden)]
 pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub use model::{
-    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityEnvelope, CapabilityEnvelopeAdmission,
-    CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-    ConstraintRef, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator,
-    OrderingRequirement, ResidentResource, ResidualRequirement, ResultSinkKind, SourceFormatCapability,
-    SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
+    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
+    CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
+    InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ResidentResource, ResidualRequirement,
+    ResultSinkKind, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
 };
 #[doc(hidden)]
 pub use node::is_cudf_median_input_type;
-pub(crate) use shape::capability_shape_contract_projection_ids;

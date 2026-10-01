@@ -11,8 +11,8 @@
 //! per optimizer candidate, and several decision kinds can coexist. Candidate
 //! rows never describe final-plan composition; see
 //! [`crate::gpu_coverage::QueryGpuPlanningOutcome`] for the completed plan.
-//! [`CandidateOutcomeKind`] owns the stable `selected`, `deferred`,
-//! `not_supported`, and `not_selected_by_cost` projection labels shared by
+//! [`CandidateOutcomeKind`] owns the stable `selected`, `not_supported`, and
+//! `not_selected_by_cost` projection labels shared by
 //! [`crate::gpu_coverage`] and [`crate::native_report`].
 
 pub use query_engine::{
@@ -31,12 +31,6 @@ use crate::{
     error::{Error, ErrorCode, Result},
     native::ExpressionRejection,
 };
-
-/// Stable reason code for a candidate deferred pending resident producer
-/// output evidence. The engine no longer models missing-fact/owner-term
-/// detail for this decision; the fact that admission is deferred until the
-/// producer becomes resident is the entire contract.
-pub const DEFERRED_PRODUCER_BINDING_REASON_CODE: &str = "consumer_producer_binding_required";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnsupportedColumnDetail {
@@ -114,21 +108,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn planning_report_projects_deferred_producer_binding_facts() {
-        let candidate = GpuCandidate::new("mixed_join", 1);
-        let mut report = PlanningReport::new();
-        report.push_selected(candidate.clone());
-        assert!(report.mark_selected_deferred(&candidate, "physical_optimizer".to_string()));
-
-        let json = report.to_json();
-        assert_eq!(json["selected_count"], 1);
-        assert_eq!(json["deferred_count"], 1);
-        assert_eq!(json["outcomes"][0]["outcome"], "deferred");
-        assert_eq!(json["outcomes"][0]["planning_stage"], "physical_optimizer");
-        assert_eq!(json["outcomes"][0]["reason_code"], DEFERRED_PRODUCER_BINDING_REASON_CODE);
-    }
-
-    #[test]
     fn not_supported_details_transfer_only_between_reports_with_equal_outcome_counts() {
         let detail = NotSupportedDetail {
             column: Some(UnsupportedColumnDetail::new("countDetail", "List(Int64)", "projected")),
@@ -157,7 +136,6 @@ mod tests {
     #[test]
     fn candidate_outcome_kind_labels_are_stable() {
         assert_eq!(CandidateOutcomeKind::Selected.as_str(), "selected");
-        assert_eq!(CandidateOutcomeKind::Deferred.as_str(), "deferred");
         assert_eq!(CandidateOutcomeKind::NotSupported.as_str(), "not_supported");
         assert_eq!(CandidateOutcomeKind::NotSelectedByCost.as_str(), "not_selected_by_cost");
     }
@@ -168,8 +146,6 @@ mod tests {
 pub enum CandidateOutcomeKind {
     /// Candidate was selected for native execution.
     Selected,
-    /// Candidate was selected, but its resident producer binding is not available yet.
-    Deferred,
     /// Candidate cannot execute under the native capability contract.
     NotSupported,
     /// Candidate is native-capable but was not selected by the cost model.
@@ -181,7 +157,6 @@ impl CandidateOutcomeKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Selected => "selected",
-            Self::Deferred => "deferred",
             Self::NotSupported => "not_supported",
             Self::NotSelectedByCost => "not_selected_by_cost",
         }
@@ -199,12 +174,6 @@ impl std::fmt::Display for CandidateOutcomeKind {
 pub enum CandidateOutcome {
     /// Candidate was selected for native execution.
     Selected { candidate: GpuCandidate },
-    /// Candidate was selected, but its composed evidence awaits resident producer output.
-    Deferred {
-        candidate: GpuCandidate,
-        /// Planning stage that emitted the deferred decision.
-        planning_stage: String,
-    },
     /// Candidate cannot execute under the native capability contract.
     NotSupported {
         candidate: GpuCandidate,
@@ -226,7 +195,6 @@ impl CandidateOutcome {
     pub const fn kind(&self) -> CandidateOutcomeKind {
         match self {
             Self::Selected { .. } => CandidateOutcomeKind::Selected,
-            Self::Deferred { .. } => CandidateOutcomeKind::Deferred,
             Self::NotSupported { .. } => CandidateOutcomeKind::NotSupported,
             Self::NotSelectedByCost { .. } => CandidateOutcomeKind::NotSelectedByCost,
         }
@@ -375,7 +343,7 @@ impl PlanningReport {
         let plan_node_id = plan_node_id.into();
         for outcome in &mut self.outcomes {
             match outcome {
-                CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                CandidateOutcome::Selected { candidate } => {
                     candidate.plan_node_id = Some(plan_node_id.clone());
                 },
                 CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {},
@@ -386,7 +354,7 @@ impl PlanningReport {
     pub(crate) fn wrap_selected_candidates_with_outer_operator(&mut self, operator: &str) {
         for outcome in &mut self.outcomes {
             match outcome {
-                CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                CandidateOutcome::Selected { candidate } => {
                     *candidate = candidate.clone().with_outer_operator(operator);
                 },
                 CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {},
@@ -404,16 +372,6 @@ impl PlanningReport {
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
         self.not_supported_details.push(NotSupportedDetail::default());
-    }
-
-    pub(crate) fn mark_selected_deferred(&mut self, candidate: &GpuCandidate, planning_stage: String) -> bool {
-        let Some(outcome) = self.outcomes.iter_mut().find(
-            |outcome| matches!(outcome, CandidateOutcome::Selected { candidate: selected } if selected == candidate),
-        ) else {
-            return false;
-        };
-        *outcome = CandidateOutcome::Deferred { candidate: candidate.clone(), planning_stage };
-        true
     }
 
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
@@ -472,19 +430,12 @@ impl PlanningReport {
     }
 
     pub fn selected_count(&self) -> usize {
-        self.outcomes
-            .iter()
-            .filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. }))
-            .count()
-    }
-
-    pub fn deferred_count(&self) -> usize {
-        self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Deferred { .. })).count()
+        self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. })).count()
     }
 
     pub fn single_selected_candidate(&self) -> Option<&GpuCandidate> {
         let mut rewritten = self.outcomes.iter().filter_map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => Some(candidate),
+            CandidateOutcome::Selected { candidate } => Some(candidate),
             CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
         });
         let candidate = rewritten.next()?;
@@ -521,13 +472,12 @@ impl PlanningReport {
     /// Serializes this planning report as structured candidate-outcome JSON.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "algeon_datafusion.planning_report.v2",
+            "schema": "algeon_datafusion.planning_report.v3",
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
             "headline_facts": self.headline_facts_to_json(),
             "selected_count": self.selected_count(),
-            "deferred_count": self.deferred_count(),
             "not_supported_count": self.not_supported_count(),
             "not_selected_by_cost_count": self.not_selected_by_cost_count(),
             "not_selected_count": self.not_selected_count(),
@@ -557,7 +507,7 @@ impl PlanningReport {
             .iter()
             .enumerate()
             .filter_map(|(index, outcome)| match outcome {
-                CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. } => None,
+                CandidateOutcome::Selected { .. } => None,
                 CandidateOutcome::NotSupported { candidate, capability_reason } => {
                     let mut evidence = TriageEvidenceRef::new("planning_report.outcomes").with_row_index(index);
                     if let Some(query_id) = self.query_id.clone() {
@@ -620,15 +570,6 @@ impl CandidateOutcome {
             Self::Selected { candidate } => json!({
                 "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
-                "capability_reason_code": null,
-                "cost_reason_code": null,
-                "cost_evidence": null,
-            }),
-            Self::Deferred { candidate, planning_stage } => json!({
-                "outcome": self.kind().as_str(),
-                "candidate": candidate.to_json(),
-                "planning_stage": planning_stage,
-                "reason_code": DEFERRED_PRODUCER_BINDING_REASON_CODE,
                 "capability_reason_code": null,
                 "cost_reason_code": null,
                 "cost_evidence": null,

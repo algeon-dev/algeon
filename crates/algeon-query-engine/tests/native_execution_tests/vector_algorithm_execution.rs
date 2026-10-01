@@ -10,16 +10,19 @@ use arrow::{
 };
 use cudf::DataFrame;
 use query_engine::{
+    admission::admit,
     error::{QueryError, QueryErrorCode},
-    exec::{QueryExecutionRequest, output::QueryOutput, set_vector_after_index_build_hook_for_tests},
-    expr::Expr,
+    exec::{QueryExecutionRequest, admit_query_plan, output::QueryOutput, set_vector_after_index_build_hook_for_tests},
+    expr::{Expr, SortExpr},
+    mode::StatisticalAggregateExecutionMode,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
         VectorBruteForceKnnParams, VectorCagraParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansParams,
-        VectorPairwiseDistanceParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding,
-        vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+        VectorPairwiseDistanceParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, WindowFunction,
+        WindowSpec, vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema,
     },
+    rapids_backend::rapids_analysis_context,
     runtime::{
         ExecutionContext, MemoryControlPolicy, StandaloneConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
@@ -189,9 +192,12 @@ fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
                 .unwrap(),
             );
         }
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let (result, _, _) = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
         )
         .into_parts();
         match reason {
@@ -307,9 +313,11 @@ fn ivf_flat_cancellation_after_index_build_releases_query_allocations() {
     let bytes_before = domain_bytes(&admitted);
 
     let hook = AfterIndexBuildHook::install(record_domain_bytes_and_cancel);
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, _, _) = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
     drop(hook);
@@ -388,9 +396,11 @@ fn execute_failing_columns_knn(dataset_x: Vec<f32>, k: usize) -> QueryError {
         .expect("query resident owner"),
     );
 
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, metrics, _observation) = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
     let error = match result {
@@ -449,9 +459,11 @@ fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt
             .unwrap(),
         );
     }
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, metrics, _observation) = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
     let error = match result {
@@ -512,9 +524,11 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
             .unwrap(),
         );
     }
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, metrics, _observation) = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
     let error = match result {
@@ -562,8 +576,10 @@ fn unbounded_vector_request_requires_compiled_pipeline_before_source_work() {
     })
     .expect("unbounded execution context");
 
+    let admitted_plan =
+        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy()).unwrap();
     let (result, metrics, _observation) =
-        execute_query_plan_direct(&context, QueryExecutionRequest::new(&plan)).into_parts();
+        execute_query_plan_direct(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts();
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("unbounded vector execution must require compiled bounded admission"),
@@ -573,6 +589,58 @@ fn unbounded_vector_request_requires_compiled_pipeline_before_source_work() {
     assert_eq!(metrics.compiled_pipeline_attempts, 0);
     assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
     assert_eq!(metrics.source_read_time, std::time::Duration::ZERO);
+}
+
+#[test]
+fn bounded_vector_rejection_reports_the_contract_it_misses() {
+    // No compiled contract covers a row number over PCA output; the error
+    // carries that decision's own rejection instead of a generic vector reason.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/algeon-rejected-vector-source-must-not-open.parquet",
+        Arc::clone(&schema),
+        vec!["id".into(), "x".into(), "y".into()],
+    )));
+    let pca_schema = vector_pca_output_schema(DataType::Int64, 1);
+    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::Pca,
+        VectorAlgorithmParams::Pca(VectorPcaParams::new(
+            VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x", "y"]),
+            1,
+        )),
+        Arc::clone(&pca_schema),
+    ));
+    let window_schema = Arc::new(Schema::new(
+        pca_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .chain([Field::new("row_number", DataType::Int64, false)])
+            .collect::<Vec<_>>(),
+    ));
+    let key = pca_schema.field(0).name().clone();
+    let window = builder.add_window(
+        vector,
+        WindowSpec::new(
+            Vec::new(),
+            vec![SortExpr::new(Expr::column(key), false, false)],
+            vec![WindowFunction::row_number_i64("row_number")],
+        ),
+        window_schema,
+    );
+    let plan = builder.finish_with_host_sink(window);
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("the plan is decidable");
+    let expected = decision.rejection_projection().expect("no compiled contract covers the plan").reason;
+
+    let error = backend_context().admit_plan(&plan).err().expect("a rejected vector plan fails before any work");
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some(expected));
 }
 
 #[cfg(not(feature = "cuvs"))]
@@ -601,8 +669,11 @@ fn cuvs_disabled_rejects_before_local_source_staging() {
     let context = backend_context();
     let admitted = context.admit_plan(&plan).expect("vector plan is structurally admitted without cuVS");
 
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, metrics, _observation) =
-        execute_query_plan_direct(admitted.context.context(), QueryExecutionRequest::new(&plan)).into_parts();
+        execute_query_plan_direct(admitted.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
+            .into_parts();
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("disabled cuVS must fail before opening the local Parquet source"),

@@ -1,24 +1,15 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use query_engine::{
-    admission::{BoundedPipelineDecision, bounded_pipeline_decision},
+    admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     error::QueryError,
-    mode::CapabilityEnvelopeStatus,
+    exec::preflight_query_plan,
     pipeline::CompiledPipeline,
-    plan::{PlanNode, QueryPlan},
+    plan::QueryPlan,
     rapids_backend::rapids_analysis_context,
-    source::SourceNode,
 };
 
-use crate::{
-    error::{Error, ErrorCode},
-    native_exec::AlgeonNativeExecutionConfig,
-    report::GpuCandidate,
-};
-
-/// Stable compatibility reason used when report rows omit bounded non-join plans.
-pub const CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
-    "capability_contract_report_scope_is_compiled_join_pipeline";
+use crate::{error::Error, native_exec::AlgeonNativeExecutionConfig, report::GpuCandidate};
 
 /// Adapter-side capability-contract diagnostics collected during planning.
 ///
@@ -28,46 +19,21 @@ pub const CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
 pub struct NativeCapabilityContractDiagnostics {
     /// Candidates accepted by the optimizer with capability reports attached.
     pub accepted_candidates: Vec<NativeCapabilityAcceptedCandidateDiagnostics>,
-    /// Structurally supported candidates waiting for resident producer facts.
-    pub deferred_candidates: Vec<NativeCapabilityDeferredCandidateDiagnostics>,
     /// Candidates rejected before execution with their first blocking decision.
     pub rejected_candidates: Vec<NativeCapabilityRejectedCandidateDiagnostics>,
-    /// Bounded non-join plans seen while compatibility reports cover compiled joins.
-    pub non_join_bounded_plan_count: usize,
-    /// Stable reason explaining why non-join bounded plans lack gate rows.
-    pub non_join_bounded_plan_reason: Option<String>,
 }
 
 impl NativeCapabilityContractDiagnostics {
     /// Appends accepted/rejected candidate evidence from another optimizer stage.
     pub fn merge(&mut self, other: Self) {
         self.accepted_candidates.extend(other.accepted_candidates);
-        self.deferred_candidates.extend(other.deferred_candidates);
         self.rejected_candidates.extend(other.rejected_candidates);
-        self.non_join_bounded_plan_count += other.non_join_bounded_plan_count;
-        if self.non_join_bounded_plan_reason.is_none() {
-            self.non_join_bounded_plan_reason = other.non_join_bounded_plan_reason;
-        }
     }
 
     /// Returns true when no capability-contract evidence was captured.
     pub fn is_empty(&self) -> bool {
-        self.accepted_candidates.is_empty()
-            && self.deferred_candidates.is_empty()
-            && self.rejected_candidates.is_empty()
-            && self.non_join_bounded_plan_count == 0
+        self.accepted_candidates.is_empty() && self.rejected_candidates.is_empty()
     }
-}
-
-/// Planner decision for a candidate whose composed evidence awaits producer binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeCapabilityDeferredCandidateDiagnostics {
-    /// Optimizer candidate that reached the deferred capability stage.
-    pub candidate: GpuCandidate,
-    /// Stable stage that emitted this decision.
-    pub planning_stage: String,
-    /// Report carrying the deferred status without a parallel event store.
-    pub report: CapabilityContractReport,
 }
 
 /// Capability report and compiled graph facts for an accepted candidate.
@@ -117,69 +83,31 @@ impl NativeCapabilityCompiledGraphDiagnostics {
     }
 }
 
-/// Decides the executable bounded plan once for the candidate flow.
+/// Decides once whether a native candidate runs as a compiled pipeline.
 ///
-/// Returns `None` when there is nothing to decide yet: the policy is
-/// unbounded, the plan has no join, or a composed consumer still awaits its
-/// producer binding. Callers pass the same decision to the boundary check and
-/// to the accepted/rejected diagnostics instead of re-deriving it.
-pub(super) fn native_bounded_decision(
+/// `plan` is the candidate in the sink form execution runs, so the decision
+/// and the executed plan see the same sink. The boundary check and the
+/// accepted/rejected diagnostics read this decision instead of re-deriving it.
+pub(super) fn native_admission_decision(
     plan: &QueryPlan,
     execution_config: &AlgeonNativeExecutionConfig,
-) -> DataFusionResult<Option<BoundedPipelineDecision>> {
-    if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
-        return Ok(None);
-    }
-    if composed_admission_requires_producer_binding(plan) {
-        return Ok(None);
-    }
-    bounded_pipeline_decision(
-        plan,
-        execution_config.statistical_aggregate_execution_mode(),
-        rapids_analysis_context().with_policy(execution_config.planning_policy()),
-    )
-    .map(Some)
-    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+) -> DataFusionResult<AdmissionDecision> {
+    preflight_query_plan(plan)
+        .and_then(|()| {
+            admit(
+                plan,
+                execution_config.statistical_aggregate_execution_mode(),
+                rapids_analysis_context().with_policy(execution_config.planning_policy()),
+            )
+        })
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(
-    plan: &QueryPlan,
     candidate: GpuCandidate,
     execution_config: &AlgeonNativeExecutionConfig,
-    bounded_decision: Option<&BoundedPipelineDecision>,
+    admission: &AdmittedPlan,
 ) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
-    if !execution_config.memory_control_policy().is_bounded() {
-        return Ok(NativeCapabilityContractDiagnostics::default());
-    }
-    if !plan.contains_join() {
-        return Ok(non_join_capability_diagnostics());
-    }
-    if composed_admission_requires_producer_binding(plan) {
-        let decision = CapabilityDecisionRow::deferred_composed_producer_binding(0).map_err(|error| {
-            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
-        })?;
-        let report = CapabilityContractReport::from_decision_rows(CapabilityEnvelopeStatus::Deferred, vec![decision])
-            .map_err(|error| {
-            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
-        })?;
-        return Ok(NativeCapabilityContractDiagnostics {
-            deferred_candidates: vec![NativeCapabilityDeferredCandidateDiagnostics {
-                candidate,
-                planning_stage: "physical_optimizer".to_string(),
-                report: stamp_capability_report_correlation(report, execution_config),
-            }],
-            ..Default::default()
-        });
-    }
-
-    let Some(decision) = bounded_decision else {
-        return Err(capability_contract_candidate_error(
-            "bounded rewrite has no capability-envelope admission evidence",
-        ));
-    };
-    let admission = decision.admission().ok_or_else(|| {
-        capability_contract_candidate_error("bounded rewrite has no capability-envelope admission evidence")
-    })?;
     let report = stamp_capability_report_correlation(
         CapabilityContractReport::from_admission(admission).map_err(|error| {
             capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
@@ -192,81 +120,21 @@ pub(super) fn accepted_plan_contract_diagnostics(
             report,
             compiled_graph: NativeCapabilityCompiledGraphDiagnostics::from_pipeline(admission.pipeline()),
         }],
-        deferred_candidates: Vec::new(),
         rejected_candidates: Vec::new(),
-        non_join_bounded_plan_count: 0,
-        non_join_bounded_plan_reason: None,
     })
-}
-
-/// Reads the boundary verdict off an already-made decision.
-///
-/// A missing decision means there was nothing to decide (unbounded policy,
-/// joinless plan, or a composed consumer awaiting producer binding) and never
-/// rejects.
-pub(super) fn native_execution_boundary_is_rejected_on_decision(
-    bounded_decision: Option<&BoundedPipelineDecision>,
-) -> bool {
-    matches!(bounded_decision, Some(decision) if decision.admission().is_none())
-}
-
-/// A plan with a GPU-resident source is a composed consumer whose producer
-/// output is not yet available at this planning stage: the producer prepares
-/// and executes separately, after this physical-optimizer pass runs.
-fn composed_admission_requires_producer_binding(plan: &QueryPlan) -> bool {
-    plan.nodes().iter().any(
-        |node| matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))),
-    )
 }
 
 pub(super) fn rejected_plan_contract_diagnostics(
-    plan: &QueryPlan,
     candidate: GpuCandidate,
     execution_config: &AlgeonNativeExecutionConfig,
-    bounded_decision: Option<&BoundedPipelineDecision>,
+    rejection: &AdmissionRejection,
 ) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
-    if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
-        return Ok(NativeCapabilityContractDiagnostics::default());
-    }
-
-    let Some(blocking_row) = first_blocking_contract_row(plan, execution_config, bounded_decision)? else {
-        return Ok(NativeCapabilityContractDiagnostics::default());
-    };
+    let blocking_contract = CapabilityDecisionRow::from_rejection_projection(0, rejection.projection())
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(NativeCapabilityContractDiagnostics {
         accepted_candidates: Vec::new(),
-        deferred_candidates: Vec::new(),
-        rejected_candidates: vec![NativeCapabilityRejectedCandidateDiagnostics {
-            candidate,
-            blocking_contract: blocking_row,
-        }],
-        non_join_bounded_plan_count: 0,
-        non_join_bounded_plan_reason: None,
+        rejected_candidates: vec![NativeCapabilityRejectedCandidateDiagnostics { candidate, blocking_contract }],
     })
-}
-
-fn first_blocking_contract_row(
-    plan: &QueryPlan,
-    execution_config: &AlgeonNativeExecutionConfig,
-    bounded_decision: Option<&BoundedPipelineDecision>,
-) -> DataFusionResult<Option<CapabilityDecisionRow>> {
-    if let Some(projection) = bounded_decision.and_then(|decision| decision.rejection_projection()) {
-        return CapabilityDecisionRow::from_rejection_projection(0, projection).map(Some).map_err(|error| {
-            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
-        });
-    }
-
-    let analysis = plan.capability_analysis(rapids_analysis_context().with_policy(execution_config.planning_policy()));
-    let report = CapabilityContractReport::from_capability_analysis(&analysis)
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
-    Ok(report.decision_rows().first().cloned())
-}
-
-fn non_join_capability_diagnostics() -> NativeCapabilityContractDiagnostics {
-    NativeCapabilityContractDiagnostics {
-        non_join_bounded_plan_count: 1,
-        non_join_bounded_plan_reason: Some(CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON.to_string()),
-        ..Default::default()
-    }
 }
 
 fn capability_contract_report_error(error: QueryError) -> DataFusionError {
@@ -276,11 +144,6 @@ fn capability_contract_report_error(error: QueryError) -> DataFusionError {
         error,
     )
     .into()
-}
-
-fn capability_contract_candidate_error(message: &'static str) -> DataFusionError {
-    Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.native.capability_contract_diagnostics", message)
-        .into()
 }
 
 fn stamp_capability_report_correlation(
@@ -319,7 +182,7 @@ mod tests {
         capability::KeyedHashJoinStrategyOptions,
         expr::ColumnRef,
         plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType, QueryPlanBuilder},
-        source::LiteralBatchSource,
+        source::{LiteralBatchSource, SourceNode},
     };
 
     use super::*;
@@ -348,9 +211,7 @@ mod tests {
                 KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11),
             );
 
-        let decision = native_bounded_decision(&plan, &execution_config)
-            .expect("the join plan is decidable")
-            .expect("a bounded join plan is decided at planning");
+        let decision = native_admission_decision(&plan, &execution_config).expect("the join plan is decidable");
         let admission = decision.admission().expect("a literal inner join is admitted");
 
         assert_eq!(admission.policy(), execution_config.planning_policy());

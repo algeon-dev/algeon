@@ -21,11 +21,13 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AdmittedPlan, AttemptCapabilityEvidence},
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
     runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
 };
+#[cfg(test)]
+use query_engine::{exec::admit_query_plan, mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
 
 #[cfg(test)]
 use super::metrics::NativeMetricsCapture;
@@ -37,10 +39,7 @@ use super::{
     },
     metrics::{AlgeonNativeMetrics, NativeExecutionMetricsCapture},
 };
-use crate::{
-    error::{Error, ErrorCode, Result},
-    native::lakehouse_pruning::prune_native_query_plan,
-};
+use crate::error::{Error, ErrorCode, Result};
 
 /// Crate-internal device-resident producer contract used by composed native execution.
 ///
@@ -204,7 +203,7 @@ pub(crate) fn register_gpu_resident_producer_discovery(discovery: GpuResidentPro
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeGpuProducerExec {
     input_name: String,
-    plan: QueryPlan,
+    admitted: Arc<AdmittedPlan>,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
     lakehouse_footer_pruning: bool,
@@ -241,9 +240,13 @@ impl AlgeonNativeGpuProducerExec {
         source_storage_profiles: Vec<SourceStorageProfile>,
     ) -> Result<Self> {
         let metrics_capture = Some(metrics_capture.unwrap_or_else(NativeMetricsCapture::standalone).new_execution());
+        let admitted = admit_query_plan(&plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
+            .map_err(|error| {
+                Error::from_native("algeon_datafusion.native_exec.test_admission", "test plan is not admissible", error)
+            })?;
         Self::try_new_with_execution_capture(
             input_name,
-            plan,
+            admitted,
             metrics_capture,
             plan_task_mapping_datafusion_shape,
             lakehouse_footer_pruning,
@@ -256,13 +259,13 @@ impl AlgeonNativeGpuProducerExec {
     /// the native plan must already reproduce; `None` declares no ordering.
     pub(crate) fn try_new_for_shared_plan(
         input_name: impl Into<String>,
-        plan: QueryPlan,
+        admitted: Arc<AdmittedPlan>,
         execution_config: &super::AlgeonNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
     ) -> Result<Self> {
         Self::try_new_with_execution_capture(
             input_name,
-            plan,
+            admitted,
             execution_config.new_metrics_capture(),
             execution_config.plan_task_mapping_datafusion_shape(),
             execution_config.lakehouse_footer_pruning(),
@@ -273,7 +276,7 @@ impl AlgeonNativeGpuProducerExec {
 
     fn try_new_with_execution_capture(
         input_name: impl Into<String>,
-        plan: QueryPlan,
+        admitted: Arc<AdmittedPlan>,
         metrics_capture: Option<NativeExecutionMetricsCapture>,
         plan_task_mapping_datafusion_shape: Option<&str>,
         lakehouse_footer_pruning: bool,
@@ -288,6 +291,7 @@ impl AlgeonNativeGpuProducerExec {
                 "native GPU-resident producer input name must not be empty",
             ));
         }
+        let plan = admitted.plan();
         if plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -296,7 +300,7 @@ impl AlgeonNativeGpuProducerExec {
             )
             .with_fact("result_sink", "host_arrow"));
         }
-        let source_names = gpu_resident_source_names(&plan);
+        let source_names = gpu_resident_source_names(plan);
         if !source_names.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -314,7 +318,7 @@ impl AlgeonNativeGpuProducerExec {
         Ok(Self {
             input_name,
             cache,
-            plan,
+            admitted,
             metrics_capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             lakehouse_footer_pruning,
@@ -328,7 +332,17 @@ impl AlgeonNativeGpuProducerExec {
     }
 
     pub(crate) fn native_plan(&self) -> &QueryPlan {
-        &self.plan
+        self.admitted.plan()
+    }
+
+    async fn resolved_admitted_plan(&self, task_context: &TaskContext) -> Result<Arc<AdmittedPlan>> {
+        super::lakehouse::resolve_admitted_plan(
+            self.lakehouse_footer_pruning,
+            &self.source_storage_profiles,
+            &self.admitted,
+            task_context,
+        )
+        .await
     }
 
     pub(crate) fn with_metrics_capture(mut self, metrics_capture: Option<NativeExecutionMetricsCapture>) -> Self {
@@ -344,7 +358,7 @@ impl AlgeonNativeGpuProducerExec {
         &self,
         native_context: &ExecutionContext,
         partition: usize,
-        plan: &QueryPlan,
+        admitted: &AdmittedPlan,
     ) -> DataFusionResult<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
@@ -363,7 +377,7 @@ impl AlgeonNativeGpuProducerExec {
             self.plan_task_mapping_datafusion_shape.as_deref(),
         );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let outcome = execute_query_plan(native_context, QueryExecutionRequest::new(plan));
+        let outcome = execute_query_plan(native_context, QueryExecutionRequest::admitted(admitted));
         let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "algeon_datafusion.native_gpu_producer.execute_gpu",
@@ -391,11 +405,11 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
     }
 
     fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
-        Ok(AttemptCapabilityEvidence::for_query_plan(&self.plan))
+        Ok(AttemptCapabilityEvidence::for_query_plan(self.native_plan()))
     }
 
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        query_plan_hard_row_upper_bound(&self.plan)
+        query_plan_hard_row_upper_bound(self.native_plan())
     }
 
     fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
@@ -411,11 +425,8 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
             if !self.lakehouse_footer_pruning {
                 return Ok(plan);
             }
-            let runtime_env = task_context.runtime_env();
-            let resolved_plan =
-                prune_native_query_plan(self.plan.clone(), &runtime_env, &self.source_storage_profiles).await;
             let mut prepared = self.clone();
-            prepared.plan = resolved_plan;
+            prepared.admitted = self.resolved_admitted_plan(task_context.as_ref()).await?;
             prepared.lakehouse_footer_pruning = false;
             Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
         })
@@ -428,13 +439,8 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
         Box::pin(async move {
-            let plan = if self.lakehouse_footer_pruning {
-                let runtime_env = task_context.runtime_env();
-                prune_native_query_plan(self.plan.clone(), &runtime_env, &self.source_storage_profiles).await
-            } else {
-                self.plan.clone()
-            };
-            AlgeonNativeGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition, &plan)
+            let admitted = self.resolved_admitted_plan(task_context.as_ref()).await?;
+            AlgeonNativeGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition, &admitted)
         })
     }
 }
@@ -542,24 +548,24 @@ impl DisplayAs for AlgeonNativeGpuProducerExec {
                 f,
                 "AlgeonNativeGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
                 self.input_name,
-                self.plan.node_count(),
-                self.plan.contains_edge_normalize(),
+                self.native_plan().node_count(),
+                self.native_plan().contains_edge_normalize(),
             ),
             DisplayFormatType::Verbose => write!(
                 f,
                 "AlgeonNativeGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}, native_plan={}",
                 self.input_name,
-                self.plan.node_count(),
-                self.plan.contains_edge_normalize(),
-                native_plan_one_line(&self.plan),
+                self.native_plan().node_count(),
+                self.native_plan().contains_edge_normalize(),
+                native_plan_one_line(self.native_plan()),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "input_name={}", self.input_name)?;
-                writeln!(f, "native_nodes={}", self.plan.node_count())?;
+                writeln!(f, "native_nodes={}", self.native_plan().node_count())?;
                 writeln!(f, "sink=gpu_resident")?;
                 writeln!(f, "output_boundary=device_resident")?;
-                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;
-                write_native_plan_tree(f, &self.plan)
+                writeln!(f, "edge_normalize_inserted={}", self.native_plan().contains_edge_normalize())?;
+                write_native_plan_tree(f, self.native_plan())
             },
         }
     }

@@ -10,24 +10,17 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
             assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
-            if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&row.query_id.as_str())
-                && row.final_disposition == Some(FinalPlanDisposition::Native)
-            {
-                assert!(row.capability_decision_rows.is_empty());
+            if row.final_disposition == Some(FinalPlanDisposition::Native) {
                 assert!(
-                    !row.capability_compiled_graphs.is_empty(),
-                    "{} accepted bounded join row should expose compiled graph diagnostics",
+                    row.capability_decision_rows.is_empty(),
+                    "{} accepted rows must not emit non-admitted capability decisions",
                     row.query_id
                 );
-            } else {
-                if row.final_disposition == Some(FinalPlanDisposition::Native) {
-                    assert!(
-                        row.capability_decision_rows.is_empty(),
-                        "{} accepted rows must not emit non-admitted capability decisions",
-                        row.query_id
-                    );
-                    assert!(row.capability_compiled_graphs.is_empty());
-                }
+                assert!(
+                    !row.capability_compiled_graphs.is_empty(),
+                    "{} accepted native row should expose compiled graph diagnostics",
+                    row.query_id
+                );
             }
             if row.final_disposition == Some(FinalPlanDisposition::Native) {
                 assert_eq!(row.post_native_plan_root, "AlgeonNativeExec");

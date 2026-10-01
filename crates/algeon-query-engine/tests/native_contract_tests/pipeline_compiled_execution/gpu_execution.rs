@@ -2,7 +2,9 @@ use query_engine::{
     admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     dimension_pruning::local_dimension_pruning_resolver,
     error::QueryErrorCode,
-    exec::{ExecutionMetrics, QueryExecutionRequest, execute_query_plan as engine_execute_query_plan},
+    exec::{
+        ExecutionMetrics, QueryExecutionRequest, admit_query_plan, execute_query_plan as engine_execute_query_plan,
+    },
     observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
     pipeline::SortStrategy,
     rapids_backend::rapids_analysis_context,
@@ -170,9 +172,8 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision =
-        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not error");
     let admission = decision.admission().expect("a grouped aggregate join-build input is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -211,9 +212,8 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision =
-        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit filter is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -285,9 +285,8 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision =
-        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
     assert!(
         admission.pipeline().tasks().iter().any(|task| task.kind() == PipelineTaskKind::Union),
@@ -333,9 +332,8 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
         sort_task.sort_strategy()
     );
 
-    let decision =
-        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit offset is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -601,7 +599,9 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
         .expect("observed root join compiles");
     let (context, observation) = bounded_observed_context(shared_runtime(runtime), &plan);
 
-    let outcome = engine_execute_query_plan(&context, QueryExecutionRequest::new(&plan));
+    let admitted = admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+        .expect("observed root join admits");
+    let outcome = engine_execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
     let (result, metrics, plan_observation) = outcome.into_parts();
     assert!(matches!(result, Ok(QueryOutput::HostArrow(_))));
     assert!(plan_observation.is_none(), "one plan must not seal its query observation");
@@ -658,8 +658,8 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = keyless_root_join_data_plan(&left_path, &right_path);
+    assert!(bounded_pipeline_admission(&plan).unwrap().is_some(), "keyless root join should be admitted");
     let analysis = plan.capability_analysis(rapids_analysis_context());
-    assert!(analysis.admits_root_join());
     let pipeline = compile_pipeline(&plan, &analysis).expect("keyless root join should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -745,27 +745,20 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-    assert!(analysis.admits_root_join());
-    let admission = bounded_pipeline_admission(&plan)
-        .expect("bounded admission should not fail")
-        .expect("GPU sink root join should be admitted");
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not fail");
+    let admission = decision.admission().expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
-    // The composed execution path hands the executable (GPU-sink) plan to both
-    // the preflight and execution: the artifact binds that same sink.
-    assert_eq!(admission.sink_kind(), SinkBoundaryKind::GpuResidentOutput);
-    assert!(admission.matches(&plan, StatisticalAggregateExecutionMode::default()));
-    assert!(admission.scope().matches(&plan));
     assert!(
         bounded_pipeline_rejection_projection(&plan).expect("bounded rejection projection should not fail").is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        bounded_join_modeled_facts(&plan, rapids_analysis_context()).is_some(),
+        bounded_join_modeled_facts(&plan, &decision, rapids_analysis_context()).is_some(),
         "GPU sink plans admitted by compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none(),
+        bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none(),
         "GPU sink plans admitted by compiled execution must not emit unsupported bounded-join facts"
     );
     let mut passthrough_builder = QueryPlanBuilder::new();
@@ -803,56 +796,6 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     assert_eq!(passthrough_batch.num_rows(), 2);
     assert_eq!(int32_values(passthrough_batch, 0), vec![Some(2), Some(4)]);
     assert_eq!(int32_values(passthrough_batch, 1), vec![Some(200), Some(400)]);
-}
-
-#[test]
-fn bounded_artifact_binding_rejects_plan_pipeline_sink_mismatch() {
-    // A host-sink artifact must not execute a GPU-sink plan and vice versa.
-    // The mismatch is a typed caller error on the artifact, not a silent
-    // re-decision and not a support-check relabel.
-    let mode = StatisticalAggregateExecutionMode::default();
-    let plan = root_join_data_plan(
-        Path::new("/tmp/compiled-sink-mismatch-left.parquet"),
-        Path::new("/tmp/compiled-sink-mismatch-right.parquet"),
-    );
-    let gpu_plan = plan.clone_with_gpu_resident_sink();
-    let host_admission = bounded_pipeline_decision(&plan, mode, rapids_analysis_context())
-        .expect("host-sink decision should not fail")
-        .admission()
-        .cloned()
-        .expect("host-sink root join should be admitted");
-    let gpu_admission = bounded_pipeline_decision(&gpu_plan, mode, rapids_analysis_context())
-        .expect("GPU-sink decision should not fail")
-        .admission()
-        .cloned()
-        .expect("GPU-sink root join should be admitted");
-
-    assert!(host_admission.matches(&plan, mode));
-    assert!(gpu_admission.matches(&gpu_plan, mode));
-    assert!(!host_admission.matches(&gpu_plan, mode));
-    assert!(!gpu_admission.matches(&plan, mode));
-    let host_for_gpu =
-        host_admission.binding_rejection(&gpu_plan, mode).expect("mismatched sink must name its binding clause");
-    assert_eq!(host_for_gpu.reason, "compiled_pipeline_sink_binding_mismatch");
-    assert_eq!(host_for_gpu.boundary, "compiled_pipeline");
-    let gpu_for_host =
-        gpu_admission.binding_rejection(&plan, mode).expect("mismatched sink must name its binding clause");
-    assert_eq!(gpu_for_host.reason, "compiled_pipeline_sink_binding_mismatch");
-
-    // End to end: handing the host artifact to the GPU-sink plan is a typed
-    // binding error carrying the rejection reason as a fact.
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let context = bounded_context(shared_runtime(runtime), &gpu_plan);
-    let outcome = engine_execute_query_plan(
-        &context,
-        QueryExecutionRequest::new(&gpu_plan).with_bounded_admission(&host_admission),
-    );
-    let (result, _, _) = outcome.into_parts();
-    let error = match result {
-        Ok(_) => panic!("mismatched artifact must not execute"),
-        Err(error) => error,
-    };
-    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("compiled_pipeline_sink_binding_mismatch"));
 }
 
 #[test]
@@ -926,7 +869,7 @@ fn single_sink_output_pipeline(
             ResidentResource::new(*resource, *producer, vec![], ResidentLifetime::SinkOutput { producer: *producer })
         })
         .collect::<Vec<_>>();
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         tasks,
         vec![],
         vec![

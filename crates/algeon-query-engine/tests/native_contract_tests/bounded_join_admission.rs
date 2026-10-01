@@ -1,8 +1,8 @@
+use std::collections::BTreeMap;
+
 use query_engine::{
-    admission::{
-        BoundedPipelineAdmission, bounded_join_modeled_facts as modeled_facts,
-        bounded_join_unsupported_shape_facts as unsupported_facts, bounded_pipeline_decision,
-    },
+    admission::{AdmittedPlan, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
+    backend::AnalysisContext,
     error::Result,
     mode::StatisticalAggregateExecutionMode,
     plan::QueryPlan,
@@ -11,9 +11,26 @@ use query_engine::{
 
 use super::*;
 
-fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
-    bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
-        .into_execution_admission()
+fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
+    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?.admission().cloned())
+}
+
+fn modeled_facts(
+    plan: &QueryPlan,
+    mode: StatisticalAggregateExecutionMode,
+    ctx: AnalysisContext<'_>,
+) -> Option<BTreeMap<&'static str, String>> {
+    let decision = admit(plan, mode, ctx).unwrap();
+    bounded_join_modeled_facts(plan, &decision, ctx)
+}
+
+fn unsupported_facts(
+    plan: &QueryPlan,
+    mode: StatisticalAggregateExecutionMode,
+    ctx: AnalysisContext<'_>,
+) -> Option<BTreeMap<&'static str, String>> {
+    let decision = admit(plan, mode, ctx).unwrap();
+    bounded_join_unsupported_shape_facts(plan, &decision, ctx)
 }
 
 #[path = "bounded_join_admission/aggregate_over_join_subplans.rs"]
@@ -21,6 +38,7 @@ mod aggregate_over_join_subplans;
 #[path = "bounded_join_admission/mixed_residual.rs"]
 mod mixed_residual;
 #[path = "bounded_join_admission/plans.rs"]
+#[expect(dead_code, reason = "fixtures shared with the GPU pipeline target are not all used by this target")]
 pub(crate) mod plans;
 #[path = "bounded_join_admission/residual_resident_grouped_aggregate.rs"]
 mod residual_resident_grouped_aggregate;

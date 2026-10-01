@@ -20,7 +20,6 @@ pub(in crate::exec::bounded::aggregate) use compiled::{
 pub(in crate::exec::bounded::aggregate) use incremental::{
     CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge,
 };
-pub(in crate::exec::bounded) use partitioned::execute_final_aggregate_merge;
 pub(in crate::exec::bounded::aggregate) use partitioned::execute_incremental_source_adjacent_final_aggregate_merge;
 
 pub(super) struct PartitionedFinalMergeTopK<'a> {
@@ -201,9 +200,6 @@ pub(super) fn partitioned_final_merge_topk_sort(
     bounded: &BoundedPlan<'_>,
     sort: &SortNode,
 ) -> Result<Option<SortNode>> {
-    if bounded.post_aggregate_stages.iter().any(|stage| matches!(stage, BoundedUnaryStage::Filter { .. })) {
-        return Ok(None);
-    }
     let mut expressions = Vec::with_capacity(sort.spec.expressions.len());
     for sort_expr in &sort.spec.expressions {
         let mut column = lower_column_expr(&sort_expr.expr, "query_engine.final_merge.topk_sort")?;
@@ -226,8 +222,7 @@ pub(super) fn project_topk_sort_column_through_stage(
     column: &str,
 ) -> Result<Option<String>> {
     match stage {
-        BoundedUnaryStage::Filter { .. } => Ok(None),
-        BoundedUnaryStage::Projection { node, .. } => {
+        BoundedUnaryStage::Projection { node } => {
             let Some(output) = node.outputs.iter().find(|output| output.field.name() == column) else {
                 return Ok(None);
             };
@@ -344,25 +339,4 @@ pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_o
 
 pub(in crate::exec::bounded) fn reduce_merge_fan_in(merge_fan_in: usize) -> Option<usize> {
     BoundedFinalMergePolicy::default().reduce_merge_fan_in(merge_fan_in)
-}
-
-pub(super) fn final_merge_retry_facts(
-    merge_level: usize,
-    merge_fan_in: usize,
-    metrics: &ExecutionMetrics,
-) -> RetryFacts {
-    let retry_action = if BoundedFinalMergePolicy::default().merge_fan_in_is_at_retry_floor(merge_fan_in) {
-        "fail_min_merge_fan_in"
-    } else {
-        "retry_attempts_exhausted"
-    };
-
-    let progress = metrics.progress();
-    RetryFacts::new()
-        .with_retry_action(retry_action)
-        .with_resume_boundary("final_merge")
-        .with_committed_chunks(progress.source_chunks_committed as usize)
-        .with_committed_partials(progress.partial_aggregate_count as usize)
-        .with_merge_level(merge_level)
-        .with_merge_fan_in(merge_fan_in)
 }

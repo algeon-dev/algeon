@@ -77,7 +77,6 @@ fn semijoin_reduction_options_and_rule_name_are_stable() {
         DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
         SemijoinReductionOptions::DEFAULT_COST_THRESHOLD_MULTIPLIER
     );
-    assert_eq!(SemijoinReductionOptions::default().admission_mode, SemijoinReductionAdmissionMode::NotEvaluated);
     assert!(!SemijoinReductionOptions::disabled().enabled);
     SemijoinReductionOptions::default().validate().unwrap();
 }

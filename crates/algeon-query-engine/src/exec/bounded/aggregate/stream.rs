@@ -1,21 +1,17 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedPlan, CommittedPartial,
+    AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
     CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget,
-    execute_bounded_raw_source_chunk, execute_bounded_unary, execute_bounded_unary_from_frame, execute_bounded_union,
-    execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
-    execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
-    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
+    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_unary,
+    execute_bounded_unary_from_frame, execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_compiled_bounded_aggregate_from_frame,
+    execute_compiled_bounded_final_aggregate_merge, execute_partial_aggregate_with_budget,
+    execution_budget_token_for_boundary, execution_overrides,
     final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
     observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes,
-    partitioned::{
-        execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks, partitioned_aggregate_partition_count,
-        should_partition_whole_input_grouped_aggregate,
-    },
     should_execute_incremental_partitioned_final_aggregate_merge, stream_bounded_join_leaf_local_parquet_source_chunks,
     unsupported_bounded_shape,
 };
@@ -972,102 +968,4 @@ fn split_compiled_aggregate_stream_frame(
     let left_bytes = observe_device_memory_bytes(&left, execution.metrics())?;
     let right_bytes = observe_device_memory_bytes(&right, execution.metrics())?;
     Ok((ResidentGpuFrame::with_device_bytes(left, left_bytes), ResidentGpuFrame::with_device_bytes(right, right_bytes)))
-}
-
-/// Correct execution path for grouped aggregates that cannot merge chunk-local
-/// partial states. Per-chunk `NUnique` values cannot be summed, and
-/// `STDDEV_SAMP` needs either one DataFusion-exact host Welford pass or one
-/// native tolerant libcudf std pass over the complete input.
-///
-/// This function reads every chunk's raw data (source read + filter +
-/// projections, but NO partial aggregate). When the aggregate groups by a key
-/// it hands the chunks to the group-key partitioned path, which rebuilds one
-/// partition at a time; otherwise it concatenates all raw frames into a single
-/// in-memory frame and runs one full groupby aggregate.
-pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_chunks(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    chunks: &[SourceChunk],
-) -> Result<CommittedPartial> {
-    let mut raw_frames: Vec<CommittedPartial> = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        match execute_bounded_raw_source_chunk(execution, bounded, chunk) {
-            Ok(raw) => {
-                execution.metrics().record_source_chunk_commit(raw.source_row_group_count);
-                raw_frames.push(raw.partial);
-            },
-            Err(error) => {
-                return Err(error);
-            },
-        }
-    }
-
-    let raw_bytes = raw_frames.iter().map(CommittedPartial::device_bytes).sum::<u64>();
-    if raw_frames.len() > 1
-        && should_partition_whole_input_grouped_aggregate(execution.context(), bounded.aggregate.0, raw_bytes)
-    {
-        let partition_count = partitioned_aggregate_partition_count(execution.context(), raw_bytes);
-        return execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
-            execution,
-            bounded,
-            raw_frames,
-            partition_count,
-        );
-    }
-
-    if raw_frames.len() == 1 {
-        let raw = raw_frames.pop().expect("single frame checked");
-        let input_device_bytes = raw.device_bytes();
-        let result = execute_compiled_bounded_aggregate_from_frame(
-            execution,
-            bounded.aggregate_id,
-            bounded.aggregate.0,
-            bounded.aggregate_input_schema,
-            bounded.aggregate.1,
-            raw.frame,
-            input_device_bytes,
-        );
-        return result;
-    }
-
-    let first = raw_frames.remove(0);
-    let first_df = first.frame.into_frame();
-    let concatenated = {
-        let token = match execution_budget_token_for_boundary(
-            execution.context(),
-            execution.device_budget_bytes(),
-            "distinct_aggregate_concat",
-            "query_engine.bounded.distinct_aggregate.concat.budget_token",
-            "failed to create bounded native distinct aggregate concat budget token",
-        ) {
-            Ok(token) => token,
-            Err(error) => {
-                return Err(error);
-            },
-        };
-        let other_frame_refs: Vec<_> = raw_frames.iter().map(|f| f.frame.frame()).collect();
-        first_df.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
-            attach_budget_token_failure_facts(
-                cudf_query_error(
-                    "query_engine.bounded.distinct_aggregate.concat",
-                    "failed to concatenate raw frames for bounded distinct aggregate",
-                    error,
-                ),
-                &token,
-            )
-        })
-    };
-    // The aggregate below allocates, so the raw frames cannot wait for end of scope.
-    drop(raw_frames);
-    let concatenated = concatenated.map(GpuDataFrame::new)?;
-    let concat_bytes = observe_device_memory_bytes(&concatenated, execution.metrics())?;
-    execute_compiled_bounded_aggregate_from_frame(
-        execution,
-        bounded.aggregate_id,
-        bounded.aggregate.0,
-        bounded.aggregate_input_schema,
-        bounded.aggregate.1,
-        concatenated,
-        concat_bytes,
-    )
 }

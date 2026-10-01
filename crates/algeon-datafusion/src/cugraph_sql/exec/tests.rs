@@ -31,6 +31,7 @@ use parquet::{
 };
 use query_engine::{
     admission::AttemptCapabilityEvidence,
+    exec::admit_query_plan,
     expr::{Expr, SortExpr, SortSpec},
     observability::{AttemptDisposition, RuntimeTerminalOutcome},
     plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
@@ -1586,12 +1587,18 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
     let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
+    let wrong_order_admitted = admit_query_plan(
+        &consumer_gpu_plan,
+        wrong_order_context.context().statistical_aggregate_execution_mode(),
+        wrong_order_context.context().planning_policy(),
+    )
+    .expect("wrong-order fixture consumer must be admissible");
     let wrong_order_error = match execute_edge_source_to_gpu(
         wrong_order_context.context(),
         &mut graph_metrics,
         Arc::clone(&composed_exec),
         Arc::clone(&wrong_order_task_context),
-        Some(consumer_gpu_plan.clone()),
+        Some(wrong_order_admitted),
     )
     .await
     {
@@ -1617,12 +1624,18 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     let changed_consumer_gpu_plan = consumer_host_plan
         .with_appended_sort(SortSpec::new(vec![SortExpr::new(Expr::column("vertex"), false, false)]))
         .clone_with_gpu_resident_sink();
+    let changed_consumer_admitted = admit_query_plan(
+        &changed_consumer_gpu_plan,
+        original_context.context().statistical_aggregate_execution_mode(),
+        original_context.context().planning_policy(),
+    )
+    .expect("changed-scope fixture consumer must be admissible");
     let changed_scope_error = match execute_edge_source_to_gpu(
         original_context.context(),
         &mut graph_metrics,
         composed_exec,
         original_task_context,
-        Some(changed_consumer_gpu_plan),
+        Some(changed_consumer_admitted),
     )
     .await
     {

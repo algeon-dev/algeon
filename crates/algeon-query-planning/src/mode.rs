@@ -10,19 +10,25 @@ use std::{fmt, str::FromStr};
 /// Execution contract for floating statistical aggregates such as
 /// `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, and `VAR_POP`.
 ///
-/// The default is [`Self::GpuNativeTolerant`], so statistical aggregates stay
-/// on the GPU without a host round trip. Its results are not guaranteed to
-/// match DataFusion bit for bit. Select [`Self::DataFusionExactHostWelford`]
-/// when they must.
+/// [`Self::DataFusionExactHostWelford`] requires the supported DataFusion
+/// aggregate semantics and a validated input-order and evaluation contract.
+/// Bit-for-bit equivalence is claimed only for that contract. If the required
+/// contract is unavailable, planning rejects the native candidate; it never
+/// infers exactness from the surrounding join or final sort.
+/// [`Self::GpuNativeTolerant`] remains the default and does not promise
+/// bit-for-bit equivalence with DataFusion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatisticalAggregateExecutionMode {
-    /// Preserve DataFusion's order-sensitive Welford accumulator bits by
-    /// materializing the aggregate input to host and evaluating it in
-    /// DataFusion input order.
+    /// Evaluate DataFusion's Welford accumulator on the host over the
+    /// aggregate input, in DataFusion input order where the plan carries it.
     ///
     /// Aggregates in the same spec keep DataFusion's integer and NaN
     /// semantics. Planning rejects group-key and aggregate types that this
-    /// host kernel does not cover, so those plans stay on DataFusion.
+    /// host kernel does not cover, and ungrouped floating `SUM` and `AVG`,
+    /// which DataFusion adds batch by batch, so those plans stay on
+    /// DataFusion. A NaN result matches as a NaN, not bit for bit: an add of
+    /// two NaN operands keeps the sign of the operand the compiler places
+    /// first, in DataFusion and in this kernel alike.
     DataFusionExactHostWelford,
     /// Use libcudf's native grouped/scalar statistical kernels with each
     /// aggregate's declared degrees of freedom. This is the default.
@@ -111,7 +117,7 @@ impl StatisticalAggregateToleranceContract {
     }
 }
 
-/// Capability-envelope status used by admission reports.
+/// Admission status used by capability reports.
 ///
 /// The single bounded controller owns admission. The `Display` implementation
 /// emits the stable serialized wire labels.
@@ -119,8 +125,6 @@ impl StatisticalAggregateToleranceContract {
 pub enum CapabilityEnvelopeStatus {
     /// The plan is ready for bounded execution.
     Admitted,
-    /// Structural support is known, but a prerequisite owner fact is not yet bound.
-    Deferred,
     /// At least one capability decision blocks bounded execution.
     Rejected,
 }
@@ -130,7 +134,6 @@ impl CapabilityEnvelopeStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Admitted => "bounded",
-            Self::Deferred => "deferred_bounded",
             Self::Rejected => "unsupported_bounded",
         }
     }

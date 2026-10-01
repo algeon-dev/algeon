@@ -22,17 +22,16 @@ use arrow::{
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     admission::{
-        AttemptCapabilityEvidence, BoundedPipelineAdmission, CompiledBoundedPipelineSupport, bounded_pipeline_decision,
+        AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     capability::CapabilityRejectionProjection,
     dynamic_filter::DynamicFilterProducer,
     error::Result,
     exec::{
-        CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest,
+        CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest, admit_query_plan,
         execute_query_plan as execute_engine_query_plan, materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
-        preflight_bounded_query_plan,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
@@ -64,13 +63,12 @@ use query_engine::{
     },
 };
 
-fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
-    bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
-        .into_execution_admission()
+fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
+    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?.admission().cloned())
 }
 
 fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
-    Ok(bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
+    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
         .rejection_projection()
         .cloned())
 }
@@ -160,11 +158,7 @@ mod cudf {
         }
 
         pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
-            preflight_bounded_query_plan(
-                plan,
-                StatisticalAggregateExecutionMode::default(),
-                PlanningPolicy::default(),
-            )?;
+            admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             self.acquire_context_with_evidence_items([evidence])
         }
@@ -174,11 +168,7 @@ mod cudf {
             plan: &QueryPlan,
             owner: RuntimeObservationOwner,
         ) -> Result<PipelineTestContext> {
-            preflight_bounded_query_plan(
-                plan,
-                StatisticalAggregateExecutionMode::default(),
-                PlanningPolicy::default(),
-            )?;
+            admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
@@ -232,7 +222,13 @@ impl Deref for PipelineTestContext {
 }
 
 fn execute_query_plan(context: &PipelineTestContext, plan: &QueryPlan) -> Result<QueryExecutionResult> {
-    let outcome = execute_engine_query_plan(context.context.context(), QueryExecutionRequest::new(plan));
+    let execution_context = context.context.context();
+    let admitted = admit_query_plan(
+        plan,
+        execution_context.statistical_aggregate_execution_mode(),
+        execution_context.planning_policy(),
+    )?;
+    let outcome = execute_engine_query_plan(execution_context, QueryExecutionRequest::admitted(&admitted));
     let (result, metrics, _observation) = outcome.into_parts();
     result.map(|output| QueryExecutionResult::new(output, metrics))
 }
@@ -242,9 +238,15 @@ fn execute_query_plan_with_gpu_inputs(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<QueryExecutionResult> {
+    let execution_context = context.context.context();
+    let admitted = admit_query_plan(
+        plan,
+        execution_context.statistical_aggregate_execution_mode(),
+        execution_context.planning_policy(),
+    )?;
     let outcome = execute_engine_query_plan(
-        context.context.context(),
-        QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
+        execution_context,
+        QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(gpu_inputs),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     result.map(|output| QueryExecutionResult::new(output, metrics))

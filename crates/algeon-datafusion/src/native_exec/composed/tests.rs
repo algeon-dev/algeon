@@ -770,7 +770,7 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
 
     let completed = complete_composed_admission_evidence(
         prepared.execution_config.clone(),
-        &prepared.plan,
+        prepared.native_plan(),
         &prepared.gpu_inputs,
         task_context.as_ref(),
     )

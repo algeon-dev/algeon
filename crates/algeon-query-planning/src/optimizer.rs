@@ -82,10 +82,9 @@ pub use projection_simplification::{
 pub(crate) use rewrite::parent_counts;
 pub use semijoin_reduction::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, SEMIJOIN_REDUCTION_RULE_NAME,
-    SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
-    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
-    SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
-    SemijoinReductionResult, optimize_semijoin_reduction,
+    SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal,
+    SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions,
+    SemijoinReductionRejectedReason, SemijoinReductionResult, optimize_semijoin_reduction,
 };
 #[doc(hidden)]
 pub use shared_resident_extraction::{
@@ -277,7 +276,7 @@ pub fn optimize_query_plan(
     let projection_simplification_result =
         projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification);
     let semijoin_result =
-        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction, ctx);
+        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction);
     let join_filter_reassociation_result =
         optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation, resolver);
     let join_build_side_result = join_build_side::optimize_join_build_side_selection(

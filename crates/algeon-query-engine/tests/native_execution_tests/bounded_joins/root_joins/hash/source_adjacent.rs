@@ -245,10 +245,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(
-        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
-        "source-adjacent filter/projection hash probe plan should stay capability-admitted:\n{plan}"
-    );
+    assert_bounded_pipeline_admitted(&plan);
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -325,10 +322,7 @@ fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(
-        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
-        "source-adjacent filter should stay capability-admitted:\n{plan}"
-    );
+    assert_bounded_pipeline_admitted(&plan);
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -406,10 +400,7 @@ fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_in
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(
-        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
-        "single-chunk source-adjacent filter/projection hash probe plan should stay capability-admitted:\n{plan}"
-    );
+    assert_bounded_pipeline_admitted(&plan);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);

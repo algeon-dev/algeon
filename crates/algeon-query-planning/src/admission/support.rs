@@ -3,11 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, CapabilityScope, CompiledJoinExecutionStrategy, KeyedHashJoinStrategyDecision,
-        SubgraphInvariantKind,
+        CapabilityRejectionProjection, CapabilityScope, CompiledJoinExecutionStrategy, EdgeConsumer,
+        KeyedHashJoinStrategyDecision, SubgraphInvariantKind,
     },
     error::Result,
-    pipeline::{CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, SinkBoundaryKind},
+    pipeline::{
+        CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResource,
+        SinkBoundaryKind,
+    },
     plan::{NodeId, PlanNode, QueryPlan},
 };
 
@@ -24,10 +27,8 @@ pub enum CompiledBoundedPipelineSupport {
 #[doc(hidden)]
 /// Checks compiled graph shape only; it does not perform capability admission.
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
-    pipeline.validate()?;
-
     match join_task_groups(pipeline) {
-        JoinTaskGroups::Complete(groups) if groups.is_empty() && !pipeline_tasks_within_migrated_contract(pipeline) => {
+        JoinTaskGroups::Complete(groups) if groups.is_empty() && !pipeline_tasks_within_compiled_contract(pipeline) => {
             return Ok(admission_rejection(
                 "compiled_pipeline_requires_join_task_group",
                 [("pipeline_task_count", pipeline.tasks().len().to_string())],
@@ -48,19 +49,6 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
         ));
     }
     let sink_path = sink_data_path(pipeline);
-    if let Some(task) = unmigrated_graph_composition_task(pipeline, &sink_path) {
-        return Ok(match task.plan_node() {
-            Some(node_id) => node_rejection(
-                node_id,
-                "compiled_graph_task_composition_not_migrated",
-                [("task_id", task.id().to_string()), ("pipeline_task_kind", task.kind().as_str().to_string())],
-            ),
-            None => admission_rejection(
-                "compiled_graph_task_composition_not_migrated",
-                [("task_id", task.id().to_string()), ("pipeline_task_kind", task.kind().as_str().to_string())],
-            ),
-        });
-    }
     if let Some(task) = stage_task_outside_sink_path(pipeline, &sink_path) {
         return Ok(admission_rejection(
             "compiled_pipeline_stage_task_position_unsupported",
@@ -88,6 +76,11 @@ pub fn compiled_bounded_query_plan_support(
     }
     if let Some(rejection) = shared_resident_producer_lineage_rejection(analysis, pipeline) {
         return Ok(rejection);
+    }
+    if let Some(projection) =
+        task_outside_contract_rejection(pipeline).or_else(|| window_input_ordering_rejection(plan, pipeline))
+    {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported(projection));
     }
 
     let join_groups = match join_task_groups(pipeline) {
@@ -141,32 +134,45 @@ pub fn compiled_bounded_query_plan_support(
 /// overlap on lanes, reusing one build for many probe chunks. Graph and
 /// edge-normalize tasks keep their existing stream/MR/handle affinity and run
 /// as serial coordinator tasks coexisting with other independent work until
-/// their component owners prove safe overlap. Windows stay on their existing
-/// path until their compiled contract migrates.
+/// their component owners prove safe overlap. A window is admitted only when
+/// its input ordering is proved, and stays on the serial coordinator outside
+/// this set.
 #[doc(hidden)]
 pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> bool {
+    !pipeline.tasks().is_empty() && pipeline.tasks().iter().all(|task| task_kind_within_migrated_contract(task.kind()))
+}
+
+/// Every task of `pipeline` has a compiled task contract: the lane-eligible
+/// kinds above, plus windows, whose input ordering admission checks
+/// separately.
+pub(super) fn pipeline_tasks_within_compiled_contract(pipeline: &CompiledPipeline) -> bool {
     !pipeline.tasks().is_empty()
-        && pipeline.tasks().iter().all(|task| {
-            matches!(
-                task.kind(),
-                PipelineTaskKind::SourceRead
-                    | PipelineTaskKind::GpuResidentSource
-                    | PipelineTaskKind::LiteralBatchSource
-                    | PipelineTaskKind::Unary
-                    | PipelineTaskKind::Aggregate
-                    | PipelineTaskKind::JoinBuild
-                    | PipelineTaskKind::JoinProbe
-                    | PipelineTaskKind::JoinMaterialize
-                    | PipelineTaskKind::FinalSort
-                    | PipelineTaskKind::Limit
-                    | PipelineTaskKind::Union
-                    | PipelineTaskKind::EdgeNormalize
-                    | PipelineTaskKind::GraphAlgorithm
-                    | PipelineTaskKind::VectorAlgorithm
-                    | PipelineTaskKind::MlAlgorithm
-                    | PipelineTaskKind::SinkMaterialize
-            )
-        })
+        && pipeline
+            .tasks()
+            .iter()
+            .all(|task| task.kind() == PipelineTaskKind::Window || task_kind_within_migrated_contract(task.kind()))
+}
+
+pub(super) fn task_kind_within_migrated_contract(kind: PipelineTaskKind) -> bool {
+    matches!(
+        kind,
+        PipelineTaskKind::SourceRead
+            | PipelineTaskKind::GpuResidentSource
+            | PipelineTaskKind::LiteralBatchSource
+            | PipelineTaskKind::Unary
+            | PipelineTaskKind::Aggregate
+            | PipelineTaskKind::JoinBuild
+            | PipelineTaskKind::JoinProbe
+            | PipelineTaskKind::JoinMaterialize
+            | PipelineTaskKind::FinalSort
+            | PipelineTaskKind::Limit
+            | PipelineTaskKind::Union
+            | PipelineTaskKind::EdgeNormalize
+            | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::VectorAlgorithm
+            | PipelineTaskKind::MlAlgorithm
+            | PipelineTaskKind::SinkMaterialize
+    )
 }
 
 fn admission_rejection(
@@ -277,22 +283,6 @@ fn shared_resident_producer_lineage_rejection(
             )
         },
     )
-}
-
-/// Graph composition the compiled executor has no output contract for yet.
-///
-/// A graph or edge-normalize task can feed a join input, where the join task
-/// group owns the hand-off. Carrying its output on to the sink through the
-/// stages above the joins has no compiled contract; it used to be refused
-/// implicitly, by not appearing in a sink-path task-kind allowlist.
-fn unmigrated_graph_composition_task<'a>(
-    pipeline: &'a CompiledPipeline,
-    sink_path: &BTreeSet<PipelineTaskId>,
-) -> Option<&'a PipelineTask> {
-    pipeline.tasks().iter().find(|task| {
-        matches!(task.kind(), PipelineTaskKind::GraphAlgorithm | PipelineTaskKind::EdgeNormalize)
-            && sink_path.contains(&task.id())
-    })
 }
 
 /// The chain of tasks that carries the final output, walked back from the sink
@@ -500,4 +490,71 @@ fn single_task_of_kind(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> O
         return None;
     }
     first
+}
+
+/// The first task no compiled task contract covers. Windows are covered by
+/// [`window_input_ordering_rejection`] instead.
+fn task_outside_contract_rejection(pipeline: &CompiledPipeline) -> Option<CapabilityRejectionProjection> {
+    let outside = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() != PipelineTaskKind::Window && !task_kind_within_migrated_contract(task.kind()))?;
+    Some(CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Admission("compiled_task_contract"),
+        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+        contract_scope: CapabilityScope::Subgraph,
+        boundary: "compiled_pipeline",
+        reason: "compiled_task_kind_outside_contract",
+        facts: BTreeMap::from([
+            ("pipeline_task_kind", outside.kind().as_str().to_string()),
+            ("pipeline_task_count", pipeline.tasks().len().to_string()),
+        ]),
+    })
+}
+
+/// A window that numbers rows in input order whose input the compiler did not
+/// record as ordered by the window keys.
+fn window_input_ordering_rejection(
+    plan: &QueryPlan,
+    pipeline: &CompiledPipeline,
+) -> Option<CapabilityRejectionProjection> {
+    let task = pipeline
+        .tasks()
+        .iter()
+        .filter(|task| task.kind() == PipelineTaskKind::Window)
+        .find(|task| !window_input_ordering_established(plan, pipeline, task))?;
+    let window = task.plan_node()?;
+    let producer = task
+        .input_resources()
+        .first()
+        .and_then(|input| pipeline.resources().iter().find(|resource| resource.id() == *input))
+        .and_then(|resource| pipeline.tasks().iter().find(|candidate| candidate.id() == resource.producer()))
+        .and_then(PipelineTask::plan_node)?;
+    Some(CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Edge { producer, consumer: EdgeConsumer::Node(window) },
+        category: CapabilityRejectionCategory::MissingEdgeContract,
+        contract_scope: CapabilityScope::Edge,
+        boundary: "compiled_pipeline",
+        reason: "window_input_ordering_not_established",
+        facts: BTreeMap::from([("window_task", task.id().to_string())]),
+    })
+}
+
+fn window_input_ordering_established(plan: &QueryPlan, pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
+    let Some(PlanNode::Window(window)) = task.plan_node().and_then(|node_id| plan.node(node_id)).map(|node| &node.kind)
+    else {
+        return false;
+    };
+    if !window.spec.counts_rows_in_input_order() {
+        return true;
+    }
+    let [input] = task.input_resources() else {
+        return false;
+    };
+    pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.id() == *input)
+        .and_then(ResidentResource::ordering)
+        .is_some_and(|ordering| ordering.covers_window(&window.spec))
 }

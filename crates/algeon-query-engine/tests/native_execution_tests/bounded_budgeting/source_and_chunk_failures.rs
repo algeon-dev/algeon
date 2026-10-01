@@ -348,9 +348,11 @@ fn bounded_native_query_fails_with_original_cap_cause_when_no_row_group_fits() {
     let context = backend_context_with_memory_control_policy(cap_recovery_policy(256 * 1024, row_groups));
     let admitted = context.admit_plan(&plan).unwrap();
 
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("no split can fit a single row group under the cap");
@@ -400,9 +402,15 @@ fn bounded_native_query_stops_recovery_at_the_next_cancellation_boundary() {
         )
         .unwrap();
     let admitted = handle.acquire_context_with_cancellation(cancellation).unwrap();
+    let admitted_plan = admit_query_plan(
+        &plan,
+        admitted.context().statistical_aggregate_execution_mode(),
+        admitted.context().planning_policy(),
+    )
+    .unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("the deadline elapses before recovery completes");

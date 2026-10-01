@@ -14,8 +14,7 @@ use algeon_datafusion::{
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
         AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
-        CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
-        classify_final_plan,
+        DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan,
     },
     report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
@@ -139,13 +138,9 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
         other => panic!("expected rewritten candidate, got {other:?}"),
     }
     assert_eq!(diagnostics.source_diagnostics.len(), 1);
-    assert!(diagnostics.capability_contract.accepted_candidates.is_empty());
+    // A plan without a join is decided at planning like any other candidate.
+    assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
-    assert_eq!(diagnostics.capability_contract.non_join_bounded_plan_count, 1);
-    assert_eq!(
-        diagnostics.capability_contract.non_join_bounded_plan_reason.as_deref(),
-        Some(CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
-    );
 
     fs::remove_dir_all(dir).unwrap();
 }

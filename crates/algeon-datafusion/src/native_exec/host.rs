@@ -17,9 +17,9 @@ use datafusion::{
     },
 };
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput, preflight_bounded_query_plan},
-    plan::QueryPlan,
+    admission::{AdmittedPlan, AttemptCapabilityEvidence},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
+    plan::{QueryPlan, ResultSink},
 };
 
 use super::{
@@ -48,7 +48,7 @@ use crate::error::{Error, ErrorCode, Result};
 /// the final GPU result back to host Arrow for DataFusion streaming.
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeExec {
-    plan: QueryPlan,
+    admitted: Arc<AdmittedPlan>,
     execution_config: AlgeonNativeExecutionConfig,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
     graph_claim_calibration_capture: GraphClaimCalibrationCapture,
@@ -63,39 +63,52 @@ impl AlgeonNativeExec {
     /// host Arrow `RecordBatch` output to DataFusion.
     #[cfg(test)]
     pub(crate) fn try_new(plan: QueryPlan, execution_config: AlgeonNativeExecutionConfig) -> Result<Self> {
-        Self::try_new_with_cache(plan, execution_config, None)
+        let admitted = super::admit_for_test(&plan.clone_with_deferred_host_materialization_sink(), &execution_config)?;
+        Self::try_new_with_cache(admitted, execution_config, None)
     }
 
     pub(crate) fn try_new_with_equivalence_properties(
-        plan: QueryPlan,
+        admitted: Arc<AdmittedPlan>,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: EquivalenceProperties,
     ) -> Result<Self> {
-        Self::try_new_with_cache(plan, execution_config, Some(eq_properties))
+        Self::try_new_with_cache(admitted, execution_config, Some(eq_properties))
     }
 
     fn try_new_with_cache(
-        plan: QueryPlan,
+        admitted: Arc<AdmittedPlan>,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
     ) -> Result<Self> {
-        if !plan.sink().materializes_host_boundary() {
+        // The node executes the plan in the deferred form it was admitted in
+        // and materializes the host batches itself.
+        let plan = admitted.plan();
+        if !matches!(plan.sink(), ResultSink::DeferredHostArrow { .. }) {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
                 "algeon_datafusion.native_exec.try_new",
-                "native DataFusion execution requires a host-arrow result sink",
+                "native DataFusion execution requires a deferred host-arrow result sink",
             )
-            .with_fact("result_sink", "gpu_resident"));
+            .with_fact(
+                "result_sink",
+                match plan.sink() {
+                    ResultSink::HostArrow { .. } => "host_arrow",
+                    ResultSink::GpuResident { .. } => "gpu_resident",
+                    ResultSink::DeferredHostArrow { .. } => "deferred_host_arrow",
+                },
+            ));
         }
         let cache = match eq_properties {
-            Some(eq_properties) => properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?,
-            None => conservative_properties(Arc::clone(plan.output_schema())),
+            Some(eq_properties) => {
+                properties_with_equivalence(Arc::clone(plan.caller_visible_output_schema()), eq_properties)?
+            },
+            None => conservative_properties(Arc::clone(plan.caller_visible_output_schema())),
         };
 
         let metrics_capture = execution_config.new_metrics_capture();
         Ok(Self {
             cache,
-            plan,
+            admitted,
             execution_config,
             metrics_capture,
             graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
@@ -104,7 +117,7 @@ impl AlgeonNativeExec {
     }
 
     pub(crate) fn native_plan(&self) -> &QueryPlan {
-        &self.plan
+        self.admitted.plan()
     }
 
     #[cfg(feature = "bench-support")]
@@ -130,15 +143,17 @@ impl AlgeonNativeExec {
     }
 
     #[cfg(feature = "cugraph")]
-    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
-        if !self.execution_config.lakehouse_footer_pruning() {
-            return self.clone();
-        }
+    pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Result<Self> {
         let mut prepared = self.clone();
-        prepared.plan =
-            super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context).await;
+        prepared.admitted = super::lakehouse::resolve_admitted_plan(
+            self.execution_config.lakehouse_footer_pruning(),
+            self.execution_config.source_storage_profiles(),
+            &self.admitted,
+            task_context,
+        )
+        .await?;
         prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
-        prepared
+        Ok(prepared)
     }
 }
 
@@ -148,26 +163,26 @@ impl DisplayAs for AlgeonNativeExec {
             DisplayFormatType::Default => write!(
                 f,
                 "AlgeonNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
-                self.plan.node_count(),
+                self.native_plan().node_count(),
                 self.execution_config.memory_control_policy(),
-                self.plan.contains_edge_normalize(),
+                self.native_plan().contains_edge_normalize(),
             ),
             DisplayFormatType::Verbose => write!(
                 f,
                 "AlgeonNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
-                self.plan.node_count(),
+                self.native_plan().node_count(),
                 self.execution_config.memory_control_policy(),
-                self.plan.contains_edge_normalize(),
-                native_plan_one_line(&self.plan),
+                self.native_plan().contains_edge_normalize(),
+                native_plan_one_line(self.native_plan()),
             ),
             DisplayFormatType::TreeRender => {
-                writeln!(f, "native_nodes={}", self.plan.node_count())?;
+                writeln!(f, "native_nodes={}", self.native_plan().node_count())?;
                 writeln!(f, "sink=host_arrow")?;
                 writeln!(f, "native_pipeline_execution_mode=bounded")?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
                 writeln!(f, "output_boundary=device_to_host")?;
-                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;
-                write_native_plan_tree(f, &self.plan)
+                writeln!(f, "edge_normalize_inserted={}", self.native_plan().contains_edge_normalize())?;
+                write_native_plan_tree(f, self.native_plan())
             },
         }
     }
@@ -224,7 +239,7 @@ impl ExecutionPlan for AlgeonNativeExec {
         // `AlgeonNativeExecutionConfig`; the DataFusion task context scopes
         // backend admission across native fragments in one execution.
         let schema = self.schema();
-        let plan = self.plan.clone();
+        let admitted = Arc::clone(&self.admitted);
         let execution_config = self.execution_config.clone();
         let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let metrics = AlgeonNativeMetrics::new_with_capture_and_shape(
@@ -241,33 +256,20 @@ impl ExecutionPlan for AlgeonNativeExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
-                let unresolved_capability_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
-                let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
-                // The executable plan carries the deferred materialization sink;
-                // the preflight decides this same plan once and hands the
-                // artifact to execution instead of deciding again there.
-                let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
-                let bounded_admission = if execution_config.memory_control_policy().is_bounded() {
-                    preflight_bounded_query_plan(
-                        &gpu_plan,
-                        execution_config.statistical_aggregate_execution_mode(),
-                        execution_config.planning_policy(),
-                    )
-                    .map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "algeon_datafusion.native_exec.bounded_preflight",
-                            "failed to preflight the resolved bounded native executable plan before admission",
-                            error,
-                        ))
-                    })?
-                } else {
-                    None
-                };
+                let unresolved_capability_evidence = AttemptCapabilityEvidence::for_query_plan(admitted.plan());
+                let admitted = super::lakehouse::resolve_admitted_plan(
+                    execution_config.lakehouse_footer_pruning(),
+                    execution_config.source_storage_profiles(),
+                    &admitted,
+                    task_context.as_ref(),
+                )
+                .await?;
+                let plan = admitted.plan();
                 if execution_config.lakehouse_footer_pruning()
                     && let Some(ticket) =
                         execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
                 {
-                    let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
+                    let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
                     if let Some(existing) = ticket.attempt_capability_evidence_for_rebind()
                         && unresolved_capability_evidence
                             .execution_scopes()
@@ -328,13 +330,7 @@ impl ExecutionPlan for AlgeonNativeExec {
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                         // Once native execution starts, the attempt is terminal: errors are surfaced with stable
                         // facts by `native_query_runtime_error` and are not replayed through DataFusion.
-                        // Execution checks the preflight artifact against the
-                        // executable plan instead of re-deriving it.
-                        let mut request = QueryExecutionRequest::new(&gpu_plan);
-                        if let Some(admission) = &bounded_admission {
-                            request = request.with_bounded_admission(admission);
-                        }
-                        let outcome = execute_query_plan(&context, request);
+                        let outcome = execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "algeon_datafusion.native_exec.execute",

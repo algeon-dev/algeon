@@ -32,7 +32,7 @@ pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) ->
         })
         .collect::<Vec<_>>();
     let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input());
-    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
+    CompiledPipeline::from_parts_unvalidated(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
 pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> CompiledPipeline {
@@ -90,7 +90,7 @@ pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> Com
         ResidentLifetime::TaskLocal { task: extra_task },
     ));
     let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input());
-    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
+    CompiledPipeline::from_parts_unvalidated(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
 pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
@@ -98,7 +98,7 @@ pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
     let unary = PipelineTaskId::new(1);
     let frame = ResidentResourceId::new(0);
 
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         vec![
             PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
             PipelineTask::new(unary, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
@@ -127,7 +127,7 @@ pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
     let first_frame = ResidentResourceId::new(0);
     let second_frame = ResidentResourceId::new(1);
 
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         vec![
             PipelineTask::new(first_source, PipelineTaskKind::SourceRead).with_output_resources(vec![first_frame]),
             PipelineTask::new(second_source, PipelineTaskKind::SourceRead).with_output_resources(vec![second_frame]),
@@ -177,7 +177,7 @@ pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
     let source_frame = ResidentResourceId::new(0);
     let join_output = ResidentResourceId::new(1);
 
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         vec![
             PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![source_frame]),
             PipelineTask::new(probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![source_frame]),
@@ -243,7 +243,7 @@ pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() 
     let first_join_output = ResidentResourceId::new(3);
     let second_join_output = ResidentResourceId::new(4);
 
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         vec![
             PipelineTask::new(first_build_source, PipelineTaskKind::SourceRead)
                 .with_output_resources(vec![first_build_frame]),
@@ -364,7 +364,7 @@ pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
     let second_consumer = PipelineTaskId::new(2);
     let frame = ResidentResourceId::new(0);
 
-    CompiledPipeline::new(
+    CompiledPipeline::from_parts_unvalidated(
         vec![
             PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
             PipelineTask::new(first_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),

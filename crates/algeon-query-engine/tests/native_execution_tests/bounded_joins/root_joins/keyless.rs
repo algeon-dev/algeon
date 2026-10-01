@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use query_engine::{expr::ColumnRef, rapids_backend::rapids_analysis_context};
+use query_engine::expr::ColumnRef;
 
 use super::*;
 
@@ -36,7 +36,7 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -102,7 +102,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -173,7 +173,7 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -240,7 +240,7 @@ fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross
         false,
         false,
     );
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -299,7 +299,7 @@ fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right
         false,
         true,
     );
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -338,7 +338,7 @@ fn bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_
         true,
         false,
     );
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

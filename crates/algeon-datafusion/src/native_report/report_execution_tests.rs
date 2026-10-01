@@ -775,10 +775,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
                 accepted_candidate_contract_entry(first_candidate.clone(), 11),
                 accepted_candidate_contract_entry(second_candidate.clone(), 22),
             ],
-            deferred_candidates: Vec::new(),
             rejected_candidates: Vec::new(),
-            non_join_bounded_plan_count: 0,
-            non_join_bounded_plan_reason: None,
         },
     };
 
@@ -1261,10 +1258,7 @@ fn accepted_capability_contract_diagnostics() -> NativeCapabilityContractDiagnos
                 sink_kind: "host_arrow_materialization".to_string(),
             },
         }],
-        deferred_candidates: Vec::new(),
         rejected_candidates: Vec::new(),
-        non_join_bounded_plan_count: 0,
-        non_join_bounded_plan_reason: None,
     }
 }
 

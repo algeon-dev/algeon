@@ -183,7 +183,9 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
     let accepted = &diagnostics.capability_contract.accepted_candidates[0];
-    assert_eq!(accepted.compiled_graph.sink_kind, "host_arrow_materialization");
+    // Planning decides the deferred host sink execution runs; the adapter
+    // materializes the host batches.
+    assert_eq!(accepted.compiled_graph.sink_kind, "gpu_resident_output");
     assert!(accepted.compiled_graph.resource_count > 0);
     let admission_report = &accepted.report;
     assert_eq!(admission_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);

@@ -49,7 +49,9 @@ fn execute_plan(
     plan: &QueryPlan,
     gpu_inputs: Option<&GpuResidentInputMap>,
 ) -> Result<QueryExecutionResult> {
-    let mut request = QueryExecutionRequest::new(plan);
+    let admitted =
+        exec::admit_query_plan(plan, context.statistical_aggregate_execution_mode(), context.planning_policy())?;
+    let mut request = QueryExecutionRequest::admitted(&admitted);
     if let Some(gpu_inputs) = gpu_inputs {
         request = request.with_gpu_inputs(gpu_inputs);
     }

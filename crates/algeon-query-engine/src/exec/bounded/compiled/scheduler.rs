@@ -164,7 +164,6 @@ impl<'a> CompiledPipelineScheduler<'a> {
         pipeline: &'a CompiledPipeline,
         prioritized_join_builds: BTreeSet<PipelineTaskId>,
     ) -> Result<Self> {
-        pipeline.validate()?;
         let dependencies = build_dependencies(pipeline);
         Ok(Self { pipeline, dependencies, prioritized_join_builds })
     }
@@ -1168,7 +1167,7 @@ mod tests {
         let frame_b = ResidentResourceId::new(2);
         let unary_frame_b = ResidentResourceId::new(3);
         let union_frame = ResidentResourceId::new(4);
-        CompiledPipeline::new(
+        CompiledPipeline::from_parts_unvalidated(
             vec![
                 PipelineTask::new(source_a, PipelineTaskKind::SourceRead).with_output_resources(vec![frame_a]),
                 PipelineTask::new(unary_a, PipelineTaskKind::Unary)
@@ -1237,7 +1236,7 @@ mod tests {
     fn claim_rejects_control_gated_task_before_its_predecessor_completes() {
         let head = PipelineTaskId::new(0);
         let gated = PipelineTaskId::new(1);
-        let pipeline = CompiledPipeline::new(
+        let pipeline = CompiledPipeline::from_parts_unvalidated(
             vec![
                 PipelineTask::new(head, PipelineTaskKind::SourceRead)
                     .with_output_resources(vec![ResidentResourceId::new(0)]),
@@ -1293,7 +1292,7 @@ mod tests {
         let unary = PipelineTaskId::new(1);
         let frame = ResidentResourceId::new(0);
         let unary_frame = ResidentResourceId::new(1);
-        CompiledPipeline::new(
+        CompiledPipeline::from_parts_unvalidated(
             vec![
                 PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
                 PipelineTask::new(unary, PipelineTaskKind::Unary)

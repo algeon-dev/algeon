@@ -7,9 +7,8 @@ use arrow::{
 };
 
 use super::{
-    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, ExecutionMetrics, GpuDataFrame,
-    GpuResultHandle, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts,
-    record_batch_memory_size,
+    Array, BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, GpuResultHandle, NodeId,
+    QueryError, QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
 };
 
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMetrics) -> Result<RecordBatch> {
@@ -18,24 +17,6 @@ pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMet
     metrics.add_materialization_time(timer.elapsed());
     metrics.record_device_to_host_materialization(output.num_rows() as u64, record_batch_memory_size(&output) as u64);
     Ok(output)
-}
-
-pub(super) fn materialize_bounded_to_host(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    input: CommittedPartial,
-    final_node_id: NodeId,
-    executable_schema: &SchemaRef,
-    output_schema: &SchemaRef,
-) -> Result<RecordBatch> {
-    let input_device_bytes = input.device_bytes();
-    materialize_bounded_frame_to_host(
-        execution,
-        input.frame,
-        input_device_bytes,
-        final_node_id,
-        executable_schema,
-        output_schema,
-    )
 }
 
 pub(in crate::exec) fn materialize_bounded_frame_to_host(

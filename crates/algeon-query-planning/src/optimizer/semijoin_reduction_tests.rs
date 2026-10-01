@@ -10,49 +10,6 @@ use crate::{
 };
 
 #[test]
-fn admission_gate_keeps_not_yet_admitted_rewrite_but_protects_admitted_original() {
-    assert!(matches!(
-        mode_admission_gate_decision(
-            Some(false),
-            Some(false),
-            SemijoinReductionAdmissionDecision::BoundedKept,
-            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-        ),
-        AdmissionGateDecision::Keep {
-            decision: SemijoinReductionAdmissionDecision::BoundedKept,
-            original_admitted: Some(false),
-            rewritten_admitted: Some(false),
-        }
-    ));
-    assert!(matches!(
-        mode_admission_gate_decision(
-            Some(true),
-            Some(false),
-            SemijoinReductionAdmissionDecision::BoundedKept,
-            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-        ),
-        AdmissionGateDecision::Reject {
-            decision: SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-            original_admitted: Some(true),
-            rewritten_admitted: Some(false),
-        }
-    ));
-    assert!(matches!(
-        mode_admission_gate_decision(
-            None,
-            Some(true),
-            SemijoinReductionAdmissionDecision::BoundedKept,
-            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-        ),
-        AdmissionGateDecision::Reject {
-            decision: SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-            original_admitted: None,
-            rewritten_admitted: Some(true),
-        }
-    ));
-}
-
-#[test]
 fn lineage_accepts_source_passthrough_key() {
     let (plan, source) = single_source_plan(vec![field("k"), field("payload")]);
     let analysis = analyze_keys(&plan, source, &[left_key("k")]).expect("source key should map");

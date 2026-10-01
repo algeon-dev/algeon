@@ -305,7 +305,10 @@ impl AlgeonNativeExecutionConfig {
     /// Defaults to [`StatisticalAggregateExecutionMode::GpuNativeTolerant`],
     /// whose results can differ from DataFusion in floating-point bits. Select
     /// [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`] when
-    /// results must match DataFusion exactly.
+    /// results must match DataFusion exactly. In that mode a candidate whose
+    /// statistical aggregate input DataFusion reads through more than one
+    /// partition stays on DataFusion, whose own result then depends on the
+    /// order partitions deliver rows.
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.statistical_aggregate_execution_mode = mode;
         self

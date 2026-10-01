@@ -1,22 +1,27 @@
 pub mod query_planning
 pub mod query_planning::admission
-pub struct query_planning::admission::BoundedPipelineAdmission
-impl query_planning::admission::BoundedPipelineAdmission
-pub const fn query_planning::admission::BoundedPipelineAdmission::envelope(&self) -> query_planning::capability::CapabilityEnvelope
-pub fn query_planning::admission::BoundedPipelineAdmission::matches(&self, &query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode) -> bool
-pub fn query_planning::admission::BoundedPipelineAdmission::pipeline(&self) -> &query_planning::pipeline::CompiledPipeline
-pub const fn query_planning::admission::BoundedPipelineAdmission::policy(&self) -> query_planning::policy::PlanningPolicy
-pub fn query_planning::admission::BoundedPipelineAdmission::scope(&self) -> &AttemptExecutionScope
-pub const fn query_planning::admission::BoundedPipelineAdmission::sink_kind(&self) -> query_planning::pipeline::SinkBoundaryKind
-pub const fn query_planning::admission::BoundedPipelineAdmission::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
-pub struct query_planning::admission::BoundedPipelineDecision
-impl query_planning::admission::BoundedPipelineDecision
-pub fn query_planning::admission::BoundedPipelineDecision::admission(&self) -> core::option::Option<&query_planning::admission::BoundedPipelineAdmission>
-pub fn query_planning::admission::BoundedPipelineDecision::into_execution_admission(self) -> query_planning::error::Result<core::option::Option<query_planning::admission::BoundedPipelineAdmission>>
-pub fn query_planning::admission::BoundedPipelineDecision::rejection_projection(&self) -> core::option::Option<&query_planning::capability::CapabilityRejectionProjection>
-pub fn query_planning::admission::bounded_join_modeled_facts(&query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn query_planning::admission::bounded_join_unsupported_shape_facts(&query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn query_planning::admission::bounded_pipeline_decision(&query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::admission::BoundedPipelineDecision>
+pub enum query_planning::admission::AdmissionDecision
+pub query_planning::admission::AdmissionDecision::Admitted(alloc::sync::Arc<query_planning::admission::AdmittedPlan>)
+pub query_planning::admission::AdmissionDecision::Rejected(query_planning::admission::AdmissionRejection)
+impl query_planning::admission::AdmissionDecision
+pub fn query_planning::admission::AdmissionDecision::admission(&self) -> core::option::Option<&alloc::sync::Arc<query_planning::admission::AdmittedPlan>>
+pub fn query_planning::admission::AdmissionDecision::rejection_projection(&self) -> core::option::Option<&query_planning::capability::CapabilityRejectionProjection>
+pub struct query_planning::admission::AdmissionRejection
+impl query_planning::admission::AdmissionRejection
+pub fn query_planning::admission::AdmissionRejection::execution_error(&self, &query_planning::plan::QueryPlan) -> query_planning::error::QueryError
+pub fn query_planning::admission::AdmissionRejection::is_execution_mode_refusal(&self) -> bool
+pub fn query_planning::admission::AdmissionRejection::projection(&self) -> &query_planning::capability::CapabilityRejectionProjection
+pub struct query_planning::admission::AdmittedPlan
+impl query_planning::admission::AdmittedPlan
+pub const fn query_planning::admission::AdmittedPlan::fingerprint(&self) -> query_planning::plan::PlanFingerprint
+pub fn query_planning::admission::AdmittedPlan::pipeline(&self) -> &query_planning::pipeline::CompiledPipeline
+pub fn query_planning::admission::AdmittedPlan::plan(&self) -> &query_planning::plan::QueryPlan
+pub const fn query_planning::admission::AdmittedPlan::policy(&self) -> query_planning::policy::PlanningPolicy
+pub const fn query_planning::admission::AdmittedPlan::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
+pub fn query_planning::admission::AdmittedPlan::with_pruned_sources(&self, query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<alloc::sync::Arc<Self>>
+pub fn query_planning::admission::admit(&query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::admission::AdmissionDecision>
+pub fn query_planning::admission::bounded_join_modeled_facts(&query_planning::plan::QueryPlan, &query_planning::admission::AdmissionDecision, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
+pub fn query_planning::admission::bounded_join_unsupported_shape_facts(&query_planning::plan::QueryPlan, &query_planning::admission::AdmissionDecision, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub mod query_planning::backend
 pub enum query_planning::backend::AggregateBinding
 pub query_planning::backend::AggregateBinding::FinalMerge
@@ -58,37 +63,10 @@ pub query_planning::capability::AggregateStateContract::DedupGroupOnly
 pub query_planning::capability::AggregateStateContract::ExactDistinctCount
 pub query_planning::capability::AggregateStateContract::Plain
 pub enum query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityDecision::Conditional
-pub query_planning::capability::CapabilityDecision::Conditional::waiting_on: alloc::vec::Vec<query_planning::capability::ConstraintRef>
 pub query_planning::capability::CapabilityDecision::Rejected
 pub query_planning::capability::CapabilityDecision::Rejected::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
 pub query_planning::capability::CapabilityDecision::Rejected::reason: &'static str
 pub query_planning::capability::CapabilityDecision::Satisfied
-pub enum query_planning::capability::CapabilityEnvelope
-pub query_planning::capability::CapabilityEnvelope::ClosedMultiJoinSubgraph
-pub query_planning::capability::CapabilityEnvelope::ComposedPipeline
-pub query_planning::capability::CapabilityEnvelope::ExactStatisticalJoinFinalFullSort
-pub query_planning::capability::CapabilityEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK
-pub query_planning::capability::CapabilityEnvelope::KeyedHashJoinResidentSubplan
-pub query_planning::capability::CapabilityEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs
-pub query_planning::capability::CapabilityEnvelope::KeylessConditionalJoinInputSubplan
-pub query_planning::capability::CapabilityEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput
-pub query_planning::capability::CapabilityEnvelope::MultiJoinAggregateOverJoinSubplanTopK
-pub query_planning::capability::CapabilityEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter
-pub query_planning::capability::CapabilityEnvelope::ProjectionGlobalLimit
-pub query_planning::capability::CapabilityEnvelope::ProjectionScalarSetop
-pub query_planning::capability::CapabilityEnvelope::RollupRankTopKAfterAggregateJoinPushdown
-pub query_planning::capability::CapabilityEnvelope::RootFullSortJoinAggregate
-pub query_planning::capability::CapabilityEnvelope::RootJoin
-pub query_planning::capability::CapabilityEnvelope::RootTopKJoinAggregate
-pub query_planning::capability::CapabilityEnvelope::SingleJoinPostRootPipeline
-pub query_planning::capability::CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort
-pub query_planning::capability::CapabilityEnvelope::UnionPipeline
-pub enum query_planning::capability::CapabilityEnvelopeAdmission
-pub query_planning::capability::CapabilityEnvelopeAdmission::Admitted
-pub query_planning::capability::CapabilityEnvelopeAdmission::Admitted::envelope: query_planning::capability::CapabilityEnvelope
-pub query_planning::capability::CapabilityEnvelopeAdmission::Rejected
-pub query_planning::capability::CapabilityEnvelopeAdmission::Rejected::projection: query_planning::capability::CapabilityRejectionProjection
 pub enum query_planning::capability::CapabilityRejectionCategory
 pub query_planning::capability::CapabilityRejectionCategory::MissingEdgeContract
 pub query_planning::capability::CapabilityRejectionCategory::MissingSubgraphInvariant
@@ -206,15 +184,12 @@ pub query_planning::capability::SubgraphInvariantKind::AggregateDerivesFromShare
 pub query_planning::capability::SubgraphInvariantKind::BuildBeforeProbe
 pub query_planning::capability::SubgraphInvariantKind::BuildBeforeProbe::join_id: query_planning::plan::NodeId
 pub query_planning::capability::SubgraphInvariantKind::FinalBarrierOrder
-pub query_planning::capability::SubgraphInvariantKind::PostRootStageOrder
-pub query_planning::capability::SubgraphInvariantKind::PostRootStageOrder::root_join_id: query_planning::plan::NodeId
 pub query_planning::capability::SubgraphInvariantKind::ProjectionTransparentResidency
 pub query_planning::capability::SubgraphInvariantKind::ResidentLifetimeDominatesConsumers
 pub query_planning::capability::SubgraphInvariantKind::ResidentUnaryChainPreservesResidency
 pub query_planning::capability::SubgraphInvariantKind::ResidualUsesBothInputs
 pub query_planning::capability::SubgraphInvariantKind::ResidualUsesBothInputs::join_id: query_planning::plan::NodeId
 pub query_planning::capability::SubgraphInvariantKind::SharedResidentSubplan
-pub query_planning::capability::SubgraphInvariantKind::StatisticalJoinFinalSortExactness
 pub query_planning::capability::SubgraphInvariantKind::TopologicalBuildProbeSchedule
 pub enum query_planning::capability::VectorInputRole
 pub query_planning::capability::VectorInputRole::Dataset
@@ -259,32 +234,9 @@ impl core::default::Default for query_planning::capability::AggregateStrategyExe
 pub fn query_planning::capability::AggregateStrategyExecutionOptions::default() -> Self
 pub struct query_planning::capability::CapabilityAnalysis
 pub query_planning::capability::CapabilityAnalysis::edges: alloc::vec::Vec<query_planning::capability::EdgeContract>
-pub query_planning::capability::CapabilityAnalysis::hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: query_planning::capability::CapabilityDecision
 pub query_planning::capability::CapabilityAnalysis::invariants: alloc::vec::Vec<query_planning::capability::SubgraphInvariant>
-pub query_planning::capability::CapabilityAnalysis::keyed_hash_join_resident_subplan_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::keyless_conditional_join_aggregate_over_join_subplan_inputs_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::keyless_conditional_join_input_subplan_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::multi_join_aggregate_over_join_subplan_topk_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::multi_join_resident_grouped_aggregate_subquery_filter_admission: query_planning::capability::CapabilityDecision
 pub query_planning::capability::CapabilityAnalysis::nodes: alloc::vec::Vec<query_planning::capability::NodeCapability>
-pub query_planning::capability::CapabilityAnalysis::root_full_sort_join_aggregate_admission: query_planning::capability::CapabilityDecision
-pub query_planning::capability::CapabilityAnalysis::root_topk_join_aggregate_admission: query_planning::capability::CapabilityDecision
 impl query_planning::capability::CapabilityAnalysis
-pub fn query_planning::capability::CapabilityAnalysis::admits_bounded_join(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_keyless_conditional_join_input_subplan_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_root_full_sort_join_aggregate_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_root_join(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::admits_root_topk_join_aggregate_pipeline(&self) -> bool
-pub fn query_planning::capability::CapabilityAnalysis::capability_envelope_admission(&self) -> query_planning::capability::CapabilityEnvelopeAdmission
-pub fn query_planning::capability::CapabilityAnalysis::capability_envelope_label(&self) -> query_planning::capability::CapabilityEnvelope
 pub fn query_planning::capability::CapabilityAnalysis::first_rejection_projection(&self) -> core::option::Option<query_planning::capability::CapabilityRejectionProjection>
 pub fn query_planning::capability::CapabilityAnalysis::has_rejections(&self) -> bool
 pub struct query_planning::capability::CapabilityRejectionProjection
@@ -293,7 +245,6 @@ pub query_planning::capability::CapabilityRejectionProjection::category: query_p
 pub query_planning::capability::CapabilityRejectionProjection::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
 pub query_planning::capability::CapabilityRejectionProjection::owner: query_planning::capability::CapabilityRejectionOwner
 pub query_planning::capability::CapabilityRejectionProjection::reason: &'static str
-pub struct query_planning::capability::ConstraintRef
 pub struct query_planning::capability::EdgeContract
 pub query_planning::capability::EdgeContract::consumer: query_planning::capability::EdgeConsumer
 pub query_planning::capability::EdgeContract::contract_kinds: alloc::vec::Vec<query_planning::capability::EdgeContractKind>
@@ -443,14 +394,12 @@ pub query_planning::contract_report::CapabilityDecisionOwner::Subgraph(query_pla
 impl core::fmt::Display for query_planning::contract_report::CapabilityDecisionOwner
 pub fn query_planning::contract_report::CapabilityDecisionOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::contract_report::CapabilityDecisionStatus
-pub query_planning::contract_report::CapabilityDecisionStatus::Deferred
 pub query_planning::contract_report::CapabilityDecisionStatus::Rejected
 pub struct query_planning::contract_report::CapabilityContractReport
 impl query_planning::contract_report::CapabilityContractReport
 pub fn query_planning::contract_report::CapabilityContractReport::decision_rows(&self) -> &[query_planning::contract_report::CapabilityDecisionRow]
 pub fn query_planning::contract_report::CapabilityContractReport::execution_mode(&self) -> query_planning::mode::CapabilityEnvelopeStatus
-pub fn query_planning::contract_report::CapabilityContractReport::from_admission(&query_planning::admission::BoundedPipelineAdmission) -> query_planning::error::Result<Self>
-pub fn query_planning::contract_report::CapabilityContractReport::from_capability_analysis(&query_planning::capability::CapabilityAnalysis) -> query_planning::error::Result<Self>
+pub fn query_planning::contract_report::CapabilityContractReport::from_admission(&query_planning::admission::AdmittedPlan) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityContractReport::from_decision_rows(query_planning::mode::CapabilityEnvelopeStatus, alloc::vec::Vec<query_planning::contract_report::CapabilityDecisionRow>) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityContractReport::is_ready(&self) -> bool
 pub fn query_planning::contract_report::CapabilityContractReport::with_query_id(self, impl core::convert::Into<QueryId>) -> Self
@@ -471,7 +420,6 @@ pub query_planning::contract_report::CapabilityDecisionRow::reason: &'static str
 pub query_planning::contract_report::CapabilityDecisionRow::scope: query_planning::capability::CapabilityScope
 pub query_planning::contract_report::CapabilityDecisionRow::status: query_planning::contract_report::CapabilityDecisionStatus
 impl query_planning::contract_report::CapabilityDecisionRow
-pub fn query_planning::contract_report::CapabilityDecisionRow::deferred_composed_producer_binding(usize) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityDecisionRow::from_rejection_projection(usize, &query_planning::capability::CapabilityRejectionProjection) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityDecisionRow::to_stable_kv_row(&self) -> alloc::string::String
 impl core::fmt::Display for query_planning::contract_report::CapabilityDecisionRow
@@ -1015,7 +963,6 @@ pub fn query_planning::graph_observation::GraphMeasuredPeakRow::to_json(&self) -
 pub mod query_planning::mode
 pub enum query_planning::mode::CapabilityEnvelopeStatus
 pub query_planning::mode::CapabilityEnvelopeStatus::Admitted
-pub query_planning::mode::CapabilityEnvelopeStatus::Deferred
 pub query_planning::mode::CapabilityEnvelopeStatus::Rejected
 impl core::fmt::Display for query_planning::mode::CapabilityEnvelopeStatus
 pub fn query_planning::mode::CapabilityEnvelopeStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1142,14 +1089,6 @@ pub enum query_planning::optimizer::ProjectionSimplificationRejectedReason
 pub query_planning::optimizer::ProjectionSimplificationRejectedReason::NonIdentityExpression
 pub query_planning::optimizer::ProjectionSimplificationRejectedReason::PassDisabled
 pub query_planning::optimizer::ProjectionSimplificationRejectedReason::SchemaMismatch
-pub query_planning::optimizer::ProjectionSimplificationRejectedReason::ShapeContract
-pub enum query_planning::optimizer::SemijoinReductionAdmissionDecision
-pub query_planning::optimizer::SemijoinReductionAdmissionDecision::BoundedKept
-pub query_planning::optimizer::SemijoinReductionAdmissionDecision::BoundedRejectedRewrite
-pub query_planning::optimizer::SemijoinReductionAdmissionDecision::NotEvaluated
-pub enum query_planning::optimizer::SemijoinReductionAdmissionMode
-pub query_planning::optimizer::SemijoinReductionAdmissionMode::Bounded
-pub query_planning::optimizer::SemijoinReductionAdmissionMode::NotEvaluated
 pub enum query_planning::optimizer::SemijoinReductionCostSignal
 pub query_planning::optimizer::SemijoinReductionCostSignal::AggregateKeysetShape
 pub query_planning::optimizer::SemijoinReductionCostSignal::ByteEstimate
@@ -1166,7 +1105,6 @@ pub query_planning::optimizer::SemijoinReductionCostSignal::RowEstimate::semi_ri
 pub query_planning::optimizer::SemijoinReductionCostSignal::RowEstimate::target_rows: u64
 pub query_planning::optimizer::SemijoinReductionCostSignal::Unavailable
 pub enum query_planning::optimizer::SemijoinReductionRejectedReason
-pub query_planning::optimizer::SemijoinReductionRejectedReason::AdmissionRejectedRewrite
 pub query_planning::optimizer::SemijoinReductionRejectedReason::AmbiguousKeyLineage
 pub query_planning::optimizer::SemijoinReductionRejectedReason::CostGateRejected
 pub query_planning::optimizer::SemijoinReductionRejectedReason::DroppedKeyLineage
@@ -1445,14 +1383,11 @@ pub fn query_planning::optimizer::ProjectionSimplificationOptions::disabled() ->
 impl core::default::Default for query_planning::optimizer::ProjectionSimplificationOptions
 pub fn query_planning::optimizer::ProjectionSimplificationOptions::default() -> Self
 pub struct query_planning::optimizer::SemijoinReductionCandidateDiagnostics
-pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::admission_decision: core::option::Option<query_planning::optimizer::SemijoinReductionAdmissionDecision>
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::applied: bool
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::cost_gate: core::option::Option<query_planning::optimizer::SemijoinReductionCostGateDiagnostics>
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::crossed_join_node_ids: alloc::vec::Vec<query_planning::plan::NodeId>
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::key_mappings: alloc::vec::Vec<query_planning::optimizer::SemijoinReductionKeyMappingDiagnostics>
-pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::original_admitted: core::option::Option<bool>
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::SemijoinReductionRejectedReason>
-pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::rewritten_admitted: core::option::Option<bool>
 pub query_planning::optimizer::SemijoinReductionCandidateDiagnostics::rule_name: &'static str
 pub struct query_planning::optimizer::SemijoinReductionCostGateDiagnostics
 pub query_planning::optimizer::SemijoinReductionCostGateDiagnostics::signal: query_planning::optimizer::SemijoinReductionCostSignal
@@ -1466,14 +1401,12 @@ pub struct query_planning::optimizer::SemijoinReductionKeyMappingDiagnostics
 pub query_planning::optimizer::SemijoinReductionKeyMappingDiagnostics::after_column: core::option::Option<alloc::string::String>
 pub query_planning::optimizer::SemijoinReductionKeyMappingDiagnostics::before_column: alloc::string::String
 pub struct query_planning::optimizer::SemijoinReductionOptions
-pub query_planning::optimizer::SemijoinReductionOptions::admission_mode: query_planning::optimizer::SemijoinReductionAdmissionMode
 pub query_planning::optimizer::SemijoinReductionOptions::cost_threshold_multiplier: u64
 pub query_planning::optimizer::SemijoinReductionOptions::enabled: bool
 impl query_planning::optimizer::SemijoinReductionOptions
 pub const query_planning::optimizer::SemijoinReductionOptions::DEFAULT_COST_THRESHOLD_MULTIPLIER: u64
 pub fn query_planning::optimizer::SemijoinReductionOptions::disabled() -> Self
 pub fn query_planning::optimizer::SemijoinReductionOptions::validate(&self) -> query_planning::error::Result<()>
-pub fn query_planning::optimizer::SemijoinReductionOptions::with_admission_mode(self, query_planning::optimizer::SemijoinReductionAdmissionMode) -> Self
 impl core::default::Default for query_planning::optimizer::SemijoinReductionOptions
 pub fn query_planning::optimizer::SemijoinReductionOptions::default() -> Self
 pub struct query_planning::optimizer::SemijoinReductionResult
@@ -1553,7 +1486,7 @@ pub fn query_planning::optimizer::discover_dimension_derived_pruning_requests(&q
 pub fn query_planning::optimizer::local_parquet_source(&query_planning::plan::QueryPlan, query_planning::plan::NodeId) -> core::option::Option<&query_planning::source::LocalParquetSource>
 pub async fn query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(query_planning::plan::QueryPlan, query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, query_planning::backend::AnalysisContext<'_>) -> query_planning::optimizer::LakehouseFooterPruningResult where R: query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
 pub fn query_planning::optimizer::optimize_query_plan(query_planning::plan::QueryPlan, &query_planning::optimizer::NativeOptimizerOptions, query_planning::backend::AnalysisContext<'_>, &dyn query_planning::optimizer::LocalParquetPruningResolver) -> query_planning::optimizer::NativeOptimizerResult
-pub fn query_planning::optimizer::optimize_semijoin_reduction(query_planning::plan::QueryPlan, &query_planning::optimizer::SemijoinReductionOptions, query_planning::backend::AnalysisContext<'_>) -> query_planning::optimizer::SemijoinReductionResult
+pub fn query_planning::optimizer::optimize_semijoin_reduction(query_planning::plan::QueryPlan, &query_planning::optimizer::SemijoinReductionOptions) -> query_planning::optimizer::SemijoinReductionResult
 pub fn query_planning::optimizer::seed_dimension_derived_reader_predicates(query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::plan::QueryPlan
 pub mod query_planning::parquet_stats
 pub enum query_planning::parquet_stats::ColumnByteKind
@@ -1668,7 +1601,6 @@ impl query_planning::pipeline::CompiledPipeline
 pub fn query_planning::pipeline::CompiledPipeline::barriers(&self) -> &[query_planning::pipeline::PipelineBarrier]
 pub fn query_planning::pipeline::CompiledPipeline::debug_render(&self) -> alloc::string::String
 pub fn query_planning::pipeline::CompiledPipeline::edges(&self) -> &[query_planning::pipeline::PipelineEdge]
-pub fn query_planning::pipeline::CompiledPipeline::new(alloc::vec::Vec<query_planning::pipeline::PipelineTask>, alloc::vec::Vec<query_planning::pipeline::PipelineEdge>, alloc::vec::Vec<query_planning::pipeline::PipelineBarrier>, alloc::vec::Vec<query_planning::pipeline::ResidentResource>, query_planning::pipeline::SinkBoundary) -> Self
 pub fn query_planning::pipeline::CompiledPipeline::resources(&self) -> &[query_planning::pipeline::ResidentResource]
 pub fn query_planning::pipeline::CompiledPipeline::sink(&self) -> &query_planning::pipeline::SinkBoundary
 pub fn query_planning::pipeline::CompiledPipeline::tasks(&self) -> &[query_planning::pipeline::PipelineTask]

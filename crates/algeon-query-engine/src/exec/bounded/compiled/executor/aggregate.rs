@@ -345,11 +345,7 @@ fn compiled_aggregate_topk<'a>(
         let node_id = current.plan_node()?;
         let node = plan.node(node_id)?;
         match &node.kind {
-            PlanNode::Projection(projection) => stages.push(BoundedUnaryStage::Projection {
-                node_id,
-                node: projection,
-                output_schema: node.output_schema(),
-            }),
+            PlanNode::Projection(projection) => stages.push(BoundedUnaryStage::Projection { node: projection }),
             PlanNode::Sort(sort) => {
                 let SortStrategy::FusedTopK { limit_node, .. } = current.sort_strategy()? else {
                     return None;

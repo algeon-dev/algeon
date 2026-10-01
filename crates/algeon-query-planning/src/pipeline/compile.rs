@@ -933,11 +933,9 @@ fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
         SubgraphInvariantKind::SharedResidentSubplan => "shared_resident_subplan",
         SubgraphInvariantKind::AggregateDerivesFromSharedProducer => "aggregate_derives_from_shared_producer",
         SubgraphInvariantKind::FinalBarrierOrder => "final_barrier_order",
-        SubgraphInvariantKind::PostRootStageOrder { .. } => "post_root_stage_order",
         SubgraphInvariantKind::ProjectionTransparentResidency => "projection_transparent_residency",
         SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
         SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
-        SubgraphInvariantKind::StatisticalJoinFinalSortExactness => "statistical_join_final_sort_exactness",
         SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }
 }

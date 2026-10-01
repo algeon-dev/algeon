@@ -1,21 +1,21 @@
 use query_engine::{
     admission::{
-        CompiledBoundedPipelineSupport, CompiledJoinExecutionStrategy, bounded_join_modeled_facts,
-        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+        CompiledBoundedPipelineSupport, CompiledJoinExecutionStrategy, compiled_bounded_pipeline_support,
+        compiled_bounded_query_plan_support,
     },
     capability::{
-        CapabilityDecision, CapabilityEnvelope, CapabilityRejectionOwner, EdgeConsumer, JoinExecutionCapability,
-        join_node_execution_capability, keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable,
+        CapabilityDecision, EdgeConsumer, JoinExecutionCapability, join_node_execution_capability,
+        keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable,
         partitioned_keyed_residual_join_supported,
     },
     dimension_pruning::local_dimension_pruning_resolver,
     error::QueryErrorCode,
-    exec::preflight_bounded_query_plan,
+    exec::admit_query_plan,
     expr::Expr,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         AcceptedInputForm, AggregateExecutionStage, CompiledPipeline, OrderingScope, PipelineTaskKind,
-        ResidentDataForm, ResourceSharing, SinkBoundaryKind, SortStrategy, compile_pipeline,
+        ResidentDataForm, ResourceSharing, SortStrategy, compile_pipeline,
     },
     plan::{EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphEdgeColumnBindings},
     policy::PlanningPolicy,
@@ -34,61 +34,10 @@ fn assert_rejection_reason_is_family_free(reason: &str, label: &str) {
 fn bounded_preflight_rejection_reports_caller_visible_sink() {
     // A rejected join plan reports the caller-visible sink as a diagnostic
     // fact only; the fact never selects a second decision.
-    let (plan, _) = compositional_edge_normalize_plan();
-    let error = preflight_bounded_query_plan(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-    )
-    .expect_err("edge normalization must not preflight");
+    let plan = compositional_join_row_number_plan(false);
+    let error = admit_query_plan(&plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
+        .expect_err("a row number over unordered join output must not preflight");
     assert_eq!(error.fact_value("caller_visible_sink"), Some("host_arrow"));
-}
-
-fn admitted_artifact_for(plan: &QueryPlan) -> BoundedPipelineAdmission {
-    bounded_pipeline_admission(plan)
-        .expect("artifact fixture should not fail admission")
-        .expect("artifact fixture should be admitted")
-}
-
-#[test]
-fn bounded_artifact_binding_matches_decided_plan_and_mode() {
-    // The artifact binds the exact plan, mode, and sink it was decided for;
-    // execution and reporting read this same binding.
-    let mut builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut builder);
-    let plan = builder.finish_with_host_sink(join);
-    let mode = StatisticalAggregateExecutionMode::default();
-
-    let admission = admitted_artifact_for(&plan);
-    assert!(admission.matches(&plan, mode));
-    assert_eq!(admission.sink_kind(), SinkBoundaryKind::HostArrowMaterialization);
-    assert_eq!(admission.statistical_aggregate_execution_mode(), mode);
-    assert!(admission.scope().matches(&plan));
-}
-
-#[test]
-fn bounded_artifact_binding_rejects_mismatched_plan_and_mode() {
-    // A plan, mode, or sink the artifact does not bind to is a caller error
-    // with a typed reason, never a silent re-decision.
-    let mut builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut builder);
-    let plan = builder.finish_with_host_sink(join);
-    let mode = StatisticalAggregateExecutionMode::default();
-    let admission = admitted_artifact_for(&plan);
-
-    let aliased = compositional_alias_join_plan();
-    assert!(!admission.matches(&aliased, mode));
-    let projection =
-        admission.binding_rejection(&aliased, mode).expect("mismatched plan must name its binding clause");
-    assert_eq!(projection.reason, "compiled_pipeline_sink_output_plan_node_mismatch");
-    assert_rejection_reason_is_family_free(projection.reason, "artifact binding rejection");
-
-    let other_mode = StatisticalAggregateExecutionMode::DataFusionExactHostWelford;
-    assert!(mode != other_mode, "binding test needs two distinct execution modes");
-    assert!(!admission.matches(&plan, other_mode));
-    let projection =
-        admission.binding_rejection(&plan, other_mode).expect("mismatched mode must name its binding clause");
-    assert_eq!(projection.reason, "compiled_pipeline_artifact_mode_mismatch");
 }
 
 #[test]
@@ -132,7 +81,7 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     let limit_index =
         tasks.iter().position(|task| task.id() == limit_task_id).expect("fused limit task exists");
     tasks[limit_index] = tasks[limit_index].clone().with_sort_strategy(fused);
-    let rebuilt = CompiledPipeline::new(
+    let rebuilt = CompiledPipeline::from_parts_unvalidated(
         tasks,
         pipeline.edges().to_vec(),
         pipeline.barriers().to_vec(),

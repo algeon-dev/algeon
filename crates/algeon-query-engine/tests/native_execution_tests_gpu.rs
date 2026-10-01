@@ -30,9 +30,10 @@ use query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::{QueryErrorCode, Result as QueryEngineResult},
     exec::{
-        QueryExecutionRequest, execute_query_plan as execute_query_plan_direct, materialize_gpu_result_to_host,
+        QueryExecutionRequest, admit_query_plan, execute_query_plan as execute_query_plan_direct,
+        materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
-        preflight_bounded_query_plan, preflight_query_plan,
+        preflight_query_plan,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
@@ -315,11 +316,7 @@ impl BackendQueryContext {
     }
 
     fn admit_plan(&self, plan: &QueryPlan) -> QueryEngineResult<AdmittedPlanContext> {
-        preflight_bounded_query_plan(
-            plan,
-            self.policy.statistical_aggregate_execution_mode,
-            self.policy.planning_policy,
-        )?;
+        admit_query_plan(plan, self.policy.statistical_aggregate_execution_mode, self.policy.planning_policy)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         self.admit_evidence(evidence)
     }
@@ -355,16 +352,13 @@ impl BackendQueryContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> QueryEngineResult<QueryExecutionResult> {
-        preflight_bounded_query_plan(
-            plan,
-            self.policy.statistical_aggregate_execution_mode,
-            self.policy.planning_policy,
-        )?;
+        let admitted_plan =
+            admit_query_plan(plan, self.policy.statistical_aggregate_execution_mode, self.policy.planning_policy)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
         let outcome = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
         let result = result.map(|output| QueryExecutionResult::new(output, metrics));
@@ -405,9 +399,15 @@ impl TestExecutionContext for AdmittedPlanContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> QueryEngineResult<QueryExecutionResult> {
+        let execution_context = self.context.context();
+        let admitted = admit_query_plan(
+            plan,
+            execution_context.statistical_aggregate_execution_mode(),
+            execution_context.planning_policy(),
+        )?;
         let outcome = execute_query_plan_direct(
-            self.context.context(),
-            QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
+            execution_context,
+            QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
         result.map(|output| QueryExecutionResult::new(output, metrics))

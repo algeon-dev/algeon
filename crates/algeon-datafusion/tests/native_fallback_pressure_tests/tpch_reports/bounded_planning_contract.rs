@@ -72,9 +72,6 @@ async fn tpch_progression_contract_pairs_fallback_pressure_and_bounded_planning(
             Some(CandidateOutcomeKind::NotSelectedByCost) => {
                 panic!("fallback-pressure reports do not apply cost selection")
             },
-            Some(CandidateOutcomeKind::Deferred) => {
-                panic!("fallback-pressure reports do not defer candidates")
-            },
             None => panic!("terminal planning failure is outside this physical-plan workload"),
         }
     }

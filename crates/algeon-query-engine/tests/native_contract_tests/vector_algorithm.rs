@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
-    admission::bounded_pipeline_decision,
+    admission::admit,
     capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, VectorInputRole},
     dimension_pruning::local_dimension_pruning_resolver,
     exec::preflight_query_plan,
@@ -518,7 +518,7 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
             );
         }
 
-        let decision = bounded_pipeline_decision(&plan, Default::default(), rapids_analysis_context())
+        let decision = admit(&plan, Default::default(), rapids_analysis_context())
             .expect("bounded admission should classify vector plan");
         let admission = decision.admission().unwrap_or_else(|| {
             panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection_projection())

@@ -12,7 +12,7 @@ use super::{
     metrics::NativeDataFusionExecutionMetrics,
     schema::{
         NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS,
-        NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
+        NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA, NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
         TsvRow, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_decision_rows,
@@ -47,7 +47,7 @@ pub struct NativeDataFusionPlanningRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Deferred or rejected capability decisions emitted by the selected candidate.
+    /// Rejected capability decisions emitted by the selected candidate.
     pub capability_decision_rows: Vec<CapabilityDecisionRow>,
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
@@ -289,6 +289,7 @@ impl TsvRow for NativeDataFusionPlanningRow {
 
     fn fields(&self) -> Vec<String> {
         vec![
+            NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA.to_string(),
             self.query_id.clone(),
             self.physical_root.clone(),
             self.physical_shape.clone(),
@@ -500,7 +501,7 @@ mod tests {
         assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
         assert_eq!(
             planning.to_tsv_line(),
-            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
+            "algeon_datafusion.native_datafusion_planning_tsv.v2\tq\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
         );
 
         let execution = NativeDataFusionExecutionRow {

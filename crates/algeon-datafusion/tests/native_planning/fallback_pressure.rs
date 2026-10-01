@@ -9,9 +9,9 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-        NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport, NativeFallbackPressureRow,
-        NativeFallbackPressureWorkloadItem,
+        NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport,
+        NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport,
+        NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem,
     },
     planner::{
         AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics,
@@ -472,11 +472,11 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     let text = accepted.to_tsv();
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
+        "schema\tquery_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
     );
     assert!(text.starts_with(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
-    assert!(text.contains("sum_session\t"));
+    assert!(text.contains(&format!("\n{NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA}\tsum_session\t")));
     assert!(text.contains("\tselected\tnone\tnone\t"));
     assert!(text.contains("\tfalse\tnone\t"));
     assert!(text.contains("\tAlgeonNativeExec\tnative\t1\t0\tfalse"));
@@ -535,6 +535,60 @@ async fn exact_statistical_aggregate_mode_keeps_aggregates_outside_the_host_kern
     assert_eq!(exact_row.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(exact_row.reason_code.as_deref(), Some("unsupported_type"));
     assert_eq!(exact_row.final_disposition, Some(FinalPlanDisposition::DataFusion));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn exact_statistical_aggregate_mode_keeps_partitioned_aggregate_input_on_datafusion() {
+    let dir = unique_temp_dir("algeon-datafusion-exact-statistical-partitioned-input");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Float64, false),
+    ]));
+    for file in 0..4 {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from((0..64).map(|row| row % 7).collect::<Vec<_>>())),
+                Arc::new(Float64Array::from((0..64).map(|row| f64::from(row) / 7.0).collect::<Vec<_>>())),
+            ],
+        )
+        .unwrap();
+        let path = dir.join(format!("part-{file}.parquet"));
+        let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    // A partitioned hash join feeds the aggregate from hash-repartitioned
+    // streams, so DataFusion's row order into the aggregate varies per run.
+    let sql = "SELECT x.key, STDDEV_SAMP(x.m00) AS m00_stddev FROM bench x \
+               JOIN (SELECT DISTINCT key FROM bench) y ON x.key = y.key GROUP BY x.key";
+    let planning_report = |query_id: &'static str, target_partitions: usize| {
+        let mut session_config = SessionConfig::new().with_target_partitions(target_partitions);
+        session_config.options_mut().optimizer.hash_join_single_partition_threshold = 0;
+        session_config.options_mut().optimizer.hash_join_single_partition_threshold_rows = 0;
+        let optimizer_config = AlgeonNativeOptimizerConfig::default()
+            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
+                256 * 1024 * 1024,
+                64 * 1024 * 1024,
+                1,
+                3,
+                1,
+            ))
+            .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
+        native_datafusion_planning_report_with_optimizer_config(query_id, &dir, sql, session_config, optimizer_config)
+    };
+
+    let partitioned = planning_report("partitioned", 4).await;
+    assert_eq!(partitioned.rows.len(), 1);
+    assert_eq!(partitioned.rows[0].outcome, Some(CandidateOutcomeKind::NotSupported));
+    assert_eq!(partitioned.rows[0].reason_code.as_deref(), Some("native_exact_statistical_input_partitioned"));
+    assert_eq!(partitioned.rows[0].final_disposition, Some(FinalPlanDisposition::DataFusion));
+
+    let single_partition = planning_report("single_partition", 1).await;
+    assert_eq!(single_partition.rows.len(), 1);
+    assert_eq!(single_partition.rows[0].final_disposition, Some(FinalPlanDisposition::Native));
 
     fs::remove_dir_all(dir).unwrap();
 }

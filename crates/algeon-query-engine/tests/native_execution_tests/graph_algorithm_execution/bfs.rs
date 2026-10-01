@@ -42,6 +42,8 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     );
 
     let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    // The graph task feeds the host sink through the compiled pipeline.
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };

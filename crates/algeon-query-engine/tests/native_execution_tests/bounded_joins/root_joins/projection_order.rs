@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::{expr::ColumnRef, rapids_backend::rapids_analysis_context};
+use query_engine::expr::ColumnRef;
 
 use super::*;
 
@@ -31,7 +31,7 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -118,7 +118,7 @@ fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

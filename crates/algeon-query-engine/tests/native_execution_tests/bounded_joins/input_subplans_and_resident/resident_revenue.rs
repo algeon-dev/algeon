@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use query_engine::{
-    admission::bounded_join_unsupported_shape_facts,
+    admission::{admit, bounded_join_unsupported_shape_facts},
     expr::ColumnRef,
     plan::{NodeId, QueryPlan},
     rapids_backend::rapids_analysis_context,
@@ -24,22 +24,8 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
         &lineitem_schema,
     );
 
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(
-        !plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
-    );
-    assert!(
-        !plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    assert!(
-        !plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-    );
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
-    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

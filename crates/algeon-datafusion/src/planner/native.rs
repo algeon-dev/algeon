@@ -48,9 +48,8 @@ use attempt::{
     peel_cooperative_native_exec,
 };
 pub use capability_envelope::{
-    CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NativeCapabilityAcceptedCandidateDiagnostics,
-    NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics,
-    NativeCapabilityDeferredCandidateDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
+    NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
+    NativeCapabilityContractDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
 };
 pub(crate) use invocation::Invocation;
 #[cfg(feature = "server")]
@@ -123,9 +122,7 @@ fn first_native_not_supported(
         CandidateOutcome::NotSupported { candidate, capability_reason } => {
             Some((candidate, *capability_reason, report.unsupported_column(index)))
         },
-        CandidateOutcome::Selected { .. }
-        | CandidateOutcome::Deferred { .. }
-        | CandidateOutcome::NotSelectedByCost { .. } => None,
+        CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
 }
 
@@ -989,9 +986,7 @@ mod tests {
             .enumerate()
             .find_map(|(index, outcome)| match outcome {
                 CandidateOutcome::NotSupported { .. } => diagnostics.report.unsupported_column(index),
-                CandidateOutcome::Selected { .. }
-                | CandidateOutcome::Deferred { .. }
-                | CandidateOutcome::NotSelectedByCost { .. } => None,
+                CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
             })
             .expect("unsupported column detail")
             .name

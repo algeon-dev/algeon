@@ -22,8 +22,9 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection()
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
 
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
+    assert!(
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+    );
 
     let right_projection_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
     let plan = mixed_residual_join_plan(
@@ -34,8 +35,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection()
         JoinSide::Right,
         vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
     );
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    let facts = unsupported_facts(&plan, rapids_analysis_context())
+    let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
         .expect("unsupported mixed semi root shape should produce facts");
     assert_rejection_facts_are_family_free(&facts, "mixed_semi_root_right_projection");
     assert_eq!(
@@ -53,30 +53,20 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection()
         JoinSide::Left,
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
+    assert!(
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+    );
 }
 
 #[test]
-fn bounded_keyless_conditional_left_only_joins_require_left_reservation_orientation() {
+fn bounded_keyless_conditional_left_semi_join_admits_left_reservation_orientation() {
     let left_schema = Arc::new(Schema::new(vec![Field::new("left_payload", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("left_payload", DataType::Int32, false)]));
 
-    let plan = keyless_conditional_left_semi_plan(
-        Arc::clone(&left_schema),
-        Arc::clone(&right_schema),
-        Arc::clone(&output_schema),
-        JoinSide::Right,
-    );
-    assert!(
-        !plan.capability_analysis(rapids_analysis_context()).admits_root_join(),
-        "default right build-side orientation must not be accepted for keyless conditional left semi joins"
-    );
-
     let plan = keyless_conditional_left_semi_plan(left_schema, right_schema, output_schema, JoinSide::Left);
     assert!(
-        plan.capability_analysis(rapids_analysis_context()).admits_root_join(),
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
         "keyless conditional left semi joins use the left side as the explicit reservation orientation"
     );
 }
@@ -107,6 +97,7 @@ fn bounded_mixed_residual_full_root_supports_pair_projection() {
         ],
     );
 
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
+    assert!(
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+    );
 }

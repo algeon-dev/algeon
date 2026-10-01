@@ -159,7 +159,6 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             aggregate: (aggregate, output_schema),
             post_aggregate_stages: Vec::new(),
             sort: None,
-            post_sort_projections: Vec::new(),
             limit: None,
         })
     }

@@ -28,24 +28,6 @@ use crate::{
     },
 };
 
-pub(super) fn execute_final_sort_limit_with_retry(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    input: CommittedPartial,
-) -> Result<CommittedPartial> {
-    let Some(sort) = bounded.sort else {
-        return Ok(input);
-    };
-    execute_final_sort_node_with_retry(
-        execution,
-        bounded.aggregate_id,
-        sort,
-        bounded.limit.map(|(_, limit)| limit),
-        input,
-        None,
-    )
-}
-
 pub(super) fn execute_final_sort_node_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -55,7 +37,7 @@ pub(super) fn execute_final_sort_node_with_retry(
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CommittedPartial> {
     let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
-        unreachable!("execute_final_sort_limit_with_retry is called only for bounded policies");
+        unreachable!("execute_final_sort_node_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();

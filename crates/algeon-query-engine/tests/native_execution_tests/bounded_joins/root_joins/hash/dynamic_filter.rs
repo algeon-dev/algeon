@@ -1,5 +1,5 @@
 use query_engine::{
-    admission::bounded_join_unsupported_shape_facts,
+    admission::{admit, bounded_join_unsupported_shape_facts},
     dimension_pruning::local_dimension_pruning_resolver,
     dynamic_filter::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterProducer,
@@ -1726,7 +1726,8 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, rapids_analysis_context()).is_none());
+    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context()).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate keyset join input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1797,7 +1798,8 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
     ));
     let context = backend_context_with_grant(1024 * 1024);
 
-    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, rapids_analysis_context()).is_none());
+    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context()).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate probe input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {

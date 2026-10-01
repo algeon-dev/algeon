@@ -18,7 +18,7 @@ use datafusion::{
 use futures::future::BoxFuture;
 use query_engine::{
     admission::AttemptCapabilityEvidence,
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput, preflight_query_plan},
+    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan, output::QueryOutput, preflight_query_plan},
     expr::Expr as NativeExpr,
     metrics::QueryMetrics,
     plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
@@ -263,8 +263,24 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         let uploaded = staged.upload(native_context, task_context).await?;
         let host_to_device_uploads = uploaded.host_to_device_uploads.clone();
         let plan = plan_for_sink(&self.spec.lower(&uploaded.bindings, Arc::clone(&self.output_schema))?, sink);
-        let outcome =
-            execute_query_plan(native_context, QueryExecutionRequest::new(&plan).with_gpu_inputs(&uploaded.inputs));
+        // The relation plan exists only after its inputs are uploaded, so it is
+        // admitted here, once; a refusal is a typed error, never a CPU rerun.
+        let admitted = admit_query_plan(
+            &plan,
+            native_context.statistical_aggregate_execution_mode(),
+            native_context.planning_policy(),
+        )
+        .map_err(|error| {
+            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
+                S::TEXT.operations.execute,
+                S::TEXT.messages.execution_failed,
+                error,
+            ))
+        })?;
+        let outcome = execute_query_plan(
+            native_context,
+            QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&uploaded.inputs),
+        );
         let (result, mut query_metrics, _observation) = outcome.into_parts();
         record_relation_staging_boundaries(&mut query_metrics, &host_to_device_uploads);
         metrics.record_query_metrics(&query_metrics);

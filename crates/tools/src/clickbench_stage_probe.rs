@@ -31,7 +31,7 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use query_engine::{
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
+    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan, output::QueryOutput},
     observability::{
         LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig,
         RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeOperatorStageState,
@@ -197,8 +197,13 @@ async fn probe_native_observed(
 
     let started = Instant::now();
     let admitted_context = query_handle.acquire_context_with_cancellation(cancellation.clone())?;
+    let admitted_plan = admit_query_plan(
+        &native_plan,
+        admitted_context.context().statistical_aggregate_execution_mode(),
+        admitted_context.context().planning_policy(),
+    )?;
 
-    let outcome = execute_query_plan(admitted_context.context(), QueryExecutionRequest::new(&native_plan));
+    let outcome = execute_query_plan(admitted_context.context(), QueryExecutionRequest::admitted(&admitted_plan));
     stop.store(true, Ordering::Release);
     let _ = watchdog.join();
     let elapsed_ms = started.elapsed().as_millis() as u64;
