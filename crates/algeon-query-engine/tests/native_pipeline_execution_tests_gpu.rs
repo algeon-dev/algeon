@@ -246,7 +246,7 @@ fn execute_query_plan(context: &PipelineTestContext, plan: &QueryPlan) -> Result
     )?;
     let outcome = execute_engine_query_plan(execution_context, QueryExecutionRequest::admitted(&admitted));
     let (result, metrics, _observation) = outcome.into_parts();
-    result.map(|output| QueryExecutionResult::new(output, metrics))
+    result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()))
 }
 
 fn execute_query_plan_with_gpu_inputs(
@@ -265,7 +265,7 @@ fn execute_query_plan_with_gpu_inputs(
         QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(gpu_inputs),
     );
     let (result, metrics, _observation) = outcome.into_parts();
-    result.map(|output| QueryExecutionResult::new(output, metrics))
+    result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()))
 }
 
 type Int32Triple = (Option<i32>, Option<i32>, Option<i32>);

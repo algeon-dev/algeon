@@ -55,16 +55,7 @@
               "type": "object"
             },
             "device_ordinal": "number",
-            "ledger_sequence": "number",
-            "telemetry": {
-              "fields": {
-                "allocation_failure_bytes": "number",
-                "allocation_failure_count": "number",
-                "largest_allocation_failure_bytes": "number",
-                "last_refresh": "null"
-              },
-              "type": "object"
-            }
+            "ledger_sequence": "number"
           },
           "type": "object"
         }

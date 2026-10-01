@@ -3,8 +3,9 @@
 use std::{
     collections::BTreeMap,
     fmt, mem,
+    panic::{self, AssertUnwindSafe},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -21,7 +22,11 @@ use super::{
     SealedRuntimeObservationSnapshot, SourceLocationDigestKeyProvider, SourceLocationDigestKeyState,
     SourceLocationDigestKeyUnavailable, SourceReadFact, SourceReadRuntimeMetrics, SystemRuntimeObservationClock,
 };
-use crate::{metrics::BoundaryMetrics, observability::recorder::ExecutionProgress};
+use crate::{
+    metrics::{BoundaryMetrics, QueryId, TraceId},
+    observability::recorder::ExecutionProgress,
+    runtime::{LakehouseCacheFillEvent, LakehouseCacheFillEventSnapshot},
+};
 
 /// Growing detail families and the loss class each is retained under.
 ///
@@ -120,6 +125,7 @@ impl RuntimeObservationHandle {
                 clock,
                 state: Mutex::new(state),
                 sealed: AtomicBool::new(false),
+                seal_published: Condvar::new(),
             })),
         }
     }
@@ -301,16 +307,52 @@ impl RuntimeObservationHandle {
             inner.sealed.store(true, Ordering::Release);
             return DeferredRuntimeObservationSeal { snapshot: None, observers: Vec::new() };
         }
-        if let Some(snapshot) = &state.sealed_snapshot {
-            return DeferredRuntimeObservationSeal { snapshot: Some(snapshot.clone()), observers: Vec::new() };
+        loop {
+            if let Some(snapshot) = &state.sealed_snapshot {
+                return DeferredRuntimeObservationSeal { snapshot: Some(snapshot.clone()), observers: Vec::new() };
+            }
+            if !inner.sealed.load(Ordering::Acquire) {
+                break;
+            }
+            state = inner.wait_for_seal(state);
         }
         inner.sealed.store(true, Ordering::Release);
-        let snapshot = SealedRuntimeObservationSnapshot {
-            data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome, attempt_report_provider)),
-        };
+        let mut data = inner.take_sealed_snapshot_data(&mut state, outcome);
+        data.plans = self.sealed_plan_metrics(&state, &inner.manifest);
+        let mut provider_panic = None;
+        if let Some(provider) = attempt_report_provider {
+            let cleanup_failures = state.cleanup_failures.clone();
+            // The provider runs the attempt's report sinks, which may read or
+            // record through this session; recording is already closed.
+            drop(state);
+            // The provider builds the exact immutable report that completion
+            // receivers publish, from the complete footer.
+            match panic::catch_unwind(AssertUnwindSafe(|| provider(&data.footer, &cleanup_failures))) {
+                Ok(report) => {
+                    debug_assert_eq!(data.footer.terminal.as_ref(), Some(&report.outcome));
+                    data.footer.attempt_report = Some(report);
+                },
+                Err(panic) => {
+                    data.footer.terminal = Some(RuntimeTerminalOutcome::Panicked);
+                    data.footer.degraded = true;
+                    provider_panic = Some(panic);
+                },
+            }
+            state = inner.lock_state();
+        }
+        let snapshot = SealedRuntimeObservationSnapshot { data: Arc::new(data) };
         state.sealed_snapshot = Some(snapshot.clone());
         let observers = mem::take(&mut state.seal_observers);
-        DeferredRuntimeObservationSeal { snapshot: Some(snapshot), observers }
+        inner.seal_published.notify_all();
+        let deferred = DeferredRuntimeObservationSeal { snapshot: Some(snapshot), observers };
+        if let Some(panic) = provider_panic {
+            // Observers run outside the state lock. The snapshot is already
+            // published, so a recovery seal returns it instead of waiting.
+            drop(state);
+            deferred.invoke_observers();
+            panic::resume_unwind(panic);
+        }
+        deferred
     }
 
     pub(super) fn mark_degraded(&self) {
@@ -368,6 +410,9 @@ impl RuntimeObservationHandle {
             return;
         }
         let execution = state.metrics.entry(plan_execution_id.clone()).or_default();
+        if execution.is_frozen() {
+            return;
+        }
         if !execution.summary.source_read.apply(&fact) {
             execution.totals_saturated = true;
         }
@@ -386,7 +431,9 @@ impl RuntimeObservationHandle {
             return;
         };
         let mut state = inner.lock_state();
-        if inner.sealed.load(Ordering::Acquire) {
+        if inner.sealed.load(Ordering::Acquire)
+            || state.metrics.get(plan_execution_id).is_some_and(PlanExecutionMetrics::is_frozen)
+        {
             return;
         }
         let logical_bytes = debug_logical_bytes(&row);
@@ -401,6 +448,38 @@ impl RuntimeObservationHandle {
             execution.source_read_rows_dropped = execution.source_read_rows_dropped.saturating_add(1);
         }
         state.metrics_revision = state.metrics_revision.saturating_add(1);
+    }
+
+    /// Offers one background lakehouse cache-fill completion for bounded
+    /// retention.
+    ///
+    /// With trace capture disabled the event is not kept. Otherwise it shares
+    /// the query's record and byte limits, and a declined event is counted as
+    /// a `LakehouseCacheFillDetail` loss. The next plan execution to freeze its
+    /// metrics carries the retained events.
+    #[doc(hidden)]
+    pub fn record_lakehouse_cache_fill(&self, event: &LakehouseCacheFillEvent) {
+        let Some(inner) = self.trace_inner() else {
+            return;
+        };
+        let mut state = inner.lock_state();
+        if inner.sealed.load(Ordering::Acquire) {
+            return;
+        }
+        let event = LakehouseCacheFillEventSnapshot::from(event);
+        let logical_bytes = debug_logical_bytes(&event);
+        let sequence = state.take_sequence();
+        if state
+            .admit(
+                inner.manifest.limits,
+                RuntimeObservationRecordClass::LakehouseCacheFillDetail,
+                sequence,
+                logical_bytes,
+            )
+            .is_ok()
+        {
+            state.cache_fill_events.push(event);
+        }
     }
 
     /// Returns whether this handle reaches a query-bound owner, which is
@@ -439,12 +518,62 @@ impl RuntimeObservationHandle {
     pub fn metrics_checkpoint(&self, plan_execution_id: &PlanExecutionId) -> Option<QueryMetricsCheckpoint> {
         let inner = self.inner.as_ref()?;
         let state = inner.lock_state();
+        Some(self.plan_checkpoint(&state, plan_execution_id, inner.sealed.load(Ordering::Acquire)))
+    }
+
+    /// Freezes a plan execution's metrics and returns them. Facts recorded
+    /// for that plan afterwards are ignored; freezing again returns the same
+    /// checkpoint. Returns `None` only for [`Self::disabled`].
+    pub(crate) fn freeze_plan_metrics(&self, plan_execution_id: &PlanExecutionId) -> Option<QueryMetricsCheckpoint> {
+        let inner = self.inner.as_ref()?;
+        let mut state = inner.lock_state();
+        if !state.metrics.get(plan_execution_id).is_some_and(PlanExecutionMetrics::is_frozen) {
+            let cache_fill_events = mem::take(&mut state.cache_fill_events);
+            let execution = state.metrics.entry(plan_execution_id.clone()).or_default();
+            execution.reduction.lakehouse_cache_fill_events.extend(cache_fill_events);
+        }
+        let checkpoint = self.plan_checkpoint(&state, plan_execution_id, true);
+        state.metrics.entry(plan_execution_id.clone()).or_default().frozen = Some(checkpoint.clone());
+        Some(checkpoint)
+    }
+
+    /// Every plan execution's metrics as a sealed snapshot carries them: the
+    /// frozen value, or the reduction at seal.
+    fn sealed_plan_metrics(
+        &self,
+        state: &RuntimeObservationRecorderState,
+        manifest: &RuntimeObservationManifest,
+    ) -> BTreeMap<PlanExecutionId, QueryMetrics> {
+        state
+            .metrics
+            .keys()
+            .map(|plan_execution_id| {
+                let mut metrics = QueryMetrics {
+                    query_id: QueryId::new(manifest.query_id.as_str()),
+                    trace_id: manifest.trace_id.as_ref().map(|trace_id| TraceId::new(trace_id.as_str())),
+                    ..QueryMetrics::default()
+                };
+                metrics.apply_owner_checkpoint(&self.plan_checkpoint(state, plan_execution_id, true));
+                (plan_execution_id.clone(), metrics)
+            })
+            .collect()
+    }
+
+    fn plan_checkpoint(
+        &self,
+        state: &RuntimeObservationRecorderState,
+        plan_execution_id: &PlanExecutionId,
+        sealed: bool,
+    ) -> QueryMetricsCheckpoint {
         let empty = PlanExecutionMetrics::default();
         let execution = state.metrics.get(plan_execution_id).unwrap_or(&empty);
+        if let Some(frozen) = &execution.frozen {
+            return frozen.clone();
+        }
         let detail_rows_dropped = execution.source_read_rows_dropped.saturating_add(execution.detail_rows_dropped);
-        Some(QueryMetricsCheckpoint {
+        QueryMetricsCheckpoint {
             revision: state.metrics_revision,
-            sealed: inner.sealed.load(Ordering::Acquire),
+            sealed,
             summary: execution.summary.clone(),
             source_read_rows: execution.source_read_rows.clone(),
             metrics: execution.reduction.clone(),
@@ -458,7 +587,7 @@ impl RuntimeObservationHandle {
                 truncated: detail_rows_dropped > 0,
                 totals_saturated: execution.totals_saturated || state.counter_overflow,
             },
-        })
+        }
     }
 
     /// Applies one typed metrics fact to a plan execution's reduction.
@@ -473,7 +602,9 @@ impl RuntimeObservationHandle {
             return;
         };
         let mut state = inner.lock_state();
-        if inner.sealed.load(Ordering::Acquire) {
+        if inner.sealed.load(Ordering::Acquire)
+            || state.metrics.get(plan_execution_id).is_some_and(PlanExecutionMetrics::is_frozen)
+        {
             return;
         }
         let mut execution = state.metrics.remove(plan_execution_id).unwrap_or_default();
@@ -539,7 +670,7 @@ impl RuntimeObservationHandle {
         let Some(peaks) = execution.budget_windows.remove(&window.0) else {
             return;
         };
-        if sealed || (peaks.observed_peak_bytes.is_none() && peaks.retained_bytes.is_none()) {
+        if sealed || execution.is_frozen() || (peaks.observed_peak_bytes.is_none() && peaks.retained_bytes.is_none()) {
             return;
         }
         execution.reduction.record_task_budget_observation(

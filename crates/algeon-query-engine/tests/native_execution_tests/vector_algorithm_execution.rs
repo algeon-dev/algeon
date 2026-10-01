@@ -404,6 +404,7 @@ fn execute_failing_columns_knn(dataset_x: Vec<f32>, k: usize) -> QueryError {
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
+    let metrics = metrics.snapshot();
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("invalid kNN input must fail at the vector operator"),
@@ -467,6 +468,7 @@ fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
+    let metrics = metrics.snapshot();
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("pairwise N*M allocation must exceed query cap"),
@@ -532,6 +534,7 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&gpu_inputs),
     )
     .into_parts();
+    let metrics = metrics.snapshot();
     let error = match result {
         Err(error) => error,
         Ok(_) => panic!("CAGRA build must exceed the query cap"),

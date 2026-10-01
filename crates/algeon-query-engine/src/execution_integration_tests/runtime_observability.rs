@@ -73,7 +73,7 @@ fn observed_execution_cancellation_preserves_error_metrics_and_partial_events() 
 
     let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::admitted(&admitted));
     assert!(matches!(outcome.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
-    assert_eq!(outcome.metrics().query_id().as_str(), "observed-cancel");
+    assert_eq!(outcome.metrics().snapshot().query_id().as_str(), "observed-cancel");
     let snapshot = outcome.observation().expect("enabled execution returns sealed evidence");
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
     assert_eq!(snapshot.events().iter().filter(|event| is_query_terminal(&event.payload)).count(), 1);

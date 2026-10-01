@@ -10,12 +10,14 @@ use std::{
     },
 };
 
-use datafusion::physical_plan::metrics::{
-    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, MetricsSet,
+use arrow::record_batch::RecordBatch;
+use datafusion::{
+    common::utils::memory::get_record_batch_memory_size,
+    physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, MetricsSet},
 };
 use query_engine::{
     error::QueryError,
-    exec::output::{QueryExecutionOutcome, QueryOutput},
+    exec::output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
     graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
     metrics::{JoinOperatorMetrics, QueryMetrics},
     observability::{AttemptId, QueryAttemptReport, RuntimeObservationConfig},
@@ -386,7 +388,6 @@ pub(crate) struct AlgeonNativeMetrics {
     row_capture_budget: Arc<Mutex<MetricRowCaptureBudget>>,
     row_capture_loss: Count,
     row_capture_loss_reported: Arc<AtomicBool>,
-    deferred_compiled_host_sink: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -496,7 +497,6 @@ impl AlgeonNativeMetrics {
             row_capture_budget,
             row_capture_loss,
             row_capture_loss_reported: Arc::new(AtomicBool::new(false)),
-            deferred_compiled_host_sink: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -557,41 +557,26 @@ impl AlgeonNativeMetrics {
         &self,
         outcome: QueryExecutionOutcome,
     ) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, metrics, _observation) = outcome.into_parts();
-        self.record_query_metrics(&metrics);
+        let (result, plan, _observation) = outcome.into_parts();
+        self.record_query_metrics(&plan.freeze());
         result
     }
 
-    /// Finalize a native outcome whose logical host sink is materialized later
-    /// by the adapter's bounded GPU-to-host cursor.
+    /// Finalizes a native outcome whose logical host sink the adapter's
+    /// bounded GPU-to-host cursor runs later. A failed plan records its
+    /// metrics now; a successful one hands them to the cursor.
     pub(crate) fn finalize_query_outcome_for_deferred_host(
         &self,
         outcome: QueryExecutionOutcome,
-    ) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, metrics, _observation) = outcome.into_parts();
-        self.deferred_compiled_host_sink.store(metrics.compiled_pipeline_attempts > 0, Ordering::Relaxed);
-        self.record_query_metrics(&metrics);
-        result
-    }
-
-    /// Records the host sink a compiled pipeline deferred to the adapter, once,
-    /// when the adapter's cursor has run it: after its first batch, or at the
-    /// end of an output that had none.
-    pub(crate) fn record_deferred_host_sink_executed(&self) {
-        if self.deferred_compiled_host_sink.swap(false, Ordering::Relaxed) {
-            self.compiled_pipeline_tasks_executed.add(1);
-            self.compiled_pipeline_host_arrow_sinks.add(1);
+    ) -> std::result::Result<(QueryOutput, DeferredHostMetrics), QueryError> {
+        let (result, plan, _observation) = outcome.into_parts();
+        match result {
+            Ok(output) => Ok((output, DeferredHostMetrics::new(self.clone(), plan))),
+            Err(error) => {
+                self.record_query_metrics(&plan.freeze());
+                Err(error)
+            },
         }
-    }
-
-    pub(crate) fn record_deferred_host_materialization(&self, rows: usize, bytes: usize) {
-        self.device_to_host_materializations.add(1);
-        self.device_to_host_materialized_rows.add(rows);
-        self.device_to_host_materialized_bytes.add(bytes);
-    }
-
-    pub(crate) fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
-        self.record_descriptor_cache_events(events);
     }
 
     fn record_lakehouse_cache_fill_event_rows(&self, events: &[LakehouseCacheFillEventSnapshot]) {
@@ -1359,6 +1344,54 @@ struct JoinRuntimeCounters {
     one_shot_join_index_bytes: u64,
     one_shot_join_materialization_bytes: u64,
     one_shot_join_output_bytes: u64,
+}
+
+/// The metrics of a plan whose host sink runs in the adapter's cursor.
+///
+/// The cursor records the sink's work into the plan through its recorder.
+/// The plan's metrics freeze and reach DataFusion once, when this value
+/// drops: at the end of the output, on a cursor failure, or when the consumer
+/// stops early.
+#[derive(Debug)]
+pub(crate) struct DeferredHostMetrics {
+    metrics: AlgeonNativeMetrics,
+    plan: PlanMetrics,
+    compiled_sink_pending: bool,
+}
+
+impl DeferredHostMetrics {
+    fn new(metrics: AlgeonNativeMetrics, plan: PlanMetrics) -> Self {
+        let compiled_sink_pending = plan.snapshot().compiled_pipeline_attempts > 0;
+        Self { metrics, plan, compiled_sink_pending }
+    }
+
+    pub(crate) const fn baseline(&self) -> &BaselineMetrics {
+        &self.metrics.baseline
+    }
+
+    /// Records the host sink a compiled pipeline deferred to the adapter, once,
+    /// when the cursor has run it: after its first batch, or at the end of an
+    /// output that had none.
+    pub(crate) fn record_sink_executed(&mut self) {
+        if std::mem::take(&mut self.compiled_sink_pending) {
+            let recorder = self.plan.recorder();
+            recorder.record_compiled_pipeline_tasks_executed(1);
+            recorder.record_compiled_pipeline_host_arrow_sink();
+        }
+    }
+
+    pub(crate) fn record_materialization(&self, batch: &RecordBatch) {
+        self.plan.recorder().record_device_to_host_materialization(
+            u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
+            u64::try_from(get_record_batch_memory_size(batch)).unwrap_or(u64::MAX),
+        );
+    }
+}
+
+impl Drop for DeferredHostMetrics {
+    fn drop(&mut self) {
+        self.metrics.record_query_metrics(&self.plan.freeze());
+    }
 }
 
 fn optional_fact(facts: Option<&BTreeMap<String, String>>, key: &str) -> String {

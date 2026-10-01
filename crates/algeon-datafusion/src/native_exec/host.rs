@@ -323,7 +323,6 @@ impl ExecutionPlan for AlgeonNativeExec {
                 }
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
-                let cursor_metrics = metrics.clone();
                 run_gpu_execution_task(
                     gpu_executor,
                     observation,
@@ -334,15 +333,14 @@ impl ExecutionPlan for AlgeonNativeExec {
                         // Once native execution starts, the attempt is terminal: errors are surfaced with stable
                         // facts by `native_query_runtime_error` and are not replayed through DataFusion.
                         let outcome = execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
-                        let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
-                            DataFusionError::from(native_query_runtime_error(
-                                "algeon_datafusion.native_exec.execute",
-                                "Algeon native query execution failed",
-                                error,
-                            ))
-                        })?;
-                        metrics
-                            .record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
+                        let (output, deferred_metrics) =
+                            metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
+                                DataFusionError::from(native_query_runtime_error(
+                                    "algeon_datafusion.native_exec.execute",
+                                    "Algeon native query execution failed",
+                                    error,
+                                ))
+                            })?;
                         let QueryOutput::GpuResident(handle) = output else {
                             return Err(DataFusionError::from(
                                 Error::new(
@@ -370,7 +368,7 @@ impl ExecutionPlan for AlgeonNativeExec {
                             cursor,
                             cursor_executor,
                             cursor_observation,
-                            cursor_metrics,
+                            deferred_metrics,
                             context_lease,
                         ))
                     },

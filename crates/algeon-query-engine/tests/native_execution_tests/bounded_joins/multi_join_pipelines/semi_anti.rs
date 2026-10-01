@@ -359,6 +359,7 @@ fn bounded_native_query_fails_typed_when_a_shared_leaf_consumer_cannot_shrink_be
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the shared leaf consumers cannot fit under the cap");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
@@ -415,6 +416,7 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the deadline elapses while the leaf streams");
     assert_eq!(error.code(), QueryErrorCode::Cancelled, "{error:?}");
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));

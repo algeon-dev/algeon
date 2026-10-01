@@ -6,8 +6,12 @@ use std::{
 
 #[cfg(feature = "test-hooks")]
 use crate::{error::Result, observability::RuntimeExecutionObservationScope, runtime::ExecutionContext};
+#[cfg(any(test, feature = "test-hooks"))]
 use crate::{
-    metrics::QueryMetrics,
+    exec::output::PlanMetrics,
+    metrics::{QueryId, QueryMetrics},
+};
+use crate::{
     observability::{MetricsRecorder, PlanExecutionId, RuntimeObservationHandle},
     plan::NodeId,
 };
@@ -70,20 +74,10 @@ impl ExecutionMetrics {
         ))
     }
 
-    /// Projects the owner's current metrics onto `base`, which supplies the
-    /// identity and policy fields the owner does not reduce.
-    pub(crate) fn project_onto(&self, base: &mut QueryMetrics) {
-        if let Some(checkpoint) = self.recorder.checkpoint() {
-            base.apply_owner_checkpoint(&checkpoint);
-        }
-    }
-
     /// The owner's current metrics as a detached value.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn snapshot(&self) -> QueryMetrics {
-        let mut metrics = QueryMetrics::default();
-        self.project_onto(&mut metrics);
-        metrics
+        PlanMetrics::new(self.recorder.clone(), QueryId::default(), None).snapshot()
     }
 
     /// Records one aggregate strategy decision and keeps the cardinality

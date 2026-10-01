@@ -92,12 +92,9 @@ fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
         "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
     );
 
-    for expected_kind in [
-        NativeMetricRecordingKind::Query,
-        NativeMetricRecordingKind::Admission,
-        NativeMetricRecordingKind::CacheEvents,
-        NativeMetricRecordingKind::Attempt,
-    ] {
+    for expected_kind in
+        [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::Attempt]
+    {
         assert!(
             NATIVE_ALGEON_RECORDING_DESCRIPTORS.iter().any(|(_name, kind)| *kind == expected_kind),
             "recording contract must exercise {expected_kind:?} mappings"
@@ -477,7 +474,8 @@ fn query_metric_row_bridge_enforces_shared_record_and_byte_caps() {
 fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    native_metrics.record_lakehouse_cache_fill_events(&[LakehouseCacheFillEventSnapshot {
+    let mut query_metrics = QueryMetrics::new("q-cache-fill");
+    query_metrics.lakehouse_cache_fill_events.push(LakehouseCacheFillEventSnapshot {
         outcome: "failed",
         bytes: None,
         elapsed: std::time::Duration::from_nanos(4321),
@@ -489,7 +487,8 @@ fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
         error_kind: Some("dependency".to_string()),
         error_status: Some("retryable".to_string()),
         error_operation: Some("query_engine.lakehouse_cache.background_fill.fetch".to_string()),
-    }]);
+    });
+    native_metrics.record_query_metrics(&query_metrics);
 
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
     assert_eq!(metrics.lakehouse_cache_fill_event_snapshot_rows.len(), 1);

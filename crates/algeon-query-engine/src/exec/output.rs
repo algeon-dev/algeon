@@ -2,9 +2,12 @@
 
 use arrow::record_batch::RecordBatch;
 
+use super::{next_plan_execution_id, plan_identity};
 use crate::{
-    error::QueryError, metrics::QueryMetrics, observability::SealedRuntimeObservationSnapshot,
-    runtime::resident::GpuResultHandle,
+    error::QueryError,
+    metrics::{QueryId, QueryMetrics, TraceId},
+    observability::{MetricsRecorder, SealedRuntimeObservationSnapshot},
+    runtime::{ExecutionContext, resident::GpuResultHandle},
 };
 
 /// Output produced by native query execution.
@@ -47,20 +50,82 @@ pub struct QueryExecutionResult {
     metrics: QueryMetrics,
 }
 
+/// The metrics of one plan execution, held by its observation owner.
+///
+/// Work that belongs to the plan but runs after [`super::execute_query_plan`]
+/// returns, such as a deferred host sink, records through
+/// [`Self::recorder`]. A [`QueryMetrics`] value is a projection taken with
+/// [`Self::snapshot`].
+#[derive(Debug, Clone)]
+pub struct PlanMetrics {
+    recorder: MetricsRecorder,
+    query_id: QueryId,
+    trace_id: Option<TraceId>,
+}
+
+impl PlanMetrics {
+    pub(crate) const fn new(recorder: MetricsRecorder, query_id: QueryId, trace_id: Option<TraceId>) -> Self {
+        Self { recorder, query_id, trace_id }
+    }
+
+    /// Binds the metrics of work that runs under `context` outside any engine
+    /// plan, such as a frontend's host boundary copies. `label` prefixes the
+    /// minted plan execution id.
+    pub fn bind(context: &ExecutionContext, label: &str) -> Self {
+        let (query_id, trace_id) = plan_identity(context);
+        let recorder = MetricsRecorder::bind(
+            context.runtime_observation(),
+            next_plan_execution_id(label),
+            query_id.as_str(),
+            trace_id.as_ref().map(TraceId::as_str),
+        );
+        Self::new(recorder, query_id, trace_id)
+    }
+
+    /// Where this plan execution's metrics are recorded.
+    pub const fn recorder(&self) -> &MetricsRecorder {
+        &self.recorder
+    }
+
+    /// This plan execution's metrics as recorded so far.
+    pub fn snapshot(&self) -> QueryMetrics {
+        let mut metrics = self.identity();
+        if let Some(checkpoint) = self.recorder.checkpoint() {
+            metrics.apply_owner_checkpoint(&checkpoint);
+        }
+        metrics
+    }
+
+    /// Freezes this plan execution's metrics and returns them; facts recorded
+    /// afterward are ignored. The sealed observation snapshot carries the
+    /// same value under [`SealedRuntimeObservationSnapshot::query_metrics`].
+    pub fn freeze(&self) -> QueryMetrics {
+        let mut metrics = self.identity();
+        if let Some(checkpoint) = self.recorder.freeze() {
+            metrics.apply_owner_checkpoint(&checkpoint);
+        }
+        metrics
+    }
+
+    fn identity(&self) -> QueryMetrics {
+        QueryMetrics { query_id: self.query_id.clone(), trace_id: self.trace_id.clone(), ..Default::default() }
+    }
+}
+
 /// Evidence-preserving result of one observed native execution.
 ///
 /// Unlike `Result<QueryExecutionResult, QueryError>`, this outcome retains
-/// aggregate metrics and the sealed observation snapshot when execution fails.
+/// the plan's metrics and the sealed observation snapshot when execution fails.
 pub struct QueryExecutionOutcome {
     result: std::result::Result<QueryOutput, QueryError>,
-    metrics: QueryMetrics,
+    metrics: PlanMetrics,
     observation: Option<SealedRuntimeObservationSnapshot>,
 }
 
 impl QueryExecutionOutcome {
     pub(crate) fn new(
         result: std::result::Result<QueryOutput, QueryError>,
-        metrics: QueryMetrics,
+        metrics: PlanMetrics,
         observation: Option<SealedRuntimeObservationSnapshot>,
     ) -> Self {
         Self { result, metrics, observation }
@@ -72,9 +137,8 @@ impl QueryExecutionOutcome {
         self.result.as_ref()
     }
 
-    /// Borrows all aggregate metrics, including records emitted before failure.
-    #[cfg(test)]
-    pub(crate) const fn metrics(&self) -> &QueryMetrics {
+    /// The plan's metrics, including records emitted before failure.
+    pub const fn metrics(&self) -> &PlanMetrics {
         &self.metrics
     }
 
@@ -87,7 +151,7 @@ impl QueryExecutionOutcome {
     /// Consumes the outcome without discarding failure diagnostics.
     pub fn into_parts(
         self,
-    ) -> (std::result::Result<QueryOutput, QueryError>, QueryMetrics, Option<SealedRuntimeObservationSnapshot>) {
+    ) -> (std::result::Result<QueryOutput, QueryError>, PlanMetrics, Option<SealedRuntimeObservationSnapshot>) {
         (self.result, self.metrics, self.observation)
     }
 }

@@ -1,6 +1,6 @@
 //! Query-scoped bounded synchronous runtime observation recorder.
 
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use super::{
     CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryAttemptReport, QueryBoundaryKind,
@@ -137,6 +137,8 @@ pub(crate) struct RuntimeObservationSnapshotData {
     pub(crate) topology: Vec<RetainedTopologyRecord>,
     pub(crate) events: Vec<RuntimeTimelineEvent>,
     pub(crate) footer: RuntimeObservationFooter,
+    /// Each plan execution's frozen metrics. Only a seal fills it.
+    pub(crate) plans: BTreeMap<PlanExecutionId, QueryMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +189,12 @@ snapshot_accessors!(SealedRuntimeObservationSnapshot);
 impl SealedRuntimeObservationSnapshot {
     pub(crate) fn data(&self) -> &RuntimeObservationSnapshotData {
         &self.data
+    }
+
+    /// The metrics of plan execution `plan`, as frozen when its owner
+    /// projected them or, failing that, when this session sealed.
+    pub fn query_metrics(&self, plan: &PlanExecutionId) -> Option<&QueryMetrics> {
+        self.data.plans.get(plan)
     }
 
     /// Returns whether both values are views of the same immutable seal.

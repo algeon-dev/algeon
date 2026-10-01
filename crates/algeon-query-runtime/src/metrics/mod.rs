@@ -47,7 +47,10 @@ pub use self::{
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::BudgetedExecutionEvent,
 };
-use crate::observability::{MetricsCaptureMode, MetricsCompleteness};
+use crate::{
+    observability::{MetricsCaptureMode, MetricsCompleteness},
+    runtime::LakehouseCacheFillEventSnapshot,
+};
 
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,6 +76,9 @@ pub struct QueryMetrics {
     pub dynamic_filter_runtime_rows: Vec<DynamicFilterRuntimeMetrics>,
     /// Source-read runtime event rows in observation order.
     pub source_read_runtime_rows: Vec<SourceReadRuntimeMetrics>,
+    /// Background lakehouse cache-fill completions this plan execution
+    /// carries: those its owner retained since the previous plan froze.
+    pub lakehouse_cache_fill_events: Vec<LakehouseCacheFillEventSnapshot>,
     /// Number of input batches observed by native execution.
     pub input_batches: u64,
     /// Number of input rows observed by native execution.
@@ -384,6 +390,7 @@ impl QueryMetrics {
         self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
         self.dynamic_filter_runtime_rows.extend(other.dynamic_filter_runtime_rows);
         self.source_read_runtime_rows.extend(other.source_read_runtime_rows);
+        self.lakehouse_cache_fill_events.extend(other.lakehouse_cache_fill_events);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
         self.peak_device_memory_bytes = self.peak_device_memory_bytes.max(other.peak_device_memory_bytes);

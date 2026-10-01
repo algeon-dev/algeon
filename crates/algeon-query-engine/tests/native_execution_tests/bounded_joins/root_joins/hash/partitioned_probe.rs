@@ -77,6 +77,7 @@ fn bounded_native_partitioned_probe_recovers_hash_partition_cap_rejections() {
             admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
         let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::admitted(&admitted_plan));
         let (result, metrics, _) = outcome.into_parts();
+        let metrics = metrics.snapshot();
         let output = result.unwrap();
         let batch = output.as_host_arrow().unwrap();
         assert_eq!(int32_array(batch, 1).values().as_ref(), &[(1 << 21) - 1, (1 << 21) - 2]);
@@ -117,6 +118,7 @@ fn bounded_native_partitioned_probe_reports_indivisible_cap_failure_and_cleans_u
         admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::admitted(&admitted_plan));
     let (result, metrics, _) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the configured probe row floor prevents subdivision");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.operation(), "query_engine.bounded.join.hash_partition", "{error:?}");

@@ -18,9 +18,13 @@ use datafusion::{
 use futures::future::BoxFuture;
 use query_engine::{
     admission::AttemptCapabilityEvidence,
-    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan, output::QueryOutput, preflight_query_plan},
+    error::QueryError,
+    exec::{
+        QueryExecutionRequest, admit_query_plan, execute_query_plan,
+        output::{QueryExecutionOutcome, QueryOutput},
+        preflight_query_plan,
+    },
     expr::Expr as NativeExpr,
-    metrics::QueryMetrics,
     plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
     runtime::{ExecutionContext, resident::GpuResultHandle},
     source::{GpuResidentSource, SourceNode},
@@ -33,8 +37,8 @@ use crate::{
         NativeHostOutputCursor,
         admission::QueryAdmissionTicket,
         child_inputs::{
-            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, HostToDeviceUpload, NativeChildBinding, NativeChildInputSpec,
-            StagedNativeChildren, stage_native_children,
+            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, NativeChildBinding, NativeChildInputSpec, StagedNativeChildren,
+            stage_native_children,
         },
         gpu_function_occurrence_from_task_context, gpu_resident_producer, native_host_output_stream,
         prepared_gpu_resident_producer_admission_tickets, producer_bound_capability_evidence, run_gpu_execution_task,
@@ -251,14 +255,16 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             })
     }
 
+    /// Uploads the staged inputs and runs the relation plan. The uploads are
+    /// recorded into the plan's metrics; the caller finalizes the outcome for
+    /// its sink.
     async fn execute_staged(
         &self,
         native_context: &ExecutionContext,
         task_context: Arc<TaskContext>,
         staged: StagedNativeChildren,
         sink: RelationFunctionSink,
-        metrics: &AlgeonNativeMetrics,
-    ) -> Result<QueryOutput> {
+    ) -> Result<QueryExecutionOutcome> {
         self.reject_unavailable_execution()?;
         let uploaded = staged.upload(native_context, task_context).await?;
         let host_to_device_uploads = uploaded.host_to_device_uploads.clone();
@@ -281,16 +287,11 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             native_context,
             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&uploaded.inputs),
         );
-        let (result, mut query_metrics, _observation) = outcome.into_parts();
-        record_relation_staging_boundaries(&mut query_metrics, &host_to_device_uploads);
-        metrics.record_query_metrics(&query_metrics);
-        result.map_err(|error| {
-            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
-                S::TEXT.operations.execute,
-                S::TEXT.messages.execution_failed,
-                error,
-            ))
-        })
+        let recorder = outcome.metrics().recorder();
+        for upload in &host_to_device_uploads {
+            recorder.record_host_to_device_upload(upload.rows, upload.bytes);
+        }
+        Ok(outcome)
     }
 
     async fn execute_gpu_result_with_context_impl(
@@ -311,9 +312,9 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         let staged = self.take_prepared_staged_inputs()?;
         let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let output = self
-            .execute_staged(native_context, task_context, staged, RelationFunctionSink::GpuResident, &metrics)
-            .await?;
+        let outcome =
+            self.execute_staged(native_context, task_context, staged, RelationFunctionSink::GpuResident).await?;
+        let output = metrics.finalize_query_outcome(outcome).map_err(relation_execution_error::<S>)?;
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -546,7 +547,6 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                 let observation = context_lease.context().runtime_observation().clone();
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
-                let cursor_metrics = metrics.clone();
                 run_gpu_execution_task(
                     gpu_executor,
                     observation,
@@ -556,15 +556,17 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                         let execution_task_context =
                             context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-                        let output = exec
+                        let outcome = exec
                             .execute_staged(
                                 &context,
                                 execution_task_context,
                                 staged,
                                 RelationFunctionSink::DeferredHostArrow,
-                                &metrics,
                             )
                             .await?;
+                        let (output, deferred_metrics) = metrics
+                            .finalize_query_outcome_for_deferred_host(outcome)
+                            .map_err(relation_execution_error::<S>)?;
                         let QueryOutput::GpuResident(handle) = output else {
                             return Err(Error::new(
                                 ErrorCode::InvalidExecutionPlan,
@@ -591,7 +593,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                             cursor,
                             cursor_executor,
                             cursor_observation,
-                            cursor_metrics,
+                            deferred_metrics,
                             context_lease,
                         );
                         if let Some(host_occurrence) = host_occurrence {
@@ -676,10 +678,12 @@ pub(crate) fn add_projected_relation_source(builder: &mut QueryPlanBuilder, chil
     }
 }
 
-fn record_relation_staging_boundaries(metrics: &mut QueryMetrics, uploads: &[HostToDeviceUpload]) {
-    for upload in uploads {
-        metrics.boundary.record_host_to_device_upload(upload.rows, upload.bytes);
-    }
+fn relation_execution_error<S: RelationFunctionSpec>(error: QueryError) -> DataFusionError {
+    DataFusionError::from(Error::from_native_with_blocking_diagnostics(
+        S::TEXT.operations.execute,
+        S::TEXT.messages.execution_failed,
+        error,
+    ))
 }
 
 #[cfg(test)]

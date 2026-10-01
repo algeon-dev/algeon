@@ -36,7 +36,6 @@ impl BackendMetricUnit {
 pub enum BackendMetricUpdatePoint {
     LedgerTransition,
     ReportReady,
-    TelemetryRefresh,
 }
 
 /// A closed label domain.  `cardinality` is a contract bound, not a sample
@@ -134,8 +133,6 @@ macro_rules! for_each_backend_metric {
             admission_max_resident_owner_bytes => "algeon.gpu.admission.max_resident_owner": BackendMetricUnit::Bytes, BackendMetricKind::Max, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
             attempts_completed => "algeon.gpu.attempts.completed": BackendMetricUnit::One, BackendMetricKind::Counter, ATTEMPT_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::ReportReady, 32;
             attempts_duration => "algeon.gpu.attempts.duration": BackendMetricUnit::Seconds, BackendMetricKind::Histogram, ATTEMPT_DURATION_LABELS, DURATION_BUCKETS_NS, BackendMetricUpdatePoint::ReportReady, 128;
-            memory_allocation_failures => "algeon.gpu.memory.allocation_failures": BackendMetricUnit::One, BackendMetricKind::Counter, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::TelemetryRefresh, 64;
-            memory_allocation_failure_bytes => "algeon.gpu.memory.allocation_failure": BackendMetricUnit::Bytes, BackendMetricKind::Counter, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::TelemetryRefresh, 64;
             cache_evictable_resident_bytes => "algeon.gpu.cache.evictable.resident": BackendMetricUnit::Bytes, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
             cache_pinned_in_use_bytes => "algeon.gpu.cache.pinned.in_use": BackendMetricUnit::Bytes, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
         }
@@ -220,20 +217,6 @@ mod tests {
             BackendMetricKind::Histogram,
             BackendMetricUpdatePoint::ReportReady,
             128,
-        ),
-        (
-            "algeon.gpu.memory.allocation_failures",
-            BackendMetricUnit::One,
-            BackendMetricKind::Counter,
-            BackendMetricUpdatePoint::TelemetryRefresh,
-            64,
-        ),
-        (
-            "algeon.gpu.memory.allocation_failure",
-            BackendMetricUnit::Bytes,
-            BackendMetricKind::Counter,
-            BackendMetricUpdatePoint::TelemetryRefresh,
-            64,
         ),
         (
             "algeon.gpu.cache.evictable.resident",

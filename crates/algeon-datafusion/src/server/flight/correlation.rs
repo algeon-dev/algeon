@@ -647,7 +647,7 @@ mod correlation_tests {
         assert_eq!(results.len(), 1);
         let payload = String::from_utf8(results[0].body.to_vec()).unwrap();
 
-        assert!(payload.contains("# algeon_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# algeon_admission_stats=2\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# backend_metrics_backend_generation=1\n"), "{payload}");
         assert!(

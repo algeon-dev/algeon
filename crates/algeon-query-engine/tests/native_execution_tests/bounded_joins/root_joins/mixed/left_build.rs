@@ -124,6 +124,7 @@ fn bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_pr
                     QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
                 );
                 let (result, metrics, _) = outcome.into_parts();
+                let metrics = metrics.snapshot();
                 let output = result.unwrap_or_else(|error| panic!("{join_type:?}/{null_equality:?}: {error:?}"));
                 let QueryOutput::HostArrow(batch) = &output else {
                     panic!("expected host output");
@@ -192,6 +193,7 @@ fn bounded_native_mixed_left_build_releases_state_after_late_probe_cap_failure()
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the indivisible final probe row must exceed the cap");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.fact_value("build_side"), Some("left"));

@@ -754,7 +754,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
     let callback_chunk_index = chunk_index;
     let callback_cache_path_hash = stable_log_hash(&cache_path.display().to_string());
     let callback_stable_id_hash = stable_log_hash(callback_stable_id.as_str());
-    let event_sink = context.lakehouse_cache_fill_events();
+    let observation = context.runtime_observation().clone();
     let sidecar_content_identity = sidecar_content_identity(resolved_source, stable_id.as_str()).to_string();
     let _fetch_handle = context.spawn_lakehouse_cache_maintenance(
         {
@@ -777,7 +777,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
         move |fill_result| {
             match fill_result.value {
                 Ok(Some(bytes)) => {
-                    event_sink.record(LakehouseCacheFillEvent {
+                    observation.record_lakehouse_cache_fill(&LakehouseCacheFillEvent {
                         outcome: LakehouseCacheFillOutcome::Completed,
                         bytes: Some(bytes),
                         elapsed: fill_result.elapsed,
@@ -799,7 +799,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
                     evict_lakehouse_cache(cache_root.as_deref(), &cache_path, cache_max_bytes);
                 },
                 Ok(None) => {
-                    event_sink.record(LakehouseCacheFillEvent {
+                    observation.record_lakehouse_cache_fill(&LakehouseCacheFillEvent {
                         outcome: LakehouseCacheFillOutcome::Abandoned,
                         bytes: None,
                         elapsed: fill_result.elapsed,
@@ -819,7 +819,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
                     );
                 },
                 Err(error) => {
-                    event_sink.record(LakehouseCacheFillEvent {
+                    observation.record_lakehouse_cache_fill(&LakehouseCacheFillEvent {
                         outcome: LakehouseCacheFillOutcome::Failed,
                         bytes: None,
                         elapsed: fill_result.elapsed,

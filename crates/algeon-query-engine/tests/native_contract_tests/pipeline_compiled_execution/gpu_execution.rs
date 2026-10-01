@@ -623,6 +623,7 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
         .expect("observed root join admits");
     let outcome = engine_execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
     let (result, metrics, plan_observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     assert!(matches!(result, Ok(QueryOutput::HostArrow(_))));
     assert!(plan_observation.is_none(), "one plan must not seal its query observation");
     context._handle.finish();

@@ -192,7 +192,7 @@ mod enabled {
         drop(inputs);
         drop(runtime);
         admitted.finish();
-        (result, metrics, observation)
+        (result, metrics.snapshot(), observation)
     }
 
     fn execute_supervised(
@@ -816,6 +816,7 @@ mod enabled {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
+        let metrics = metrics.snapshot();
         let error = result.err().expect("RF training must exceed tiny grant");
         assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
         assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"), "{error:?}");
@@ -854,6 +855,7 @@ mod enabled {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
+        let metrics = metrics.snapshot();
         let error = result.err().expect("device grant too small for ML fit");
         assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
         assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"), "{error:?}");
@@ -1233,6 +1235,7 @@ fn cuml_disabled_rejects_before_local_source_staging() {
     let (result, metrics, _) =
         execute_query_plan_direct(admitted.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
             .into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("disabled cuML must reject before source staging");
     assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("required_feature_disabled"));

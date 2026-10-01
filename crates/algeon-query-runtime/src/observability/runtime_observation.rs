@@ -961,6 +961,9 @@ pub enum RuntimeObservationRecordClass {
     DynamicFilterDetail,
     /// A lower-level budget report row offered for bounded retention.
     BudgetDetail,
+    /// A background lakehouse cache-fill completion offered for bounded
+    /// retention.
+    LakehouseCacheFillDetail,
 }
 
 /// Reason an attempted record was not retained.

@@ -297,6 +297,7 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (output, metrics, _) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let output = output.unwrap();
     let usage = admitted.attempt_allocation_domain_usage().unwrap().unwrap();
     assert!(usage.peak_bytes <= cap, "{usage:?}");

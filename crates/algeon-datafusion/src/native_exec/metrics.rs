@@ -11,7 +11,9 @@ mod registry;
 
 pub use capture::{NativeExecutionMetricsCapture, NativeMetricsCapture};
 pub use contract::NATIVE_ALGEON_DATAFUSION_METRIC_NAMES;
-pub(crate) use record::{AlgeonNativeMetrics, GraphClaimCalibrationCapture, SealedAttemptMetricsTarget};
+pub(crate) use record::{
+    AlgeonNativeMetrics, DeferredHostMetrics, GraphClaimCalibrationCapture, SealedAttemptMetricsTarget,
+};
 pub use record::{
     GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, SealedAttemptGraphClaimCalibrationSnapshot,
 };

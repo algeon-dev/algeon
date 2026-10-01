@@ -200,7 +200,7 @@ pub(super) fn execute_admitted_with_peak(
         .expect("allocation-domain usage samples")
         .expect("admitted context owns one allocation domain");
     admitted.finish();
-    (result, metrics, usage.peak_bytes)
+    (result, metrics.snapshot(), usage.peak_bytes)
 }
 
 pub(super) fn assert_attempt_domain_released(context: &ExecutionContext) {

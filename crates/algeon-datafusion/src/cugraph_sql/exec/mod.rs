@@ -36,13 +36,12 @@ use query_engine::{
     error::QueryError,
     exec::{
         QueryExecutionRequest, execute_query_plan,
-        output::{QueryExecutionOutcome, QueryOutput},
+        output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
     },
     expr::{
         AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
-    metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
-    observability::SealedRuntimeObservationSnapshot,
+    metrics::GraphAlgorithmRuntimeMetrics,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
         GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
@@ -149,30 +148,24 @@ use lowering::{
 pub use node::CugraphAlgoExec;
 use residency::{attach_graph_residency, cugraph_graph_residency_descriptor};
 
+/// The metrics of one cuGraph wrapper execution: the plans its stages ran,
+/// plus a plan execution of its own for the host boundary work and BFS
+/// follower rows that belong to no engine plan. They reach DataFusion once.
 pub(super) struct GraphExecutionMetrics<'a> {
     sink: &'a AlgeonNativeMetrics,
-    accumulated: QueryMetrics,
-    stage_count: usize,
+    stages: Vec<PlanMetrics>,
+    boundary: PlanMetrics,
     published: bool,
 }
 
 impl<'a> GraphExecutionMetrics<'a> {
-    pub(super) fn new(sink: &'a AlgeonNativeMetrics) -> Self {
-        Self { sink, accumulated: QueryMetrics::default(), stage_count: 0, published: false }
-    }
-
-    fn merge_stage_evidence(&mut self, metrics: QueryMetrics, _observation: Option<SealedRuntimeObservationSnapshot>) {
-        if self.stage_count == 0 {
-            self.accumulated = metrics;
-        } else {
-            self.accumulated.merge_from(metrics);
-        }
-        self.stage_count = self.stage_count.saturating_add(1);
+    pub(super) fn new(sink: &'a AlgeonNativeMetrics, context: &ExecutionContext) -> Self {
+        Self { sink, stages: Vec::new(), boundary: PlanMetrics::bind(context, "cugraph-boundary"), published: false }
     }
 
     fn merge_outcome(&mut self, outcome: QueryExecutionOutcome) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, metrics, observation) = outcome.into_parts();
-        self.merge_stage_evidence(metrics, observation);
+        let (result, plan, _observation) = outcome.into_parts();
+        self.stages.push(plan);
         if result.is_err() {
             self.publish();
         }
@@ -188,15 +181,24 @@ impl<'a> GraphExecutionMetrics<'a> {
         if self.published {
             return;
         }
-        self.sink.record_query_metrics(&self.accumulated);
+        let mut snapshots = self.stages.iter().chain([&self.boundary]).map(PlanMetrics::freeze);
+        let mut metrics = snapshots.next().unwrap_or_default();
+        for stage in snapshots {
+            metrics.merge_from(stage);
+        }
+        self.sink.record_query_metrics(&metrics);
         self.published = true;
     }
 
-    fn record_device_to_host_materialization(&mut self, batch: &RecordBatch) {
-        self.accumulated.boundary.record_device_to_host_materialization(
+    fn record_device_to_host_materialization(&self, batch: &RecordBatch) {
+        self.boundary.recorder().record_device_to_host_materialization(
             u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
             u64::try_from(get_record_batch_memory_size(batch)).unwrap_or(u64::MAX),
         );
+    }
+
+    pub(super) fn record_graph_algorithm_runtime(&self, row: GraphAlgorithmRuntimeMetrics) {
+        self.boundary.recorder().record_graph_algorithm_runtime(row);
     }
 }
 

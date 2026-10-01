@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryMetrics, QueryMetricsSummary,
-    RetainedTopologyRecord, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationRecordClass,
-    RuntimeObservationSealObserver, RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, SourceReadRuntimeMetrics,
+    CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryMetrics, QueryMetricsCheckpoint,
+    QueryMetricsSummary, RetainedTopologyRecord, RuntimeObservationLimits, RuntimeObservationLossReason,
+    RuntimeObservationRecordClass, RuntimeObservationSealObserver, RuntimeTimelineEvent,
+    SealedRuntimeObservationSnapshot, SourceReadRuntimeMetrics,
 };
+use crate::runtime::LakehouseCacheFillEventSnapshot;
 
 /// Exact cleanup-failure accounting for an attempt report. It sits outside the
 /// record limits, so bounded timeline loss never changes the count or the
@@ -89,6 +91,10 @@ pub(super) struct RuntimeObservationRecorderState {
     // Query-wide share of the limits already taken by budget detail rows.
     pub(super) budget_detail_records: u64,
     pub(super) budget_detail_bytes: u64,
+    // Retained background cache-fill completions not yet carried by a plan.
+    // A fill finishes on its own schedule, so the next plan execution to
+    // freeze its metrics takes them.
+    pub(super) cache_fill_events: Vec<LakehouseCacheFillEventSnapshot>,
 }
 
 // Bounded by the number of plan executions in the query, not by data volume;
@@ -107,6 +113,15 @@ pub(super) struct PlanExecutionMetrics {
     // scope, so there are at most a handful open at once.
     pub(super) budget_windows: BTreeMap<u64, BudgetWindowPeaks>,
     pub(super) next_budget_window: u64,
+    // Set once the plan's owner projects its metrics; later facts for the
+    // plan are ignored, so every projection agrees with this value.
+    pub(super) frozen: Option<QueryMetricsCheckpoint>,
+}
+
+impl PlanExecutionMetrics {
+    pub(super) const fn is_frozen(&self) -> bool {
+        self.frozen.is_some()
+    }
 }
 
 /// The largest allocator high-water and retained bytes the budget reports in

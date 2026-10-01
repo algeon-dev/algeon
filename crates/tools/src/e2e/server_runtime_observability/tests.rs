@@ -349,16 +349,13 @@ fn variable_frame_evidence_aggregates_and_rejects_transport_oversize() {
 
 fn admission_payload(rows: &[(usize, u64, u64)]) -> String {
     let mut payload = String::from(
-        "# algeon_admission_stats=1\n# backend=query_service\n# device_ordinals=0,1\n# max_queued_attempts=64\n\n\
+        "# algeon_admission_stats=2\n# backend=query_service\n# device_ordinals=0,1\n# max_queued_attempts=64\n\n\
          [backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n1\t9\t2\n\n\
          [backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tresident_owner_bytes\tmax_resident_owner_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n",
     );
     for (device, attempts, grant_bytes) in rows {
         payload.push_str(&format!("{device}\t4\t{attempts}\t{grant_bytes}\t0\t0\t0\t0\tOpen\n"));
     }
-    payload.push_str(
-        "\n[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n",
-    );
     payload
 }
 

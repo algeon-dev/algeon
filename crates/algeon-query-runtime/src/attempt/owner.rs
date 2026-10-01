@@ -1257,13 +1257,15 @@ impl fmt::Debug for AttemptCompletionFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use query_planning::error::{QueryError, QueryErrorCode};
 
     use super::*;
     use crate::{
         observability::{
-            DeterministicRuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationRecord,
-            write_runtime_observation_jsonl,
+            DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationRecord,
+            SourceReadFact, write_runtime_observation_jsonl,
         },
         runtime::BackendLifecycle,
     };
@@ -1371,6 +1373,27 @@ mod tests {
         assert_eq!(delivered.len(), 1);
         assert!(Arc::ptr_eq(&delivered[0], &report));
         assert!(observed_before_completion.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn sealed_report_sink_can_write_back_to_its_attempt_observation() {
+        let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        let completion = begin.completion.completion();
+        let observation = begin.owner.observation_for_test();
+        begin.owner.register_sealed_report_sink(move |_report| {
+            observation.record_source_read(&PlanExecutionId::new("late-plan"), SourceReadFact::InputBatch { rows: 1 });
+        });
+        native_disposition(&begin);
+
+        let (sealed, seal_finished) = mpsc::channel();
+        let owner = begin.owner;
+        thread::spawn(move || sealed.send(owner.commit_terminal(RuntimeTerminalOutcome::Succeeded)));
+        seal_finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the seal finishes while its report sink writes to the same observation")
+            .unwrap();
+
+        assert!(completion.try_report().is_some());
     }
 
     #[test]

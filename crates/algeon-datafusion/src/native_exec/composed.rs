@@ -744,7 +744,6 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                 let runtime_attempt_ticket = attempt_ticket.clone();
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
-                let cursor_metrics = metrics.clone();
                 run_gpu_execution_task(
                     gpu_executor,
                     observation,
@@ -823,15 +822,13 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                             &context,
                             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&input_map),
                         );
-                        let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
+                        let (output, deferred_metrics) = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "algeon_datafusion.native_composed.execute",
                                 "algeon native composed query execution failed",
                                 error,
                             ))
                         })?;
-                        metrics
-                            .record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
                         let QueryOutput::GpuResident(handle) = output else {
                             return Err(DataFusionError::from(
                                 Error::new(
@@ -859,7 +856,7 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                             cursor,
                             cursor_executor,
                             cursor_observation,
-                            cursor_metrics,
+                            deferred_metrics,
                             context_lease,
                         ))
                     },
@@ -1074,7 +1071,6 @@ impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
                     error,
                 ))
             })?;
-            metrics.record_lakehouse_cache_fill_events(&native_context.drain_lakehouse_cache_fill_event_snapshots());
             let QueryOutput::GpuResident(handle) = output else {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,

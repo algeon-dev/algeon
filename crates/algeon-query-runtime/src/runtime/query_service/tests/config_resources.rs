@@ -129,7 +129,7 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(9));
     assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 2);
 
-    context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
+    context.runtime_observation().record_lakehouse_cache_fill(&LakehouseCacheFillEvent {
         outcome: LakehouseCacheFillOutcome::Completed,
         bytes: Some(128),
         elapsed: Duration::from_millis(1),
@@ -139,11 +139,17 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
         chunk_index: None,
         error: None,
     });
-    assert_eq!(context.lakehouse_cache_fill_event_snapshots().len(), 1);
+    let plan = PlanExecutionId::new("cache-fill-plan");
+    let carried = |context: &ExecutionContext| {
+        let mut metrics = QueryMetrics::default();
+        metrics.apply_owner_checkpoint(&context.runtime_observation().freeze_plan_metrics(&plan).unwrap());
+        metrics.lakehouse_cache_fill_events.len()
+    };
+    assert_eq!(carried(context), 1);
 
     let other_handle = service.admit_query().unwrap();
     let other_admitted_context = other_handle.acquire_context().unwrap();
-    assert!(other_admitted_context.context().lakehouse_cache_fill_event_snapshots().is_empty());
+    assert_eq!(carried(other_admitted_context.context()), 0, "each attempt keeps its own cache-fill events");
 }
 #[test]
 fn admission_only_query_service_honors_per_device_active_attempt_limit() {

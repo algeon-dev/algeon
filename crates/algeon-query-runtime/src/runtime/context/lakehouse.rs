@@ -20,11 +20,10 @@ use tokio::{runtime::Runtime as TokioRuntime, task::JoinHandle};
 use super::{
     super::{
         CacheFillByteBudget, CacheFillBytePermit, SourceStorageProfile,
-        cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
         cache_fill::CacheFillOperationPermit,
         object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey},
     },
-    ExecutionContext, QueryScope, QueryServiceStreamPool,
+    ExecutionContext, QueryServiceStreamPool,
 };
 
 impl ExecutionContext {
@@ -51,23 +50,6 @@ impl ExecutionContext {
     #[cfg(test)]
     pub(crate) fn lakehouse_cache_fill_max_concurrent_ops(&self) -> usize {
         self.device.lakehouse_cache_fill_concurrency.max_concurrent_ops()
-    }
-
-    /// Structured asynchronous lakehouse cache-fill completion/failure events.
-    #[doc(hidden)]
-    pub fn lakehouse_cache_fill_events(&self) -> LakehouseCacheFillEventSink {
-        self.query_lakehouse_cache_fill_events().clone()
-    }
-
-    /// Returns credential-free background cache-fill events observed by this context so far.
-    #[cfg(test)]
-    pub(crate) fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
-        self.query_lakehouse_cache_fill_events().events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
-    }
-
-    /// Drains credential-free background cache-fill events observed by this context so far.
-    pub fn drain_lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
-        self.query_lakehouse_cache_fill_events().drain().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
     }
 
     #[doc(hidden)]
@@ -207,13 +189,6 @@ impl ExecutionContext {
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
         })
-    }
-
-    fn query_lakehouse_cache_fill_events(&self) -> &LakehouseCacheFillEventSink {
-        match &self.query {
-            QueryScope::Standalone(query) => &query.lakehouse_cache_fill_events,
-            QueryScope::Admitted(attempt) => &attempt.lakehouse_cache_fill_events,
-        }
     }
 
     #[cfg(any(test, feature = "test-hooks"))]

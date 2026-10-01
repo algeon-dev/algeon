@@ -24,7 +24,6 @@ use super::{
         ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, StreamLease,
         attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
         cache::local_parquet::GpuLocalParquetSourceCache,
-        cache_events::LakehouseCacheFillEventSink,
         cache_fill::CacheFillConcurrencyGate,
         io_lifecycle::IoLifecycle,
         object_store::SourceObjectStoreRegistry,
@@ -90,7 +89,6 @@ pub(super) struct StandaloneQuery {
     /// Present when the standalone context owns its runtime observation; the
     /// context then terminalizes the query itself.
     pub(super) observation_owner: Option<RuntimeObservationOwner>,
-    pub(super) lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
 }
 
 /// The admitted binding of one attempt: its epochs, immutable grant, and the
@@ -109,7 +107,6 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// attempt report.
     #[cfg(feature = "cugraph")]
     pub(in crate::runtime) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
-    pub(in crate::runtime) lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
     /// Post-grant evidence shared with the query handle; absent for a
     /// placement-only admission, whose plans then fail closed.
     pub(in crate::runtime) capability_evidence: Option<Arc<AttemptCapabilityEvidence>>,
