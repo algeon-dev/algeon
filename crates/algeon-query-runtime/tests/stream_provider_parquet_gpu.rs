@@ -47,8 +47,8 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
 
     let path = unique_fixture_path();
     let service = test_service();
-    let first = service.admit_query_with_request(QueryAdmissionRequest::new()).unwrap();
-    let second = service.admit_query_with_request(QueryAdmissionRequest::new()).unwrap();
+    let first = service.admit_query_with_request(QueryAdmissionRequest::test_attempt()).unwrap();
+    let second = service.admit_query_with_request(QueryAdmissionRequest::test_attempt()).unwrap();
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(second.device_ordinal(), 0);
     assert_ne!(first.grant_identity().unwrap(), second.grant_identity().unwrap());

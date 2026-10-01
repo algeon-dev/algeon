@@ -43,11 +43,11 @@ use tokio::{task::yield_now, time::timeout};
 
 use super::prune_native_query_plan;
 use crate::{
+    attempt::{AlgeonAttempt, attempt_ticket_for_test},
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::DataFusionErrorExt,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        admission::QueryAdmissionTicket,
     },
 };
 
@@ -270,30 +270,42 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     (plan, source)
 }
 
-fn admission_execution_config(backend: &InstalledTestGpuBackend, plan: &QueryPlan) -> AlgeonNativeExecutionConfig {
+/// A config carrying the ticket of an attempt that the caller keeps alive
+/// while the config executes.
+fn admission_execution_config(
+    backend: &InstalledTestGpuBackend,
+    plan: &QueryPlan,
+) -> (AlgeonAttempt, AlgeonNativeExecutionConfig) {
     let source = backend
         .optimizer_config()
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(source.clone(), Some(AttemptCapabilityEvidence::for_query_plan(plan)));
-    AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+    let (attempt, ticket) =
+        attempt_ticket_for_test(source.clone(), Some(AttemptCapabilityEvidence::for_query_plan(plan)));
+    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(ticket)
-        .with_lakehouse_footer_pruning(true)
+        .with_lakehouse_footer_pruning(true);
+    (attempt, config)
 }
 
-fn composed_admission_execution_config(backend: &InstalledTestGpuBackend) -> AlgeonNativeExecutionConfig {
+/// [`admission_execution_config`] for a composed root, whose evidence
+/// completion extends the attempt's ticket.
+fn composed_admission_execution_config(
+    backend: &InstalledTestGpuBackend,
+) -> (AlgeonAttempt, AlgeonNativeExecutionConfig) {
     let source = backend
         .optimizer_config()
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(source.clone(), None);
-    AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+    let (attempt, ticket) = attempt_ticket_for_test(source.clone(), None);
+    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(ticket)
-        .with_lakehouse_footer_pruning(true)
+        .with_lakehouse_footer_pruning(true);
+    (attempt, config)
 }
 
 fn task_context_with_runtime(runtime_env: Arc<RuntimeEnv>) -> Arc<TaskContext> {
@@ -397,8 +409,8 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
-    let exec = AlgeonNativeExec::try_new(plan.clone(), admission_execution_config(&backend, &plan))
-        .expect("test native host execution should build");
+    let (_attempt, config) = admission_execution_config(&backend, &plan);
+    let exec = AlgeonNativeExec::try_new(plan.clone(), config).expect("test native host execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(runtime_env))
@@ -436,7 +448,7 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(source.clone(), Some(combined_evidence));
+    let (_ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(combined_evidence));
     let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(Arc::clone(&ticket))
@@ -488,7 +500,7 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(source.clone(), Some(unrelated_evidence));
+    let (_ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(unrelated_evidence));
     let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(Arc::clone(&ticket))
@@ -541,12 +553,9 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));
     let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
     let consumer_plan = builder.finish_with_host_sink(union);
-    let exec = AlgeonNativeComposedExec::try_new(
-        consumer_plan,
-        vec![Arc::new(producer)],
-        composed_admission_execution_config(&backend),
-    )
-    .expect("test native composed execution should build");
+    let (_attempt, config) = composed_admission_execution_config(&backend);
+    let exec = AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], config)
+        .expect("test native composed execution should build");
 
     let mut stream = exec
         .execute(0, task_context_with_runtime(runtime_env))

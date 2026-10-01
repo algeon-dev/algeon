@@ -10,7 +10,7 @@ fn attempt_requirement_admits_with_the_ledgers_configured_default_grant() {
     .unwrap();
 
     let handle = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("requirement should admit");
     assert_eq!(handle.device_budget_bytes(), 512);
@@ -26,11 +26,11 @@ fn admission_without_observation_mints_one_identity_per_committed_grant() {
     .unwrap();
 
     let first = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("first request admits");
     let second = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("second request admits");
 
@@ -63,7 +63,7 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 
     let handle = service
         .service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("attempt-bound request admits");
 
     assert_eq!(handle.grant_identity().unwrap().attempt_id, attempt_id);
@@ -82,7 +82,7 @@ fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution
     let evidence = explicit_sink_capability_evidence();
     let admitted = service
         .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()),
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()),
         )
         .expect("submission succeeds")
         .expect("the exact entry fits the synthetic ledger");
@@ -105,7 +105,7 @@ fn explicit_cap_above_device_capacity_is_rejected_before_enqueue() {
     .unwrap();
 
     let error = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(2048))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(2048))
         .expect_err("cap exceeding every eligible device must reject");
     assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
     assert_eq!(error.fact_value("reason"), Some("query_cap_exceeds_resident_capacity"));
@@ -127,7 +127,9 @@ fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before
     let mut evidence = explicit_sink_capability_evidence();
     evidence.required_capabilities = vec![ExecutionCapability::new("unavailable")];
     let error = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .enqueue_admission_with_request(
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
+        )
         .expect_err("an unavailable device capability must reject locally");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
@@ -148,7 +150,7 @@ fn submitted_plan_evidence_survives_admission_while_internal_placement_requireme
     let evidence = explicit_sink_capability_evidence();
     let submitted = service
         .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()),
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()),
         )
         .unwrap()
         .expect("submitted evidence admits on an all-modeled test profile");
@@ -156,7 +158,7 @@ fn submitted_plan_evidence_survives_admission_while_internal_placement_requireme
     drop(submitted);
 
     let placement_only = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("internal placement requirement admits");
     assert!(placement_only.handle.lifetime.admitted_capability_evidence_for_test().is_none());
@@ -217,7 +219,9 @@ fn restricted_capability_profile_rejects_missing_blocking_try_and_queued_require
     assert_eq!(service.queued_len(), 0);
 
     let admitted = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(compatible_requirement))
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_attempt_requirement(compatible_requirement),
+        )
         .unwrap()
         .expect("an explicit compatible capability evidence admits");
     assert_eq!(admitted.device_ordinal(), 0);
@@ -243,7 +247,7 @@ fn explicit_query_cap_is_preserved_across_admissions() {
     .unwrap();
 
     let raised = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(70))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(70))
         .unwrap()
         .expect("explicit cap should admit");
     // An explicit cap is never clamped: the admission issues exactly what the

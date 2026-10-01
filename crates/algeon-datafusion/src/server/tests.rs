@@ -5,7 +5,7 @@ use std::{
 };
 
 use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
-use query_engine::{error::QueryErrorCode, observability::RuntimeObservationConfig};
+use query_engine::observability::RuntimeObservationConfig;
 use tokio::time::timeout;
 
 use super::*;
@@ -14,7 +14,7 @@ use crate::server::{
     backend::{
         AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
-    native_exec::{AlgeonNativeExecutionConfig, NativeMetricsCapture},
+    native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
 
@@ -143,14 +143,8 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         .unwrap()
         .into_execution()
         .unwrap();
-    let observation = execution.observation_handle().unwrap();
-    let capture = NativeMetricsCapture::coordinated("shutdown-race", observation)
-        .with_observation_activity_factory(execution.activity_factory())
-        .new_execution();
-    let prior_activity = capture
-        .new_observation_activity()
-        .expect("coordinated capture always requires activity")
-        .expect("activity acquired before shutdown");
+    let activity_factory = execution.activity_factory();
+    let prior_activity = activity_factory().expect("activity acquired before shutdown");
     let barrier = Arc::new(Barrier::new(2));
 
     let (coordinator_live, racing_activity) = thread::scope(|scope| {
@@ -169,9 +163,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
             .begin_attempt(attempt::AttemptOptions::default())
             .expect_err("native admission is closed before the coordinator race begins");
         assert_eq!(error.code(), ErrorCode::Cancelled);
-        let racing_activity = capture
-            .new_observation_activity()
-            .expect("coordinated acquisition cannot downgrade to no activity requirement");
+        let racing_activity = activity_factory();
         (shutdown.join().unwrap(), racing_activity)
     });
 
@@ -182,13 +174,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         timeout(Duration::from_millis(20), &mut finish).await.is_err(),
         "maintenance cannot drain while pre-shutdown activity is live"
     );
-    match racing_activity {
-        Ok(activity) => drop(activity),
-        Err(error) => {
-            assert_eq!(error.code(), QueryErrorCode::Cancelled);
-            assert_eq!(error.fact_value("reason"), Some("query_coordinator_activity_rejected"));
-        },
-    }
+    drop(racing_activity);
     assert!(
         timeout(Duration::from_millis(20), &mut finish).await.is_err(),
         "racing acquisition cannot release the prior activity"

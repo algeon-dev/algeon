@@ -2,7 +2,7 @@
 /// waiter; a request that cannot admit leaves the queue with its waiter.
 impl QueryService {
     fn try_admit_query(&self) -> Result<Option<QueryHandle>> {
-        self.try_admit_query_with_request(QueryAdmissionRequest::new())
+        self.try_admit_query_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {

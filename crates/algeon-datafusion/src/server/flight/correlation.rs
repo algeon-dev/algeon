@@ -341,16 +341,16 @@ mod correlation_tests {
             .and_then(|value| value.to_str().ok())
             .expect("query id response metadata")
             .to_string();
-        let native_cancellation =
+        let attempt_cancellation =
             service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
 
         let response =
             service.execute_ticket(query_id.clone(), None).await.expect("statement do_get should return a lazy stream");
-        assert!(!native_cancellation.is_cancelled(), "stream creation must not cancel the query");
+        assert!(!attempt_cancellation.is_cancelled(), "stream creation must not cancel the query");
 
         drop(response);
 
-        assert!(native_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
+        assert!(attempt_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
         assert_eq!(service.cancellations.len(), 0, "dropped streams must leave no cancellable registry entry");
         let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("# outcome=cancelled"), "{payload}");
@@ -376,7 +376,7 @@ mod correlation_tests {
             .and_then(|value| value.to_str().ok())
             .expect("query id response metadata")
             .to_string();
-        let native_cancellation =
+        let attempt_cancellation =
             service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
         let response =
             service.execute_ticket(query_id.clone(), None).await.expect("statement do_get should return a lazy stream");
@@ -388,7 +388,7 @@ mod correlation_tests {
 
         assert!(unwind.is_err());
         assert_eq!(service.coordinator.terminal(&query_id), Some(QueryTerminalOutcome::Panicked));
-        assert!(native_cancellation.is_cancelled(), "panic cleanup still cancels native execution");
+        assert!(attempt_cancellation.is_cancelled(), "panic cleanup still cancels native execution");
         assert_eq!(service.cancellations.len(), 0);
         let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# outcome=panicked\n"), "{payload}");
@@ -415,7 +415,7 @@ mod correlation_tests {
             .and_then(|value| value.to_str().ok())
             .expect("query id response metadata")
             .to_string();
-        let native_cancellation =
+        let attempt_cancellation =
             service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
 
         let mut stream = service
@@ -425,11 +425,11 @@ mod correlation_tests {
             .into_inner();
         stream.next().await.expect("schema frame").expect("schema frame is valid");
         stream.next().await.expect("record-batch frame").expect("record-batch frame is valid");
-        assert!(!native_cancellation.is_cancelled(), "partial polling must keep the query live");
+        assert!(!attempt_cancellation.is_cancelled(), "partial polling must keep the query live");
 
         drop(stream);
 
-        assert!(native_cancellation.is_cancelled(), "dropping a partially polled stream must cancel native work");
+        assert!(attempt_cancellation.is_cancelled(), "dropping a partially polled stream must cancel native work");
         assert_eq!(service.cancellations.len(), 0, "midstream drops must remove cancellation registration");
         let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("# outcome=cancelled"), "{payload}");

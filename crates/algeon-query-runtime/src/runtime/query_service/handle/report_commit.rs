@@ -673,9 +673,7 @@ mod tests {
         attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
         let completion = attempt.completion.completion();
         let handle = service
-            .admit_query_with_request(
-                QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding()),
-            )
+            .admit_query_with_request(QueryAdmissionRequest::new(attempt.owner.admission_binding()))
             .expect("attempt-bound admission");
         attempt.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
         handle.finish();

@@ -540,11 +540,14 @@ impl InstalledTestGpuBackend {
 
         let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let device = AlgeonGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
+        // Reports of attempts no caller awaits, such as the internal attempt of
+        // a plain `collect`, queue here for tests to inspect.
         let backend = AlgeonGpuBackend::builder()
             .with_native_execution_config(native_execution_config)
             .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
             .devices([device])
             .queue_policy(queue_policy)
+            .with_attempt_completion_queue_capacity(64)
             .build()
             .expect("test backend configuration must be valid");
         Self { backend: Some(backend), _serial: serial }

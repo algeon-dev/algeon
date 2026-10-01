@@ -22,7 +22,6 @@ use query_engine::{
         RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
         SealedRuntimeObservationSnapshot,
     },
-    runtime::ExecutionCancellation,
 };
 use tokio::{task::yield_now, time::timeout};
 
@@ -646,7 +645,6 @@ fn ticket_payload(started_at: Instant, deadline: Instant) -> CoordinatorTicketPa
         prepared_handle: None,
         kind: 0,
         execution_domain: StatementExecutionDomain::Data,
-        native_cancellation: ExecutionCancellation::new(),
         attempt: None,
         started_at,
         deadline,

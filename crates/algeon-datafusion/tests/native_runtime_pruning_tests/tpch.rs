@@ -93,7 +93,8 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert!(arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics =
+        below_native_admission(&native_plan).metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
 
@@ -172,7 +173,8 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert!(arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics =
+        below_native_admission(&native_plan).metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
@@ -226,7 +228,8 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert!(arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics =
+        below_native_admission(&native_plan).metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
@@ -259,7 +262,8 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert!(arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics =
+        below_native_admission(&native_plan).metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
@@ -309,7 +313,8 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert!(arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics =
+        below_native_admission(&native_plan).metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
 

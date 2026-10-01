@@ -4,7 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use algeon_datafusion::{attempt::AttemptOptions, native_exec::below_native_admission};
 use arrow::datatypes::SchemaRef;
+use futures::TryStreamExt;
 use query_engine::observability::SealedRuntimeObservationSnapshot;
 
 use super::*;
@@ -93,7 +95,7 @@ pub(super) async fn plan_native_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable(), None).await
+    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable()).await
 }
 
 async fn plan_native_query_with_resources(
@@ -101,9 +103,8 @@ async fn plan_native_query_with_resources(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
-    observation_capture: Option<ObservationCapture>,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    let optimizer_config = native_optimizer_config(config, resources, observation_capture);
+    let optimizer_config = native_optimizer_config(config, resources);
     let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
     let builder = resources.install_on(builder)?;
     let state = builder.with_algeon_native(optimizer_config).build();
@@ -124,18 +125,11 @@ async fn plan_native_query_with_resources(
 pub(super) fn native_optimizer_config(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
-    observation_capture: Option<ObservationCapture>,
 ) -> AlgeonNativeOptimizerConfig {
     let base = resources.optimizer_config().unwrap_or_else(|| {
         AlgeonNativeOptimizerConfig::default()
             .with_native_execution_config(config.native_execution_config_with_resources(resources))
     });
-    let base = if let Some(capture) = observation_capture {
-        let execution_config = base.native_execution_config().clone().with_benchmark_observation_capture(capture);
-        base.with_native_execution_config(execution_config)
-    } else {
-        base
-    };
     config.native_execution.configure_native_optimizer(base).expect("native TPC-H benchmark installs the native rule")
 }
 
@@ -315,13 +309,12 @@ pub(super) async fn run_native_query_iterations(
     pending_observations: &mut Vec<(String, ObservationCapture)>,
 ) -> Result<TimedNativeQueryRun, NativeRunFailure> {
     for _ in 0..config.warmup_iterations {
-        let planned = plan_native_query_with_resources(metadata, query, config, resources, None)
-            .await
-            .map_err(native_not_started)?;
+        let planned =
+            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
         if planned.planning_row.outcome == Some(CandidateOutcomeKind::Selected) {
             validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
                 .map_err(native_not_started)?;
-            let _ = collect_native_plan_once(planned.plan).await.map_err(native_started)?;
+            let _ = collect_native_plan_once(planned.plan, resources, None).await.map_err(native_started)?;
         } else {
             return Err(NativeRunFailure {
                 runtime_started: false,
@@ -340,9 +333,8 @@ pub(super) async fn run_native_query_iterations(
     for iteration in 0..config.iterations {
         let iteration_started = Instant::now();
         let observation_capture = (iteration == 0 && artifact_dir.is_some()).then(|| Arc::new(Mutex::new(None)));
-        let planned = plan_native_query_with_resources(metadata, query, config, resources, observation_capture.clone())
-            .await
-            .map_err(native_not_started)?;
+        let planned =
+            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
         planning_samples.push(iteration_started.elapsed());
         if planned.planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
             return Err(NativeRunFailure {
@@ -355,7 +347,10 @@ pub(super) async fn run_native_query_iterations(
             .map_err(native_not_started)?;
         let schema = planned.plan.schema();
         let started = Instant::now();
-        let (batches, metrics) = collect_native_plan_once(Arc::clone(&planned.plan)).await.map_err(native_started)?;
+        let (batches, metrics) =
+            collect_native_plan_once(Arc::clone(&planned.plan), resources, observation_capture.as_ref())
+                .await
+                .map_err(native_started)?;
         samples.push(started.elapsed());
         plan_plus_execution_samples.push(iteration_started.elapsed());
         final_measurement = Some(measure_output(&schema, &batches).map_err(native_started)?);
@@ -414,9 +409,28 @@ async fn collect_cpu_plan_once(planned: PlannedCpuQuery) -> Result<Vec<RecordBat
     collect(plan, Arc::new(TaskContext::default())).await.map_err(cpu_started)
 }
 
-async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<(Vec<RecordBatch>, MetricsSet)> {
-    let batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await?;
-    let metrics = plan.metrics().unwrap_or_default();
+/// Runs `plan` once. A plain `collect` runs it as an internal attempt; a run
+/// that captures its sealed observation runs it in an explicit attempt.
+async fn collect_native_plan_once(
+    plan: Arc<dyn ExecutionPlan>,
+    resources: &NativeTpchRuntimeResources,
+    observation_capture: Option<&ObservationCapture>,
+) -> DataFusionResult<(Vec<RecordBatch>, MetricsSet)> {
+    let batches = match (observation_capture, resources.backend()) {
+        (Some(capture), Some(backend)) => {
+            let attempt = backend.begin_attempt(AttemptOptions::default()).map_err(DataFusionError::from)?;
+            let capture = Arc::clone(capture);
+            attempt.register_sealed_report_observer(move |_report, snapshot| {
+                if let Ok(mut slot) = capture.lock() {
+                    *slot = Some(snapshot);
+                }
+            });
+            let stream = attempt.execute_physical_plan(Arc::clone(&plan), &SessionContext::new())?;
+            stream.try_collect().await?
+        },
+        _ => collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await?,
+    };
+    let metrics = below_native_admission(&plan).metrics().unwrap_or_default();
     Ok((batches, metrics))
 }
 

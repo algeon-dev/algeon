@@ -32,6 +32,7 @@ use query_engine::{
 
 use super::{
     GpuResidentProducer,
+    admission::attempt_execution_required_error,
     common::{
         NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
         gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream, native_plan_one_line,
@@ -44,7 +45,6 @@ use super::{
     },
     prepare_gpu_resident_producer_for_execution,
     producer::prepared_gpu_resident_producer_admission_tickets,
-    register_gpu_resident_producer_discovery,
 };
 use crate::{
     error::{Error, ErrorCode, Result},
@@ -504,8 +504,7 @@ fn complete_composed_admission_evidence(
     // footer-bound producer can finish preparation. Rebinding a new ticket
     // here would create a second query-service lifecycle whose release can
     // revoke the deferred host cursor before it reaches EOF. Update that
-    // still-unadmitted ambient ticket in place; standalone callers retain the
-    // replacement-ticket path because they have no active stream to preserve.
+    // still-unadmitted ambient ticket in place.
     if let Some(active_ticket) = canonical_ticket {
         active_ticket.extend_capability_evidence_before_admission([complete_evidence]).map_err(|error| {
             DataFusionError::from(Error::from_native(
@@ -519,12 +518,12 @@ fn complete_composed_admission_evidence(
         });
     }
 
-    let Some(first_ticket) = producer_tickets.first() else {
+    if producer_tickets.is_empty() {
         return Ok(CompletedComposedAdmissionEvidence { execution_config });
-    };
-    let attempt_ticket = Invocation::of_task(task_context)
-        .and_then(|invocation| invocation.attempt_admission_ticket(source.clone(), Some(complete_evidence.clone())));
-    let ticket = match attempt_ticket {
+    }
+    let ticket = match Invocation::of_task(task_context)
+        .and_then(|invocation| invocation.attempt_admission_ticket(source, Some(complete_evidence.clone())))
+    {
         Some((ticket, true)) => ticket,
         // Another fragment of this invocation minted the ticket first.
         Some((ticket, false)) => {
@@ -537,7 +536,9 @@ fn complete_composed_admission_evidence(
             })?;
             ticket
         },
-        None => first_ticket.rebind_with_source_and_capability_evidence(source, complete_evidence),
+        None => {
+            return Err(attempt_execution_required_error("algeon_datafusion.native_composed.admission_evidence").into());
+        },
     };
     Ok(CompletedComposedAdmissionEvidence {
         execution_config: execution_config.with_existing_query_admission_ticket(ticket),
@@ -708,9 +709,7 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                     })?;
                 let ordered_runtime_occurrence_ids =
                     admitted_composed_projection.as_ref().map(|_| runtime_occurrence_ids.clone());
-                let attempt_ticket = execution_config
-                    .query_admission_ticket_for_task_context(task_context.as_ref())
-                    .filter(|ticket| ticket.is_attempt_bound());
+                let attempt_ticket = execution_config.query_admission_ticket_for_task_context(task_context.as_ref());
                 if let Some(projection) = admitted_composed_projection
                     && let Some(ticket) = &attempt_ticket
                 {
@@ -936,7 +935,6 @@ impl AlgeonNativeComposedGpuProducerExec {
         }
         validate_composed_gpu_inputs(plan, &gpu_inputs, "algeon_datafusion.native_composed_gpu_producer.try_new")?;
         let cache = properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?;
-        register_composed_gpu_producer();
         Ok(Self {
             input_name,
             admitted,
@@ -1237,14 +1235,5 @@ fn validate_composed_gpu_inputs(
     Ok(())
 }
 
-fn composed_gpu_producer_discovery(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(|producer| producer as &dyn GpuResidentProducer)
-}
-
-fn register_composed_gpu_producer() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| register_gpu_resident_producer_discovery(composed_gpu_producer_discovery));
-}
-
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

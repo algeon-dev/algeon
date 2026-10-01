@@ -62,7 +62,7 @@ impl AlgeonNativeExecutionConfig {
         if let Some(ticket) = self.query_admission_ticket_for_task_context(&task_context) {
             let task_context = task_context_with_query_admission_ticket(task_context, Arc::clone(&ticket));
             return ticket
-                .acquire_context(task_context, self.cancellation.clone())
+                .acquire_context(task_context)
                 .await
                 .map(AlgeonNativeExecutionContext::ticket_bound)
                 .and_then(|context| self.stamp_acquired_service_context(context))

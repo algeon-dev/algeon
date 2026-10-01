@@ -43,7 +43,7 @@ struct QueuedAdmissionAttempt<'a> {
 impl QueryService {
     #[cfg(test)]
     pub(crate) fn admit_query(&self) -> Result<QueryHandle> {
-        self.admit_query_with_request(QueryAdmissionRequest::new())
+        self.admit_query_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     /// Admits a query with consolidated request-scoped admission metadata.
@@ -82,7 +82,6 @@ impl QueryService {
             requested_at,
             execution_cancellation,
             submitted_plan_capability_evidence,
-            request,
             observation,
             attempt_id,
             admission_request_id,
@@ -108,23 +107,26 @@ impl QueryService {
         };
         let submission_seq = pending.submission_seq();
 
-        let (device_entries, compatible_devices) =
-            match self.resolve_device_admission_entries(&request, &requirement, &candidate_ordinals) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    record_admission_lifecycle(
-                        &observation,
-                        admission_request_id,
-                        admission_rejection(&error),
-                        0,
-                        None,
-                        None,
-                    );
-                    pending.release();
-                    completion.finish_error(&error);
-                    return Err(error);
-                },
-            };
+        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
+            submitted_plan_capability_evidence.as_ref(),
+            &requirement,
+            &candidate_ordinals,
+        ) {
+            Ok(entries) => entries,
+            Err(error) => {
+                record_admission_lifecycle(
+                    &observation,
+                    admission_request_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                pending.release();
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
         if let Err(error) =
             self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
         {

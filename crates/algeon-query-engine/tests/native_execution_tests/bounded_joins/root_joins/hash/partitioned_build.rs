@@ -494,7 +494,7 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
     let handle = suite_backend_with_policy(context.policy)
         .session_capability()
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::test_attempt()
                 .with_query_plan_capability_evidence(evidence)
                 .with_query_cap_bytes(14 * 1024 * 1024),
         )

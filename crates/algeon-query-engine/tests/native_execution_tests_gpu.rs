@@ -27,6 +27,7 @@ use cudf::DataFrame;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     admission::AttemptCapabilityEvidence,
+    attempt::{AttemptAdmissionBinding, AttemptOwner, BeginAttemptRequest},
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::{QueryErrorCode, Result as QueryEngineResult},
     exec::{
@@ -41,7 +42,7 @@ use query_engine::{
     },
     metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::RuntimeObservationOwner,
+    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig},
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
@@ -330,17 +331,28 @@ impl BackendQueryContext {
         self.admit_evidence_with_observation(evidence, None)
     }
 
+    fn begin_native_attempt(&self, query_id: &str, observation: RuntimeObservationConfig) -> AttemptOwner {
+        let attempt = suite_backend_with_policy(self.policy)
+            .begin_attempt(BeginAttemptRequest {
+                query_id: Some(AttemptQueryId::new(query_id).expect("valid attempt query id")),
+                observation,
+                ..BeginAttemptRequest::default()
+            })
+            .expect("suite backend begins an attempt")
+            .owner;
+        attempt.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
+        attempt
+    }
+
     fn admit_evidence_with_observation(
         &self,
         evidence: AttemptCapabilityEvidence,
-        observation: Option<RuntimeObservationOwner>,
+        attempt: Option<AttemptAdmissionBinding>,
     ) -> QueryEngineResult<AdmittedPlanContext> {
-        let mut request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence);
+        let request = attempt.map_or_else(QueryAdmissionRequest::test_attempt, QueryAdmissionRequest::new);
+        let mut request = request.with_query_plan_capability_evidence(evidence);
         if let Some(bytes) = self.requested_bytes {
             request = request.with_query_cap_bytes(bytes);
-        }
-        if let Some(observation) = observation {
-            request = request.with_runtime_observation_owner(observation);
         }
         let handle = suite_backend_with_policy(self.policy).session_capability().admit_query_with_request(request)?;
         let context = handle.acquire_context()?;
@@ -355,7 +367,7 @@ impl BackendQueryContext {
         let admitted_plan =
             admit_query_plan(plan, self.policy.statistical_aggregate_execution_mode, self.policy.planning_policy)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
-        let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
+        let admitted = self.admit_evidence_with_observation(evidence, None)?;
         let outcome = execute_query_plan_direct(
             admitted.context.context(),
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(gpu_inputs),

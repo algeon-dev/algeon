@@ -51,9 +51,9 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         .unwrap();
     let session = core.session_capability();
 
-    let first = session.admit_query_with_request(QueryAdmissionRequest::new()).expect("first query admits");
-    let second = session.admit_query_with_request(QueryAdmissionRequest::new()).expect("second query admits");
-    let third = session.admit_query_with_request(QueryAdmissionRequest::new()).expect("third query admits");
+    let first = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("first query admits");
+    let second = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("second query admits");
+    let third = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("third query admits");
     // Least-loaded placement decides the visiting order; the contract here is
     // how many attempts each device ends up holding, not which one is picked
     // first while both are idle.
@@ -63,7 +63,12 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     }
     assert_eq!(placed, [2, 1], "device 0 holds its cap of two and device 1 holds its cap of one");
     assert!(
-        session.enqueue_admission_with_request(QueryAdmissionRequest::new()).unwrap().try_admit().unwrap().is_none(),
+        session
+            .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
+            .unwrap()
+            .try_admit()
+            .unwrap()
+            .is_none(),
         "the device-1 cap remains one instead of inheriting device 0's cap of two",
     );
 

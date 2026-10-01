@@ -161,7 +161,6 @@ pub(super) struct QueryExecutionGuard {
     pub(super) correlation_id: Option<String>,
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) flight_token: CancellationToken,
-    pub(super) native_cancellation: ExecutionCancellation,
     pub(super) attempt_cancellation: Option<AttemptCancellation>,
     pub(super) shutdown_token: CancellationToken,
     /// Set only after Flight has polled the execution body and therefore
@@ -463,7 +462,6 @@ impl Drop for QueryExecutionGuard {
             } else {
                 self.terminal.finish_dropped("stream");
             }
-            self.native_cancellation.cancel();
             if let Some(attempt_cancellation) = &self.attempt_cancellation {
                 attempt_cancellation.cancel();
             }

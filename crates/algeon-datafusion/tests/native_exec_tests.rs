@@ -10,7 +10,7 @@ use algeon_datafusion::{
     },
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
         AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
@@ -126,7 +126,11 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    // The admission root is a visible node over the native fragment.
+    assert_eq!(optimized.name(), "NativeAdmissionExec");
+    assert_eq!(optimized.children().len(), 1);
+    assert!(displayable(optimized.as_ref()).indent(false).to_string().starts_with("NativeAdmissionExec\n"));
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
@@ -170,7 +174,9 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
     assert_eq!(row.source_diagnostics.len(), 1);
     assert!(row.source_diagnostics[0].direct_device_read);
 
-    let filter = optimized.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
+    let filter = below_native_admission(&optimized)
+        .downcast_ref::<FilterExec>()
+        .expect("mixed boundary must retain the CPU root filter");
     let native = filter
         .input()
         .downcast_ref::<AlgeonNativeExec>()
@@ -197,7 +203,7 @@ fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperati
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
-    let cooperative = optimized
+    let cooperative = below_native_admission(&optimized)
         .downcast_ref::<CooperativeExec>()
         .expect("the certified transparent wrapper should remain in the final plan");
     let filter = cooperative
@@ -308,7 +314,7 @@ fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
     let cpu = block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
     let native_plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let native_leaf = mixed_boundary_native_leaf(native_plan.as_ref());
+    let native_leaf = mixed_boundary_native_leaf(below_native_admission(&native_plan).as_ref());
     let native = block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
 
     assert_eq!(ilike_rows(&native), ilike_rows(&cpu));
@@ -341,7 +347,7 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
     assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
     assert!(error.to_string().contains("AlgeonNativeExec[host-output]"), "unexpected error: {error}");
     assert_eq!(
-        mixed_boundary_native_leaf(plan.as_ref())
+        mixed_boundary_native_leaf(below_native_admission(&plan).as_ref())
             .metrics()
             .unwrap()
             .sum_by_name("device_to_host_materializations")
@@ -363,7 +369,7 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
     let backend = test_gpu_backend();
     let rule = AlgeonNativePhysicalOptimizerRule::new(backend.optimizer_config().clone());
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let native_leaf = mixed_boundary_native_leaf(plan.as_ref());
+    let native_leaf = mixed_boundary_native_leaf(below_native_admission(&plan).as_ref());
 
     let batches = block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
 
@@ -433,7 +439,7 @@ proptest! {
         prop_assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
         prop_assert_eq!(row.native_plan_fragment_count, Some(1));
         prop_assert_eq!(row.host_datafusion_boundary_count, Some(1));
-        let filter = planned.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
+        let filter = below_native_admission(&planned).downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
         let native = filter.input().downcast_ref::<AlgeonNativeExec>().expect("mixed boundary must replace only the source leaf");
         assert_mixed_boundary_properties(filter, native);
 
@@ -519,7 +525,7 @@ fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_pro
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
@@ -541,7 +547,7 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
@@ -575,7 +581,7 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let batches = block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
@@ -603,7 +609,7 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let actual = block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(actual.len(), expected.len());
     assert_eq!(int32_array(&actual[0], 0).values().as_ref(), int32_array(&expected[0], 0).values().as_ref());
@@ -852,7 +858,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
         .optimize_with_diagnostics(plan, &ConfigOptions::default())
         .expect("a non-count plan must not be rejected by the NoDataFusionCpu count-only probe");
     assert!(
-        after_probe.downcast_ref::<AlgeonNativeExec>().is_none(),
+        below_native_admission(&after_probe).downcast_ref::<AlgeonNativeExec>().is_none(),
         "the count-only probe should decline an analytical SUM plan"
     );
     let probe_report = probe_diagnostics.expect("count-only probe should record its own rejection evidence").report;
@@ -863,7 +869,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
         .optimize_with_diagnostics(after_probe, &ConfigOptions::default())
         .expect("the final native optimizer must run after a count-only probe miss");
     assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
+        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
         "the final native optimizer should rewrite the supported analytical plan"
     );
     let final_report =
@@ -928,14 +934,14 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     let (after_probe, probe_diagnostics) = count_only_probe
         .optimize_with_diagnostics(plan, &ConfigOptions::default())
         .expect("NoDataFusionCpu count-only probe should retain supported native count rewrites");
-    assert!(after_probe.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&after_probe).downcast_ref::<AlgeonNativeExec>().is_some());
     let probe_report = probe_diagnostics.expect("count-only probe should record its rewrite evidence").report;
     assert_eq!(probe_report.selected_count(), 1);
     assert_eq!(probe_report.not_selected_count(), 0);
     let after_final = final_native
         .optimize(after_probe, &ConfigOptions::default())
         .expect("the final native optimizer should preserve a count-only native rewrite");
-    assert!(after_final.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&after_final).downcast_ref::<AlgeonNativeExec>().is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1081,7 +1087,7 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     // the scalar distinct count is exact.
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
+        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
         "distinct aggregate over anti join should execute natively:\n{optimized_tree}"
     );
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
@@ -1127,7 +1133,7 @@ fn native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contra
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
+        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
         "outcomes={:?}; plan={}",
         report.outcomes(),
         displayable(optimized.as_ref()).indent(false)
@@ -1148,7 +1154,7 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
         optimized_tree.contains("AlgeonNativeExec"),

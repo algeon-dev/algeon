@@ -31,11 +31,7 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use prost::Message;
-use query_engine::{
-    observability::{RuntimeObservationConfig, RuntimeObservationHandle},
-    plan::MlForestModelDigest,
-    runtime::ExecutionCancellation,
-};
+use query_engine::{observability::RuntimeObservationConfig, plan::MlForestModelDigest};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
@@ -70,9 +66,6 @@ use crate::{
         },
         cuml_sql::forest_model_digests,
         gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
-        native_exec::{
-            NativeMetricsCapture, ServerNativeObservationActivityFactory as NativeObservationActivityFactory,
-        },
         planner::native::{Invocation, InvocationExecution},
     },
 };

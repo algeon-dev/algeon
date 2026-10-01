@@ -156,7 +156,7 @@ fn query_service_rejects_an_already_cancelled_execution_token_before_enqueue() {
     cancellation.cancel();
 
     let error = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_execution_cancellation(cancellation))
+        .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_execution_cancellation(cancellation))
         .expect_err("a cancelled attempt must never enter the admission queue");
 
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
@@ -174,7 +174,9 @@ async fn query_service_execution_token_cancels_a_queued_async_admission() {
     let queued_cancellation = cancellation.clone();
     let queued = tokio::spawn(async move {
         queued_service
-            .admit_async_with_request(QueryAdmissionRequest::new().with_execution_cancellation(queued_cancellation))
+            .admit_async_with_request(
+                QueryAdmissionRequest::test_attempt().with_execution_cancellation(queued_cancellation),
+            )
             .await
     });
     wait_for_queued_len(&service, 1);
@@ -203,7 +205,9 @@ fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() 
     let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
     let admission = std::thread::spawn(move || {
         let result = queued_service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_execution_cancellation(queued_cancellation));
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_execution_cancellation(queued_cancellation),
+            );
         result_sender.send(result.map(|_| ())).expect("test receives blocking admission result");
     });
 
@@ -285,12 +289,15 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
         1,
         2,
     );
-    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
+    let active =
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150)).unwrap();
     let queued_service = service.clone();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         started_sender.send(()).unwrap();
-        queued_service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap()
+        queued_service
+            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150))
+            .unwrap()
     });
     started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     wait_for_queued_len(&service, 1);
@@ -312,7 +319,8 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
         1,
         2,
     );
-    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
+    let active =
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150)).unwrap();
     let retained_grant = active.memory_grant().unwrap();
     drop(active);
     assert_eq!(first_memory_governor_report(&service).live_grants_bytes, 150);
@@ -321,7 +329,9 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         started_sender.send(()).unwrap();
-        queued_service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap()
+        queued_service
+            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150))
+            .unwrap()
     });
     started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     wait_for_queued_len(&service, 1);
@@ -341,9 +351,11 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
         1,
         2,
     );
-    let _active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
-    let mut waiter =
-        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
+    let _active =
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150)).unwrap();
+    let mut waiter = service
+        .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150))
+        .unwrap();
     service.expire_waiter(&mut waiter);
 
     let error = waiter.try_admit().unwrap_err();
@@ -442,8 +454,9 @@ fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
         2,
     );
     let active = service.admit_query().unwrap();
-    let mut large =
-        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(295)).unwrap();
+    let mut large = service
+        .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(295))
+        .unwrap();
     let mut small = service.enqueue_admission().unwrap();
 
     assert!(large.try_admit().unwrap().is_none());
@@ -466,10 +479,11 @@ fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
         10,
         2,
     );
-    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60)).unwrap();
+    let active =
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(60)).unwrap();
     let grant = active.memory_grant().unwrap();
     let mut waiter =
-        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60)).unwrap();
+        service.enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(60)).unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
     grant.freeze_resident(50).unwrap();
@@ -492,13 +506,14 @@ fn frozen_resident_release_revalidates_and_wakes_a_capacity_waiter() {
         2,
     );
     let resident_owner =
-        service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(50)).unwrap();
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(50)).unwrap();
     let resident_grant = resident_owner.memory_grant().unwrap();
     resident_grant.freeze_resident(30).unwrap();
     drop(resident_owner);
-    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40)).unwrap();
+    let active =
+        service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(40)).unwrap();
     let mut waiter =
-        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40)).unwrap();
+        service.enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(40)).unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
     drop(resident_grant);
@@ -587,9 +602,7 @@ fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
 
     let mut queued = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()),
-        )
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("attempt-bound request queues behind the active admission");
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     assert_eq!(service.admission_snapshot().unwrap().queued_queries, 1);
@@ -712,7 +725,9 @@ fn cancellation_and_deadline_release_pending_reservations() {
     let cancellation_token = cancellation.clone();
     let cancelled = std::thread::spawn(move || {
         cancellation_service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_execution_cancellation(cancellation_token))
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_execution_cancellation(cancellation_token),
+            )
     });
     pause.wait_until_entered(Duration::from_secs(1));
     cancellation.cancel();
@@ -725,7 +740,7 @@ fn cancellation_and_deadline_release_pending_reservations() {
     let deadline_pause = service.pause_pending_preflight();
     let deadline_service = service.clone();
     let deadline_thread = std::thread::spawn(move || {
-        deadline_service.admit_query_with_request(QueryAdmissionRequest::new().with_queue_deadline(deadline))
+        deadline_service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_queue_deadline(deadline))
     });
     deadline_pause.wait_until_entered(Duration::from_secs(1));
     while Instant::now() < deadline {
@@ -740,7 +755,7 @@ fn cancellation_and_deadline_release_pending_reservations() {
     service.reset_pending_preflight_resolver_calls();
     let error = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new().with_queue_deadline(Instant::now() - Duration::from_millis(1)),
+            QueryAdmissionRequest::test_attempt().with_queue_deadline(Instant::now() - Duration::from_millis(1)),
         )
         .expect_err("an already-expired queue deadline rejects before owner preflight");
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
@@ -827,7 +842,7 @@ fn closed_devices_leave_the_impossible_cap_decision_to_the_fleet_health_error() 
     ledger.close_admission("test closes the only compatible device").expect("device closes");
 
     let error = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(80))
+        .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(80))
         .expect_err("a closed fleet rejects admission");
 
     assert_ne!(

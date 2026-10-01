@@ -9,11 +9,11 @@ use std::{
 };
 
 use query_engine::{
+    attempt::AttemptCancellation,
     observability::{
         QueryAttemptReport, RuntimeObservationOwner, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
         write_runtime_observation_jsonl,
     },
-    runtime::ExecutionCancellation,
 };
 
 #[cfg(test)]
@@ -94,7 +94,7 @@ pub(crate) struct ShutdownDiscarded {
     pub(crate) _observation_owner: Option<RuntimeObservationOwner>,
     pub(crate) _terminal: Option<QueryTerminal>,
     pub(crate) _ticket: Option<CoordinatorTicketPayload>,
-    pub(crate) _execution_cancellation: Option<ExecutionCancellation>,
+    pub(crate) _execution_cancellation: Option<AttemptCancellation>,
 }
 
 pub(crate) struct FinalizationOutput {

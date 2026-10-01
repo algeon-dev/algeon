@@ -34,6 +34,8 @@ use datafusion::{
     prelude::{DataFrame, SessionContext},
 };
 use futures::{FutureExt, Stream, future::BoxFuture};
+#[cfg(test)]
+use query_engine::admission::AttemptCapabilityEvidence;
 use query_engine::{
     attempt::{
         AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCompletionFactory, AttemptHandle, AttemptOwner,
@@ -52,6 +54,8 @@ pub use query_engine::{
     },
 };
 
+#[cfg(test)]
+use crate::native_exec::admission::{QueryAdmissionSource, QueryAdmissionTicket};
 pub use crate::native_exec::{
     GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, SealedAttemptGraphClaimCalibrationSnapshot,
 };
@@ -195,6 +199,12 @@ impl InvocationAttempt {
         self.state.query_id.as_ref()
     }
 
+    /// The attempt's cancellation, the one token native work of this
+    /// invocation observes.
+    pub(crate) fn cancellation(&self) -> &AttemptCancellation {
+        &self.state.cancellation
+    }
+
     /// Engine-minted execution identity for this invocation. Graph execution
     /// services use it only to link an intentional non-physical follower to
     /// its physical leader in the sealed diagnostic projection.
@@ -273,6 +283,23 @@ impl AlgeonGpuBackend {
     }
 
     fn begin_attempt_with_cap(&self, options: AttemptOptions, query_cap_bytes: Option<u64>) -> Result<AlgeonAttempt> {
+        AlgeonAttempt::begin(self.session_capability(), options, query_cap_bytes)
+    }
+
+    /// Drains up to `max` reports whose completion receivers were all
+    /// dropped before publication. Drained reports leave the queue; the
+    /// backend retains no copy.
+    pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
+        self.session_capability().take_abandoned_attempt_reports(max)
+    }
+
+    pub fn attempt_counters_snapshot(&self) -> AttemptBackendCountersSnapshot {
+        self.session_capability().attempt_counters_snapshot()
+    }
+}
+
+impl AlgeonAttempt {
+    fn begin(session: &GpuBackendSession, options: AttemptOptions, query_cap_bytes: Option<u64>) -> Result<Self> {
         let query_id = options.query_id.map(AttemptQueryId::new).transpose().map_err(|error| {
             Error::from_native("algeon_datafusion.attempt.begin", "invalid attempt query correlation", error)
         })?;
@@ -280,8 +307,7 @@ impl AlgeonGpuBackend {
             Error::from_native("algeon_datafusion.attempt.begin", "invalid attempt trace correlation", error)
         })?;
         let state_query_id = query_id.clone();
-        let begin = self
-            .session_capability()
+        let begin = session
             .begin_attempt(BeginAttemptRequest {
                 query_id,
                 trace_context,
@@ -310,28 +336,15 @@ impl AlgeonGpuBackend {
         begin.owner.register_sealed_report_sink(move |report| {
             metrics_state.publish_sealed_metrics(&report);
         });
-        Ok(AlgeonAttempt {
+        Ok(Self {
             owner: Mutex::new(Some(begin.owner)),
             invocation: Invocation::for_attempt(InvocationAttempt::new(Arc::clone(&state))),
             state,
             completion_factory,
-            session: self.session_capability().clone(),
+            session: session.clone(),
         })
     }
 
-    /// Drains up to `max` reports whose completion receivers were all
-    /// dropped before publication. Drained reports leave the queue; the
-    /// backend retains no copy.
-    pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
-        self.session_capability().take_abandoned_attempt_reports(max)
-    }
-
-    pub fn attempt_counters_snapshot(&self) -> AttemptBackendCountersSnapshot {
-        self.session_capability().attempt_counters_snapshot()
-    }
-}
-
-impl AlgeonAttempt {
     pub fn attempt_id(&self) -> AttemptId {
         self.state.handle.attempt_id()
     }
@@ -602,30 +615,90 @@ impl AlgeonAttempt {
     }
 
     /// Binds the invocation's admission ticket to `task_context` when `plan`
-    /// admits native work. A plan planned outside this attempt carries its own
-    /// ticket; its source and evidence mint the invocation's ticket instead.
+    /// admits native work. For a plan planned outside this attempt, the
+    /// source and evidence its admission node holds mint the ticket.
     fn task_context_with_attempt_ticket(
         &self,
         plan: &dyn ExecutionPlan,
         task_context: Arc<TaskContext>,
     ) -> Arc<TaskContext> {
         let Some(admission) = native_admission_plan(plan) else { return task_context };
-        let planned = admission.ticket();
         let (ticket, _) = self
             .invocation
-            .attempt_admission_ticket(planned.source(), planned.attempt_capability_evidence_for_rebind())
+            .attempt_admission_ticket(admission.source(), Some(admission.evidence()))
             .expect("an attempt's invocation carries its attempt");
         task_context_with_query_admission_ticket(task_context, ticket)
     }
 }
 
+/// Runs `execute` as one internal attempt begun on `session`, for a native
+/// admission root executed without an attempt of its own (a plain DataFusion
+/// `collect`). `execute` receives a task context carrying the attempt's
+/// invocation; the returned stream commits the attempt's terminal outcome on
+/// end of stream, error, drop, or panic.
+pub(crate) fn execute_in_internal_attempt(
+    session: &GpuBackendSession,
+    plan: &dyn ExecutionPlan,
+    task_context: Arc<TaskContext>,
+    execute: impl FnOnce(Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream>,
+) -> DataFusionResult<SendableRecordBatchStream> {
+    let attempt = AlgeonAttempt::begin(session, AttemptOptions::default(), None).map_err(DataFusionError::from)?;
+    let _ = attempt.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+    attempt.state.set_sealed_metrics_target(plan);
+    let owner = attempt.take_owner()?;
+    let mut session_config = task_context.session_config().clone();
+    attempt.invocation.install(&mut session_config);
+    let task_context = Arc::new(TaskContext::new(
+        task_context.task_id(),
+        task_context.session_id(),
+        session_config,
+        task_context.scalar_functions().clone(),
+        task_context.higher_order_functions().clone(),
+        task_context.aggregate_functions().clone(),
+        task_context.window_functions().clone(),
+        task_context.runtime_env(),
+    ));
+    match execute(task_context) {
+        Ok(inner) => Ok(Box::pin(AttemptStream::new(inner, owner, Arc::clone(&attempt.state)))),
+        Err(error) => {
+            commit_datafusion_error(&owner, &error, &attempt.state.cancellation);
+            Err(error)
+        },
+    }
+}
+
+/// Begins a native attempt on `source`'s backend and mints its invocation's
+/// ticket from `evidence`, for tests that drive a ticket without planning.
+/// The ticket admits at most once, under the returned attempt.
+#[cfg(test)]
+pub(crate) fn attempt_ticket_for_test(
+    source: QueryAdmissionSource,
+    evidence: Option<AttemptCapabilityEvidence>,
+) -> (AlgeonAttempt, Arc<QueryAdmissionTicket>) {
+    attempt_ticket_with_options_for_test(source, evidence, AttemptOptions::default())
+}
+
+/// [`attempt_ticket_for_test`] for an attempt begun with `options`.
+#[cfg(test)]
+pub(crate) fn attempt_ticket_with_options_for_test(
+    source: QueryAdmissionSource,
+    evidence: Option<AttemptCapabilityEvidence>,
+    options: AttemptOptions,
+) -> (AlgeonAttempt, Arc<QueryAdmissionTicket>) {
+    let attempt = AlgeonAttempt::begin(source.session(), options, None).expect("a test attempt begins");
+    attempt.state.handle.set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
+    let (ticket, _) = attempt
+        .invocation
+        .attempt_admission_ticket(source, evidence)
+        .expect("an attempt's invocation carries its attempt");
+    (attempt, ticket)
+}
+
 fn native_admission_plan(plan: &dyn ExecutionPlan) -> Option<&NativeAdmissionExec> {
-    // `NativeAdmissionExec` is a transparent wrapper: `name`, `fmt`, and
-    // `downcast_delegate` all forward to its input, so detection must cast
-    // the trait object directly instead of `ExecutionPlan::downcast_ref`.
-    // It is usually the physical root, but DDL plans can execute it below a
-    // non-transparent DataFusion operator. The invocation task context must
-    // carry the same attempt ticket before either shape starts execution.
+    // `NativeAdmissionExec` is usually the physical root, but DDL plans can
+    // execute it below a DataFusion operator, and a GPU function occurrence
+    // can wrap it. The invocation task context must carry the same attempt
+    // ticket before any of these shapes starts execution.
     let mut current = plan;
     loop {
         if let Some(admission) = (current as &dyn Any).downcast_ref::<NativeAdmissionExec>() {

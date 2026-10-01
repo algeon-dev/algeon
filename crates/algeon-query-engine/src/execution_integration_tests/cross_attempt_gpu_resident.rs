@@ -112,8 +112,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     producer_observation.set_disposition(observability::AttemptDisposition::Native).unwrap();
     let producer = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_attempt_binding(producer_owner.admission_binding())
+            QueryAdmissionRequest::new(producer_owner.admission_binding())
                 .with_query_plan_capability_evidence(producer_evidence),
         )
         .expect("producer admission");
@@ -180,7 +179,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     tiny_evidence.attest_cugraph_graph_execution_scope(&pagerank);
     let tiny = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_cap_bytes(1).with_query_plan_capability_evidence(tiny_evidence),
+            QueryAdmissionRequest::test_attempt().with_query_cap_bytes(1).with_query_plan_capability_evidence(tiny_evidence),
         )
         .expect("tiny explicit cap is admissible");
     let tiny_context = tiny.acquire_context().expect("tiny context");
@@ -201,7 +200,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
         evidence.attest_cugraph_graph_execution_scope(plan);
         let consumer = service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
             .expect("remaining capacity admits graph consumer");
         let consumer_context = consumer.acquire_context().expect("consumer context");
         let result = execute_plan(consumer_context.context(), plan, Some(&inputs))
@@ -243,10 +242,10 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     evidence.attest_cugraph_graph_execution_scope(&plan);
     let producer_attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()))
         .expect("producer attempt admission");
     let consumer_attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("consumer attempt admission");
     let producer_context = producer_attempt.acquire_context().expect("producer context");
     let consumer_context = consumer_attempt.acquire_context().expect("consumer context");
@@ -390,8 +389,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
     let attempt = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_attempt_binding(attempt_owner.admission_binding())
+            QueryAdmissionRequest::new(attempt_owner.admission_binding())
                 .with_query_plan_capability_evidence(evidence),
         )
         .expect("admission");
@@ -752,8 +750,7 @@ fn execute_pagerank_attempt(
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
-    let mut request = QueryAdmissionRequest::new()
-        .with_attempt_binding(attempt_owner.admission_binding())
+    let mut request = QueryAdmissionRequest::new(attempt_owner.admission_binding())
         .with_query_plan_capability_evidence(evidence);
     if let Some(cap_bytes) = cap_bytes {
         request = request.with_query_cap_bytes(cap_bytes);
@@ -934,8 +931,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     let producer = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_attempt_binding(attempt_owner.admission_binding())
+            QueryAdmissionRequest::new(attempt_owner.admission_binding())
                 .with_query_plan_capability_evidence(evidence),
         )
         .expect("producer admission");

@@ -4,6 +4,7 @@ use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit},
     gpu_coverage::validate_query,
+    native_exec::below_native_admission,
     planner::{
         AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
         classify_final_plan,
@@ -736,7 +737,8 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
         plan_contains_native_exec(cugraph_plan),
         "backend-managed cuGraph plan should have a native edge-source child:\n{cugraph_display}"
     );
-    let metrics = plan.metrics().expect("backend-managed cuGraph plan should expose native metrics");
+    let metrics =
+        below_native_admission(&plan).metrics().expect("backend-managed cuGraph plan should expose native metrics");
 
     assert_eq!(metric_usize(&metrics, "admission_sequence_observed"), 1);
     assert!(metric_usize(&metrics, "admission_sequence") > 0);

@@ -2,12 +2,13 @@
 //!
 //! # Cancellation contract
 //!
-//! Each in-flight statement registers a Flight [`CancellationToken`] and a
-//! native [`ExecutionCancellation`] flag. The token stops `DoGet`; the native
-//! flag is checked cooperatively at query-engine boundaries and does not preempt
-//! an in-flight libcudf/CUDA call.
+//! Each in-flight statement registers a Flight [`CancellationToken`] and its
+//! attempt's [`AttemptCancellation`], the one token native execution observes.
+//! The Flight token stops `DoGet`; the attempt token is checked cooperatively
+//! at query-engine boundaries and does not preempt an in-flight libcudf/CUDA
+//! call.
 //!
-//! `cancel()` flips the **native flag first, then the Flight token**. The
+//! `cancel()` cancels the **attempt first, then the Flight token**. The
 //! ordering keeps the next native boundary from producing another batch after
 //! the Flight stream starts tearing down.
 //!
@@ -16,11 +17,11 @@
 //! Entries are inserted after a statement ticket is consumed, before any
 //! execution branch can return. `QueryExecutionGuard::drop` removes the entry
 //! and, if the stream was dropped before a terminal result, cancels both the
-//! native flag and Flight token. Before a ticket is issued, shutdown still
-//! reaches the native flag through the planning `shutdown_token` arm.
+//! attempt and the Flight token. Before a ticket is issued, shutdown still
+//! reaches the attempt through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
-use query_engine::{attempt::AttemptCancellation, runtime::ExecutionCancellation};
+use query_engine::attempt::AttemptCancellation;
 use tokio_util::sync::CancellationToken;
 
 /// Registry of in-flight statement cancellation handles, keyed by query id.
@@ -31,27 +32,24 @@ pub struct QueryCancellation {
     tokens: DashMap<String, QueryCancellationEntry>,
 }
 
-/// Paired Flight stream token and native execution cancellation flag for one
-/// registered statement. Both halves are flipped together by [`QueryCancellation::cancel`].
+/// Paired Flight stream token and attempt cancellation for one registered
+/// statement. Both halves are flipped together by [`QueryCancellation::cancel`].
 #[derive(Debug)]
 struct QueryCancellationEntry {
     flight_token: CancellationToken,
-    native_cancellation: ExecutionCancellation,
     attempt_cancellation: Option<AttemptCancellation>,
 }
 
 impl QueryCancellation {
-    /// Register `query_id` with the Flight stream token and the native
-    /// cancellation flag observed by `query-engine`.
+    /// Register `query_id` with the Flight stream token and the attempt
+    /// cancellation observed by `query-engine`.
     pub fn insert(
         &self,
         query_id: String,
         flight_token: CancellationToken,
-        native_cancellation: ExecutionCancellation,
         attempt_cancellation: Option<AttemptCancellation>,
     ) {
-        self.tokens
-            .insert(query_id, QueryCancellationEntry { flight_token, native_cancellation, attempt_cancellation });
+        self.tokens.insert(query_id, QueryCancellationEntry { flight_token, attempt_cancellation });
     }
 
     /// Cancel the registered statement, if any.
@@ -62,7 +60,6 @@ impl QueryCancellation {
         self.tokens
             .get(query_id)
             .map(|entry| {
-                entry.native_cancellation.cancel();
                 if let Some(attempt_cancellation) = &entry.attempt_cancellation {
                     attempt_cancellation.cancel();
                 }

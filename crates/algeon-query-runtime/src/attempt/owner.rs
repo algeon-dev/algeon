@@ -30,6 +30,8 @@ use crate::observability::{
 use crate::observability::{
     CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeObservationPayload,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::BackendLifecycle;
 use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
@@ -639,6 +641,20 @@ impl AttemptOwner {
             owner: Self(Arc::new(AttemptInner { core, observation_owner: owner, finalizer_slot })),
             completion: AttemptCompletionFactory { shared },
         }
+    }
+
+    /// A fresh attempt classified as native and observed outside any backend,
+    /// for tests that admit without a planning frontend.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn native_for_test() -> Self {
+        let begin = Self::begin(
+            BeginAttemptRequest::default(),
+            BackendLifecycle::new().try_begin_observation().expect("a new backend lifecycle admits observation"),
+            Arc::new(AttemptBackendCounters::default()),
+            None,
+        );
+        begin.owner.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
+        begin.owner
     }
 
     /// The engine-minted identity of this invocation.

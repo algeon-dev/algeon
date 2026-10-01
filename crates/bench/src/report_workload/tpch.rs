@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use algeon_datafusion::{
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
     native_report::{
         NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
         NativeFallbackPressureWorkloadItem,
@@ -320,10 +320,13 @@ async fn execute_tpch_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFus
             let output_batches = batches.len();
             let output_rows = batches.iter().map(RecordBatch::num_rows).sum();
             let output_bytes = batches.iter().map(get_record_batch_memory_size).sum();
-            let metrics = plan.metrics().unwrap_or_default();
+            let metrics = below_native_admission(&plan).metrics().unwrap_or_default();
             NativeDataFusionRuntime::Succeeded { output_batches, output_rows, output_bytes, metrics }
         },
-        Err(error) => NativeDataFusionRuntime::Failed { message: error.to_string(), metrics: plan.metrics() },
+        Err(error) => NativeDataFusionRuntime::Failed {
+            message: error.to_string(),
+            metrics: below_native_admission(&plan).metrics(),
+        },
     }
 }
 

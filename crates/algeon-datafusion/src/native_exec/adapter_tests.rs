@@ -15,14 +15,14 @@ mod exec_plans;
 use std::{collections::HashMap, fs, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
+    attempt::AttemptOptions,
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::ErrorCode,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
     },
     planner::{
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
-        native::wrap_direct_native_plan_with_admission_ticket,
+        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
     },
     report::CandidateOutcome,
 };
@@ -41,13 +41,14 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
+    prelude::SessionContext,
 };
 use exec_plans::*;
 use query_engine::{
     chunk::SourceChunkPlanningOptions,
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::QueryPlanBuilder,
-    runtime::{ExecutionCancellation, LakehouseCacheFillConfig, SourceChunkPlanningMode},
+    runtime::{LakehouseCacheFillConfig, SourceChunkPlanningMode},
     source::{GpuResidentSource, SourceNode},
 };
 use support_core::*;
@@ -67,7 +68,7 @@ fn bound_execution_config(fixture: &InstalledTestGpuBackend) -> AlgeonNativeExec
 
 fn admitted_plan(fixture: &InstalledTestGpuBackend, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let config = bound_execution_config(fixture);
-    wrap_direct_native_plan_with_admission_ticket(plan, &config)
+    wrap_direct_native_plan_with_admission(plan, &config)
         .expect("a directly built native plan must mint its execution admission ticket")
 }
 
@@ -460,17 +461,17 @@ async fn native_optimizer_property_checked_ilike_boundary_honors_pre_execution_c
     let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-cancelled");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
     let fixture = backend_fixture();
-    let config = AlgeonNativeOptimizerConfig::default()
-        .with_native_execution_config(bound_execution_config(&fixture).with_cancellation(cancellation));
+    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(bound_execution_config(&fixture));
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let attempt = fixture.backend().begin_attempt(AttemptOptions::default()).expect("attempt begins");
+    attempt.cancellation().cancel();
 
-    let error = collect(plan, Arc::new(TaskContext::default()))
-        .await
-        .expect_err("the mixed native leaf must observe cancellation before it starts native execution");
+    let error = match attempt.execute_physical_plan(plan, &SessionContext::new()) {
+        Ok(_) => panic!("the mixed plan must observe cancellation before it starts native execution"),
+        Err(error) => error,
+    };
     assert_eq!(adapter_error(&error).code(), ErrorCode::Cancelled);
 
     fs::remove_dir_all(dir).unwrap();

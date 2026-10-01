@@ -1296,8 +1296,11 @@ impl GpuBackendSession {
         service.admit_query_with_backend_permits(request, observation, resource, completion_dispatcher)
     }
 
+    /// Admits a fresh native attempt; see [`QueryAdmissionRequest::test_attempt`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
     pub fn admit_query(&self) -> Result<QueryHandle> {
-        self.admit_query_with_request(QueryAdmissionRequest::new())
+        self.admit_query_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     /// Queues an admission request and returns its waiter without blocking.
@@ -2064,7 +2067,9 @@ mod tests {
             observed_active_gpu_permits: Arc::clone(&observed_active_gpu_permits),
             completion,
         });
-        let request = QueryAdmissionRequest::new().with_runtime_observation_activity(activity);
+        let attempt = AttemptOwner::native_for_test();
+        let request =
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_runtime_observation_activity(activity);
         let handle = backend.session_capability().admit_query_with_request(request).unwrap();
         assert_eq!(lifecycle.snapshot().active_gpu_permits, 1);
         if acquire_context {
@@ -2099,15 +2104,12 @@ mod tests {
     fn backend_observation_quiescence_waits_for_detached_seal_observers() {
         let _owner_test = live_backend_test_lock();
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
-        let owner = RuntimeObservationOwner::new(
-            "detached-seal-observer",
-            None,
-            RuntimeObservationConfig::bounded(32, 32 * 1024),
-        );
+        let attempt = AttemptOwner::native_for_test();
+        let binding = attempt.admission_binding();
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let observer_gate = Arc::clone(&gate);
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
-        owner.register_seal_observer(move |_snapshot| {
+        binding.register_seal_observer(move |_snapshot| {
             let _ = entered_sender.send(());
             let (lock, changed) = &*observer_gate;
             let mut released = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2115,10 +2117,8 @@ mod tests {
                 released = changed.wait(released).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         });
-        let handle = backend
-            .session_capability()
-            .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner))
-            .unwrap();
+        let handle =
+            backend.session_capability().admit_query_with_request(QueryAdmissionRequest::new(binding)).unwrap();
         drop(handle.acquire_context().expect("query acquires a service-stream context"));
         handle.finish();
         drop(handle);
@@ -2158,17 +2158,21 @@ mod tests {
         .unwrap();
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
+        let first_attempt = AttemptOwner::native_for_test();
         let first = backend
             .session_capability()
-            .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_activity(
-                QueryActivityLease::new(ReentrantCloseActivityProbe {
-                    backend: backend.clone(),
-                    entered: entered_sender,
-                    completion: completion_sender,
-                }),
-            ))
+            .admit_query_with_request(
+                QueryAdmissionRequest::new(first_attempt.admission_binding()).with_runtime_observation_activity(
+                    QueryActivityLease::new(ReentrantCloseActivityProbe {
+                        backend: backend.clone(),
+                        entered: entered_sender,
+                        completion: completion_sender,
+                    }),
+                ),
+            )
             .unwrap();
-        let second = backend.session_capability().admit_query_with_request(QueryAdmissionRequest::new()).unwrap();
+        let second =
+            backend.session_capability().admit_query_with_request(QueryAdmissionRequest::test_attempt()).unwrap();
         drop(first.acquire_context().expect("first query acquires a service-stream context"));
         drop(second.acquire_context().expect("second query acquires a service-stream context"));
 

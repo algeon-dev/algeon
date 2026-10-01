@@ -4,9 +4,8 @@ use query_engine::error::QueryError;
 
 use super::*;
 use crate::{
-    backend::InstalledTestGpuBackend,
-    error::ErrorCode,
-    native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
+    attempt::attempt_ticket_for_test, backend::InstalledTestGpuBackend, error::ErrorCode,
+    native_exec::admission::task_context_with_query_admission_ticket,
 };
 
 #[tokio::test]
@@ -41,8 +40,8 @@ fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ambient_ticket = QueryAdmissionTicket::new(source.clone(), None);
-    let child_ticket = QueryAdmissionTicket::new(source.clone(), None);
+    let (_ambient_attempt, ambient_ticket) = attempt_ticket_for_test(source.clone(), None);
+    let (_child_attempt, child_ticket) = attempt_ticket_for_test(source.clone(), None);
     let child_config = AlgeonNativeExecutionConfig::bounded(256, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(Arc::clone(&child_ticket));
@@ -78,12 +77,4 @@ fn config_validation_errors_carry_configured_correlation_ids() {
         .expect("adapter error should retain native source error");
     assert_eq!(native.query_id().map(QueryId::as_str), Some("query-config-error"));
     assert_eq!(native.trace_id().map(TraceId::as_str), Some("trace-config-error"));
-}
-
-#[test]
-fn standalone_metrics_capture_keeps_query_id_unset() {
-    let config =
-        AlgeonNativeExecutionConfig::bounded_default().with_metrics_capture(NativeMetricsCapture::standalone());
-
-    assert!(config.query_id().is_none());
 }

@@ -32,7 +32,9 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
@@ -73,7 +75,9 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
@@ -138,7 +142,8 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
         reset_arrow_host_interop_observation_for_test();
         let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-        let metrics = optimization.plan.metrics().expect("{name} must expose DataFusion metrics");
+        let metrics =
+            below_native_admission(&optimization.plan).metrics().expect("{name} must expose DataFusion metrics");
         assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0, "{name}");
         assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1, "{name}");
 

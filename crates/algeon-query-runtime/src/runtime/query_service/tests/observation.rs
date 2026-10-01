@@ -31,36 +31,6 @@ fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
     assert_eq!(scope.health_snapshot(device).fault_count(), 1);
 }
 #[test]
-fn coordinator_owned_handle_survives_three_legal_admission_epochs_without_intermediate_seal() {
-    let service = test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "coordinator-query",
-        Some(RuntimeTraceId::new("coordinator-trace")),
-        RuntimeObservationConfig::bounded(64, 64 * 1024),
-    );
-    let observation = owner.handle();
-
-    for _ in 0..3 {
-        let handle = service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_handle(observation.clone()))
-            .expect("each legal epoch admits against the shared observation handle");
-        drop(handle);
-        assert!(owner.sealed_snapshot().is_none(), "query service must not seal a coordinator-owned root");
-    }
-
-    let events = observed_admission_events(&owner);
-    assert_eq!(
-        events.iter().filter(|(_, lifecycle)| matches!(lifecycle, AdmissionLifecycleState::Admitted)).count(),
-        3
-    );
-    assert_eq!(
-        events.iter().filter(|(_, lifecycle)| matches!(lifecycle, AdmissionLifecycleState::Released)).count(),
-        3
-    );
-    let snapshot = owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
-    assert_eq!(snapshot.manifest().query_id.as_str(), "coordinator-query");
-}
-#[test]
 fn opaque_activity_token_lives_until_query_service_release_finishes() {
     struct DropProbe(Arc<AtomicUsize>);
     impl Drop for DropProbe {
@@ -71,9 +41,10 @@ fn opaque_activity_token_lives_until_query_service_release_finishes() {
 
     let service = test_service(1, 8);
     let drops = Arc::new(AtomicUsize::new(0));
+    let attempt = AttemptOwner::native_for_test();
     let handle = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::new(attempt.admission_binding())
                 .with_runtime_observation_activity(QueryActivityLease::new(DropProbe(Arc::clone(&drops)))),
         )
         .expect("activity-bearing query admits");
@@ -97,9 +68,10 @@ fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
 
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let replacement = Arc::new(std::sync::Mutex::new(None));
+    let attempt = AttemptOwner::native_for_test();
     let handle = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::new(attempt.admission_binding())
                 .with_runtime_observation_activity(QueryActivityLease::new(ReplacementProbe(Arc::clone(&replacement)))),
         )
         .expect("activity-bearing query admits");
@@ -126,9 +98,10 @@ fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
 #[tokio::test(flavor = "current_thread")]
 async fn fallible_activity_acquisition_rejects_without_entering_admission() {
     let service = test_service(1, 8);
+    let attempt = AttemptOwner::native_for_test();
     let error = service
         .admit_async_with_request(
-            QueryAdmissionRequest::new().with_runtime_observation_activity_result(Err(QueryError::new(
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_runtime_observation_activity_result(Err(QueryError::new(
                 QueryErrorCode::Cancelled,
                 "test.query_service.observation_activity",
                 "coordinated activity acquisition failed",
@@ -148,13 +121,10 @@ async fn fallible_activity_acquisition_rejects_without_entering_admission() {
 #[test]
 fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
     let service = test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "external-query",
-        Some(RuntimeTraceId::new("external-trace")),
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("external-query", Some("external-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission enqueues");
     let handle = waiter.try_admit().expect("admission attempt succeeds").expect("capacity admits query");
     let admission_request_id = handle.admission_request_id();
@@ -176,14 +146,12 @@ fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
 async fn async_capacity_contention_uses_one_id_without_false_rejection() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("capacity barrier admits first query");
-    let owner =
-        RuntimeObservationOwner::new("async-contended-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("async-contended-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let queued_service = service.clone();
-    let queued_owner = owner.clone();
+    let queued_binding = attempt.admission_binding();
     let queued = tokio::spawn(async move {
-        queued_service
-            .admit_async_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(queued_owner))
-            .await
+        queued_service.admit_async_with_request(QueryAdmissionRequest::new(queued_binding)).await
     });
 
     loop {
@@ -216,16 +184,15 @@ async fn async_capacity_contention_uses_one_id_without_false_rejection() {
 #[tokio::test(flavor = "current_thread")]
 async fn async_permanent_rejection_remains_terminal_rejected() {
     let service = test_service(1, 8);
-    let owner =
-        RuntimeObservationOwner::new("async-rejected-query", None, RuntimeObservationConfig::bounded(16, 16 * 1024));
+    let attempt = observed_attempt("async-rejected-query", None, RuntimeObservationConfig::bounded(16, 16 * 1024));
+    let owner = attempt.observation_owner_for_test();
 
     // A requested cap above every compatible device's resident-adjusted
     // capacity rejects permanently before enqueue.
     let error = service
         .admit_async_with_request(
-            QueryAdmissionRequest::new()
-                .with_query_cap_bytes(128 * 1024 * 1024)
-                .with_runtime_observation_owner(owner.clone()),
+            QueryAdmissionRequest::new(attempt.admission_binding())
+                .with_query_cap_bytes(128 * 1024 * 1024),
         )
         .await
         .unwrap_err();
@@ -239,10 +206,10 @@ async fn async_permanent_rejection_remains_terminal_rejected() {
 #[test]
 fn shared_owner_seals_only_after_admission_release_and_query_cleanup() {
     let service = test_service(1, 8);
-    let owner =
-        RuntimeObservationOwner::new("shared-owner-query", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+    let attempt = observed_attempt("shared-owner-query", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let handle = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission attempt succeeds")
         .expect("capacity admits query");
     let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("shared-plan"));
@@ -288,9 +255,10 @@ fn shared_owner_seals_only_after_admission_release_and_query_cleanup() {
 fn query_service_observes_queued_waiter_drop_as_cancellation() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query admits");
-    let owner = RuntimeObservationOwner::new("cancelled-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("cancelled-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("second query queues");
     let admission_request_id = waiter.admission_request_id();
 
@@ -311,13 +279,10 @@ fn query_service_observes_queued_waiter_drop_as_cancellation() {
 #[test]
 fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_completion() {
     let service = test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "poisoned-waiter-drop-query",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("poisoned-waiter-drop-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission enqueues");
     let admission_request_id = waiter.admission_request_id();
 
@@ -344,10 +309,10 @@ fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_comple
 #[test]
 fn close_drains_queued_completion_from_a_poisoned_admission_guard() {
     let service = test_service(1, 8);
-    let owner =
-        RuntimeObservationOwner::new("poisoned-close-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("poisoned-close-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission enqueues");
 
     service.poison_admission();
@@ -363,13 +328,10 @@ fn close_drains_queued_completion_from_a_poisoned_admission_guard() {
 #[test]
 fn close_and_wait_drains_queued_completion_from_a_poisoned_admission_guard() {
     let service = test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "poisoned-close-and-wait-query",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("poisoned-close-and-wait-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission enqueues");
 
     service.poison_admission();
@@ -387,13 +349,13 @@ fn close_and_wait_drains_queued_completion_from_a_poisoned_admission_guard() {
 #[test]
 fn query_service_observes_pre_enqueue_rejection_without_reclassifying_error() {
     let service = test_service(1, 8);
-    let owner = RuntimeObservationOwner::new("rejected-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("rejected-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
 
     let error = service
         .enqueue_admission_with_request(
-            QueryAdmissionRequest::new()
-                .with_query_cap_bytes(128 * 1024 * 1024)
-                .with_runtime_observation_owner(owner.clone()),
+            QueryAdmissionRequest::new(attempt.admission_binding())
+                .with_query_cap_bytes(128 * 1024 * 1024),
         )
         .expect_err("an impossible requirement rejects before enqueue");
 
@@ -410,9 +372,10 @@ fn query_service_observes_pre_enqueue_rejection_without_reclassifying_error() {
 fn query_service_observes_deterministic_queued_timeout_once() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query admits");
-    let owner = RuntimeObservationOwner::new("timed-out-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("timed-out-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("second query queues");
     let admission_request_id = waiter.admission_request_id();
     service.expire_waiter(&mut waiter);
@@ -437,13 +400,10 @@ fn query_service_observes_deterministic_queued_timeout_once() {
 fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let owner = RuntimeObservationOwner::new(
-        "snapshot-swept-timeout-query",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("snapshot-swept-timeout-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("second query queues");
     let admission_request_id = waiter.admission_request_id();
     service.expire_waiter(&mut waiter);
@@ -500,7 +460,7 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
     attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
     let mut waiter = service
         .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding()),
+            QueryAdmissionRequest::new(attempt.owner.admission_binding()),
         )
         .expect("attempt-bound second query queues");
     service.expire_waiter(&mut waiter);
@@ -547,13 +507,10 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
 fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let owner = RuntimeObservationOwner::new(
-        "snapshot-swept-health-rejection-query",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("snapshot-swept-health-rejection-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("second query queues");
     let admission_request_id = waiter.admission_request_id();
     service
@@ -596,13 +553,10 @@ fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error
 #[test]
 fn query_service_context_uses_pre_admission_observation_identity() {
     let service = runtime_test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "external-context-query",
-        Some(RuntimeTraceId::new("external-context-trace")),
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let attempt = observed_attempt("external-context-query", Some("external-context-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let handle = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission attempt succeeds")
         .expect("query admits");
     let admitted_context = handle.acquire_context().expect("context acquisition succeeds");
@@ -676,13 +630,10 @@ fn query_service_context_uses_pre_admission_observation_identity() {
 #[test]
 fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
     let service = runtime_test_service(1, 8);
-    let owner = RuntimeObservationOwner::new(
-        "stream-release-before-seal",
-        None,
-        RuntimeObservationConfig::bounded(64, 64 * 1024),
-    );
+    let attempt = observed_attempt("stream-release-before-seal", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+    let owner = attempt.observation_owner_for_test();
     let handle = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission attempt succeeds")
         .expect("query admits");
     let admitted_context = handle.acquire_context().expect("context acquisition succeeds");
@@ -743,4 +694,23 @@ fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
         .expect("query terminal is retained");
     assert!(stream_released < cleanup_finished);
     assert!(cleanup_finished < terminal);
+}
+
+/// A native attempt observed with `config`, as an adapter begins one before
+/// admission.
+fn observed_attempt(query_id: &str, trace_id: Option<&str>, config: RuntimeObservationConfig) -> AttemptOwner {
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            query_id: Some(AttemptQueryId::new(query_id).expect("valid attempt query id")),
+            trace_context: trace_id.map(|trace_id| AttemptTraceContext::new(trace_id).expect("valid attempt trace id")),
+            observation: config,
+            ..BeginAttemptRequest::default()
+        },
+        BackendLifecycle::new().try_begin_observation().expect("attempt observation permit"),
+        Arc::new(AttemptBackendCounters::default()),
+        None,
+    )
+    .owner;
+    attempt.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt
 }

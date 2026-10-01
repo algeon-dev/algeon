@@ -101,7 +101,7 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
     let grant_identity = handle.grant_identity().expect("admitted handle owns its grant identity");
     assert_eq!(grant_identity.attempt_id, attempt_id);
@@ -189,7 +189,9 @@ fn admitted_context_gate_rejects_changed_scope_evidence() {
         let plan = explicit_sink_plan("input");
         let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
         let handle = service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
+            )
             .expect("evidence-backed admission");
         let admitted = handle.acquire_context().expect("service context");
         (service, plan, handle, admitted)
@@ -985,7 +987,7 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
 
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
     let context = handle.acquire_context().expect("admitted execution context");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");

@@ -11,13 +11,11 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
-    datasource::memory::MemorySourceConfig,
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr, expressions::Column},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
-        filter::FilterExec,
         stream::RecordBatchStreamAdapter,
     },
 };
@@ -28,18 +26,16 @@ use futures::{
 use query_engine::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence, ExecutionCapability},
     error::QueryErrorCode,
-    observability::{
-        QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimeTerminalOutcome,
-    },
+    observability::{QueryAttemptReport, RuntimeTerminalOutcome},
     plan::{QueryPlan, QueryPlanBuilder},
-    runtime::{DeviceCapabilities, ExecutionCancellation, GpuDeviceMemoryLimit},
+    runtime::{DeviceCapabilities, GpuDeviceMemoryLimit},
     source::{GpuResidentSource, SourceNode},
 };
 use tokio::time::timeout;
 
 use super::*;
 use crate::{
+    attempt::{AttemptOptions, attempt_ticket_for_test, attempt_ticket_with_options_for_test},
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, InstalledTestGpuBackend},
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::AlgeonNativeExecutionConfig,
@@ -165,34 +161,21 @@ impl ExecutionPlan for LifecycleExec {
     }
 }
 
-fn lifecycle_owner(query_id: &'static str) -> RuntimeObservationOwner {
-    RuntimeObservationOwner::new(query_id, None, RuntimeObservationConfig::bounded(32, 4096))
-}
-
 fn lifecycle_exec(behavior: LifecyclePlanBehavior, observed_ticket: Arc<Mutex<Option<u64>>>) -> Arc<dyn ExecutionPlan> {
     Arc::new(LifecycleExec::new(behavior, observed_ticket))
 }
 
-fn assert_terminal_boundary_once(owner: &RuntimeObservationOwner, expected: RuntimeTerminalOutcome) {
-    let snapshot = owner.sealed_snapshot().expect("lifecycle owner must be sealed");
-    assert_eq!(snapshot.footer().terminal, Some(expected));
-    let terminal_count = snapshot
-        .events()
-        .iter()
-        .filter(|event| {
-            matches!(
-                &event.payload,
-                RuntimeObservationPayload::QueryBoundary {
-                    boundary: QueryBoundaryKind::Succeeded
-                        | QueryBoundaryKind::Failed
-                        | QueryBoundaryKind::Cancelled
-                        | QueryBoundaryKind::Dropped
-                        | QueryBoundaryKind::Panicked
-                }
-            )
-        })
-        .count();
-    assert_eq!(terminal_count, 1, "terminal lifecycle boundary must be recorded exactly once");
+/// Roots `input` in the admission node the final optimizer pass places.
+fn admission_exec(backend: &InstalledTestGpuBackend, input: Arc<dyn ExecutionPlan>) -> NativeAdmissionExec {
+    NativeAdmissionExec::new(input, admission_source(backend), AttemptCapabilityEvidence::empty())
+}
+
+/// The report of the one internal attempt that executions without an
+/// attempt of their own began on `backend`.
+fn sole_internal_attempt_report(backend: &InstalledTestGpuBackend) -> Arc<QueryAttemptReport> {
+    let reports = backend.backend().take_abandoned_attempt_reports(8);
+    assert_eq!(reports.len(), 1, "one execution must publish exactly one attempt report");
+    Arc::clone(&reports[0])
 }
 
 fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
@@ -231,7 +214,7 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
     ])
     .unwrap();
     let evidence = AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).unwrap();
-    let ticket = QueryAdmissionTicket::new(admission_source(&backend), Some(evidence));
+    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), Some(evidence));
     let task_context = Arc::new(TaskContext::default());
     let _round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
 
@@ -271,7 +254,8 @@ async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
     let backend = InstalledTestGpuBackend::new();
     let first_plan = resident_host_plan("first-fragment");
     let second_plan = resident_host_plan("second-fragment");
-    let ticket = QueryAdmissionTicket::new(admission_source(&backend), Some(AttemptCapabilityEvidence::empty()));
+    let (_attempt, ticket) =
+        attempt_ticket_for_test(admission_source(&backend), Some(AttemptCapabilityEvidence::empty()));
 
     ticket
         .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
@@ -283,10 +267,7 @@ async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&first_plan)));
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&second_plan)));
 
-    let context = ticket
-        .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
-        .await
-        .expect("the combined evidence admits");
+    let context = ticket.acquire_context(Arc::new(TaskContext::default())).await.expect("the combined evidence admits");
     let error = ticket
         .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
         .expect_err("evidence is immutable after admission starts");
@@ -304,11 +285,11 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default(),
     );
-    let ticket = QueryAdmissionTicket::new(admission_source(&backend), None);
+    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     assert!(ticket.attempt_capability_evidence().is_none());
 
     let context = ticket
-        .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+        .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect("installed backend must acquire a real admission context");
     let facts = context.admission_facts();
@@ -317,26 +298,24 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
 
     drop(context);
-    let next_context = timeout(
-        std::time::Duration::from_secs(5),
-        ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
-    )
-    .await
-    .expect("dropping the context must eventually return the real ledger grant")
-    .expect("released capacity must admit the next context");
+    let (_next_attempt, next_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    let next_context =
+        timeout(std::time::Duration::from_secs(5), next_ticket.acquire_context(Arc::new(TaskContext::default())))
+            .await
+            .expect("dropping the context must eventually return the real ledger grant")
+            .expect("released capacity must admit the next attempt");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
     drop(next_context);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_ticket_propagates_cancellation_to_admission() {
+async fn admission_ticket_propagates_attempt_cancellation_to_admission() {
     let backend = InstalledTestGpuBackend::new();
-    let ticket = QueryAdmissionTicket::new(admission_source(&backend), None);
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    attempt.cancellation().cancel();
 
     let error = ticket
-        .acquire_context(Arc::new(TaskContext::default()), cancellation)
+        .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect_err("cancelled admission must not acquire a real handle");
 
@@ -345,14 +324,13 @@ async fn admission_ticket_propagates_cancellation_to_admission() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_failure_clears_round_state_and_allows_a_retry() {
+async fn admission_failure_clears_round_state_and_ends_the_attempt_admission() {
     let backend = InstalledTestGpuBackend::new();
-    let ticket = QueryAdmissionTicket::new(admission_source(&backend), None);
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    attempt.cancellation().cancel();
 
     let error = ticket
-        .acquire_context(Arc::new(TaskContext::default()), cancellation)
+        .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect_err("cancelled admission must fail before publishing a handle");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
@@ -368,19 +346,16 @@ async fn admission_failure_clears_round_state_and_allows_a_retry() {
         assert!(round.handle.is_none(), "a rejected admission cannot retain a query handle");
     }
 
-    let retry = timeout(
-        Duration::from_secs(5),
-        ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
-    )
-    .await
-    .expect("a retry must not wait on the rejected round")
-    .expect("the same ticket can admit after a rejected attempt");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
-    drop(retry);
+    let retry = timeout(Duration::from_secs(5), ticket.acquire_context(Arc::new(TaskContext::default())))
+        .await
+        .expect("a retry must not wait on the rejected round")
+        .expect_err("an attempt admits at most once");
+    assert_eq!(retry.fact_value("reason"), Some("attempt_admission_already_claimed"));
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
 
     let state = ticket.state.lock().expect("ticket state mutex");
-    assert!(state.admitting.is_empty());
-    assert!(state.rounds.is_empty(), "retry cleanup must remove the completed round exactly once");
+    assert!(state.admitting.is_empty(), "a refused claim must not strand its in-flight marker");
+    assert!(state.rounds.values().all(|round| round.handle.is_none()));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -392,18 +367,14 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default(),
     );
-    let owner = lifecycle_owner("pending-context-real-grant");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner);
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let task_context = Arc::new(TaskContext::default());
-    let first_context = ticket
-        .acquire_context(Arc::clone(&task_context), ExecutionCancellation::new())
-        .await
-        .expect("the first context must be admitted");
+    let first_context =
+        ticket.acquire_context(Arc::clone(&task_context)).await.expect("the first context must be admitted");
 
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
+    attempt.cancellation().cancel();
     let error = ticket
-        .acquire_context(Arc::clone(&task_context), cancellation)
+        .acquire_context(Arc::clone(&task_context))
         .await
         .expect_err("a cancelled secondary context must not consume another context lease");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
@@ -416,13 +387,12 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
     }
 
     drop(first_context);
-    let replacement = timeout(
-        Duration::from_secs(5),
-        ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
-    )
-    .await
-    .expect("the grant must be returned after the last context drops")
-    .expect("the ticket must admit a replacement context");
+    let (_replacement_attempt, replacement_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    let replacement =
+        timeout(Duration::from_secs(5), replacement_ticket.acquire_context(Arc::new(TaskContext::default())))
+            .await
+            .expect("the grant must be returned after the last context drops")
+            .expect("released capacity must admit a replacement attempt");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
     drop(replacement);
 }
@@ -436,22 +406,23 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default().with_max_queue_wait(Duration::from_secs(1)),
     );
-    let holder = QueryAdmissionTicket::new(admission_source(&backend), None);
+    let (_holder_attempt, holder) = attempt_ticket_for_test(admission_source(&backend), None);
     let held_context = holder
-        .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+        .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect("the holder must consume the device-local admission slot");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
 
-    let waiter = QueryAdmissionTicket::new(admission_source(&backend), None);
     let deadline = Instant::now() + Duration::from_millis(100);
-    let error = timeout(
-        Duration::from_secs(5),
-        waiter.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::with_deadline(Some(deadline))),
-    )
-    .await
-    .expect("a queued waiter must terminate at its deadline")
-    .expect_err("deadline expiry must reject the waiter");
+    let (_waiter_attempt, waiter) = attempt_ticket_with_options_for_test(
+        admission_source(&backend),
+        None,
+        AttemptOptions { deadline: Some(deadline), ..AttemptOptions::default() },
+    );
+    let error = timeout(Duration::from_secs(5), waiter.acquire_context(Arc::new(TaskContext::default())))
+        .await
+        .expect("a queued waiter must terminate at its deadline")
+        .expect_err("deadline expiry must reject the waiter");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
     let snapshot = backend.backend().admission_snapshot().unwrap();
@@ -464,13 +435,12 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
     }
 
     drop(held_context);
-    let replacement = timeout(
-        Duration::from_secs(5),
-        waiter.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
-    )
-    .await
-    .expect("released capacity must be reusable after waiter cancellation")
-    .expect("waiter ticket can retry after deadline cleanup");
+    let (_replacement_attempt, replacement_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    let replacement =
+        timeout(Duration::from_secs(5), replacement_ticket.acquire_context(Arc::new(TaskContext::default())))
+            .await
+            .expect("released capacity must be reusable after waiter cancellation")
+            .expect("a new attempt admits after the waiter's deadline cleanup");
     drop(replacement);
 }
 
@@ -485,16 +455,11 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
             .with_device_capabilities(DeviceCapabilities::only(Vec::new())),
         AlgeonGpuQueuePolicy::default(),
     );
-    let config =
-        AlgeonNativeExecutionConfig::bounded(256, 512, 1, 1, 1).with_query_admission_source(admission_source(&backend));
-    let ticket = config
-        .new_plan_query_admission_ticket_with_fragment_requirements(vec![unavailable.clone()])
-        .expect("fragment requirements aggregate into a ticket")
-        .expect("configured admission source creates a ticket");
+    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), Some(unavailable.clone()));
 
     assert_eq!(ticket.attempt_capability_evidence(), Some(unavailable));
     let error = ticket
-        .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+        .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect_err("an aggregated unsupported capability must reject before admission");
 
@@ -515,101 +480,31 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
     );
 }
 
-#[test]
-fn standalone_ticket_drop_seals_local_observation() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = RuntimeObservationOwner::new("ticket-drop", None, RuntimeObservationConfig::bounded(16, 4096));
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    drop(ticket);
-    assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
-}
-
-#[test]
-fn ticket_dropped_during_an_unrelated_unwind_records_dropped() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("ticket-unrelated-unwind");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-
-    let unwind = catch_unwind(AssertUnwindSafe(move || {
-        let _last_ticket_reference = ticket;
-        panic!("unrelated panic");
-    }));
-
-    assert!(unwind.is_err());
-    assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
-}
-
-#[test]
-fn stream_dropped_during_an_unrelated_unwind_records_dropped() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("stream-unrelated-unwind");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let exec =
-        NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))), ticket);
-    let stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
-
-    let unwind = catch_unwind(AssertUnwindSafe(move || {
-        let _stream = stream;
-        panic!("unrelated panic");
-    }));
-
-    assert!(unwind.is_err());
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
-}
-
 #[tokio::test(flavor = "current_thread")]
-async fn panic_in_the_inner_stream_poll_records_panicked_once() {
+async fn panic_in_the_inner_stream_poll_reports_panicked_once() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("stream-poll-panic");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::PanickingStream, Arc::new(Mutex::new(None))),
-        ticket,
-    );
+    let exec =
+        admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::PanickingStream, Arc::new(Mutex::new(None))));
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
 
     let unwind = AssertUnwindSafe(stream.next()).catch_unwind().await;
 
     assert!(unwind.is_err(), "the inner panic must keep unwinding");
     drop(stream);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Panicked);
 }
 
 #[test]
-fn panic_in_the_input_execute_records_panicked_once() {
+fn panic_in_the_input_execute_reports_panicked_once() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("input-execute-panic");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::PanickingExecute, Arc::new(Mutex::new(None))),
-        ticket,
-    );
+    let exec =
+        admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::PanickingExecute, Arc::new(Mutex::new(None))));
 
     let unwind = catch_unwind(AssertUnwindSafe(|| exec.execute(0, Arc::new(TaskContext::default()))));
 
     assert!(unwind.is_err(), "the input panic must keep unwinding");
     drop(exec);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
-}
-
-/// A panic raised inside a round's admission records `Panicked`: the
-/// admission guards, which record `Cancelled`, drop only after the panic has
-/// left the admission future.
-#[tokio::test(flavor = "current_thread")]
-async fn panic_inside_admission_records_panicked_once() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("admission-panic");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    PANIC_IN_NEXT_ADMISSION.set(true);
-
-    let admission =
-        AssertUnwindSafe(ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()))
-            .catch_unwind()
-            .await;
-
-    assert!(admission.is_err(), "the admission panic must keep unwinding");
-    drop(ticket);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Panicked);
 }
 
 /// An attempt mints its one admission ticket while planning; executing the
@@ -622,8 +517,6 @@ async fn one_attempt_invocation_mints_one_admission_ticket() {
         prelude::{ParquetReadOptions, SessionContext},
     };
     use parquet::arrow::ArrowWriter;
-
-    use crate::attempt::AttemptOptions;
 
     let backend = InstalledTestGpuBackend::new();
     let dir = tempfile::tempdir().unwrap();
@@ -642,7 +535,7 @@ async fn one_attempt_invocation_mints_one_admission_ticket() {
         backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build(),
     );
     ctx.register_parquet("rows", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    let next_ticket_id = || QueryAdmissionTicket::new(admission_source(&backend), None).id();
+    let next_ticket_id = || attempt_ticket_for_test(admission_source(&backend), None).1.id();
 
     let before = next_ticket_id();
     let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
@@ -658,41 +551,29 @@ async fn one_attempt_invocation_mints_one_admission_ticket() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn composed_producer_consumer_success_seals_after_consumer_eof() {
+async fn internal_attempt_reports_success_once_at_consumer_eof() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("composed-success");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
-        Arc::clone(&ticket),
-    );
-    let task_context = Arc::new(TaskContext::default());
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)));
 
-    let mut stream = exec.execute(0, Arc::clone(&task_context)).expect("synthetic composed consumer executes");
+    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic consumer executes");
     assert!(stream.next().await.is_none(), "consumer reaches host EOF");
     assert!(stream.next().await.is_none(), "polling an already-complete consumer remains EOF");
-    assert!(owner.sealed_snapshot().is_none(), "round guard remains until the stream is dropped");
     drop(stream);
 
-    assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Succeeded);
+    assert!(
+        observed_ticket.lock().expect("test ticket observation mutex").is_some(),
+        "the internal attempt's ticket owns the execution round"
+    );
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Succeeded);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ambient_task_ticket_owns_the_wrapper_round_without_a_second_admission() {
+async fn ambient_attempt_ticket_owns_the_round_without_an_internal_attempt() {
     let backend = InstalledTestGpuBackend::new();
-    let wrapper_owner = lifecycle_owner("wrapper-ticket-unused");
-    let active_owner = lifecycle_owner("ambient-ticket-active");
-    let wrapper_ticket =
-        QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, wrapper_owner.clone());
-    let active_ticket =
-        QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, active_owner.clone());
+    let (_attempt, active_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
-        Arc::clone(&wrapper_ticket),
-    );
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)));
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&active_ticket));
 
@@ -705,160 +586,109 @@ async fn ambient_task_ticket_owns_the_wrapper_round_without_a_second_admission()
         Some(active_ticket.id()),
         "the active invocation ticket owns the execution round"
     );
-    assert_terminal_boundary_once(&active_owner, RuntimeTerminalOutcome::Succeeded);
-    assert!(wrapper_owner.sealed_snapshot().is_none(), "the wrapper ticket must not receive a second round");
-
-    drop(exec);
-    drop(wrapper_ticket);
-    assert_terminal_boundary_once(&wrapper_owner, RuntimeTerminalOutcome::Dropped);
+    assert_eq!(
+        backend.backend().attempt_counters_snapshot().attempts_begun,
+        1,
+        "an execution inside an attempt begins no internal attempt"
+    );
 }
 
 #[test]
-fn composed_producer_execute_error_releases_round_and_seals_failure() {
+fn internal_attempt_input_execute_error_reports_one_failure() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("composed-producer-error");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::ExecuteError, Arc::clone(&observed_ticket)),
-        Arc::clone(&ticket),
-    );
+    let exec =
+        admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::ExecuteError, Arc::new(Mutex::new(None))));
 
     let error = match exec.execute(0, Arc::new(TaskContext::default())) {
-        Ok(_) => panic!("producer error must reach the wrapper"),
+        Ok(_) => panic!("input error must reach the admission node"),
         Err(error) => error,
     };
-    assert!(error.find_algeon_error().is_some(), "producer failure remains typed at the DataFusion boundary");
-    assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
-    let snapshot = owner.sealed_snapshot().expect("producer failure seals the round");
-    assert!(matches!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Failed { .. })));
-    assert_terminal_boundary_once(&owner, snapshot.footer().terminal.clone().expect("terminal outcome recorded"));
+    assert!(error.find_algeon_error().is_some(), "input failure remains typed at the DataFusion boundary");
+    assert!(matches!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Failed { .. }));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn composed_consumer_error_seals_one_failed_terminal_boundary() {
+async fn internal_attempt_stream_error_reports_one_failure() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("composed-consumer-error");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::StreamError, Arc::clone(&observed_ticket)),
-        Arc::clone(&ticket),
-    );
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::StreamError, Arc::new(Mutex::new(None))));
 
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("consumer stream starts");
     let error = stream.next().await.expect("consumer emits one error").expect_err("consumer error is preserved");
     assert!(error.find_algeon_error().is_some());
     drop(stream);
 
-    assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
-    let snapshot = owner.sealed_snapshot().expect("consumer failure seals the round");
-    assert!(matches!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Failed { .. })));
-    assert_terminal_boundary_once(&owner, snapshot.footer().terminal.clone().expect("terminal outcome recorded"));
+    assert!(matches!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Failed { .. }));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn composed_consumer_cancellation_is_terminalized_as_cancelled() {
+async fn internal_attempt_stream_cancellation_reports_cancelled() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("composed-cancelled");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::CancelledStream, Arc::clone(&observed_ticket)),
-        Arc::clone(&ticket),
-    );
+    let exec =
+        admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::CancelledStream, Arc::new(Mutex::new(None))));
 
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cancelled consumer stream starts");
     let error = stream.next().await.expect("consumer emits cancellation").expect_err("cancellation is an error item");
     assert_eq!(error.find_algeon_error().expect("cancelled error remains typed").code(), ErrorCode::Cancelled);
     drop(stream);
 
-    assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Cancelled);
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Cancelled);
 }
 
 #[test]
-fn dropping_task_context_before_stream_does_not_drop_the_admission_round() {
+fn dropping_task_context_before_stream_does_not_end_the_internal_attempt() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("task-drop");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, observed_ticket), ticket);
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))));
     let task_context = Arc::new(TaskContext::default());
 
     let stream = exec.execute(0, Arc::clone(&task_context)).expect("synthetic stream starts");
     drop(task_context);
-    assert!(owner.sealed_snapshot().is_none(), "stream owns the round after its task context is dropped");
+    assert!(
+        backend.backend().take_abandoned_attempt_reports(8).is_empty(),
+        "the stream owns the attempt after its task context is dropped"
+    );
     drop(stream);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Dropped);
 }
 
 #[test]
-fn admission_wrapper_forwards_delegate_expression_visitation() {
+fn dropping_stream_without_polling_reports_dropped_once() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("expression-visitation");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner);
-    let schema = Arc::new(Schema::new(vec![Field::new("flag", DataType::Boolean, false)]));
-    let memory = MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).expect("empty memory source");
-    let predicate: Arc<dyn PhysicalExpr> = Arc::new(Column::new("flag", 0));
-    let filter = FilterExec::try_new(Arc::clone(&predicate), memory).expect("filter over memory source");
-
-    // The wrapper flattens its delegate out of `children()`, so the predicate
-    // is reachable only if the wrapper forwards expression visitation.
-    let wrapper = NativeAdmissionExec::new(Arc::new(filter), ticket);
-    let mut visited = Vec::new();
-    wrapper
-        .apply_expressions(&mut |expression| {
-            visited.push(Arc::ptr_eq(expression, &predicate));
-            Ok(TreeNodeRecursion::Continue)
-        })
-        .expect("delegate expression visitation");
-    assert_eq!(visited, vec![true], "the admission wrapper must visit the delegate's predicate");
-}
-
-#[test]
-fn dropping_stream_without_polling_records_dropped_once() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("stream-drop");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let exec =
-        NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))), ticket);
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))));
 
     let stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
     drop(stream);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
+    assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Dropped);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn one_context_ticket_keeps_composed_round_alive_until_all_streams_drop() {
+async fn one_attempt_ticket_keeps_its_round_alive_until_all_streams_drop() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("context-ticket");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
+    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = NativeAdmissionExec::new(
-        lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
-        Arc::clone(&ticket),
-    );
-    let task_context = Arc::new(TaskContext::default());
+    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)));
+    let task_context = task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ticket));
 
-    let mut first = exec.execute(0, Arc::clone(&task_context)).expect("first composed stream starts");
-    let mut second = exec.execute(0, Arc::clone(&task_context)).expect("second composed stream reuses the ticket");
+    let mut first = exec.execute(0, Arc::clone(&task_context)).expect("first stream starts");
+    let mut second = exec.execute(0, Arc::clone(&task_context)).expect("second stream reuses the ticket");
     assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
 
     assert!(first.next().await.is_none());
     drop(first);
-    assert!(owner.sealed_snapshot().is_none(), "one live stream keeps the shared execution round alive");
+    assert_eq!(
+        ticket.state.lock().expect("ticket state mutex").rounds.len(),
+        1,
+        "one live stream keeps the shared execution round alive"
+    );
 
     assert!(second.next().await.is_none());
     drop(second);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Succeeded);
+    assert!(ticket.state.lock().expect("ticket state mutex").rounds.is_empty());
 }
 
 #[test]
 fn context_ticket_guard_release_waits_for_the_execution_round() {
     let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("context-guard");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
+    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let task_context = Arc::new(TaskContext::default());
     let round = ticket.begin_execution_round(Arc::clone(&task_context)).expect("execution round starts");
 
@@ -876,7 +706,6 @@ fn context_ticket_guard_release_waits_for_the_execution_round() {
     };
     drop(context_guard);
 
-    assert!(owner.sealed_snapshot().is_none(), "context release cannot finish a still-live execution round");
     {
         let state = ticket.state.lock().expect("ticket state mutex");
         let ticket_round = state.rounds.get(&round.task_key).expect("stream still owns the round");
@@ -884,35 +713,5 @@ fn context_ticket_guard_release_waits_for_the_execution_round() {
         assert_eq!(ticket_round.active_streams, 1);
     }
     drop(round);
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
-}
-
-#[test]
-fn pre_cancelled_pending_context_seals_cancelled_and_releases_its_round() {
-    let backend = InstalledTestGpuBackend::new();
-    let owner = lifecycle_owner("pending-context-cancelled");
-    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
-    let task_context = Arc::new(TaskContext::default());
-    let round = ticket.begin_execution_round(Arc::clone(&task_context)).expect("execution round starts");
-    let observation = ticket
-        .state
-        .lock()
-        .expect("ticket state mutex")
-        .rounds
-        .get(&round.task_key)
-        .expect("round is registered")
-        .observation
-        .clone();
-
-    let pending_guard = QueryAdmissionPendingContextGuard {
-        ticket: Arc::clone(&ticket),
-        task_key: round.task_key,
-        epoch: round.epoch,
-        released: false,
-        observation,
-    };
-    drop(pending_guard);
-    drop(round);
-
-    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Cancelled);
+    assert!(ticket.state.lock().expect("ticket state mutex").rounds.is_empty());
 }

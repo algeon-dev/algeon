@@ -5,7 +5,6 @@
 # every attributed hidden symbol has its own row with owner, consumer, and a
 # concrete removal condition.
 symbol	feature	owner	consumer	removal_condition
-algeon_datafusion::native_exec::config::AlgeonNativeExecutionConfig::with_benchmark_observation_capture	bench-support	root adapter native execution	bench TPC-H execution harness	benchmark runner stops capturing sealed runtime observation snapshots directly from execution config
 algeon_datafusion::native_report::bench_support	bench-support	root adapter native reports	bench TPC-DS parity report	benchmark report package stops consuming parity comparison rows
 algeon_datafusion::native_exec::composed::AlgeonNativeComposedExec::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading composed consumer QueryPlans
 algeon_datafusion::native_exec::host::AlgeonNativeExec::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading host QueryPlans

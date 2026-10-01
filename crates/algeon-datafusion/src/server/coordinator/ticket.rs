@@ -6,20 +6,29 @@ use std::{
     time::Instant,
 };
 
+use query_engine::observability::RuntimeTerminalOutcome;
+#[cfg(test)]
 use query_engine::{
-    observability::{RuntimeObservationHandle, RuntimeObservationOwner, RuntimeTerminalOutcome},
+    observability::{RuntimeObservationHandle, RuntimeObservationOwner},
     runtime::QueryActivityLease,
 };
 
+#[cfg(test)]
+use super::types::ObservationId;
 use super::{
     super::observability::CapturedError,
     QueryCoordinator,
     types::{
-        CoordinatorTicketPayload, ObservationId, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounters,
-        QueryKey, QueryPhase, QueryTerminal, RetainedUnavailableReason,
+        CoordinatorTicketPayload, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounters, QueryKey,
+        QueryPhase, QueryTerminal, RetainedUnavailableReason,
     },
 };
-use crate::server::native_exec::ServerNativeObservationActivityFactory as NativeObservationActivityFactory;
+use crate::server::attempt::AlgeonAttempt;
+
+/// Acquires the coordinator activity lease a test holds in place of native
+/// cleanup work.
+#[cfg(test)]
+pub(crate) type NativeObservationActivityFactory = Arc<dyn Fn() -> Option<QueryActivityLease> + Send + Sync + 'static>;
 
 impl QueryCoordinator {
     pub(crate) fn consume_ticket(
@@ -53,7 +62,7 @@ impl QueryCoordinator {
             } else {
                 record.phase = QueryPhase::Executing;
                 record.active_leases = 1;
-                record.execution_cancellation = Some(ticket.native_cancellation.clone());
+                record.execution_cancellation = ticket.attempt.as_ref().map(AlgeonAttempt::cancellation);
             }
             (ticket, Arc::clone(&record.hot), expired)
         };
@@ -123,6 +132,7 @@ impl QueryCoordinator {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire_activity(
         self: &Arc<Self>,
         key: &QueryKey,
@@ -153,6 +163,7 @@ impl QueryCoordinator {
         Ok(ObservationActivityLease { coordinator: Arc::downgrade(self), key: key.clone(), released: false })
     }
 
+    #[cfg(test)]
     pub(crate) fn observation_handle(
         &self,
         key: &QueryKey,
@@ -234,6 +245,7 @@ impl QueryCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn release_activity(&self, key: &QueryKey) {
         let should_finalize = {
             let mut state = self.lock_state();
@@ -257,6 +269,7 @@ impl QueryCoordinator {
 pub(crate) struct QueryPlanningLease {
     pub(crate) coordinator: Weak<QueryCoordinator>,
     pub(crate) key: QueryKey,
+    #[cfg(test)]
     pub(crate) observation_id: ObservationId,
     pub(crate) hot: Arc<QueryHotCounters>,
     /// Set exactly when a native attempt has registered its immutable report
@@ -314,6 +327,7 @@ impl QueryPlanningLease {
         Arc::clone(&self.hot)
     }
 
+    #[cfg(test)]
     pub(crate) fn observation_handle(&self) -> Result<RuntimeObservationHandle, QueryCoordinatorError> {
         self.coordinator
             .upgrade()
@@ -321,6 +335,7 @@ impl QueryPlanningLease {
             .observation_handle(&self.key, &self.observation_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
         observation_activity_factory(Weak::clone(&self.coordinator), self.key.clone(), self.observation_id.clone())
     }
@@ -510,6 +525,7 @@ impl Drop for QueryExecutionLease {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn observation_activity_factory(
     coordinator: Weak<QueryCoordinator>,
     key: QueryKey,
@@ -521,6 +537,7 @@ pub(crate) fn observation_activity_factory(
     })
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct ObservationActivityLease {
     pub(crate) coordinator: Weak<QueryCoordinator>,
@@ -528,6 +545,7 @@ pub(crate) struct ObservationActivityLease {
     pub(crate) released: bool,
 }
 
+#[cfg(test)]
 impl Drop for ObservationActivityLease {
     fn drop(&mut self) {
         if self.released {

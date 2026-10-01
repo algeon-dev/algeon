@@ -33,21 +33,6 @@ impl DatafusionAlgeonFlightSqlService {
                 return Err(status);
             },
         };
-        let coordinator_capture = if attempt.is_none() {
-            let observation = match planning_lease.observation_handle() {
-                Ok(observation) => observation,
-                Err(error) => {
-                    let (status, captured) = adapter_error_to_status_and_capture(
-                        error.adapter_error("algeon_datafusion.server.flight.update.observation_handle"),
-                    );
-                    planning_lease.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            };
-            Some((observation, planning_lease.activity_factory()))
-        } else {
-            None
-        };
         // Keep this exact-generation callback before `into_execution` moves
         // the planning lease. Its error arm may seal the attempt only after
         // that move has already terminalized the coordinator record.
@@ -89,17 +74,7 @@ impl DatafusionAlgeonFlightSqlService {
 
         drop(_query_enter);
 
-        let native_cancellation = ExecutionCancellation::new();
-        let execution = match coordinator_capture {
-            Some((observation, activity_factory)) => self.coordinated_invocation_execution(
-                &query_id,
-                correlation_id.as_deref(),
-                native_cancellation.clone(),
-                observation,
-                activity_factory,
-            ),
-            None => self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
-        };
+        let execution = self.attempt_invocation_execution(correlation_id.as_deref());
         let query_ctx = match self.data_query_context(attempt.as_ref(), execution) {
             Ok(context) => context,
             Err(error) => {
@@ -136,7 +111,6 @@ impl DatafusionAlgeonFlightSqlService {
                 },
             },
             _ = self.shutdown_token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }
@@ -236,7 +210,6 @@ impl DatafusionAlgeonFlightSqlService {
                 },
             },
             _ = self.shutdown_token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }

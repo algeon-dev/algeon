@@ -65,7 +65,7 @@ fn admit_attempt(core: &GpuBackendCore) -> AdmittedAttempt {
 
     let handle = core
         .session_capability()
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(owner.admission_binding()))
         .expect("same-device attempt admits");
     attempt.record_physical_execution_started().expect("physical execution starts");
     attempt.record_gpu_execution_started().expect("GPU execution starts");

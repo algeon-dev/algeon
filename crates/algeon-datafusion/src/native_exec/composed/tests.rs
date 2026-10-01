@@ -27,17 +27,18 @@ use query_engine::{
 
 use super::*;
 use crate::{
+    attempt::attempt_ticket_for_test,
     backend::InstalledTestGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{
         AlgeonNativeGpuProducerExec, QueryAdmissionSource,
         admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
-        graph::{GraphExecutionPlan, register_graph_execution_plan_discovery},
+        graph::GraphExecutionPlan,
     },
 };
 
 #[derive(Debug)]
-struct FakeGpuResidentProducer {
+pub(crate) struct FakeGpuResidentProducer {
     input_name: String,
     ticket: Arc<QueryAdmissionTicket>,
     capability_evidence: AttemptCapabilityEvidence,
@@ -46,8 +47,15 @@ struct FakeGpuResidentProducer {
     inner: EmptyExec,
 }
 
+impl FakeGpuResidentProducer {
+    /// The fake runs a graph algorithm only when built with `graph_execution`.
+    pub(crate) fn graph_execution_plan(&self) -> Option<&dyn GraphExecutionPlan> {
+        self.graph_execution.then_some(self as &dyn GraphExecutionPlan)
+    }
+}
+
 #[derive(Debug)]
-struct FakeHostOwnedGraphExec {
+pub(crate) struct FakeHostOwnedGraphExec {
     inner: EmptyExec,
 }
 
@@ -196,18 +204,9 @@ impl GraphExecutionPlan for FakeGpuResidentProducer {
     }
 }
 
-fn fake_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    plan.downcast_ref::<FakeGpuResidentProducer>().map(|producer| producer as &dyn GpuResidentProducer)
-}
-
-fn fake_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-    plan.downcast_ref::<FakeGpuResidentProducer>()
-        .filter(|producer| producer.graph_execution)
-        .map(|producer| producer as &dyn GraphExecutionPlan)
-}
-
-fn fake_host_owned_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-    plan.downcast_ref::<FakeHostOwnedGraphExec>().map(|graph| graph as &dyn GraphExecutionPlan)
+/// A task context of the invocation whose one admission ticket is `ticket`.
+fn invocation_task_context(ticket: &Arc<QueryAdmissionTicket>) -> Arc<TaskContext> {
+    task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(ticket))
 }
 
 fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
@@ -290,7 +289,6 @@ fn consumer_plan(schema: Arc<Schema>) -> QueryPlan {
 
 #[test]
 fn composed_constructor_preserves_host_owned_graph_gpu_output_rejection() {
-    register_graph_execution_plan_discovery(fake_host_owned_graph_execution_plan);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let consumer_plan = consumer_plan(Arc::clone(&schema));
     let child = Arc::new(FakeHostOwnedGraphExec { inner: EmptyExec::new(schema) }) as Arc<dyn ExecutionPlan>;
@@ -346,14 +344,13 @@ fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
 }
 
 #[test]
-fn complete_composed_admission_evidence_rebinds_fake_producer_with_full_cpu_only_evidence() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
+fn complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_cpu_only_evidence() {
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_producer_ticket_attempt, producer_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
         ticket: Arc::clone(&producer_ticket),
@@ -363,14 +360,15 @@ fn complete_composed_admission_evidence_rebinds_fake_producer_with_full_cpu_only
         inner: EmptyExec::new(schema),
     })];
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let task_context = TaskContext::default();
+    let task_context = invocation_task_context(&producer_ticket);
 
-    let completed = complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &task_context)
-        .expect("evidence completion is CPU-only and does not acquire CUDA");
+    let completed =
+        complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, task_context.as_ref())
+            .expect("evidence completion is CPU-only and does not acquire CUDA");
     let completed_ticket =
         completed.execution_config.query_admission_ticket().expect("complete evidence installs one ticket");
 
-    assert!(!Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion reissues the prepared ticket");
+    assert!(Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion keeps the invocation's one ticket");
     let completed_evidence =
         completed_ticket.attempt_capability_evidence().expect("completed ticket retains the composed evidence");
     completed_evidence
@@ -380,25 +378,28 @@ fn complete_composed_admission_evidence_rebinds_fake_producer_with_full_cpu_only
 
 #[test]
 fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallback_scope() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = non_attested_projection_consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_producer_ticket_attempt, producer_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
-        ticket: producer_ticket,
+        ticket: Arc::clone(&producer_ticket),
         capability_evidence: producer_evidence,
         graph_execution: true,
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let completed =
-        complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-            .expect("non-attested one-producer consumer uses ordinary bounded admission");
+    let completed = complete_composed_admission_evidence(
+        config,
+        &consumer_plan,
+        &prepared_inputs,
+        invocation_task_context(&producer_ticket).as_ref(),
+    )
+    .expect("non-attested one-producer consumer uses ordinary bounded admission");
     let completed_ticket =
         completed.execution_config.query_admission_ticket().expect("fallback completion installs one admission ticket");
     let completed_evidence =
@@ -410,9 +411,6 @@ fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallbac
 
 #[test]
 fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_before_grant() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
-
     for (label, build) in [
         ("filter", filter_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
         ("projection", zero_copy_projection_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
@@ -423,19 +421,24 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
         let (schema, producer_evidence) = typed_graph_producer_evidence();
         let consumer_plan = build(Arc::clone(&schema));
         let execute_count = Arc::new(AtomicUsize::new(0));
-        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+        let (_producer_ticket_attempt, producer_ticket) =
+            attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
-            ticket: producer_ticket,
+            ticket: Arc::clone(&producer_ticket),
             capability_evidence: producer_evidence,
             graph_execution: true,
             execute_count: Arc::clone(&execute_count),
             inner: EmptyExec::new(schema),
         })];
         let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-        let completed =
-            complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-                .unwrap_or_else(|error| panic!("{label} consumer must complete a bounded evidence: {error}"));
+        let completed = complete_composed_admission_evidence(
+            config,
+            &consumer_plan,
+            &prepared_inputs,
+            invocation_task_context(&producer_ticket).as_ref(),
+        )
+        .unwrap_or_else(|error| panic!("{label} consumer must complete a bounded evidence: {error}"));
         assert_eq!(execute_count.load(Ordering::SeqCst), 0, "{label} admission evidence does not execute producers");
         let completed_ticket = completed
             .execution_config
@@ -448,7 +451,9 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
         let handle = backend
             .backend()
             .session_capability()
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
+            )
             .unwrap_or_else(|error| panic!("{label} consumer must admit on the CPU-only test backend: {error}"));
         assert_eq!(execute_count.load(Ordering::SeqCst), 0, "{label} admission does not execute producers");
         handle.finish();
@@ -460,16 +465,15 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
 
 #[test]
 fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_path() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = sorted_consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_producer_ticket_attempt, producer_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
-        ticket: producer_ticket,
+        ticket: Arc::clone(&producer_ticket),
         capability_evidence: producer_evidence,
         graph_execution: true,
         execute_count: Arc::new(AtomicUsize::new(0)),
@@ -477,9 +481,13 @@ fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_
     })];
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
-    let completed =
-        complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-            .expect("the existing single graph sort must use the engine composed resolver");
+    let completed = complete_composed_admission_evidence(
+        config,
+        &consumer_plan,
+        &prepared_inputs,
+        invocation_task_context(&producer_ticket).as_ref(),
+    )
+    .expect("the existing single graph sort must use the engine composed resolver");
     let completed_ticket =
         completed.execution_config.query_admission_ticket().expect("standalone path retains one admission ticket");
     completed_ticket
@@ -491,17 +499,16 @@ fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_
 
 #[test]
 fn complete_composed_admission_evidence_composes_relational_producers_with_typed_evidence() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let producer_evidence = typed_relational_producer_evidence(Arc::clone(&schema));
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_producer_ticket_attempt, producer_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
-        ticket: producer_ticket,
+        ticket: Arc::clone(&producer_ticket),
         capability_evidence: producer_evidence,
         graph_execution: false,
         execute_count: Arc::new(AtomicUsize::new(0)),
@@ -509,9 +516,13 @@ fn complete_composed_admission_evidence_composes_relational_producers_with_typed
     })];
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
-    let completed =
-        complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-            .expect("pure relational composition must use the engine composed resolver");
+    let completed = complete_composed_admission_evidence(
+        config,
+        &consumer_plan,
+        &prepared_inputs,
+        invocation_task_context(&producer_ticket).as_ref(),
+    )
+    .expect("pure relational composition must use the engine composed resolver");
     let completed_ticket =
         completed.execution_config.query_admission_ticket().expect("relational composition retains one ticket");
 
@@ -524,8 +535,6 @@ fn complete_composed_admission_evidence_composes_relational_producers_with_typed
 
 #[test]
 fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selection() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, graph_evidence) = typed_graph_producer_evidence();
@@ -533,18 +542,12 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
     let mixed_plan = consumer_plan_for_inputs(&["graph", "relational"], Arc::clone(&schema));
-    let mixed_graph_ticket = QueryAdmissionTicket::new(
-        config.query_admission_source().expect("test config has admission authority"),
-        Some(graph_evidence.clone()),
-    );
-    let mixed_relational_ticket = QueryAdmissionTicket::new(
-        config.query_admission_source().expect("test config has admission authority"),
-        Some(relational_evidence.clone()),
-    );
+    let (_mixed_attempt, mixed_ticket) =
+        attempt_ticket_for_test(config.query_admission_source().expect("test config has admission authority"), None);
     let mixed_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![
         Arc::new(FakeGpuResidentProducer {
             input_name: "graph".to_string(),
-            ticket: mixed_graph_ticket,
+            ticket: Arc::clone(&mixed_ticket),
             capability_evidence: graph_evidence.clone(),
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
@@ -552,39 +555,35 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
         }),
         Arc::new(FakeGpuResidentProducer {
             input_name: "relational".to_string(),
-            ticket: mixed_relational_ticket,
+            ticket: Arc::clone(&mixed_ticket),
             capability_evidence: relational_evidence.clone(),
             graph_execution: false,
             execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(Arc::clone(&schema)),
         }),
     ];
-    let mixed =
-        complete_composed_admission_evidence(config.clone(), &mixed_plan, &mixed_inputs, &TaskContext::default())
-            .expect("adding a complete relational producer must remain supported");
-    let mixed_ticket = mixed.execution_config.query_admission_ticket().expect("mixed completion installs a ticket");
-    let mixed_evidence = mixed_ticket.attempt_capability_evidence().expect("mixed completion retains a evidence");
+    let mixed = complete_composed_admission_evidence(
+        config.clone(),
+        &mixed_plan,
+        &mixed_inputs,
+        invocation_task_context(&mixed_ticket).as_ref(),
+    )
+    .expect("adding a complete relational producer must remain supported");
+    let mixed_completed_ticket =
+        mixed.execution_config.query_admission_ticket().expect("mixed completion installs a ticket");
+    let mixed_evidence =
+        mixed_completed_ticket.attempt_capability_evidence().expect("mixed completion retains a evidence");
     mixed_evidence
         .validate_covers_plan(&mixed_plan)
         .expect("mixed evidence must cover the mixed-producer consumer plan");
 
     let three_input_plan = consumer_plan_for_inputs(&["first", "second", "relational"], Arc::clone(&schema));
-    let first_ticket = QueryAdmissionTicket::new(
-        config.query_admission_source().expect("test config has admission authority"),
-        Some(graph_evidence.clone()),
-    );
-    let second_ticket = QueryAdmissionTicket::new(
-        config.query_admission_source().expect("test config has admission authority"),
-        Some(graph_evidence.clone()),
-    );
-    let relational_ticket = QueryAdmissionTicket::new(
-        config.query_admission_source().expect("test config has admission authority"),
-        Some(relational_evidence.clone()),
-    );
+    let (_three_input_attempt, three_input_ticket) =
+        attempt_ticket_for_test(config.query_admission_source().expect("test config has admission authority"), None);
     let three_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![
         Arc::new(FakeGpuResidentProducer {
             input_name: "first".to_string(),
-            ticket: first_ticket,
+            ticket: Arc::clone(&three_input_ticket),
             capability_evidence: graph_evidence.clone(),
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
@@ -592,7 +591,7 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
         }),
         Arc::new(FakeGpuResidentProducer {
             input_name: "second".to_string(),
-            ticket: second_ticket,
+            ticket: Arc::clone(&three_input_ticket),
             capability_evidence: graph_evidence,
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
@@ -600,19 +599,24 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
         }),
         Arc::new(FakeGpuResidentProducer {
             input_name: "relational".to_string(),
-            ticket: relational_ticket,
+            ticket: Arc::clone(&three_input_ticket),
             capability_evidence: relational_evidence,
             graph_execution: false,
             execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(Arc::clone(&schema)),
         }),
     ];
-    let three_input =
-        complete_composed_admission_evidence(config, &three_input_plan, &three_inputs, &TaskContext::default())
-            .expect("adding a complete relational producer must not reject two graph producers");
-    let three_input_ticket =
-        three_input.execution_config.query_admission_ticket().expect("three-input completion installs a ticket");
-    three_input_ticket
+    let three_input = complete_composed_admission_evidence(
+        config,
+        &three_input_plan,
+        &three_inputs,
+        invocation_task_context(&three_input_ticket).as_ref(),
+    )
+    .expect("adding a complete relational producer must not reject two graph producers");
+    three_input
+        .execution_config
+        .query_admission_ticket()
+        .expect("three-input completion installs a ticket")
         .attempt_capability_evidence()
         .expect("three-input completion retains a evidence")
         .validate_covers_plan(&three_input_plan)
@@ -621,14 +625,14 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
 
 #[test]
 fn complete_composed_admission_evidence_preserves_the_active_stream_ticket_before_admission() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
-    let active_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_producer_ticket_attempt, producer_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
+    let (_active_ticket_attempt, active_ticket) =
+        attempt_ticket_for_test(source.clone(), Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
         ticket: producer_ticket,
@@ -660,7 +664,7 @@ fn complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ti
     let producer = AlgeonNativeGpuProducerExec::try_new("fake_input", producer_plan)
         .expect("ticketless relational producer should build");
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let active_ticket = QueryAdmissionTicket::new(source.clone(), None);
+    let (_active_ticket_attempt, active_ticket) = attempt_ticket_for_test(source.clone(), None);
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&active_ticket));
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -694,13 +698,11 @@ fn complete_composed_admission_evidence_keeps_no_authority_unchanged() {
 
 #[test]
 fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let producer_source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let producer_ticket = QueryAdmissionTicket::new(producer_source, Some(producer_evidence.clone()));
+    let (producer_attempt, producer_ticket) = attempt_ticket_for_test(producer_source, Some(producer_evidence.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
         ticket: producer_ticket,
@@ -709,6 +711,7 @@ fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind()
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
+    drop(producer_attempt);
     drop(backend);
 
     let other_backend = InstalledTestGpuBackend::new();
@@ -726,18 +729,15 @@ fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind()
 
 #[tokio::test]
 async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant() {
-    register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
-    register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (schema, producer_evidence) = typed_graph_producer_evidence();
     let consumer_plan = consumer_plan_for_inputs(&["first", "second"], Arc::clone(&schema));
-    let first_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
-    let second_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_evidence.clone()));
+    let (_attempt, invocation_ticket) = attempt_ticket_for_test(source.clone(), None);
     let producers = vec![
         Arc::new(FakeGpuResidentProducer {
             input_name: "first".to_string(),
-            ticket: first_ticket,
+            ticket: Arc::clone(&invocation_ticket),
             capability_evidence: producer_evidence.clone(),
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
@@ -745,7 +745,7 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
         }) as Arc<dyn ExecutionPlan>,
         Arc::new(FakeGpuResidentProducer {
             input_name: "second".to_string(),
-            ticket: second_ticket,
+            ticket: Arc::clone(&invocation_ticket),
             capability_evidence: producer_evidence,
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
@@ -756,7 +756,7 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
     let composed = AlgeonNativeComposedExec::try_new(consumer_plan.clone(), producers, config)
         .expect("the real composed constructor must retain both prepared producer occurrences");
 
-    let task_context = Arc::new(TaskContext::default());
+    let task_context = invocation_task_context(&invocation_ticket);
     let prepared = composed
         .prepare_lakehouse_metadata(Arc::clone(&task_context))
         .await
@@ -789,7 +789,9 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
     let grant = backend
         .backend()
         .session_capability()
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(completed_evidence))
+        .admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(completed_evidence),
+        )
         .expect("the installed test profile must admit the composed evidence");
     assert_eq!(grant.device_ordinal(), 0);
     drop(grant);

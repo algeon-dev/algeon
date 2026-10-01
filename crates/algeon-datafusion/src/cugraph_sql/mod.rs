@@ -32,6 +32,8 @@ use error::plan;
 pub use exec::CugraphAlgoExec;
 #[cfg(feature = "cugraph")]
 pub(crate) use exec::native_graph_input_execution_plan;
+#[cfg(all(test, feature = "cugraph"))]
+pub(crate) use exec::tests::CountingGpuResidentProducer;
 pub(crate) use gpu_family::CugraphGpuFunctionFamily;
 pub(crate) use logical::{CugraphLogicalNode, CugraphRelationRole};
 pub(crate) use planning::is_feature_disabled_execution_plan;

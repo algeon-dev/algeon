@@ -534,14 +534,16 @@ async fn explain_gpu_stream_drop_retains_one_sealed_attempt_report() {
         .await
         .expect("EXPLAIN GPU FlightInfo should issue a ticket");
     let query_id = query_id_from_flight_info(&response);
-    let native_cancellation =
-        service.coordinator.ticket_cancellation(&query_id).expect("EXPLAIN GPU ticket retains native cancellation");
+    let attempt_cancellation = service
+        .coordinator
+        .ticket_cancellation(&query_id)
+        .expect("EXPLAIN GPU ticket retains its attempt cancellation");
     let response =
         service.execute_ticket(query_id.clone(), None).await.expect("EXPLAIN GPU DoGet should return a lazy stream");
 
     drop(response);
 
-    assert!(native_cancellation.is_cancelled(), "dropping EXPLAIN GPU must cancel its Flight lifecycle");
+    assert!(attempt_cancellation.is_cancelled(), "dropping EXPLAIN GPU must cancel its Flight lifecycle");
     assert_eq!(service.cancellations.len(), 0, "dropped EXPLAIN GPU stream must unregister cancellation");
     let payload = query_stats_payload(&service, &query_id);
     assert!(payload.contains("# outcome=cancelled"), "{payload}");
@@ -561,8 +563,10 @@ async fn explain_gpu_post_batch_drop_records_failed_delivery_outcome() {
         .await
         .expect("EXPLAIN GPU FlightInfo should issue a ticket");
     let query_id = query_id_from_flight_info(&response);
-    let native_cancellation =
-        service.coordinator.ticket_cancellation(&query_id).expect("EXPLAIN GPU ticket retains native cancellation");
+    let attempt_cancellation = service
+        .coordinator
+        .ticket_cancellation(&query_id)
+        .expect("EXPLAIN GPU ticket retains its attempt cancellation");
     let mut stream = service
         .execute_ticket(query_id.clone(), None)
         .await
@@ -571,12 +575,12 @@ async fn explain_gpu_post_batch_drop_records_failed_delivery_outcome() {
 
     stream.next().await.expect("schema frame").expect("schema frame is valid");
     stream.next().await.expect("EXPLAIN GPU batch frame").expect("EXPLAIN GPU batch frame is valid");
-    assert!(!native_cancellation.is_cancelled(), "delivering the EXPLAIN GPU batch keeps the query live until EOF");
+    assert!(!attempt_cancellation.is_cancelled(), "delivering the EXPLAIN GPU batch keeps the query live until EOF");
 
     drop(stream);
 
     assert!(
-        native_cancellation.is_cancelled(),
+        attempt_cancellation.is_cancelled(),
         "dropping a partially delivered EXPLAIN GPU stream cancels native work"
     );
     assert_eq!(service.cancellations.len(), 0, "post-batch drop must unregister cancellation");

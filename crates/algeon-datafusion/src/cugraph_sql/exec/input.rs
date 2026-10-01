@@ -27,7 +27,7 @@ use super::{
     gpu_resident_producer_input_name, plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution,
     resident_side_input_output_rows,
 };
-use crate::native_exec::validate_host_wrapped_gpu_execution;
+use crate::native_exec::{cancellation_requested, validate_host_wrapped_gpu_execution};
 
 const CUGRAPH_HOST_INPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-input-staging]";
 const CUGRAPH_HOST_OUTPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-output-staging]";
@@ -291,7 +291,10 @@ async fn stage_cugraph_source(
                 check_host_staging_cancellation(cancellation)?;
                 let mut stream = plan.execute(partition, task_context)?;
                 let mut batches = Vec::new();
-                while let Some(batch) = stream.try_next().await? {
+                while let Some(batch) = tokio::select! {
+                    batch = stream.try_next() => batch?,
+                    () = cancellation_requested(cancellation) => None,
+                } {
                     check_host_staging_cancellation(cancellation)?;
                     reserve_host_staging_batch(
                         source_kind,
@@ -303,6 +306,7 @@ async fn stage_cugraph_source(
                     )?;
                     batches.push(batch);
                 }
+                check_host_staging_cancellation(cancellation)?;
                 Ok::<_, DataFusionError>(batches)
             }
         })

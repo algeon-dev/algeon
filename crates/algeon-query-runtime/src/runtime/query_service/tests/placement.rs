@@ -13,7 +13,7 @@ fn evidence_device_entries_are_retained_through_admission() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let plan = builder.finish_with_host_sink(source);
     let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
-    let request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone());
+    let request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone());
 
     let handle = service.admit_query_with_request(request).expect("evidence-backed fixture admission succeeds");
     let requirement = handle

@@ -26,7 +26,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
@@ -65,7 +65,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
@@ -102,7 +102,7 @@ fn assert_null_aware_anti_join_native_matches_datafusion(
     let (optimized, diagnostics) =
         rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1, "report={report:?}; diagnostics={diagnostics:?}");
@@ -173,7 +173,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert!(
-        optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
+        below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some(),
         "Q11 should optimize to AlgeonNativeExec; report={report:?}; diagnostics={diagnostics:?}"
     );
     assert_eq!(report.selected_count(), 1);
@@ -207,7 +207,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<AlgeonNativeExec>().is_some());
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);

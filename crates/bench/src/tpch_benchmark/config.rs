@@ -69,6 +69,10 @@ impl NativeTpchRuntimeResources {
         Ok(())
     }
 
+    pub(super) fn backend(&self) -> Option<&AlgeonGpuBackend> {
+        self.backend.as_ref()
+    }
+
     pub(super) fn optimizer_config(&self) -> Option<AlgeonNativeOptimizerConfig> {
         self.backend.as_ref().map(|backend| backend.optimizer_config().clone())
     }

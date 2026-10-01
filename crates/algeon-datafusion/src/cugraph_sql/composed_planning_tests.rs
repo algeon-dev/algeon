@@ -23,6 +23,7 @@ use crate::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
+        below_native_admission,
     },
     session::AlgeonSessionStateBuilderExt,
 };
@@ -280,7 +281,7 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
 
-    let composed = plan
+    let composed = below_native_admission(&plan)
         .downcast_ref::<AlgeonNativeComposedExec>()
         .expect("the canonical graph topology must lower at the root to one composed native consumer");
     let producers = composed.children();

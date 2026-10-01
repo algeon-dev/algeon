@@ -396,7 +396,7 @@ fn bounded_native_query_stops_recovery_at_the_next_cancellation_boundary() {
     let handle = suite_backend_with_policy(context.policy)
         .session_capability()
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::test_attempt()
                 .with_query_plan_capability_evidence(evidence)
                 .with_query_cap_bytes(1024 * 1024),
         )
