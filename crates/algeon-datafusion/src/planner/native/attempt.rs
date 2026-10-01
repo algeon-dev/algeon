@@ -72,11 +72,19 @@ impl NativeOptimizationAttempt {
     }
 }
 
+/// Plan-cost selection inputs: the configured thresholds, and whether the
+/// completed plan may keep a DataFusion operator in place of a native one.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NativeCostSelection {
+    pub(super) options: NativePlanCostOptions,
+    pub(super) datafusion_cpu_allowed: bool,
+}
+
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
@@ -87,7 +95,7 @@ pub(super) fn optimize_count_only_native_plan(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        native_plan_cost_options,
+        cost_selection,
     )
 }
 
@@ -95,7 +103,7 @@ pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let mut relation_inputs = LoweredRelationInputs::default();
@@ -103,11 +111,11 @@ pub(super) fn optimize_final_native_plan(
         plan,
         native_execution_config,
         native_optimizer_options,
-        native_plan_cost_options,
+        cost_selection,
         &mut relation_inputs,
     )?;
     let mut attempt =
-        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, native_plan_cost_options)?;
+        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, cost_selection)?;
     // The root attempt selects at most one whole-plan candidate, so relation
     // input outcomes are appended only after it has consumed its own report.
     attempt.report.append(relation_inputs.report);
@@ -135,7 +143,7 @@ fn lower_gpu_resident_producer_relation_inputs(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
     lowered: &mut LoweredRelationInputs,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let relation_input_names = match gpu_resident_producer(plan.as_ref()) {
@@ -153,7 +161,7 @@ fn lower_gpu_resident_producer_relation_inputs(
             Arc::clone(child),
             native_execution_config,
             native_optimizer_options,
-            native_plan_cost_options,
+            cost_selection,
             lowered,
         )?;
         if let Some(input_name) = relation_input_names.as_ref().and_then(|names| names.get(index))
@@ -166,7 +174,7 @@ fn lower_gpu_resident_producer_relation_inputs(
                 lowering,
                 native_execution_config,
                 native_optimizer_options,
-                native_plan_cost_options,
+                cost_selection,
                 NativeReplacementSink::GpuResidentProducer { input_name: input_name.clone() },
             )?;
             attempt.report.wrap_selected_candidates_with_outer_operator(plan.name());
@@ -189,7 +197,7 @@ fn optimize_final_native_root(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     if whole_plan_has_unsupported_expression_miss(&lowering)
@@ -206,7 +214,7 @@ fn optimize_final_native_root(
                 native_leaf_lowering,
                 native_execution_config,
                 native_optimizer_options,
-                native_plan_cost_options,
+                cost_selection,
             )?;
             if native_leaf.rewritten
                 && let Some(plan) = boundary.rebuild(Arc::clone(&native_leaf.plan))
@@ -222,7 +230,7 @@ fn optimize_final_native_root(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        native_plan_cost_options,
+        cost_selection,
     )
 }
 
@@ -242,7 +250,7 @@ fn replace_lowered_root_or_keep_plan(
     lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     replace_lowered_root_or_keep_plan_for_sink(
         plan,
@@ -250,7 +258,7 @@ fn replace_lowered_root_or_keep_plan(
         lowering,
         native_execution_config,
         native_optimizer_options,
-        native_plan_cost_options,
+        cost_selection,
         NativeReplacementSink::HostArrow,
     )
 }
@@ -261,7 +269,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
     lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
-    native_plan_cost_options: &NativePlanCostOptions,
+    cost_selection: NativeCostSelection,
     sink: NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let mut lowering = lowering;
@@ -320,7 +328,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
     }
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
     if let NativePlanCostDecision::NotSelectedByCost { reason, facts } =
-        native_plan_cost_decision(&native_plan, native_plan_cost_options)
+        native_plan_cost_decision(&native_plan, &cost_selection.options, cost_selection.datafusion_cpu_allowed)
     {
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -443,9 +451,10 @@ fn rejected_attempt(
 }
 
 fn rejection_capability_reason(plan: &QueryPlan, rejection: &AdmissionRejection) -> CapabilityReason {
-    if rejection.is_execution_mode_refusal() {
+    if rejection.is_execution_mode_refusal() || rejection.validation_error().is_some() {
         return match rejection.projection().category {
             CapabilityRejectionCategory::UnsupportedArrowDtype => CapabilityReason::UnsupportedType,
+            CapabilityRejectionCategory::UnsupportedExpressionFamily => CapabilityReason::UnsupportedExpression,
             _ => CapabilityReason::UnsupportedOperator,
         };
     }

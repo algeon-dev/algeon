@@ -8,7 +8,7 @@ async fn get_query_stats_returns_completed_statement_observability() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
+    let flight_info = client.execute("select x as one from (values (1)) as t(x)".to_string(), None).await.unwrap();
     let query_id = query_id_from_statement_flight_info(&flight_info);
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();

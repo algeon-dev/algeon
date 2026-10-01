@@ -1,9 +1,6 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
 use crate::{
-    admission::{
-        AdmissionDecision, AdmittedPlan, admit, bounded_join_unsupported_shape_facts_with_projection,
-        insert_bounded_join_rejection_projection_error_facts,
-    },
+    admission::{AdmissionDecision, AdmittedPlan, admit},
     mode::StatisticalAggregateExecutionMode,
     observability::RuntimeExecutionObservationScope,
     plan::ResultSink,
@@ -84,48 +81,24 @@ pub(super) fn execute_bounded_query_plan(
 /// Decides once whether `plan` runs as a compiled pipeline and returns the
 /// admitted artifact execution runs.
 ///
-/// A rejection becomes a typed error built from the same decision; the
-/// caller-visible sink is attached as a diagnostic fact only and never selects
-/// a second decision.
+/// A rejection becomes a typed error built from the same decision. A
+/// validation refusal is the validator's own error; any other rejection
+/// carries the caller-visible sink as a diagnostic fact that never selects a
+/// second decision.
 pub(super) fn admit_or_execution_error(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
 ) -> Result<Arc<AdmittedPlan>> {
-    let ctx = rapids_analysis_context().with_policy(policy);
-    validate_query_plan(plan, ctx)?;
-    let rejection = match admit(plan, statistical_aggregate_execution_mode, ctx) {
-        Ok(AdmissionDecision::Admitted(admission)) => return Ok(admission),
-        Ok(AdmissionDecision::Rejected(rejection)) => rejection,
-        Err(projection_error) if plan.contains_join() => {
-            let mut error = bounded_join_plan_unsupported();
-            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
-            insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
-            for (key, value) in facts {
-                error = error.with_fact(key, value);
-            }
-            return Err(error.with_source(projection_error));
+    match admit(plan, statistical_aggregate_execution_mode, policy, rapids_analysis_context())? {
+        AdmissionDecision::Admitted(admission) => Ok(admission),
+        AdmissionDecision::Rejected(rejection) if rejection.validation_error().is_some() => {
+            Err(rejection.execution_error(plan))
         },
-        Err(error) => return Err(error),
-    };
-    let error = if plan.contains_join() {
-        let mut error = bounded_join_plan_unsupported();
-        let facts = bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection.projection()), ctx);
-        for (key, value) in facts {
-            error = error.with_fact(key, value);
-        }
-        error
-    } else {
-        rejection.execution_error(plan)
-    };
-    Err(error.with_fact("caller_visible_sink", caller_visible_sink_kind(plan.sink())))
-}
-
-fn bounded_join_plan_unsupported() -> QueryError {
-    unsupported_bounded_shape(
-        "bounded native join execution requires an executable compiled pipeline",
-        "bounded_join_plan_shape_unsupported",
-    )
+        AdmissionDecision::Rejected(rejection) => {
+            Err(rejection.execution_error(plan).with_fact("caller_visible_sink", caller_visible_sink_kind(plan.sink())))
+        },
+    }
 }
 
 fn caller_visible_sink_kind(sink: &ResultSink) -> &'static str {

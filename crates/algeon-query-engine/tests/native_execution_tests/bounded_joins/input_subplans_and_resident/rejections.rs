@@ -66,7 +66,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         Err(error) => error,
     };
 
-    assert_bounded_join_rejection_contract(&error);
+    assert_compiled_pipeline_rejection_contract(&error);
 }
 
 #[test]
@@ -124,7 +124,13 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
         join_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .unwrap();
     assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
     let context = bounded_join_execution_context(&runtime);
 

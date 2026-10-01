@@ -9,17 +9,20 @@
 //! type are `pub(super)` to planning's `admission` module and require a
 //! backend, which planning does not implement.
 
+use arrow::array::Int64Array;
 use query_engine::{
-    admission::{admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
+    admission::{AdmissionDecision, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     capability::CapabilityRejectionOwner,
     dynamic_filter::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
         DynamicFilterProducer, DynamicFilterRoute,
     },
+    error::Result as QueryEngineResult,
     expr::GroupingSetsSpec,
     mode::StatisticalAggregateExecutionMode,
     pipeline::{AcceptedInputForm, PipelineTaskKind, ResidentDataForm, SinkBoundaryKind},
     plan::QueryPlan,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -29,8 +32,13 @@ use super::*;
 fn capability_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
     let plan = root_full_sort_left_semi_grouped_aggregate_plan();
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("left-semi full-sort aggregate admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("left-semi full-sort aggregate admission should not error");
 
     assert!(decision.admission().is_some(), "join plan should produce capability admission evidence");
 }
@@ -39,8 +47,13 @@ fn capability_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
 fn capability_admission_accepts_gpu_resident_sink_for_join_pipeline() {
     let plan = root_full_sort_left_semi_grouped_aggregate_plan().clone_with_gpu_resident_sink();
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("gpu-resident sink admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("gpu-resident sink admission should not error");
     let admission = decision.admission().expect("join plan should produce capability admission evidence");
     let pipeline = admission.pipeline();
     assert_eq!(pipeline.sink().kind(), SinkBoundaryKind::GpuResidentOutput);
@@ -54,8 +67,13 @@ fn capability_admission_accepts_gpu_resident_sink_for_join_pipeline() {
 fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cycle() {
     let plan = dynamic_filter_control_cycle_plan();
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("admission should classify the control cycle");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("admission should classify the control cycle");
 
     assert!(decision.admission().is_none());
     let projection = decision.rejection_projection().expect("a rejected candidate carries its rejection projection");
@@ -105,8 +123,13 @@ fn capability_admission_accepts_independent_source_unary_branches_behind_union()
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("union-scope admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("union-scope admission should not error");
     {
         let admission =
             decision.admission().expect("independent source/unary branches behind union use compiled admission");
@@ -135,8 +158,13 @@ fn capability_admission_accepts_source_unary_without_requiring_a_union() {
     );
     let plan = builder.finish_with_host_sink(projection);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("converged admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("converged admission should not error");
     {
         let admission =
             decision.admission().expect("admission follows operator capability, not the surrounding plan shape");
@@ -193,8 +221,13 @@ fn capability_admission_accepts_non_join_scan_filter_grouped_aggregate_topk() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&aggregate_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("non-join grouped aggregate admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("non-join grouped aggregate admission should not error");
     {
         let admission =
             decision.admission().expect("supported scan/filter/grouped aggregate should use compiled admission");
@@ -234,8 +267,13 @@ fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_c
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("whole-input aggregate admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("whole-input aggregate admission should not error");
     {
         let admission = decision.admission().expect("supported whole-input aggregate should be admitted");
         let pipeline = admission.pipeline();
@@ -287,8 +325,13 @@ fn literal_row_number_plan(order_by: bool) -> QueryPlan {
 fn capability_admission_admits_window_that_depends_on_no_input_order() {
     let plan = literal_row_number_plan(false);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("window admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("window admission should not error");
     let admission = decision.admission().expect("a row number without ORDER BY is admitted");
     assert!(admission.pipeline().tasks().iter().any(|task| task.kind() == PipelineTaskKind::Window));
 }
@@ -299,10 +342,142 @@ fn capability_admission_rejects_row_number_over_unordered_input() {
     // follow arrival order.
     let plan = literal_row_number_plan(true);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("window admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("window admission should not error");
     let projection = decision.rejection_projection().expect("a row number over unordered input is rejected");
     assert_eq!(projection.reason, "window_input_ordering_not_established");
+}
+
+/// A row-number window over a literal `(p, o)` source, partitioned by `p`,
+/// ordered by `o` when `order_by`, over input sorted by `input_sort` when given.
+fn partitioned_row_number_plan(input_sort: Option<Vec<SortExpr>>, order_by: bool) -> QueryPlan {
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false), Field::new("o", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1, 2, 1, 2])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])) as ArrayRef,
+        ],
+    )
+    .expect("literal window batch");
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![batch])));
+    let input = match input_sort {
+        Some(keys) => builder.add_sort(source, SortSpec::new(keys), Arc::clone(&input_schema)),
+        None => source,
+    };
+    let order_by = if order_by { vec![SortExpr::new(Expr::column("o"), false, false)] } else { Vec::new() };
+    let window = builder.add_window(
+        input,
+        WindowSpec::new(vec![Expr::column("p")], order_by, vec![WindowFunction::row_number("row_number")]),
+        Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Int32, false),
+            Field::new("o", DataType::Int32, false),
+            Field::new("row_number", DataType::UInt64, false),
+        ])),
+    );
+    builder.finish_with_host_sink(window)
+}
+
+fn admit_default(plan: &QueryPlan) -> QueryEngineResult<AdmissionDecision> {
+    admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
+}
+
+#[test]
+fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_partition_key() {
+    // Sorted by `o` alone, the rows of each `p` partition are interleaved, so
+    // positional numbering would give [1, 1, 3, 3, 5, 5].
+    let plan = partitioned_row_number_plan(Some(vec![SortExpr::new(Expr::column("o"), false, false)]), true);
+
+    let decision = admit_default(&plan).expect("window admission should not error");
+    let projection = decision.rejection_projection().expect("an input not grouped by partition is rejected");
+    assert_eq!(projection.reason, "window_input_ordering_not_established");
+
+    let plan = partitioned_row_number_plan(
+        Some(vec![SortExpr::new(Expr::column("p"), false, false), SortExpr::new(Expr::column("o"), false, false)]),
+        true,
+    );
+    assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
+}
+
+#[test]
+fn capability_admission_rejects_partitioned_row_number_without_order_over_unordered_input() {
+    // Without ORDER BY any numbering within a partition is valid, but it is
+    // still positional: the partition's rows must be adjacent.
+    let plan = partitioned_row_number_plan(None, false);
+
+    let decision = admit_default(&plan).expect("window admission should not error");
+    let projection = decision.rejection_projection().expect("an ungrouped partition input is rejected");
+    assert_eq!(projection.reason, "window_input_ordering_not_established");
+}
+
+#[test]
+fn capability_admission_refuses_a_plan_reading_a_column_its_input_does_not_produce() {
+    // The scalar aggregate outputs only `v`; the projection above it reads `k`.
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef, Arc::new(Int64Array::from(vec![10, 20])) as ArrayRef],
+    )
+    .expect("literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")]),
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)])),
+    );
+    let projection_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let projection = builder.add_projection(aggregate, projection_outputs(vec![Expr::column("k")], projection_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let error = admit_default(&plan).expect_err("a plan reading a missing column has no admission decision");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.plan.validate_expr");
+}
+
+#[test]
+fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_validation_code() {
+    // A timezone-aware timestamp is a valid Arrow group key that the native
+    // aggregate cannot key on. Validation reports it as unsupported, which is
+    // a rejection a frontend may fall back from, not a malformed plan.
+    let timestamp = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("ts", timestamp.clone(), false),
+        Field::new("v", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/capability-first-timezone-group-key.parquet",
+        Arc::clone(&input_schema),
+        vec!["ts".to_string(), "v".to_string()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("ts")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+        ),
+        Arc::new(Schema::new(vec![Field::new("ts", timestamp, false), Field::new("total", DataType::Int64, true)])),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let decision = admit_default(&plan).expect("an unsupported group key type is a decision");
+    let projection = decision.rejection_projection().expect("an unsupported group key type is rejected");
+    assert_eq!(projection.reason, "native_plan_validation_unsupported");
+    assert_eq!(projection.facts.get("validation_code").map(String::as_str), Some("unsupported_type"));
+    let AdmissionDecision::Rejected(rejection) = &decision else { unreachable!("checked above") };
+    let error = rejection.execution_error(&plan);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(Some(error.operation()), projection.facts.get("validation_operation").map(String::as_str));
 }
 
 #[test]
@@ -313,8 +488,13 @@ fn capability_admission_rejects_rank_over_a_materialized_partition_key() {
     // ordering covers the column the rank partitions on.
     let plan = rollup_rank_over_materialized_partition_key_plan();
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("window admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("window admission should not error");
     let projection = decision.rejection_projection().expect("no compiled contract proves the rank input order");
     assert_eq!(projection.reason, "window_input_ordering_not_established");
 }
@@ -472,8 +652,13 @@ fn rollup_rank_over_materialized_partition_key_plan() -> QueryPlan {
 #[test]
 fn admitted_plan_accepts_footer_pruning_that_only_narrows_row_groups() {
     let ctx = rapids_analysis_context();
-    let decision = admit(&footer_pruned_scan_plan(vec![0, 1, 2], 5), StatisticalAggregateExecutionMode::default(), ctx)
-        .expect("a filtered scan is decidable");
+    let decision = admit(
+        &footer_pruned_scan_plan(vec![0, 1, 2], 5),
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        ctx,
+    )
+    .expect("a filtered scan is decidable");
     let admitted = decision.admission().expect("a filtered scan is admitted");
 
     let pruned = footer_pruned_scan_plan(vec![1], 5);
@@ -487,11 +672,43 @@ fn admitted_plan_accepts_footer_pruning_that_only_narrows_row_groups() {
     assert_eq!(error.fact_value("changed"), Some("node:n1"));
 }
 
+#[test]
+fn admitted_plan_refuses_a_pruned_source_selecting_a_row_group_its_file_does_not_have() {
+    let ctx = rapids_analysis_context();
+    let decision = admit(
+        &footer_pruned_scan_plan(vec![0, 1, 2], 5),
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        ctx,
+    )
+    .expect("a filtered scan is decidable");
+    let admitted = decision.admission().expect("a filtered scan is admitted");
+
+    // Footer metadata reports one row group, yet the pruned selection keeps
+    // row group 2: the resolved source is malformed, not unsupported.
+    let broken = file_scan_plan(
+        LocalParquetFile::new("/tmp/footer-pruned-scan.parquet")
+            .with_file_size_bytes(4096)
+            .with_row_groups(vec![2])
+            .with_row_group_rows(vec![8]),
+        5,
+    );
+
+    let error = admitted.with_pruned_sources(broken, ctx).expect_err("a row group past the footer is malformed");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+}
+
 /// A scan of one Parquet file reading `row_groups`, filtered on `value > threshold`.
 fn footer_pruned_scan_plan(row_groups: Vec<usize>, threshold: i32) -> QueryPlan {
+    file_scan_plan(
+        LocalParquetFile::new("/tmp/footer-pruned-scan.parquet").with_file_size_bytes(4096).with_row_groups(row_groups),
+        threshold,
+    )
+}
+
+/// A scan of `file` filtered on `value > threshold`.
+fn file_scan_plan(file: LocalParquetFile, threshold: i32) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
-    let file =
-        LocalParquetFile::new("/tmp/footer-pruned-scan.parquet").with_file_size_bytes(4096).with_row_groups(row_groups);
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![file],

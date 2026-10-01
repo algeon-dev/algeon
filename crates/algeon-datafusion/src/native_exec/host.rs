@@ -120,10 +120,16 @@ impl AlgeonNativeExec {
         self.admitted.plan()
     }
 
+    /// The artifact planning admitted for this node.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn admitted(&self) -> &Arc<AdmittedPlan> {
+        &self.admitted
+    }
+
     #[cfg(feature = "bench-support")]
     #[doc(hidden)]
-    pub fn native_plan_for_internal_consumer(&self) -> &QueryPlan {
-        self.native_plan()
+    pub fn admitted_plan_for_internal_consumer(&self) -> &Arc<AdmittedPlan> {
+        &self.admitted
     }
 
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]

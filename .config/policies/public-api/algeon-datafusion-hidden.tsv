@@ -6,8 +6,8 @@
 # concrete removal condition.
 symbol	feature	owner	consumer	removal_condition
 algeon_datafusion::native_report::bench_support	bench-support	root adapter native reports	bench TPC-DS parity report	benchmark report package stops consuming parity comparison rows
-algeon_datafusion::native_exec::composed::AlgeonNativeComposedExec::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading composed consumer QueryPlans
-algeon_datafusion::native_exec::host::AlgeonNativeExec::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading host QueryPlans
+algeon_datafusion::native_exec::composed::AlgeonNativeComposedExec::admitted_plan_for_internal_consumer	bench-support	root adapter native execution	bench plan artifacts, tools clickbench stage probe and shadow estimate report	bench and tools stop reading the admitted artifact of composed consumers
+algeon_datafusion::native_exec::host::AlgeonNativeExec::admitted_plan_for_internal_consumer	bench-support	root adapter native execution	bench plan artifacts, tools clickbench stage probe and shadow estimate report	bench and tools stop reading the admitted artifact of host native nodes
 algeon_datafusion::cugraph_sql::parity	bench-support	root adapter cuGraph SQL	cugraph parity tests and tools refresh_cugraph_oracle	oracle refresh workflow and registry-driven parity harness are deleted
 algeon_datafusion::cugraph_sql::parity::ParityComparator	bench-support	root adapter cuGraph SQL	cugraph parity compare harness	same as algeon_datafusion::cugraph_sql::parity
 algeon_datafusion::cugraph_sql::parity::ParityTruthSource	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness	same as algeon_datafusion::cugraph_sql::parity

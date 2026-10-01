@@ -823,21 +823,17 @@ fn composed_pipeline_keeps_scalar_fanout_cardinality_as_node_facts() {
 }
 
 #[test]
-fn composed_pipeline_rejects_scalar_fanout_anti_join_at_node() {
-    // The old plan-family cardinality proof rejected the anti-join fan-out
-    // variant; now the join node capability owns the rejection while the
-    // scalar aggregates keep their one-row facts.
+fn composed_pipeline_refuses_keyless_anti_join_fanout_as_malformed() {
+    // The anti-join fan-out variant has neither keys nor a residual and
+    // projects right-side columns an anti join never outputs, so admission
+    // refuses the IR itself while the scalar aggregates keep their one-row
+    // facts.
     let plan = projection_root_scalar_fanout_unsupported_join_plan();
     let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)));
-    let projection =
-        bounded_pipeline_rejection_projection(&plan).unwrap().expect("anti-join fan-out should project a rejection");
-    assert!(
-        matches!(projection.owner, CapabilityRejectionOwner::Node(_)),
-        "anti-join fan-out should reject on the node, got {:?}",
-        projection.owner
-    );
-    assert_eq!(projection.reason, "unsupported_join_node_capability");
+    let error = bounded_pipeline_rejection_projection(&plan).expect_err("a keyless anti join without residual");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.join.validate");
 }
 
 #[test]

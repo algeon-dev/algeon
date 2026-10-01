@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::plan::QueryPlan;
+use query_engine::plan::{NodeId, QueryPlan};
 
 use super::*;
 
@@ -54,10 +54,12 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
         Field::new("threshold", DataType::Int64, false),
     ]));
     let scalar_aggregate_schema = Arc::new(Schema::new(vec![Field::new("threshold", DataType::Int32, true)]));
+    let threshold_type =
+        if matches!(variant, KeylessInputSubplanVariant::GroupedAggregate) { DataType::Int64 } else { DataType::Int32 };
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
-        Field::new("threshold", DataType::Int32, true),
+        Field::new("threshold", threshold_type, true),
     ]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -135,14 +137,6 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
         )
     };
 
-    let scalar_aggregate = builder.add_aggregate(
-        threshold_source,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
-        ),
-        Arc::clone(&scalar_aggregate_schema),
-    );
     let right_input = match variant {
         KeylessInputSubplanVariant::GroupedAggregate => builder.add_aggregate(
             threshold_source,
@@ -152,18 +146,24 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
             ),
             grouped_aggregate_schema,
         ),
-        KeylessInputSubplanVariant::SortInput => builder.add_sort(
-            scalar_aggregate,
-            SortSpec::new(vec![SortExpr::new(Expr::column("threshold"), false, false)]),
-            scalar_aggregate_schema,
-        ),
+        KeylessInputSubplanVariant::SortInput => {
+            let scalar_aggregate = threshold_scalar_aggregate(&mut builder, threshold_source, &scalar_aggregate_schema);
+            builder.add_sort(
+                scalar_aggregate,
+                SortSpec::new(vec![SortExpr::new(Expr::column("threshold"), false, false)]),
+                scalar_aggregate_schema,
+            )
+        },
         KeylessInputSubplanVariant::LimitInput => {
+            let scalar_aggregate = threshold_scalar_aggregate(&mut builder, threshold_source, &scalar_aggregate_schema);
             builder.add_limit(scalar_aggregate, LimitSpec::fetch(1), scalar_aggregate_schema)
         },
         KeylessInputSubplanVariant::Admitted
         | KeylessInputSubplanVariant::BareLeftAntiInput
         | KeylessInputSubplanVariant::InnerJoinInput
-        | KeylessInputSubplanVariant::NestedJoinInput => scalar_aggregate,
+        | KeylessInputSubplanVariant::NestedJoinInput => {
+            threshold_scalar_aggregate(&mut builder, threshold_source, &scalar_aggregate_schema)
+        },
     };
 
     let root = builder.add_join(
@@ -184,4 +184,19 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
         output_schema,
     );
     builder.finish_with_host_sink(root)
+}
+
+fn threshold_scalar_aggregate(
+    builder: &mut QueryPlanBuilder,
+    threshold_source: NodeId,
+    scalar_aggregate_schema: &Arc<Schema>,
+) -> NodeId {
+    builder.add_aggregate(
+        threshold_source,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
+        ),
+        Arc::clone(scalar_aggregate_schema),
+    )
 }

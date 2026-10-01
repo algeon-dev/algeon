@@ -22,7 +22,7 @@ use crate::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec,
         admission::{attempt_execution_required_error, invocation_admission_ticket},
         composed_admission_capability_evidence, gpu_resident_producer_input_name,
-        lakehouse::resolve_query_plan,
+        lakehouse::resolve_admitted_plan,
     },
     planner::native::Invocation,
 };
@@ -47,33 +47,40 @@ pub(super) async fn exact_native_edge_source_gpu_plan(
     edge_source: &dyn ExecutionPlan,
     task_context: &TaskContext,
 ) -> Result<Option<Arc<AdmittedPlan>>> {
-    let (execution_config, native_plan) = if let Some(native) = as_algeon_native_exec(edge_source) {
-        (native.execution_config(), native.native_plan())
+    let (execution_config, admitted) = if let Some(native) = as_algeon_native_exec(edge_source) {
+        (native.execution_config(), native.admitted())
     } else if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
-        (composed.execution_config(), composed.native_plan())
+        (composed.execution_config(), composed.admitted())
     } else {
         return Ok(None);
     };
-    admit_native_edge_source_gpu_plan(execution_config, native_plan, task_context).await.map(Some)
+    resolve_native_edge_source_gpu_plan(execution_config, admitted, task_context).await.map(Some)
 }
 
-/// Resolves a native edge source into the GPU-resident form cuGraph reads and
-/// admits that form once; its node was admitted in host form.
-pub(super) async fn admit_native_edge_source_gpu_plan(
+/// The artifact a native edge source executes for cuGraph. Footer pruning
+/// refines the node's admitted plan through the same checked re-admission
+/// every native node uses; the GPU-resident form cuGraph reads is a plan built
+/// here, so it is decided here, under the node's mode and policy.
+pub(super) async fn resolve_native_edge_source_gpu_plan(
     execution_config: &AlgeonNativeExecutionConfig,
-    native_plan: &QueryPlan,
+    admitted: &Arc<AdmittedPlan>,
     task_context: &TaskContext,
 ) -> Result<Arc<AdmittedPlan>> {
-    let plan =
-        resolve_query_plan(execution_config, native_plan.clone(), task_context).await.clone_with_gpu_resident_sink();
-    admit_query_plan(&plan, execution_config.statistical_aggregate_execution_mode(), execution_config.planning_policy())
-        .map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.cugraph_sql.edge_source",
-                "the GPU-resident cuGraph edge source is not admitted",
-                error,
-            ))
-        })
+    let refined = resolve_admitted_plan(
+        execution_config.lakehouse_footer_pruning(),
+        execution_config.source_storage_profiles(),
+        admitted,
+        task_context,
+    )
+    .await?;
+    let plan = refined.plan().clone_with_gpu_resident_sink();
+    admit_query_plan(&plan, refined.statistical_aggregate_execution_mode(), refined.policy()).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "algeon_datafusion.cugraph_sql.edge_source",
+            "the GPU-resident cuGraph edge source is not admitted",
+            error,
+        ))
+    })
 }
 
 #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]

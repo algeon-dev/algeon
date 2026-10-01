@@ -10,6 +10,7 @@ use query_engine::{
     optimizer::NativeOptimizerOptions,
     pipeline::PipelineTaskKind,
     plan::QueryPlan,
+    policy::PlanningPolicy,
     runtime::{
         ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
         GpuBackendDeviceProfile, GpuMemoryOwnership, QueryExecutionConfig, QueueBounds,
@@ -40,6 +41,7 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _bounded_decision: fn(
         &QueryPlan,
         StatisticalAggregateExecutionMode,
+        PlanningPolicy,
         AnalysisContext<'_>,
     ) -> Result<AdmissionDecision> = admit;
     let _source_validation: fn(&LocalParquetSource, AnalysisContext<'_>) -> Result<()> = validate_local_parquet_source;

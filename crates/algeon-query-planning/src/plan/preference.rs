@@ -22,6 +22,11 @@ pub enum NativePlanCostReason {
     /// Small, selective source work feeds a full-sort join/aggregate shape whose
     /// native source/join/sort fixed costs are likely to dominate useful GPU work.
     SmallSelectiveFullSort,
+    /// Every source is a literal without columns, such as a DDL result's
+    /// empty relation or a `SELECT 1` placeholder row, and no GPU algorithm
+    /// runs: native execution would hold a grant to produce rows no column
+    /// data distinguishes.
+    NoColumnData,
 }
 
 impl NativePlanCostReason {
@@ -31,6 +36,7 @@ impl NativePlanCostReason {
             Self::SmallSelectiveTopK => "native_small_selective_topk_not_selected_by_cost",
             Self::SmallSelectiveResidualJoin => "native_small_selective_residual_join_not_selected_by_cost",
             Self::SmallSelectiveFullSort => "native_small_selective_full_sort_not_selected_by_cost",
+            Self::NoColumnData => "native_no_column_data_not_selected_by_cost",
         }
     }
 }
@@ -254,8 +260,20 @@ impl NativePlanCostDecision {
 }
 
 /// Decides whether a native-capable plan should be selected by cost.
-pub fn native_plan_cost_decision(plan: &QueryPlan, options: &NativePlanCostOptions) -> NativePlanCostDecision {
+///
+/// `frontend_plan_allowed` says whether the frontend may run its own plan in
+/// place of the native candidate. A plan that reads no column data stays with
+/// the frontend whenever it may; the threshold rules in `options` apply only
+/// when they are enabled.
+pub fn native_plan_cost_decision(
+    plan: &QueryPlan,
+    options: &NativePlanCostOptions,
+    frontend_plan_allowed: bool,
+) -> NativePlanCostDecision {
     let facts = NativePlanCostFacts::from_plan(plan);
+    if frontend_plan_allowed && reads_no_column_data(plan) {
+        return NativePlanCostDecision::NotSelectedByCost { reason: NativePlanCostReason::NoColumnData, facts };
+    }
     if !options.enabled {
         return NativePlanCostDecision::ContinueNative { facts };
     }
@@ -295,6 +313,16 @@ pub fn native_plan_cost_decision(plan: &QueryPlan, options: &NativePlanCostOptio
         };
     }
     NativePlanCostDecision::ContinueNative { facts }
+}
+
+fn reads_no_column_data(plan: &QueryPlan) -> bool {
+    plan.nodes().iter().all(|node| match &node.kind {
+        PlanNode::Source(source) => {
+            matches!(source.as_ref(), SourceNode::LiteralBatch(literal) if literal.schema.fields().is_empty())
+        },
+        PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
+        _ => true,
+    })
 }
 
 fn accumulate_local_parquet_source_facts(facts: &mut NativePlanCostFacts, source: &LocalParquetSource) {

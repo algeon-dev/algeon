@@ -109,15 +109,17 @@ impl WindowSpec {
         Self { partition_by, order_by, functions }
     }
 
-    /// Whether a function numbers rows in the order its input holds them:
-    /// rank and row-number under an ORDER BY. Cumulative aggregates and
-    /// LAG/LEAD sort by the window keys themselves.
+    /// Whether a function numbers rows by their position in the input: rank
+    /// under an ORDER BY, and row-number under an ORDER BY or a PARTITION BY.
+    /// Positional numbering needs each partition's rows adjacent, in the
+    /// window's order. Cumulative aggregates and LAG/LEAD sort by the window
+    /// keys themselves.
     pub(crate) fn counts_rows_in_input_order(&self) -> bool {
-        !self.order_by.is_empty()
-            && self
-                .functions
-                .iter()
-                .any(|function| matches!(function, WindowFunction::Rank { .. } | WindowFunction::RowNumber { .. }))
+        self.functions.iter().any(|function| match function {
+            WindowFunction::Rank { .. } => !self.order_by.is_empty(),
+            WindowFunction::RowNumber { .. } => !self.order_by.is_empty() || !self.partition_by.is_empty(),
+            _ => false,
+        })
     }
 }
 

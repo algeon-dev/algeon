@@ -195,11 +195,17 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     let left_input = if matches!(variant, AggregateOverJoinSubplanInputsVariant::BareJoinInput) {
         left_join_input
     } else {
+        let left_aggregate_input_column =
+            if matches!(variant, AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut) {
+                "value"
+            } else {
+                "ps_supplycost"
+            };
         let left_aggregate = builder.add_aggregate(
             left_join_input,
             AggregateSpec::new(
                 vec![Expr::column("ps_partkey")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ps_supplycost"), "value")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(left_aggregate_input_column), "value")],
             ),
             Arc::clone(&left_aggregate_schema),
         );
@@ -239,16 +245,18 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         projection_outputs(vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema)),
     );
 
+    let left_value_column =
+        if matches!(variant, AggregateOverJoinSubplanInputsVariant::BareJoinInput) { "ps_supplycost" } else { "value" };
     let root_projection = if matches!(variant, AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight) {
         vec![
             JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+            JoinOutputColumn::left(ColumnRef::input(0, left_value_column, left_value_column), "value"),
             JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
         ]
     } else {
         vec![
             JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+            JoinOutputColumn::left(ColumnRef::input(0, left_value_column, left_value_column), "value"),
         ]
     };
     let root_schema = if matches!(variant, AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight) {
@@ -261,7 +269,7 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         right_input,
         JoinSpec::new(JoinType::Inner, Vec::new())
             .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "value", "value"),
+                Expr::input_column(0, left_value_column, left_value_column),
                 BinaryOp::Gt,
                 Expr::input_column(1, "threshold", "threshold"),
             ))

@@ -657,10 +657,11 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
         .with_build_side(JoinSide::Right),
         Arc::clone(&triple_schema),
     );
+    let edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, false), Field::new("dst", DataType::Int32, false)]));
     let shared = builder.add_projection(
         first_join,
         vec![
-            ProjectionOutput::new(Expr::column("join_key"), Field::new("join_key", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("src"), Field::new("src", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("dst"), Field::new("dst", DataType::Int32, false)),
         ],
@@ -673,14 +674,14 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
             dedup: EdgeDedupStrategy::KeepLast,
             weight_combiner: EdgeWeightCombiner::None,
         },
-        Arc::clone(&triple_schema),
+        Arc::clone(&edge_schema),
     );
     let passthrough = builder.add_filter(
         shared,
         Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&triple_schema),
+        Arc::clone(&edge_schema),
     );
-    let union = builder.add_union(vec![edge_normalize, passthrough], triple_schema);
+    let union = builder.add_union(vec![edge_normalize, passthrough], edge_schema);
     let plan = builder.finish_with_host_sink(union);
 
     let analysis = plan.capability_analysis(rapids_analysis_context());
@@ -693,7 +694,9 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
-    rapids_analysis_context())
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "shared edge-normalize input must not be admitted");
 }

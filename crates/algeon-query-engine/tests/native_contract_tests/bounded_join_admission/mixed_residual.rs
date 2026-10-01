@@ -52,7 +52,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
     );
 
     // A mixed Left join building on the left is not a supported kernel shape:
-    // the join node capability rejects it before any pipeline compiles.
+    // plan validation rejects it before capability analysis runs.
     let plan = mixed_residual_multi_join_plan(
         JoinType::Left,
         JoinSide::Left,
@@ -66,8 +66,11 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
     assert_rejection_facts_are_family_free(&facts, "left_build_mixed_left");
     assert_eq!(
         facts.get("bounded_join_rejection_reason").map(String::as_str),
-        Some("unsupported_join_node_capability")
+        Some("native_plan_validation_unsupported")
     );
+    let blocker_facts = facts.get("bounded_join_rejection_facts").expect("rejection facts");
+    assert!(blocker_facts.contains("validation_code=unsupported_plan_shape"), "{blocker_facts}");
+    assert!(blocker_facts.contains("validation_operation=query_engine.join.validate"), "{blocker_facts}");
 }
 
 #[test]
@@ -83,43 +86,19 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
 }
 
 #[test]
-fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blocker_facts() {
-    for (join_type, build_side, projection, expected_blocker) in [
-        (
-            JoinType::LeftSemi,
-            JoinSide::Left,
+fn bounded_multi_join_refuses_mixed_residual_semi_anti_projecting_right_columns_as_malformed() {
+    // A semi or anti join outputs only left rows, so a right-side output
+    // column has no value: the IR is malformed, not an unsupported shape.
+    for (join_type, build_side) in [(JoinType::LeftSemi, JoinSide::Left), (JoinType::LeftAnti, JoinSide::Right)] {
+        let plan = mixed_residual_multi_join_plan(
+            join_type,
+            build_side,
             vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
-            "multi_join_mixed_keyed_residual_semi_anti_requires_left_only_projection",
-        ),
-        (
-            JoinType::LeftAnti,
-            JoinSide::Right,
-            vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
-            "multi_join_mixed_keyed_residual_semi_anti_requires_left_only_projection",
-        ),
-    ] {
-        let plan = mixed_residual_multi_join_plan(join_type, build_side, projection);
+        );
 
-        let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("unsupported mixed semi/anti multi-join shape should produce facts");
-        assert_rejection_facts_are_family_free(&facts, "invalid_mixed_semi_anti_multi_join");
-        assert!(
-            matches!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node" | "subgraph")),
-            "invalid mixed semi/anti joins should report the first local node or subgraph blocker"
-        );
-        assert!(
-            matches!(
-                facts.get("bounded_join_rejection_category").map(String::as_str),
-                Some("unsupported_node_operator" | "missing_subgraph_invariant")
-            ),
-            "invalid mixed semi/anti joins should not require a family-shaped blocker category"
-        );
-        assert!(
-            facts
-                .get("bounded_join_rejection_reason")
-                .is_some_and(|reason| reason == expected_blocker || reason.contains("join"))
-        );
-        assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
+        let error = malformed_plan_error(&plan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan, "{join_type:?}");
+        assert_eq!(error.operation(), "query_engine.join.validate", "{join_type:?}");
     }
 }
 

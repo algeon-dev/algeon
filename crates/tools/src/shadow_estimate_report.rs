@@ -40,11 +40,9 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use query_engine::{
-    admission::{AdmissionDecision, admit},
     observability::AttemptFinalDomainUsage,
     pipeline::{ShadowBytes, ShadowPipelineEstimate, ShadowTaskEnvelope},
     plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
     runtime::{
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
@@ -58,12 +56,12 @@ use workloads::{
     tpch::{TPCH_QUERIES, TpchDatasetMetadata, prepare_tpch_report_dataset, register_tpch_tables},
 };
 
-use crate::native_plan_peel::peel_native_query_plan;
+use crate::native_plan_peel::peel_native_admitted_plan;
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const MANIFEST_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.manifest.v1";
-const COMPARE_RECORD_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.compare.v1";
+const COMPARE_RECORD_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.compare.v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Workload {
@@ -206,8 +204,6 @@ async fn process_query(
     sql: &str,
     query_dir: &Path,
 ) -> ToolResult<CompareRecord> {
-    let mode = ctx.optimizer_config.statistical_aggregate_execution_mode();
-
     // Groups (a) + (b): plan without a live backend so this half works
     // without a GPU (see `--no-execute`).
     let estimate_execution_config = ctx.optimizer_config.native_execution_config().clone().with_query_id(query_id);
@@ -222,38 +218,31 @@ async fn process_query(
         estimate_optimizer_config,
     )
     .await?;
-    let Some(native_plan) = peel_native_query_plan(physical.as_ref()) else {
+    let Some(admitted) = peel_native_admitted_plan(physical.as_ref()) else {
         return Ok(CompareRecord::error(
             ctx.workload,
             query_id,
             "physical plan did not lower to native execution (CPU fallback)".to_string(),
         ));
     };
-    let gpu_plan = native_plan.clone_with_deferred_host_materialization_sink();
+    // The node's artifact is the plan in the deferred host sink form it
+    // executes, admitted under the estimate config's mode and policy.
+    let gpu_plan = admitted.plan();
     let execution_scope = format!("blake3:{}", gpu_plan.execution_fingerprint());
-    let frontend_outputs = frontend_output_records(&gpu_plan);
-    let frontend_coverage = frontend_output_coverage(&gpu_plan);
+    let frontend_outputs = frontend_output_records(gpu_plan);
+    let frontend_coverage = frontend_output_coverage(gpu_plan);
 
-    let decision = admit(&gpu_plan, mode, rapids_analysis_context())?;
-    let pipeline = match &decision {
-        AdmissionDecision::Admitted(admission) => {
-            let estimate = estimate_compiled_pipeline(&gpu_plan, admission.pipeline())?;
-            PipelineGroup::Present {
-                task_workspace_coverage: shadow_bytes_coverage(estimate.pipeline.task_workspace.iter()),
-                resource_coverage: shadow_bytes_coverage(
-                    estimate.pipeline.resources.iter().map(|resource| &resource.model.bytes),
-                ),
-                envelope_coverage: shadow_bytes_coverage(
-                    estimate.pipeline.envelopes.iter().map(|envelope| &envelope.query_owned_bytes),
-                ),
-                collection_elapsed_ns: estimate.collection_elapsed_ns,
-                estimate: estimate.pipeline,
-            }
-        },
-        AdmissionDecision::Rejected(rejection) => PipelineGroup::Absent {
-            reason: "compiled_pipeline_rejected",
-            rejection_reason: Some(rejection.projection().reason.to_string()),
-        },
+    let estimate = estimate_compiled_pipeline(gpu_plan, admitted.pipeline())?;
+    let pipeline = PipelineGroup::Present {
+        task_workspace_coverage: shadow_bytes_coverage(estimate.pipeline.task_workspace.iter()),
+        resource_coverage: shadow_bytes_coverage(
+            estimate.pipeline.resources.iter().map(|resource| &resource.model.bytes),
+        ),
+        envelope_coverage: shadow_bytes_coverage(
+            estimate.pipeline.envelopes.iter().map(|envelope| &envelope.query_owned_bytes),
+        ),
+        collection_elapsed_ns: estimate.collection_elapsed_ns,
+        estimate: Box::new(estimate.pipeline),
     };
 
     // Group (c): real execution through the public backend + attempt API,
@@ -464,7 +453,7 @@ impl CompareRecord {
             execution_scope: String::new(),
             frontend_outputs: Vec::new(),
             frontend_coverage: Coverage::default(),
-            pipeline: PipelineGroup::Absent { reason: "query_processing_error", rejection_reason: None },
+            pipeline: PipelineGroup::Absent { reason: "query_processing_error" },
             observation: ObservationGroup::Error { message: message.clone() },
             task_deltas: Vec::new(),
             query_peak_delta: None,
@@ -487,17 +476,17 @@ struct Coverage {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum PipelineGroup {
     Present {
-        estimate: ShadowPipelineEstimate,
+        estimate: Box<ShadowPipelineEstimate>,
         task_workspace_coverage: Coverage,
         resource_coverage: Coverage,
         envelope_coverage: Coverage,
         collection_elapsed_ns: u64,
     },
     /// No compiled bounded-pipeline schedule exists for this plan.
-    /// `reason` is `"compiled_pipeline_rejected"` when admission rejected the
-    /// plan, with the contract in `rejection_reason`, or
-    /// `"query_processing_error"` for an unrelated planning failure.
-    Absent { reason: &'static str, rejection_reason: Option<String> },
+    /// `reason` is `"query_processing_error"` for a planning failure; a plan
+    /// whose candidate planning rejected has no native node and is recorded
+    /// as a CPU fallback before this group is built.
+    Absent { reason: &'static str },
 }
 
 impl PipelineGroup {

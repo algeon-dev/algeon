@@ -671,9 +671,9 @@ fn claim_lane_round(
 /// Resolves one claimed task's inputs into an owned scratch state.
 ///
 /// Exclusive inputs move out of the coordinator state; shared inputs enter
-/// the scratch as snapshots, mirroring the serial shared-input arms. Lazy
-/// shared streams and deferred sources cannot cross the lane boundary and
-/// fail here with the same invalid-plan class the serial path reports.
+/// the scratch as snapshots, mirroring the serial shared-input arms: a
+/// deferred source is re-staged per consumer. A lazy shared stream that cannot
+/// alias fails here with the same invalid-plan class the serial path reports.
 fn build_lane_scratch(
     pipeline: &CompiledPipeline,
     state: &mut CompiledPipelineState<CompiledGpuResource>,
@@ -1371,13 +1371,19 @@ mod lane_width_tests {
         mode::StatisticalAggregateExecutionMode,
         pipeline::CompiledPipeline,
         plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
+        policy::PlanningPolicy,
         rapids_backend::rapids_analysis_context,
         source::{LiteralBatchSource, SourceNode},
     };
 
     fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
-        let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+        let decision = admit(
+            plan,
+            StatisticalAggregateExecutionMode::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(),
+        )
+        .expect("bounded admission should not error");
         decision.admission().expect("these plans use the compiled admission").pipeline().clone()
     }
 

@@ -28,7 +28,7 @@ use query_engine::{
     attempt::BeginAttemptRequest,
     capability::CapabilityRejectionProjection,
     dynamic_filter::DynamicFilterProducer,
-    error::Result,
+    error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest, admit_query_plan,
         execute_query_plan as execute_engine_query_plan, materialize_gpu_result_to_host,
@@ -66,11 +66,13 @@ use query_engine::{
 };
 
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
-    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?.admission().cloned())
+    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())?
+        .admission()
+        .cloned())
 }
 
 fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
-    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
+    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())?
         .rejection_projection()
         .cloned())
 }

@@ -139,8 +139,9 @@ use crate::{
 /// Validates a complete native plan without constructing a runtime or touching
 /// GPU resources.
 ///
-/// Frontends use this capability-first boundary before host work or native
-/// admission. Execution entrypoint call the same validation internally.
+/// [`admit_query_plan`] and planning-time admission validate the plan they
+/// decide; frontends call this only for a plan they check before it can be
+/// admitted, such as the schema plan of a GPU relation function.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_query_plan(plan, rapids_analysis_context())
 }
@@ -149,8 +150,10 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
 ///
 /// Callers that build a plan where it executes (graph, vector and ML relation
 /// plans, tools, tests) admit it here; execution takes only the artifact. A
-/// plan no compiled contract covers is a typed error carrying the first
-/// contract it misses and the caller-visible sink as a diagnostic fact.
+/// malformed plan, or one using a construct the backend does not support, is
+/// the validator's error; a plan no compiled contract covers is a typed error
+/// carrying the first contract it misses and the caller-visible sink as a
+/// diagnostic fact.
 pub fn admit_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,

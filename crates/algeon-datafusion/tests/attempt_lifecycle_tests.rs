@@ -11,7 +11,7 @@ use algeon_datafusion::{
     error::DataFusionErrorExt,
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{FinalPlanDisposition, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, plan_with_native_diagnostics},
 };
 use datafusion::{
     common::{Result as DataFusionResult, tree_node::TreeNodeRecursion},
@@ -36,6 +36,14 @@ struct BackendFixture {
 
 impl BackendFixture {
     fn new(queue_capacity: Option<usize>, resource_policy: AlgeonGpuQueuePolicy) -> Self {
+        Self::with_execution_mode(queue_capacity, resource_policy, AlgeonGpuExecutionMode::NativePreferred)
+    }
+
+    fn with_execution_mode(
+        queue_capacity: Option<usize>,
+        resource_policy: AlgeonGpuQueuePolicy,
+        execution_mode: AlgeonGpuExecutionMode,
+    ) -> Self {
         let guard = super::root_gpu_fixture::lock();
         let profile = AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
@@ -45,7 +53,8 @@ impl BackendFixture {
                 SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
             ))
             .devices([device])
-            .queue_policy(resource_policy);
+            .queue_policy(resource_policy)
+            .with_execution_mode(execution_mode);
         if let Some(capacity) = queue_capacity {
             builder = builder.with_attempt_completion_queue_capacity(capacity);
         }
@@ -840,6 +849,35 @@ async fn concurrent_plain_executions_on_one_context_run_one_attempt_each() {
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
         assert!(report.admission.is_some());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plans_that_read_no_column_data_begin_no_attempt_unless_native_is_required() {
+    // A DDL result's empty relation and `SELECT 1`'s placeholder row carry no
+    // column data a GPU could accelerate, so NativePreferred keeps them on
+    // DataFusion instead of queueing for a grant.
+    {
+        let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+        let ctx = native_context(&backend).await;
+        let begun = backend.attempt_counters_snapshot().attempts_begun;
+        ctx.sql("CREATE VIEW plain_view AS SELECT k FROM native_rows").await.unwrap().collect().await.unwrap();
+        assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun, "a view's DDL result begins no attempt");
+        let batches = ctx.sql("SELECT 1").await.unwrap().collect().await.unwrap();
+        assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
+        assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun, "SELECT 1 begins no attempt");
+    }
+
+    // NativeRequired leaves no DataFusion fallback, so the literal stays native.
+    let backend = BackendFixture::with_execution_mode(
+        Some(8),
+        AlgeonGpuQueuePolicy::default(),
+        AlgeonGpuExecutionMode::NativeRequired,
+    );
+    let ctx = native_context(&backend).await;
+    let begun = backend.attempt_counters_snapshot().attempts_begun;
+    let batches = ctx.sql("SELECT 1").await.unwrap().collect().await.unwrap();
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1, "a required native literal runs");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

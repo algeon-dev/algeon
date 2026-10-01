@@ -44,7 +44,7 @@ mod invocation;
 mod mixed;
 
 use attempt::{
-    NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
+    NativeCostSelection, NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
     peel_cooperative_native_exec,
 };
 pub use capability_envelope::{
@@ -339,7 +339,11 @@ impl AlgeonNativePhysicalOptimizerRule {
         let effective_config = self.config.clone().with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
-        let native_plan_cost_options = effective_config.native_plan_cost_options();
+        let cost_selection = NativeCostSelection {
+            options: *effective_config.native_plan_cost_options(),
+            datafusion_cpu_allowed: self.config.datafusion_cpu_execution_policy()
+                == DataFusionCpuExecutionPolicy::Allow,
+        };
 
         let optimized = match (already_selected, self.config.relational_native_rewrite_policy(), self.stage) {
             (Some(plan), _, _) => NativeOptimizationAttempt::retained(plan),
@@ -351,7 +355,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                     Arc::clone(&plan),
                     native_execution_config,
                     native_optimizer_options,
-                    native_plan_cost_options,
+                    cost_selection,
                 )?
             },
             (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::Final) => {
@@ -359,7 +363,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                     Arc::clone(&plan),
                     native_execution_config,
                     native_optimizer_options,
-                    native_plan_cost_options,
+                    cost_selection,
                 )?
             },
         };

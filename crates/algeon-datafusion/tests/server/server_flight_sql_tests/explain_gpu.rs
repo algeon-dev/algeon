@@ -7,7 +7,8 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let native_info = client.execute("EXPLAIN GPU SELECT 1".to_string(), None).await.unwrap();
+    let native_info =
+        client.execute("EXPLAIN GPU SELECT x FROM (VALUES (1)) AS t(x)".to_string(), None).await.unwrap();
     let (native_schema, native_batches) = execute_flight_info_with_stream_schema(&mut client, native_info).await;
     let native_batch = &native_batches[0];
     let native_query_id = native_batch

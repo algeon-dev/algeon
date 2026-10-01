@@ -93,7 +93,7 @@ impl ContractGraph<'_> {
     fn with_resource_contracts(mut self) -> Self {
         for index in 0..self.resources.len() {
             let data_form = self.resource_data_form(&self.resources[index]);
-            let sharing = self.resource_sharing(&self.resources[index]);
+            let sharing = self.resource_sharing(&self.resources[index], data_form);
             let ordering = self.resource_ordering(&self.resources[index]);
             let resolved = self.resources[index].clone().with_consumption(data_form, sharing).with_ordering(ordering);
             self.resources[index] = resolved;
@@ -232,14 +232,37 @@ impl ContractGraph<'_> {
         }
     }
 
-    fn resource_sharing(&self, resource: &ResidentResource) -> ResourceSharing {
+    fn resource_sharing(&self, resource: &ResidentResource, data_form: ResidentDataForm) -> ResourceSharing {
         if resource.consumers().len() <= 1 {
             return ResourceSharing::SingleConsume;
         }
-        if self.consumers_can_take_independent_cursors(resource) {
+        if self.payload_opens_independent_cursors(resource, data_form)
+            && self.consumers_can_take_independent_cursors(resource)
+        {
             ResourceSharing::IndependentCursorStream
         } else {
             ResourceSharing::SharedImmutableFrame
+        }
+    }
+
+    /// Whether each consumer can open its own cursor over this payload: an
+    /// eager frame and a deferred source read can, as can an aggregate's
+    /// final-merge stream and a unary map over a payload that can. A lazy
+    /// join stream holds probe state it reads once, so its consumers share a
+    /// materialized copy instead.
+    fn payload_opens_independent_cursors(&self, resource: &ResidentResource, data_form: ResidentDataForm) -> bool {
+        match data_form {
+            ResidentDataForm::Frame | ResidentDataForm::SourceStream => true,
+            ResidentDataForm::FrameStream => match self.task(resource.producer()) {
+                Some(producer) if producer.kind() == PipelineTaskKind::Aggregate => true,
+                Some(producer) if producer.kind() == PipelineTaskKind::Unary => match producer.input_resources() {
+                    [input] => self
+                        .resource(*input)
+                        .is_some_and(|input| self.payload_opens_independent_cursors(input, input.data_form())),
+                    _ => false,
+                },
+                _ => false,
+            },
         }
     }
 

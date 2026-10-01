@@ -5,6 +5,7 @@ use query_engine::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::ShadowBytes,
     plan::AdvisoryStatistic,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     shadow::estimate_compiled_pipeline,
 };
@@ -72,11 +73,16 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     )
     .plan;
     assert!(!native.advisory_outputs().is_empty(), "optimizer rewrites carry frontend statistics forward");
-    let admission = admit(native, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .unwrap()
-        .admission()
-        .cloned()
-        .expect("the lowered q03 join plan compiles to a bounded pipeline");
+    let admission = admit(
+        native,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .unwrap()
+    .admission()
+    .cloned()
+    .expect("the lowered q03 join plan compiles to a bounded pipeline");
     let pipeline = admission.pipeline();
 
     let estimate = estimate_compiled_pipeline(native, pipeline).unwrap();

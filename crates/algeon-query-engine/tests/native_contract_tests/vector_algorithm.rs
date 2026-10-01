@@ -17,6 +17,7 @@ use query_engine::{
         vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema, vector_top_k_output_schema,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
@@ -518,7 +519,7 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
             );
         }
 
-        let decision = admit(&plan, Default::default(), rapids_analysis_context())
+        let decision = admit(&plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
             .expect("bounded admission should classify vector plan");
         let admission = decision.admission().unwrap_or_else(|| {
             panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection_projection())

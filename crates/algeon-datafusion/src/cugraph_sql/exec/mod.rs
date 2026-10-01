@@ -126,9 +126,9 @@ pub(crate) mod tests;
 
 pub(crate) use admission::native_graph_input_execution_plan;
 use admission::{
-    admit_native_edge_source_gpu_plan, as_algeon_native_composed_exec, as_algeon_native_exec,
-    cugraph_execution_config_after_staging, edge_source_graph_vertex_estimate, edge_source_output_rows,
-    exact_native_edge_source_gpu_plan, plan_contains_algeon_native, resident_side_input_output_rows,
+    as_algeon_native_composed_exec, as_algeon_native_exec, cugraph_execution_config_after_staging,
+    edge_source_graph_vertex_estimate, edge_source_output_rows, exact_native_edge_source_gpu_plan,
+    plan_contains_algeon_native, resident_side_input_output_rows, resolve_native_edge_source_gpu_plan,
     task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
     validate_standalone_bounded_cugraph_sources,
 };

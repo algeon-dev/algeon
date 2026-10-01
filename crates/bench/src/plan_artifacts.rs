@@ -2,19 +2,10 @@ use std::{fmt::Write as _, sync::Arc};
 
 use algeon_datafusion::native_exec::{AlgeonNativeComposedExec, AlgeonNativeExec};
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::{
-    admission::{AdmissionDecision, admit},
-    mode::StatisticalAggregateExecutionMode,
-    plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
-};
+use query_engine::admission::AdmittedPlan;
 
-/// Appends a fresh bounded-pipeline diagnostic for every native execution
-/// wrapper in a physical plan.
-///
-/// The diagnostic intentionally recompiles the immutable query plan with the
-/// default statistical mode. It is evidence for an artifact, not the pipeline
-/// used by execution, so it must not mutate or replace the plan being run.
+/// Appends the compiled pipeline every native execution wrapper in a physical
+/// plan executes, as planning admitted it.
 pub(crate) fn append_compiled_pipeline_diagnostic(output: &mut String, plan: &Arc<dyn ExecutionPlan>) {
     let mut count = 0;
     append_compiled_pipelines(output, plan, &mut count);
@@ -24,36 +15,25 @@ pub(crate) fn append_compiled_pipeline_diagnostic(output: &mut String, plan: &Ar
 }
 
 fn append_compiled_pipelines(output: &mut String, plan: &Arc<dyn ExecutionPlan>, count: &mut usize) {
-    let native_plan = plan
+    let admitted = plan
         .as_ref()
         .downcast_ref::<AlgeonNativeExec>()
-        .map(AlgeonNativeExec::native_plan_for_internal_consumer)
+        .map(AlgeonNativeExec::admitted_plan_for_internal_consumer)
         .or_else(|| {
             plan.as_ref()
                 .downcast_ref::<AlgeonNativeComposedExec>()
-                .map(AlgeonNativeComposedExec::native_plan_for_internal_consumer)
+                .map(AlgeonNativeComposedExec::admitted_plan_for_internal_consumer)
         });
-    if let Some(native_plan) = native_plan {
+    if let Some(admitted) = admitted {
         *count += 1;
-        append_compiled_pipeline(output, *count, native_plan);
+        append_compiled_pipeline(output, *count, admitted);
     }
     for child in plan.children() {
         append_compiled_pipelines(output, child, count);
     }
 }
 
-fn append_compiled_pipeline(output: &mut String, index: usize, plan: &QueryPlan) {
+fn append_compiled_pipeline(output: &mut String, index: usize, admitted: &AdmittedPlan) {
     let _ = writeln!(output, "wrapper={index}");
-    let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context());
-    match decision {
-        Ok(AdmissionDecision::Admitted(admission)) => {
-            let _ = writeln!(output, "{}", admission.pipeline().debug_render());
-        },
-        Ok(AdmissionDecision::Rejected(rejection)) => {
-            let _ = writeln!(output, "not_admitted={:?}", rejection.projection());
-        },
-        Err(error) => {
-            let _ = writeln!(output, "diagnostic_compile_error={error}");
-        },
-    }
+    let _ = writeln!(output, "{}", admitted.pipeline().debug_render());
 }

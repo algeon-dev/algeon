@@ -177,28 +177,30 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
             )))
         },
     };
-    let aggregate_group_exprs = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ScalarAggregateInput)
-    {
-        Vec::new()
-    } else {
-        vec![Expr::column("l_partkey")]
-    };
-    let grouped_quantity = builder.add_aggregate(
-        grouped_quantity_source,
-        AggregateSpec::new(
-            aggregate_group_exprs,
-            vec![AggregateExpr::new(
-                if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg) {
-                    AggregateFunction::Sum
-                } else {
-                    AggregateFunction::Avg
-                },
-                Expr::column("l_quantity"),
-                "avg_quantity",
-            )],
-        ),
-        Arc::clone(&grouped_quantity_schema),
+    let quantity_aggregate = AggregateExpr::new(
+        if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg) {
+            AggregateFunction::Sum
+        } else {
+            AggregateFunction::Avg
+        },
+        Expr::column("l_quantity"),
+        "avg_quantity",
     );
+    // A scalar aggregate has no group key to join on, so it carries the key
+    // column as an aggregate output to keep the root join keyed.
+    let aggregate_spec = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::ScalarAggregateInput) {
+        AggregateSpec::new(
+            Vec::new(),
+            vec![
+                AggregateExpr::new(AggregateFunction::Min, Expr::column("l_partkey"), "l_partkey"),
+                quantity_aggregate,
+            ],
+        )
+    } else {
+        AggregateSpec::new(vec![Expr::column("l_partkey")], vec![quantity_aggregate])
+    };
+    let grouped_quantity =
+        builder.add_aggregate(grouped_quantity_source, aggregate_spec, Arc::clone(&grouped_quantity_schema));
     let grouped_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput) {
         grouped_quantity
     } else if matches!(variant, ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier) {
@@ -294,17 +296,21 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
         };
     }
     let root = builder.add_join(joined_input, grouped_input, root_spec, root_schema);
-    let aggregate_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {
-        root
-    } else {
-        builder.add_projection(
-            root,
-            projection_outputs(
-                vec![Expr::column("l_extendedprice").alias("__algeon_native_aggregate_arg_0")],
-                root_output_schema,
-            ),
-        )
-    };
+    let (aggregate_input, aggregate_arg) =
+        if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {
+            (root, "l_extendedprice")
+        } else {
+            let aggregate_arg_schema =
+                Arc::new(Schema::new(vec![Field::new("__algeon_native_aggregate_arg_0", DataType::Float64, false)]));
+            let projection = builder.add_projection(
+                root,
+                projection_outputs(
+                    vec![Expr::column("l_extendedprice").alias("__algeon_native_aggregate_arg_0")],
+                    aggregate_arg_schema,
+                ),
+            );
+            (projection, "__algeon_native_aggregate_arg_0")
+        };
     let global = builder.add_aggregate(
         aggregate_input,
         AggregateSpec::new(
@@ -315,7 +321,7 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
                 } else {
                     AggregateFunction::Sum
                 },
-                Expr::column("__algeon_native_aggregate_arg_0"),
+                Expr::column(aggregate_arg),
                 "sum_extendedprice",
             )],
         ),

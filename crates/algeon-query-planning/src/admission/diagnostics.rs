@@ -4,7 +4,6 @@ use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
     capability::{CapabilityRejectionOwner, CapabilityRejectionProjection, keyed_hash_join_strategy_decision_for_plan},
-    error::QueryError,
     plan::{PlanNode, QueryPlan},
 };
 
@@ -22,7 +21,7 @@ pub fn bounded_join_unsupported_shape_facts(
     }
     decision
         .rejection_projection()
-        .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection), ctx))
+        .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, projection, ctx))
 }
 
 /// Returns modeled bounded-join facts for a join plan `decision` admitted.
@@ -34,15 +33,14 @@ pub fn bounded_join_modeled_facts(
     (plan.contains_join() && decision.admission().is_some()).then(|| bounded_join_modeled_facts_unchecked(plan, ctx))
 }
 
-#[doc(hidden)]
-pub fn bounded_join_unsupported_shape_facts_with_projection(
+fn bounded_join_unsupported_shape_facts_with_projection(
     plan: &QueryPlan,
-    rejection_projection: Option<&CapabilityRejectionProjection>,
+    rejection: &CapabilityRejectionProjection,
     ctx: AnalysisContext<'_>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
     insert_join_strategy_facts(&mut facts, plan, ctx);
-    insert_local_rejection_facts(&mut facts, plan, rejection_projection, ctx);
+    insert_local_rejection_facts(&mut facts, rejection);
     facts
 }
 
@@ -50,16 +48,6 @@ fn bounded_join_modeled_facts_unchecked(plan: &QueryPlan, ctx: AnalysisContext<'
     let mut facts = BTreeMap::new();
     insert_join_strategy_facts(&mut facts, plan, ctx);
     facts
-}
-
-#[doc(hidden)]
-pub fn insert_bounded_join_rejection_projection_error_facts(
-    facts: &mut BTreeMap<&'static str, String>,
-    error: &QueryError,
-) {
-    facts.insert("bounded_join_rejection_projection_error_code", error.code().to_string());
-    facts.insert("bounded_join_rejection_projection_error_operation", error.operation().to_string());
-    facts.insert("bounded_join_rejection_projection_error_message", error.message().to_string());
 }
 
 fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan, ctx: AnalysisContext<'_>) {
@@ -140,22 +128,13 @@ fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str
     }
 }
 
-fn insert_local_rejection_facts(
-    facts: &mut BTreeMap<&'static str, String>,
-    plan: &QueryPlan,
-    rejection_projection: Option<&CapabilityRejectionProjection>,
-    ctx: AnalysisContext<'_>,
-) {
-    let analysis_projection =
-        rejection_projection.is_none().then(|| plan.capability_analysis(ctx).first_rejection_projection()).flatten();
-    if let Some(rejection) = rejection_projection.or(analysis_projection.as_ref()) {
-        facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
-        facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));
-        facts.insert("bounded_join_rejection_boundary", rejection.boundary.to_string());
-        facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
-        facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
-        facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
-    }
+fn insert_local_rejection_facts(facts: &mut BTreeMap<&'static str, String>, rejection: &CapabilityRejectionProjection) {
+    facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
+    facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));
+    facts.insert("bounded_join_rejection_boundary", rejection.boundary.to_string());
+    facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
+    facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
+    facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
 }
 
 fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {
