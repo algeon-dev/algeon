@@ -31,7 +31,6 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
@@ -59,7 +58,7 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
 }
 
 fn mixed_grouped_aggregate_execution_context(device_budget_bytes: u64) -> BackendQueryContext {
-    backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes,
         max_source_chunk_bytes: 1024,
         max_row_groups_per_chunk: 1,

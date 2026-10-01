@@ -749,9 +749,9 @@ fn build_manifest(
     let execution_config = optimizer_config.native_execution_config();
     let capacity = serde_json::json!({
         "device_budget_bytes": device_budget_bytes,
-        "max_source_chunk_bytes": execution_config.max_source_chunk_bytes(),
-        "max_row_groups_per_chunk": execution_config.max_row_groups_per_chunk(),
-        "max_retry_attempts": execution_config.max_retry_attempts(),
+        "max_source_chunk_bytes": execution_config.source_chunking().max_source_chunk_bytes.get(),
+        "max_row_groups_per_chunk": execution_config.source_chunking().max_row_groups_per_chunk.get(),
+        "max_retry_attempts": execution_config.source_chunking().max_retry_attempts.get(),
         "source_chunk_planning_mode": format!("{:?}", execution_config.source_chunk_planning_mode()),
         "statistical_aggregate_execution_mode": format!("{:?}", optimizer_config.statistical_aggregate_execution_mode()),
         // Every attempt in this run uses the backend's configured device

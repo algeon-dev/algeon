@@ -10,7 +10,7 @@ use algeon_datafusion::{
     },
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
         AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
@@ -76,12 +76,8 @@ fn test_gpu_backend() -> &'static AlgeonGpuBackend {
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
         let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         AlgeonGpuBackend::builder()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-                256 * 1024 * 1024,
-                64 * 1024 * 1024,
-                2,
-                3,
-                1,
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
             ))
             .devices([device])
             .build()
@@ -633,7 +629,7 @@ fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
     let native =
         optimized.downcast_ref::<AlgeonNativeExec>().expect("supported plan should optimize to AlgeonNativeExec");
     let display = displayable(native).one_line().to_string();
-    assert!(display.contains("memory_control_policy=bounded"), "{display}");
+    assert!(display.contains("native_pipeline_execution_mode=bounded"), "{display}");
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);

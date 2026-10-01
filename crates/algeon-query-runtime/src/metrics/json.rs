@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use query_planning::graph_observation::GraphMeasuredPeakRow;
+use query_planning::{execution_contracts::MemoryControlPolicy, graph_observation::GraphMeasuredPeakRow};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -21,7 +21,7 @@ impl QueryMetrics {
             "query_id": self.query_id.as_str(),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
-            "memory_control_policy": self.memory_control_policy.as_str(),
+            "memory_control_policy": MemoryControlPolicy::NAME,
             "completeness": self.completeness_json(),
             "descriptors": Self::descriptors().iter().map(|descriptor| descriptor.to_json()).collect::<Vec<_>>(),
             "metrics": self.described_metrics_json(),

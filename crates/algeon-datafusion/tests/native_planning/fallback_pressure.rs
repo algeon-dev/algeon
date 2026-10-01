@@ -420,9 +420,8 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(!distributed_avg_row.rejected_before_execution);
 
     let rejected_plan = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
-    let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
-    );
+    let optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     let native_rule = AlgeonNativePhysicalOptimizerRule::new(optimizer_config);
     let (rejected_plan, rejected_diagnostics) =
         native_rule.optimize_with_diagnostics(rejected_plan, &ConfigOptions::default()).unwrap();
@@ -508,13 +507,7 @@ async fn exact_statistical_aggregate_mode_keeps_aggregates_outside_the_host_kern
     let sql = "SELECT key, MIN(label) AS first_label, STDDEV_SAMP(m00) AS m00_stddev FROM bench GROUP BY key";
     let planning_report = |query_id: &'static str, mode: StatisticalAggregateExecutionMode| {
         let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-                256 * 1024 * 1024,
-                64 * 1024 * 1024,
-                1,
-                3,
-                1,
-            ))
+            .with_native_execution_config(AlgeonNativeExecutionConfig::default())
             .with_statistical_aggregate_execution_mode(mode);
         native_datafusion_planning_report_with_optimizer_config(
             query_id,
@@ -569,13 +562,7 @@ async fn exact_statistical_aggregate_mode_keeps_partitioned_aggregate_input_on_d
         session_config.options_mut().optimizer.hash_join_single_partition_threshold = 0;
         session_config.options_mut().optimizer.hash_join_single_partition_threshold_rows = 0;
         let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-                256 * 1024 * 1024,
-                64 * 1024 * 1024,
-                1,
-                3,
-                1,
-            ))
+            .with_native_execution_config(AlgeonNativeExecutionConfig::default())
             .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
         native_datafusion_planning_report_with_optimizer_config(query_id, &dir, sql, session_config, optimizer_config)
     };

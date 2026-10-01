@@ -43,7 +43,6 @@ fn bounded_native_query_executes_root_left_hash_join_with_unmatched_probe_rows()
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -123,7 +122,6 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");

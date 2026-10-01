@@ -38,11 +38,11 @@ use crate::{
 };
 
 fn test_execution_config() -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+    AlgeonNativeExecutionConfig::default()
 }
 
 fn bounded_optimizer_config() -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default())
+    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
 }
 
 fn validation_context(config: AlgeonNativeOptimizerConfig) -> SessionContext {

@@ -627,7 +627,6 @@ fn bounded_join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
         panic!("host sink should materialize one RecordBatch");
     };
 
-    assert_eq!(result.metrics().memory_control_policy.as_str(), "bounded");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let expected = welford_stddev_samp(left_values.iter().copied()).unwrap();
     let reversed = welford_stddev_samp(left_values.iter().rev().copied()).unwrap();
@@ -1306,7 +1305,7 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
 #[test]
 fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
     let context = backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 128 * 1024 * 1024,
             max_source_chunk_bytes: 1024,
             max_row_groups_per_chunk: 1,
@@ -1452,7 +1451,7 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
 #[test]
 fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparation() {
     let context = backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 128 * 1024 * 1024,
             max_source_chunk_bytes: 1024,
             max_row_groups_per_chunk: 1,

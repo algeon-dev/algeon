@@ -36,10 +36,10 @@ mod enabled {
             ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
         },
         runtime::{
-            ExecutionContext, MemoryControlPolicy, StandaloneConfig,
+            ExecutionContext,
             resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
         },
-        source::{GpuResidentSource, LocalParquetSource, SourceNode},
+        source::{GpuResidentSource, SourceNode},
     };
 
     use super::super::{
@@ -866,41 +866,6 @@ mod enabled {
         admitted.finish();
     }
 
-    #[test]
-    fn unbounded_ml_request_rejects_before_source_work() {
-        let schema = input_schema(Shape::Wide);
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-            "/tmp/algeon-unbounded-ml-source-must-not-open.parquet",
-            Arc::clone(&schema),
-            vec!["id".into(), "x0".into(), "x1".into(), "x2".into()],
-        )));
-        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-            MlAlgorithm::Tsvd,
-            MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-                MlRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x0", "x1", "x2"]),
-                1,
-            )),
-            vector_pca_output_schema(DataType::Int64, 1),
-        ));
-        let plan = builder.finish_with_host_sink(root);
-        let context = ExecutionContext::standalone(StandaloneConfig {
-            runtime: Some(Arc::new(cudf::Runtime::new().unwrap())),
-            memory_control_policy: MemoryControlPolicy::Unbounded,
-            ..StandaloneConfig::default()
-        })
-        .unwrap();
-        let admitted_plan =
-            admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy()).unwrap();
-        let (result, metrics, _) =
-            execute_query_plan_direct(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts();
-        let error = result.err().expect("unbounded ML request");
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("compiled_ml_pipeline_required"));
-        assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
-        assert_eq!(metrics.source_read_time, std::time::Duration::ZERO);
-    }
-
     const FOREST_FIXTURES: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../components/cuml/algeon-cuml/tests/fixtures/forest");
 
@@ -1231,7 +1196,7 @@ fn cuml_disabled_rejects_before_local_source_staging() {
     use arrow::datatypes::{DataType, Field, Schema};
     use query_engine::{
         error::QueryErrorCode,
-        exec::QueryExecutionRequest,
+        exec::{QueryExecutionRequest, admit_query_plan},
         plan::{
             MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlRelationBinding, MlTsvdParams, QueryPlanBuilder,
             VectorRowIdBinding, vector_pca_output_schema,

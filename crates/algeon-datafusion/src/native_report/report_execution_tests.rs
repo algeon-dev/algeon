@@ -1208,7 +1208,7 @@ fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
 }
 
 fn native_execution_config() -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+    AlgeonNativeExecutionConfig::default()
 }
 
 fn accepted_native_diagnostics() -> NativePlanningDiagnostics {

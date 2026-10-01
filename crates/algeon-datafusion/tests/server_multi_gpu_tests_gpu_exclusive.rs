@@ -86,13 +86,7 @@ fn two_device_server_config() -> ServerConfig {
         })
         .collect();
     config.native_optimizer_config =
-        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            DEVICE_QUERY_CAPS[1],
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ));
+        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     config.queue_policy =
         config.queue_policy.clone().with_max_queued_attempts(4).with_max_queue_wait(Duration::from_secs(120));
     config

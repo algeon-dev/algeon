@@ -316,7 +316,7 @@ fn bounded_generic_local_parquet_source_scan_limit_batches_whole_row_groups_ahea
     let dir = unique_temp_dir("query-engine-bounded-source-scan-limit-batch");
     let path = dir.join("input.parquet");
     let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
             max_row_groups_per_chunk: 1,
@@ -366,7 +366,7 @@ fn bounded_generic_local_parquet_source_scan_limit_trims_to_required_row_group_p
     let dir = unique_temp_dir("query-engine-bounded-source-scan-limit");
     let path = dir.join("input.parquet");
     let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
             max_row_groups_per_chunk: 8,

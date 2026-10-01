@@ -11,7 +11,6 @@ algeon_datafusion::report::PlanNodeId	query_engine::correlation::PlanNodeId	plan
 algeon_datafusion::report::QueryId	query_engine::correlation::QueryId	planning reports	RE-EXPORT	algeon_datafusion::report::QueryId	stable report correlation id	4
 algeon_datafusion::report::TraceId	query_engine::correlation::TraceId	planning reports	RE-EXPORT	algeon_datafusion::report::TraceId	stable report correlation id	4
 algeon_datafusion::native_exec::DynamicFilterExecutionOptions	query_engine::dynamic_filter::DynamicFilterExecutionOptions	execution config	RE-EXPORT	algeon_datafusion::native_exec::DynamicFilterExecutionOptions	closed application tuning vocabulary	4
-algeon_datafusion::native_exec::MemoryControlPolicy	query_engine::execution_contracts::MemoryControlPolicy	execution config	RE-EXPORT	algeon_datafusion::native_exec::MemoryControlPolicy	closed application memory vocabulary	4
 algeon_datafusion::native_exec::SourceChunkPlanningMode	query_engine::execution_contracts::SourceChunkPlanningMode	execution config	RE-EXPORT	algeon_datafusion::native_exec::SourceChunkPlanningMode	closed application planning vocabulary	4
 algeon_datafusion::attempt::GraphMeasuredPeakRow	query_engine::graph_observation::GraphMeasuredPeakRow	attempt reports	RE-EXPORT	algeon_datafusion::attempt::GraphMeasuredPeakRow	immutable sealed measurement row	3
 algeon_datafusion::native_report::MetricDescriptor	query_engine::metrics::descriptor::MetricDescriptor	native reports	RE-EXPORT	algeon_datafusion::native_report::MetricDescriptor	immutable report metric descriptor	4

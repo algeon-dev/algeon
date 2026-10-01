@@ -119,9 +119,9 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
     // affect validation and lowering.
     let execution = optimizer_config.native_execution_config();
     let stable_policy = StableNativeValidationPolicy {
-        max_source_chunk_bytes: execution.max_source_chunk_bytes(),
-        max_row_groups_per_chunk: execution.max_row_groups_per_chunk(),
-        max_retry_attempts: execution.max_retry_attempts(),
+        max_source_chunk_bytes: execution.source_chunking().max_source_chunk_bytes.get(),
+        max_row_groups_per_chunk: execution.source_chunking().max_row_groups_per_chunk.get(),
+        max_retry_attempts: execution.source_chunking().max_retry_attempts.get(),
         max_source_reads_in_flight: execution.max_source_reads_in_flight(),
         source_chunk_planning_mode: execution.source_chunk_planning_mode(),
         statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),

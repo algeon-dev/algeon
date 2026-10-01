@@ -187,7 +187,6 @@ impl<'a> SourceAdjacentPartitionedFinal<'a> {
             });
         }
         if should_execute_incremental_partitioned_final_aggregate_merge(
-            execution.context(),
             bounded.aggregate.0,
             bounded.aggregate_input_schema,
         ) {
@@ -1023,7 +1022,7 @@ fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[S
         inputs.len(),
         inputs.iter().map(|input| input.source_row_group_count).sum(),
         source_adjacent_partition_batch_observed_device_bytes(inputs),
-        bounded_device_budget_bytes(context),
+        context.device_budget_bytes(),
     )
 }
 
@@ -1038,15 +1037,8 @@ fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacen
         .unwrap_or(u64::MAX)
 }
 
-fn bounded_device_budget_bytes(context: &ExecutionContext) -> Option<u64> {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { device_budget_bytes, .. } => Some(device_budget_bytes),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
-fn source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes: Option<u64>) -> u64 {
+fn source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes: u64) -> u64 {
     BoundedSourceBatchingPolicy::default().source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
 }
 
@@ -1509,10 +1501,8 @@ fn execute_source_adjacent_partition_aggregate(
 }
 
 fn source_adjacent_partition_aggregate_retry_budget(context: &ExecutionContext) -> usize {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { max_retry_attempts, .. } => max_retry_attempts.saturating_sub(1),
-        MemoryControlPolicy::Unbounded => 0,
-    }
+    let MemoryControlPolicy { max_retry_attempts, .. } = context.memory_control_policy();
+    max_retry_attempts.saturating_sub(1)
 }
 
 fn source_adjacent_partition_aggregate_should_split(
@@ -1703,20 +1693,13 @@ mod tests {
     #[test]
     fn source_adjacent_partition_batch_byte_limit_tracks_device_budget_with_bounds() {
         assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(Some(16 * 1024 * 1024 * 1024)),
+            source_adjacent_partition_batch_byte_limit_for_budget(16 * 1024 * 1024 * 1024),
             BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES
         );
+        assert_eq!(source_adjacent_partition_batch_byte_limit_for_budget(4 * 1024 * 1024 * 1024), 512 * 1024 * 1024);
         assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(Some(4 * 1024 * 1024 * 1024)),
-            512 * 1024 * 1024
-        );
-        assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(Some(256 * 1024 * 1024)),
+            source_adjacent_partition_batch_byte_limit_for_budget(256 * 1024 * 1024),
             BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES
-        );
-        assert_eq!(
-            source_adjacent_partition_batch_byte_limit_for_budget(None),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES
         );
     }
 
@@ -1825,7 +1808,7 @@ mod tests {
             input: NodeId::from_index_for_internal_use(2),
             spec: AggregateSpec::new(Vec::new(), Vec::new()),
         };
-        let policy = MemoryControlPolicy::Bounded {
+        let policy = MemoryControlPolicy {
             device_budget_bytes: 94 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
             max_row_groups_per_chunk: 1024,

@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     fn test_config() -> BenchmarkConfig {
-        use algeon_datafusion::native_exec::AlgeonNativeExecutionConfig;
+        use algeon_datafusion::native_exec::SourceChunking;
 
         use crate::report_workload::clickbench::{
             CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
@@ -1096,8 +1096,8 @@ mod tests {
                 device_budget_bytes: CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
                 max_source_chunk_bytes: CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
                 max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-                max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                max_retry_attempts: SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get(),
+                min_retry_chunk_row_groups: SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS.get(),
                 source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
             },
             progress: false,

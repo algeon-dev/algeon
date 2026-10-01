@@ -362,9 +362,8 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
         .collect::<Vec<_>>();
     let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema));
     let consumer = consumer_builder.finish_with_host_sink(union);
-    let composed =
-        AlgeonNativeComposedExec::try_new(consumer, producers, AlgeonNativeExecutionConfig::bounded_default())
-            .expect("synthetic N=3 topology must reach the composed production boundary");
+    let composed = AlgeonNativeComposedExec::try_new(consumer, producers, AlgeonNativeExecutionConfig::default())
+        .expect("synthetic N=3 topology must reach the composed production boundary");
 
     let children = composed.children();
     assert_eq!(children.len(), 3, "equal native producer shapes must not be structurally deduplicated");

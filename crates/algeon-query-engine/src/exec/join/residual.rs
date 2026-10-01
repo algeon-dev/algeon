@@ -3,13 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use cudf::ops::ast::{AstExpression, AstOperator};
 
 use super::{
-    ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinNullEquality, JoinSide, LiteralValue, QueryError,
-    QueryErrorCode, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
+    ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinSide, LiteralValue, QueryError, QueryErrorCode,
+    Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
 use crate::{
     datatypes::arrow_decimal_scale_to_cudf_scale,
     expr::{ColumnQualifier, interval_month_day_nano},
-    plan::JoinKey,
 };
 
 #[derive(Debug, Clone)]
@@ -200,39 +199,6 @@ pub(in crate::exec) fn lower_join_residual_predicate(
         ));
     };
     lower_join_ast_expr(context, predicate, residual_columns)
-}
-
-pub(in crate::exec) fn lower_join_match_predicate(
-    context: &ExecutionContext,
-    node: &JoinNode,
-    residual_columns: &JoinResidualColumns,
-) -> Result<AstExpression> {
-    let mut predicate = node.spec.residual_predicate.clone().ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.join.lower_residual",
-            "join match predicate lowering requires a residual predicate",
-        )
-    })?;
-
-    for key in &node.spec.keys {
-        let equality = join_key_match_expr(key, node.spec.null_equality);
-        predicate = Expr::binary(equality, BinaryOp::And, predicate);
-    }
-
-    lower_join_ast_expr(context, &predicate, residual_columns)
-}
-
-fn join_key_match_expr(key: &JoinKey, null_equality: JoinNullEquality) -> Expr {
-    let left = Expr::Column(key.left.clone());
-    let right = Expr::Column(key.right.clone());
-    let equality = Expr::binary(left.clone(), BinaryOp::Eq, right.clone());
-    match null_equality {
-        JoinNullEquality::NullsDoNotMatch => equality,
-        JoinNullEquality::NullsMatch => {
-            Expr::binary(equality, BinaryOp::Or, Expr::binary(Expr::is_null(left), BinaryOp::And, Expr::is_null(right)))
-        },
-    }
 }
 
 fn lower_join_ast_expr(

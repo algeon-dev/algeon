@@ -2,49 +2,13 @@ use std::collections::BTreeSet;
 
 use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, ExecutionOverrides};
 
-use super::{EquiJoinIndices, cudf_query_error};
+use super::cudf_query_error;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order},
     plan::{JoinOutputColumn, JoinSide, JoinType},
     runtime::ExecutionContext,
 };
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "join materialization passes build/probe/output inputs explicitly beside the attempt state"
-)]
-pub(super) fn materialize_join_output(
-    context: &ExecutionContext,
-    left: &DataFrame,
-    right: &DataFrame,
-    indices: &EquiJoinIndices,
-    overrides: &ExecutionOverrides<'_>,
-    projection: &[JoinOutputColumn],
-    join_type: JoinType,
-    preserved_side: JoinSide,
-    mark_column_name: Option<&str>,
-) -> Result<DataFrame> {
-    match indices {
-        EquiJoinIndices::Pair { left: left_indices, right: right_indices } => materialize_join_output_projection(
-            left,
-            right,
-            left_indices,
-            right_indices,
-            overrides,
-            projection,
-            join_type,
-            preserved_side,
-        ),
-        EquiJoinIndices::LeftOnly(indices) if join_type == JoinType::LeftMark => {
-            let name = mark_column_name.unwrap_or("mark");
-            materialize_mark_join_output_projection(context, left, indices, projection, name)
-        },
-        EquiJoinIndices::LeftOnly(indices) => {
-            materialize_left_only_join_output_projection(left, indices, overrides, projection, join_type)
-        },
-    }
-}
 
 pub(in crate::exec) fn dataframe_cross_join_options(projection: &[JoinOutputColumn]) -> DataFrameCrossJoinOptions {
     let left_projection = projection.iter().filter_map(|column| {

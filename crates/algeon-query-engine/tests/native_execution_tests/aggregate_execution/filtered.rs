@@ -62,7 +62,7 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
 
 #[test]
 fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization() {
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 512 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -135,7 +135,7 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
 fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
     // The aligned domain pool charge (~8x raw bytes for many small
     // allocations) sizes the pressure point above the reservation-arena path.
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 48 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -260,7 +260,7 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
 fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_groups() {
     let dir = unique_temp_dir("query-engine-filtered-grouped-high-cardinality");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 32 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -453,7 +453,7 @@ fn native_global_aggregate_filter_masks_count_distinct_inputs() {
 fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
     // The aligned domain pool charge (~8x raw bytes for many small
     // allocations) sizes the pressure point above the reservation-arena path.
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 40 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -614,7 +614,7 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
 
 #[test]
 fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 32 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -758,7 +758,7 @@ fn q09_quantity_between(lower: i32, upper: i32) -> Expr {
 fn bounded_native_partial_global_filtered_aggregate_segments_large_materialization() {
     let dir = unique_temp_dir("query-engine-filtered-global-partial-segmented");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,

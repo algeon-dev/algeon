@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use crate::{
     exec::{
-        edge_null_filter::{EdgeNullFilterScope, filter_null_edge_rows},
         nvtx::{NvtxRange, graph_build_range},
         *,
     },
@@ -39,10 +38,7 @@ mod traversal;
 #[path = "validation.rs"]
 mod validation;
 
-use bounded_betweenness::{
-    RuntimeGraphSpecResolution, resolve_runtime_graph_spec_for_execution,
-    runtime_graph_spec_resolution_after_bounded_seed_validation, validate_betweenness_static_seed_policy,
-};
+use bounded_betweenness::{RuntimeGraphSpecResolution, resolve_runtime_graph_spec_for_execution};
 use build::*;
 use centrality::*;
 use community::*;
@@ -56,17 +52,6 @@ use structure::*;
 use traversal::{execute_bfs, execute_sssp};
 use validation::*;
 
-pub(in crate::exec) fn execute_graph_algorithm(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &GraphAlgorithmNode,
-    input: GpuDataFrame,
-    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    execute_prepared_graph_algorithm(context, node_id, node, input, side_inputs, metrics)
-}
-
 pub(in crate::exec) fn graph_empty_input_prevalidated(
     context: &ExecutionContext,
     node: &GraphAlgorithmNode,
@@ -77,62 +62,6 @@ pub(in crate::exec) fn graph_empty_input_prevalidated(
 ) -> Result<bool> {
     resolve_empty_graph_input(context, node, sanitized_edges, side_inputs, input_rows, sanitized_input_rows)
         .map(|result| result.is_some())
-}
-
-fn execute_prepared_graph_algorithm(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &GraphAlgorithmNode,
-    input: GpuDataFrame,
-    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    let input_rows = input.num_rows() as u64;
-    let input_columns = input.num_columns() as u64;
-    let input_graph_residency = input.graph_residency().cloned();
-    let prior_null_edge_rows_dropped = metrics.null_edge_rows_dropped(node.input);
-    let null_filter_scope = EdgeNullFilterScope {
-        weight: node.spec.algorithm.consumes_weight(),
-        edge_id: node.spec.edge_columns.edge_id.is_some(),
-    };
-    let filtered_input = filter_null_edge_rows(
-        context,
-        node_id,
-        "graph_edge_null_filter",
-        input.frame().clone(),
-        &node.spec.edge_columns,
-        null_filter_scope,
-        metrics,
-    )?;
-    let sanitized_input_rows = filtered_input.num_rows() as u64;
-    let null_edge_rows_dropped =
-        prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
-    validate_betweenness_static_seed_policy(&node.spec)?;
-    let empty_input_prevalidated =
-        graph_empty_input_prevalidated(context, node, &filtered_input, &side_inputs, input_rows, sanitized_input_rows)?;
-    if !empty_input_prevalidated {
-        metrics.record_graph_claim_calibration(node_id, node.spec.algorithm);
-    }
-    let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
-    let mut sanitized_input = GpuDataFrame::try_new_with_source_residency(filtered_input, &input)?;
-    if null_edge_rows_dropped == 0
-        && let Some(graph_residency) = input_graph_residency
-    {
-        sanitized_input = sanitized_input.with_graph_residency(graph_residency);
-    }
-    execute_graph_algorithm_sanitized(
-        context,
-        node_id,
-        node,
-        runtime_spec,
-        sanitized_input,
-        side_inputs,
-        input_rows,
-        input_columns,
-        null_edge_rows_dropped,
-        empty_input_prevalidated,
-        metrics,
-    )
 }
 
 #[expect(

@@ -119,13 +119,7 @@ pub(in crate::exec) fn execute_vector_algorithm(
     let domain_token = context
         .attempt_allocation_domain_id()
         .map(|_| {
-            let budget_bytes = context.bounded_device_budget_bytes().ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::CudfInvariantViolation,
-                    EXECUTE_OPERATION,
-                    "admitted vector execution is missing its bounded device budget",
-                )
-            })?;
+            let budget_bytes = context.device_budget_bytes();
             let budget = usize::try_from(budget_bytes).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,

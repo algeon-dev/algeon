@@ -14,7 +14,7 @@ use crate::server::{
     backend::{
         AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
 
@@ -58,12 +58,14 @@ fn base_config() -> ServerConfig {
 fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
     let mut config = base_config();
     config.native_optimizer_config =
-        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            TEST_DEVICE_BUDGET_BYTES,
-            TEST_MAX_SOURCE_CHUNK_BYTES,
-            TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            TEST_MAX_RETRY_ATTEMPTS,
-            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            )
+            .expect("valid source chunking"),
         ));
     config.gpu_device_profiles = vec![
         AlgeonGpuDeviceProfile::new(0)
@@ -90,12 +92,14 @@ fn runtime_backend_with_policy(
         .with_max_active_attempts(max_active_attempts_per_device);
     AlgeonGpuBackend::builder()
         .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            TEST_DEVICE_BUDGET_BYTES,
-            TEST_MAX_SOURCE_CHUNK_BYTES,
-            TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            TEST_MAX_RETRY_ATTEMPTS,
-            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            )
+            .expect("valid source chunking"),
         ))
         .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
         .build()
@@ -349,12 +353,14 @@ fn builder_accepts_matching_explicit_per_device_cap() {
         .with_max_active_attempts(1);
     let backend = AlgeonGpuBackend::builder()
         .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            TEST_DEVICE_BUDGET_BYTES,
-            TEST_MAX_SOURCE_CHUNK_BYTES,
-            TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            TEST_MAX_RETRY_ATTEMPTS,
-            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            )
+            .expect("valid source chunking"),
         ))
         .build()
         .expect("injected backend should build");
@@ -402,23 +408,6 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles"));
-}
-
-#[test]
-fn injected_backend_validation_does_not_conflate_planner_template_with_profile_capacity() {
-    let backend = runtime_backend(1);
-    let mut config = bounded_config(1);
-    config.native_optimizer_config =
-        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            TEST_DEVICE_BUDGET_BYTES / 2,
-            TEST_MAX_SOURCE_CHUNK_BYTES,
-            TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            TEST_MAX_RETRY_ATTEMPTS,
-            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ));
-
-    validate_injected_backend_matches_config(&backend, &config)
-        .expect("planner template bytes are not a backend capacity or floor assertion");
 }
 
 #[tokio::test]

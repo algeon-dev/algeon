@@ -143,7 +143,7 @@ fn native_query_preserves_multi_file_source_order() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1024 * 1024,
         max_source_chunk_bytes: 1024,
         max_row_groups_per_chunk: 1,

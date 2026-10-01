@@ -37,7 +37,6 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 2);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert!(metrics.hash_join_hash_table_bytes > 0);

@@ -26,12 +26,7 @@ impl BoundedPartitionRowPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_MIN_PARTITIONS: usize = 32;
 
     pub(in crate::exec::bounded) fn mixed_join_target_rows(self, memory_policy: MemoryControlPolicy) -> u64 {
-        match memory_policy {
-            MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
-                self.mixed_join_target_rows_for_budget(device_budget_bytes)
-            },
-            MemoryControlPolicy::Unbounded => self.mixed_join_min_target_rows,
-        }
+        self.mixed_join_target_rows_for_budget(memory_policy.device_budget_bytes)
     }
 
     pub(in crate::exec::bounded) fn mixed_join_target_rows_for_budget(self, device_budget_bytes: u64) -> u64 {
@@ -104,14 +99,6 @@ mod tests {
         assert_eq!(
             BoundedPartitionRowPolicy::default().mixed_join_target_rows_for_budget(256 * 1024 * 1024 * 1024),
             BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MAX_TARGET_ROWS
-        );
-    }
-
-    #[test]
-    fn mixed_join_row_target_uses_minimum_for_unbounded_memory_policy() {
-        assert_eq!(
-            BoundedPartitionRowPolicy::default().mixed_join_target_rows(MemoryControlPolicy::Unbounded),
-            BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MIN_TARGET_ROWS
         );
     }
 

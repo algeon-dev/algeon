@@ -22,7 +22,7 @@ use algeon_datafusion::{
     },
     cugraph_sql::CugraphSqlConfig,
     error::DataFusionErrorExt,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::DataFusionCpuExecutionPolicy,
     session::AlgeonSessionStateBuilderExt,
 };
@@ -1012,13 +1012,12 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<AlgeonGpuBackend
         .with_max_queued_attempts(profile.backend.queue.max_queued_attempts)
         .with_max_queue_wait(Duration::from_millis(profile.backend.queue.max_queue_wait_ms));
     let backend = AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            native_execution.device_budget_bytes,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(SourceChunking::try_new(
             native_execution.max_source_chunk_bytes,
             native_execution.max_row_groups_per_chunk,
             native_execution.max_retry_attempts,
             native_execution.min_retry_chunk_row_groups,
-        ))
+        )?))
         // Every cell of the backend-service stress program runs GPU-only: a
         // final plan that retains any DataFusion CPU operator fails planning
         // with a structured FinalPlanRequirementUnsatisfied rather than

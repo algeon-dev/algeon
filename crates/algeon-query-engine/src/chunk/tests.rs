@@ -83,7 +83,7 @@ fn bounded_policy(
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
 ) -> MemoryControlPolicy {
-    MemoryControlPolicy::Bounded {
+    MemoryControlPolicy {
         device_budget_bytes,
         max_source_chunk_bytes,
         max_row_groups_per_chunk,

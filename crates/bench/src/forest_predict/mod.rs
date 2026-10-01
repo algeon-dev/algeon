@@ -209,7 +209,7 @@ pub async fn run() -> BenchResult<()> {
 
     let backend = AlgeonGpuBackend::builder()
         .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default())
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
         .devices([AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()?;
     let state = backend

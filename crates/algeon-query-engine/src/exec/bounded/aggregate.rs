@@ -109,9 +109,7 @@ fn source_adjacent_partitioned_live_working_set_fits_budget(
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> bool {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
-        return true;
-    };
+    let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
 
     // Live set approximation:
     //   one source batch + projected/hash-partition peak + one ready partition batch
@@ -144,7 +142,7 @@ fn source_adjacent_partitioned_live_working_set_fits_budget(
 
     let batching = BoundedSourceBatchingPolicy::default();
     let ready_partition_batch_bytes =
-        batching.source_adjacent_partition_batch_byte_limit_for_budget(Some(device_budget_bytes));
+        batching.source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes);
     // Projected + hash-partition peak roughly tracks the live source batch size twice
     // (input retained while output is built) before the input is released.
     let projected_and_hash_bytes = largest_source_batch_bytes.saturating_mul(2);

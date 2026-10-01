@@ -9,7 +9,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_join_subplan_inputs() {
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1024 * 1024,
         max_source_chunk_bytes: 1024,
         max_row_groups_per_chunk: 1,
@@ -44,7 +44,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
@@ -72,7 +71,7 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[25, 15]);
     drop(result);
     drop(runtime);
-    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1,
         max_source_chunk_bytes: 1024,
         max_row_groups_per_chunk: 1,

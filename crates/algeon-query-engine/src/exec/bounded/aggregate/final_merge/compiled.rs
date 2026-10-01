@@ -61,9 +61,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
         );
     }
 
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
-        unreachable!("execute_compiled_bounded_final_aggregate_merge is called only for bounded policies");
-    };
+    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
     let max_attempts = max_retry_attempts.max(1);
 
     if should_execute_compiled_partitioned_final_aggregate_merge(
@@ -464,9 +462,7 @@ pub(super) fn record_compiled_partitioned_final_merge_strategy(
 }
 
 fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[CommittedPartial]) -> usize {
-    let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = context.memory_control_policy() else {
-        unreachable!("initial_compiled_final_merge_fan_in is called only for bounded policies");
-    };
+    let MemoryControlPolicy { max_source_chunk_bytes, .. } = context.memory_control_policy();
     let threshold_bytes = max_source_chunk_bytes.max(1);
     let total_bytes = partials.iter().map(compiled_partial_merge_basis_bytes).sum::<u64>();
     if total_bytes <= threshold_bytes {

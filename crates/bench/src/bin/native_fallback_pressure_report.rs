@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
     };
 
-    let execution_config = AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1);
+    let execution_config = AlgeonNativeExecutionConfig::default();
     let mut report = NativeFallbackPressureReport::collect_with_native_execution_config(items, &execution_config);
     if let Some(metadata) = workload_dataset {
         report = report.with_workload_dataset_metadata(metadata);

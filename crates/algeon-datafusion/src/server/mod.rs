@@ -10,7 +10,7 @@ use std::{net::SocketAddr, sync::Arc, time::Instant};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use futures::future::BoxFuture;
-use query_engine::runtime::{GpuBackendDeviceStartupRecord, MemoryControlPolicy};
+use query_engine::runtime::GpuBackendDeviceStartupRecord;
 use tokio::{net::TcpListener, signal::ctrl_c, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
@@ -804,7 +804,7 @@ fn format_usize_list(values: &[usize]) -> String {
 
 fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
-    let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
+    let source_chunking = native_execution.source_chunking();
     let source_scheduler = native_execution.source_scheduler_policy();
     tracing::info!(
         bind_addr = %config.bind_addr,
@@ -816,10 +816,9 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
         observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-        native_memory_control_policy = %native_execution.memory_control_policy(),
-        native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
-        native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
-        native_max_retry_attempts = %native_memory.max_retry_attempts,
+        native_max_source_chunk_bytes = source_chunking.max_source_chunk_bytes.get(),
+        native_max_row_groups_per_chunk = source_chunking.max_row_groups_per_chunk.get(),
+        native_max_retry_attempts = source_chunking.max_retry_attempts.get(),
         native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
         native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
         native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
@@ -876,34 +875,6 @@ fn log_auth_mode_snapshot(mode: &AuthMode) {
             token_ttl_secs = *token_ttl_secs,
             "Algeon Flight SQL server starting with Basic+Bearer auth"
         ),
-    }
-}
-
-struct NativeMemorySnapshot {
-    max_source_chunk_bytes: String,
-    max_row_groups_per_chunk: String,
-    max_retry_attempts: String,
-}
-
-impl From<MemoryControlPolicy> for NativeMemorySnapshot {
-    fn from(policy: MemoryControlPolicy) -> Self {
-        match policy {
-            MemoryControlPolicy::Unbounded => Self {
-                max_source_chunk_bytes: "none".to_string(),
-                max_row_groups_per_chunk: "none".to_string(),
-                max_retry_attempts: "none".to_string(),
-            },
-            MemoryControlPolicy::Bounded {
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                ..
-            } => Self {
-                max_source_chunk_bytes: max_source_chunk_bytes.to_string(),
-                max_row_groups_per_chunk: max_row_groups_per_chunk.to_string(),
-                max_retry_attempts: max_retry_attempts.to_string(),
-            },
-        }
     }
 }
 

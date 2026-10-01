@@ -46,13 +46,7 @@ async fn run() -> anyhow::Result<()> {
         .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(8, 2, 2));
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            ATTEMPT_MEMORY_LIMIT_BYTES,
-            64 * 1024 * 1024,
-            1,
-            3,
-            1,
-        ))
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
         .devices([device])
         .build()
         .map_err(|error| anyhow!("no usable CUDA device 0 for this example: {error}"))?;

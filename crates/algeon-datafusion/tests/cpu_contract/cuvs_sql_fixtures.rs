@@ -72,7 +72,7 @@ pub fn cuvs_cugraph_context() -> SessionContext {
 pub fn cuvs_cugraph_native_context() -> SessionContext {
     use algeon_datafusion::cugraph_sql::CugraphSqlConfig;
 
-    let native_execution_config = AlgeonNativeExecutionConfig::bounded_default();
+    let native_execution_config = AlgeonNativeExecutionConfig::default();
     let state = SessionStateBuilder::new_with_default_features()
         .with_algeon_native(
             AlgeonNativeOptimizerConfig::default().with_native_execution_config(native_execution_config),

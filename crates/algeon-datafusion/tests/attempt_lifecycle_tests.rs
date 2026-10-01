@@ -9,7 +9,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::DataFusionErrorExt,
-    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{FinalPlanDisposition, plan_with_native_diagnostics},
 };
@@ -41,12 +41,8 @@ impl BackendFixture {
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
         let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         let mut builder = AlgeonGpuBackend::builder()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-                256 * 1024 * 1024,
-                64 * 1024 * 1024,
-                2,
-                3,
-                1,
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
             ))
             .devices([device])
             .queue_policy(resource_policy);

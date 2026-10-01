@@ -131,7 +131,6 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 3);
     assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);

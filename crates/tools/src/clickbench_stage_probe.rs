@@ -20,8 +20,11 @@ use std::{
 };
 
 use algeon_datafusion::{
-    attempt::AttemptOptions, backend::AlgeonGpuBackend, native_exec::AlgeonNativeExecutionConfig,
-    planner::AlgeonNativeOptimizerConfig, session::AlgeonSessionStateBuilderExt,
+    attempt::AttemptOptions,
+    backend::AlgeonGpuBackend,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
+    planner::AlgeonNativeOptimizerConfig,
+    session::AlgeonSessionStateBuilderExt,
 };
 use bench::report_workload::clickbench::{
     ClickbenchNativeProfileSettings, clickbench_native_profile_settings_from_env, clickbench_report_session_config,
@@ -396,13 +399,12 @@ async fn plan_native_physical(
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
     let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::bounded(
-            profile.device_budget_bytes,
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(
             profile.max_source_chunk_bytes,
             profile.max_row_groups_per_chunk,
             profile.max_retry_attempts,
             profile.min_retry_chunk_row_groups,
-        )
+        )?)
         .with_source_chunk_planning_mode(profile.source_chunk_planning_mode)
         .with_query_id(query_id),
     );
@@ -442,13 +444,12 @@ async fn plan_native_physical_for_attempt(
 }
 
 fn build_probe_attempt_backend(profile: &ClickbenchNativeProfileSettings) -> ToolResult<AlgeonGpuBackend> {
-    let execution_config = AlgeonNativeExecutionConfig::bounded(
-        profile.device_budget_bytes,
+    let execution_config = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(
         profile.max_source_chunk_bytes,
         profile.max_row_groups_per_chunk,
         profile.max_retry_attempts,
         profile.min_retry_chunk_row_groups,
-    )
+    )?)
     .with_source_chunk_planning_mode(profile.source_chunk_planning_mode);
     let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(execution_config);
     let device = GpuBackendDeviceConfig::new(

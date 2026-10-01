@@ -38,7 +38,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile,
         AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
 };
 use datafusion::prelude::SessionContext;
 use query_engine::observability::{AttemptFailureFactKey, SealedAttemptProjection};
@@ -107,13 +107,12 @@ async fn run_with_backend(config: &Arc<GoodputConfig>, backend: &AlgeonGpuBacken
 }
 
 fn build_backend(config: &GoodputConfig) -> Result<AlgeonGpuBackend, Box<dyn Error>> {
-    let execution_config = AlgeonNativeExecutionConfig::bounded(
-        config.query_cap_bytes,
+    let execution_config = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(
         config.max_source_chunk_bytes,
         config.max_row_groups_per_chunk,
         3,
         1,
-    );
+    )?);
     // The goodput sweep deliberately overprovisions the stream pool beyond the
     // derived `A_d * (1 + S_d)` formula; keep the explicit bounds template and
     // share it across every homogeneous device.

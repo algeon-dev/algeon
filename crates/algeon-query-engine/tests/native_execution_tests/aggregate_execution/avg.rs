@@ -6,7 +6,7 @@ use super::*;
 fn bounded_native_query_executes_avg_from_sum_count_state() {
     let dir = unique_temp_dir("query-engine-bounded-native-avg");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -86,7 +86,7 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
 fn bounded_native_query_executes_single_chunk_avg_finalization() {
     let dir = unique_temp_dir("query-engine-bounded-native-single-chunk-avg");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 8,
@@ -568,36 +568,34 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &BackendQueryContext, grou
 
     let result = execute_query_plan(context, &plan).unwrap();
     let metrics = result.metrics();
-    if metrics.memory_control_policy.as_str() == "bounded" {
-        let partial_strategy_rows = metrics
-            .aggregate_strategy_decisions
-            .iter()
-            .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
-            .collect::<Vec<_>>();
-        assert!(
-            partial_strategy_rows.len() > 1,
-            "bounded high-cardinality fixture should produce multiple partial aggregate strategy rows"
-        );
-        assert!(partial_strategy_rows.iter().all(|decision| {
-            decision.node_id == aggregate.to_string()
-                && decision.facts.get("selected_strategy").map(String::as_str) == Some("libcudf_groupby")
-                && decision.facts.get("source_adjacent_partial").map(String::as_str) == Some("false")
-                && decision.facts.get("source_chunk_row_group_count").map(String::as_str) == Some("1")
-                && decision.facts.get("encode_elapsed_ns").map(String::as_str) == Some("0")
-                && decision.facts.get("decode_elapsed_ns").map(String::as_str) == Some("0")
-        }));
-        assert_eq!(
-            partial_strategy_rows[0].facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+    let partial_strategy_rows = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .collect::<Vec<_>>();
+    assert!(
+        partial_strategy_rows.len() > 1,
+        "bounded high-cardinality fixture should produce multiple partial aggregate strategy rows"
+    );
+    assert!(partial_strategy_rows.iter().all(|decision| {
+        decision.node_id == aggregate.to_string()
+            && decision.facts.get("selected_strategy").map(String::as_str) == Some("libcudf_groupby")
+            && decision.facts.get("source_adjacent_partial").map(String::as_str) == Some("false")
+            && decision.facts.get("source_chunk_row_group_count").map(String::as_str) == Some("1")
+            && decision.facts.get("encode_elapsed_ns").map(String::as_str) == Some("0")
+            && decision.facts.get("decode_elapsed_ns").map(String::as_str) == Some("0")
+    }));
+    assert_eq!(
+        partial_strategy_rows[0].facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_cost_model_small_input")
+    );
+    assert!(partial_strategy_rows[1..].iter().all(|decision| {
+        matches!(
+            decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
             Some("encoded_key_partial_cost_model_small_input")
-        );
-        assert!(partial_strategy_rows[1..].iter().all(|decision| {
-            matches!(
-                decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
-                Some("encoded_key_partial_cost_model_small_input")
-                    | Some("encoded_key_partial_cost_model_high_cardinality")
-            )
-        }));
-    }
+                | Some("encoded_key_partial_cost_model_high_cardinality")
+        )
+    }));
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

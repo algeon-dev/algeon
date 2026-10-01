@@ -62,7 +62,6 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 3);
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);

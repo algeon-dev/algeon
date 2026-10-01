@@ -95,9 +95,7 @@ pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) ->
 }
 
 pub(super) fn partitioned_join_partition_count(context: &ExecutionContext, left_bytes: u64, right_bytes: u64) -> usize {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
-        return 2;
-    };
+    let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
     let target_partition_bytes = partitioned_join_target_partition_bytes(device_budget_bytes);
     let basis = left_bytes.max(right_bytes).max(1);
     let partitions = basis.saturating_add(target_partition_bytes.saturating_sub(1)) / target_partition_bytes.max(1);
@@ -121,12 +119,8 @@ fn partitioned_mixed_join_target_rows(context: &ExecutionContext) -> u64 {
 }
 
 pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionContext) -> u64 {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
-            partitioned_join_target_partition_bytes(device_budget_bytes)
-        },
-        _ => 0,
-    }
+    let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
+    partitioned_join_target_partition_bytes(device_budget_bytes)
 }
 
 pub(super) fn partitioned_join_target_partition_bytes(device_budget_bytes: u64) -> u64 {

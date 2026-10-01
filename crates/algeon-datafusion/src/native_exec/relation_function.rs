@@ -403,17 +403,15 @@ impl<S: RelationFunctionSpec> DisplayAs for RelationFunctionExec<S> {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "{}: operation={}, input_count={}, memory_control_policy={}, input_boundary=gpu_resident_or_host_staged, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "{}: operation={}, input_count={}, input_boundary=gpu_resident_or_host_staged, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 S::EXEC_NAME,
                 self.spec.operation_name(),
                 self.inputs.len(),
-                self.native_execution_config.memory_control_policy(),
                 self.gpu_result_input_name,
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "operation={}", self.spec.operation_name())?;
                 writeln!(f, "input_count={}", self.inputs.len())?;
-                writeln!(f, "memory_control_policy={}", self.native_execution_config.memory_control_policy())?;
                 writeln!(f, "input_boundary=gpu_resident_or_host_staged")?;
                 writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
                 writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)
@@ -692,6 +690,7 @@ mod tests {
     use datafusion::datasource::memory::MemorySourceConfig;
 
     use super::*;
+    use crate::native_exec::SourceChunking;
 
     #[derive(Clone, Debug)]
     struct CountingSpec {
@@ -771,7 +770,9 @@ mod tests {
             CountingSpec { lower_calls: Arc::clone(&lower_calls) },
             vec![input as Arc<dyn ExecutionPlan>],
             Arc::clone(&schema),
-            AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+            ),
             vec!["input".to_string()],
             vec![None],
             "counting_result".to_string(),

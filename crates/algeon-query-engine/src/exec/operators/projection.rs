@@ -6,8 +6,7 @@ use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
     ProjectionNode, QueryError, QueryErrorCode, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details, datafusion_order_columns,
-    execution_overrides, is_supported_arrow_implicit_cast, lower_projection_output_expr,
-    projection_schema_mismatch_error,
+    is_supported_arrow_implicit_cast, lower_projection_output_expr, projection_schema_mismatch_error,
 };
 use crate::{
     expr::{alias_wrapped_column, representation_cast_column},
@@ -17,33 +16,6 @@ use crate::{
     plan::ProjectionOutput,
     rapids_backend::rapids_analysis_context,
 };
-
-pub(in crate::exec) fn execute_projection(
-    context: &ExecutionContext,
-    node: &ProjectionNode,
-    input: GpuDataFrame,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    let frame = input.frame().clone();
-    let timer = Instant::now();
-    if let Some(output) = try_execute_column_only_projection(node, frame.clone(), None, metrics)? {
-        metrics.add_operator_time(timer.elapsed());
-        return GpuDataFrame::try_new_with_source_residency(output, &input);
-    }
-    let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
-    let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let mut output =
-        frame.with_execution(&overrides).with_columns(exprs).and_then(|frame| frame.select(output_columns)).map_err(
-            |error| {
-                cudf_query_error("query_engine.projection.execute", "failed to execute algeon native projection", error)
-            },
-        )?;
-    output = coerce_projection_output_schema(output, node, None, metrics)?;
-    metrics.add_operator_time(timer.elapsed());
-    GpuDataFrame::try_new_with_source_residency(output, &input)
-}
 
 pub(in crate::exec) fn execute_projection_with_budget(
     context: &ExecutionContext,

@@ -78,11 +78,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a ExecutionMetrics,
     ) -> Result<Self> {
-        let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
-            return Err(invalid("compiled bounded task execution requires bounded memory control")
-                .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
-        };
-        let execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics)?;
+        let execution = BoundedExecutionAttempt::new(context, context.device_budget_bytes(), metrics)?;
         let gpu_inputs = gpu_inputs.clone();
         Ok(Self {
             execution,

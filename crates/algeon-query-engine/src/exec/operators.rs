@@ -8,16 +8,16 @@ use super::{
     DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionContext,
     ExecutionMetrics, ExecutionOverrides, Expr, Field, FilterNode, GpuDataFrame, GpuResultHandle, GroupByAgg,
     GroupByOptions, LimitNode, LimitSpec, LiteralValue, LoweredAggregate, NodeId, ProjectionNode, QueryError,
-    QueryErrorCode, RecordBatch, ReduceAgg, Result, ScanAgg, Schema, SortNode, WindowFrame, WindowNode,
+    QueryErrorCode, RecordBatch, ReduceAgg, Result, ScanAgg, Schema, WindowFrame, WindowNode,
     aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_query_error_with_budget_details, cudf_unsupported_type_error, datafusion_order_columns, execution_overrides,
     global_count_star_expr, global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit,
     lit_null, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr,
     lower_filter_predicate_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
-    lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, lower_sort_spec,
-    projection_schema_mismatch_error, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
-    validate_avg_output_fields, validate_global_aggregate_capability, when,
+    lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, projection_schema_mismatch_error,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    validate_global_aggregate_capability, when,
 };
 use crate::{
     expression_lowering_policy::ExpressionLoweringPolicy,
@@ -47,8 +47,7 @@ pub(super) use global_aggregate::{
     partial_global_aggregate_spec,
 };
 pub(super) use projection::{
-    execute_projection, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    projection_regexp_replace_prepare,
+    execute_projection_with_budget, execute_projection_with_budget_and_prepared, projection_regexp_replace_prepare,
 };
 
 pub(super) fn execution_budget_token_for_boundary(
@@ -88,30 +87,6 @@ pub(super) fn budgeted_value<T>(
     let (value, report) = outcome.into_parts();
     metrics.record_budgeted_execution(operation, &report);
     value
-}
-
-pub(super) fn execute_filter(
-    context: &ExecutionContext,
-    node: &FilterNode,
-    input: GpuDataFrame,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    let frame = input.frame().clone();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
-        frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
-            cudf_query_error("query_engine.filter.execute", "failed to execute algeon native IN-list filter", error)
-        })?
-    } else {
-        let predicate = lower_filter_predicate_expr(&node.predicate)?;
-        frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
-            cudf_query_error("query_engine.filter.execute", "failed to execute algeon native filter", error)
-        })?
-    };
-    metrics.add_operator_time(timer.elapsed());
-    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 pub(super) fn execute_filter_with_budget(
@@ -229,34 +204,6 @@ fn collect_in_list_literals<T: Copy>(
         .collect()
 }
 
-pub(super) fn execute_sort(
-    context: &ExecutionContext,
-    node: &SortNode,
-    input: GpuDataFrame,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    let output = execute_sort_on_frame(context, node, input.frame().clone(), metrics)?;
-    GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
-}
-
-pub(super) fn execute_sort_on_frame(
-    context: &ExecutionContext,
-    node: &SortNode,
-    frame: DataFrame,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    let sort = lower_sort_spec(&node.spec)?;
-    let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let output = frame.with_execution(&overrides).sort_values(sort.columns, options).map_err(|error| {
-        cudf_query_error("query_engine.sort.execute", "failed to execute algeon native sort", error)
-    })?;
-    metrics.add_operator_time(timer.elapsed());
-    Ok(GpuDataFrame::new(output))
-}
-
 pub(super) fn execute_limit(
     context: &ExecutionContext,
     node: &LimitNode,
@@ -270,40 +217,6 @@ pub(super) fn execute_limit(
 
     let output = execute_limit_on_frame(context, node, input.frame().clone(), metrics)?;
     GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
-}
-
-pub(super) fn execute_union(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    inputs: Vec<GpuDataFrame>,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    if inputs.len() == 1 {
-        return Ok(inputs.into_iter().next().expect("single-input union has one frame"));
-    }
-    let mut frames = inputs.iter().map(|input| input.frame().clone()).collect::<Vec<_>>();
-    if frames.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.union.execute",
-            "union execution requires at least one input",
-        )
-        .with_fact("node_id", node_id));
-    }
-
-    let input_count = frames.len();
-    let first = frames.remove(0);
-    let rest = frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
-        cudf_query_error("query_engine.union.concat", "failed to concatenate native union inputs", error)
-            .with_fact("node_id", node_id)
-            .with_fact("input_count", input_count)
-    })?;
-    metrics.add_operator_time(timer.elapsed());
-    Ok(GpuDataFrame::new(output))
 }
 
 pub(super) fn execute_window(

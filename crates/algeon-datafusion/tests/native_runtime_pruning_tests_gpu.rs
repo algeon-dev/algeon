@@ -5,7 +5,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
     report::PlanningReport,
 };

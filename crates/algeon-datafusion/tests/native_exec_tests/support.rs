@@ -1,6 +1,9 @@
 use std::{path::Path, sync::Arc};
 
-use algeon_datafusion::{native_exec::AlgeonNativeExecutionConfig, planner::AlgeonNativeOptimizerConfig};
+use algeon_datafusion::{
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
+    planner::AlgeonNativeOptimizerConfig,
+};
 use arrow::{
     array::{Int32Array, Int64Array},
     compute::SortOptions as ArrowSortOptions,
@@ -39,7 +42,7 @@ use workloads::tpch::TPCH_TABLES;
 use crate::tpch_session::tpch_report_session_config;
 
 pub(super) fn bounded_config() -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
+    AlgeonNativeExecutionConfig::new(SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"))
 }
 
 pub(super) fn native_optimizer_config() -> AlgeonNativeOptimizerConfig {

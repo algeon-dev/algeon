@@ -10,7 +10,7 @@ use std::{
 use algeon_datafusion::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     cugraph_sql::CugraphSqlConfig,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
@@ -27,6 +27,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+
+use crate::gpu_backend::DEFAULT_NATIVE_DEVICE_BUDGET_BYTES;
 
 const ROWS_ENV: &str = "ALGEON_CUGRAPH_CONSTRUCTION_ROWS";
 const EXECUTION_MODE_ENV: &str = "ALGEON_CUGRAPH_CONSTRUCTION_EXECUTION_MODE";
@@ -72,7 +74,7 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder()
         .with_execution_mode(execution_mode)
-        .with_native_execution_config(native_execution_config())
+        .with_native_execution_config(native_execution_config()?)
         .devices([device])
         .build()?;
     let state = backend
@@ -86,8 +88,8 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     println!(
         "# rows={rows}\texecution_mode={}\tmemory_policy=bounded\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
         execution_mode_label(execution_mode),
-        env_u64(DEVICE_BUDGET_BYTES_ENV, AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,),
-        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
+        env_u64(DEVICE_BUDGET_BYTES_ENV, DEFAULT_NATIVE_DEVICE_BUDGET_BYTES),
+        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get()),
     );
     println!("{}", COLUMNS.join("\t"));
 
@@ -408,14 +410,13 @@ fn direct_friendly_session_config() -> SessionConfig {
     config
 }
 
-fn native_execution_config() -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(
-        env_u64(DEVICE_BUDGET_BYTES_ENV, AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES),
-        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
+fn native_execution_config() -> Result<AlgeonNativeExecutionConfig, Box<dyn Error>> {
+    Ok(AlgeonNativeExecutionConfig::new(SourceChunking::try_new(
+        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get()),
         1024,
         3,
         1,
-    )
+    )?))
 }
 
 fn reject_removed_memory_policy_env() -> Result<(), Box<dyn Error>> {

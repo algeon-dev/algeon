@@ -124,9 +124,8 @@ pub(super) async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
-    );
+    let optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     native_datafusion_planning_report_with_optimizer_config(query_id, path, sql, session_config, optimizer_config).await
 }
 

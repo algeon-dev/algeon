@@ -321,8 +321,8 @@ impl AggregateLaneDispatch {
                     self.context.runtime_observation().clone(),
                     move || {
                         let context = lease.context();
-                        let budget = context.bounded_device_budget_bytes().expect("compiled work is bounded");
-                        let mut execution = BoundedExecutionAttempt::new(context, budget, &metrics)?;
+                        let mut execution =
+                            BoundedExecutionAttempt::new(context, context.device_budget_bytes(), &metrics)?;
                         let result = work(&mut execution, input);
                         let output = finish_lane_work(&execution, result, observation_scope.as_ref())?;
                         #[cfg(feature = "test-hooks")]

@@ -186,6 +186,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::native_exec::SourceChunking;
 
     #[test]
     fn bounded_decision_admits_under_the_configured_planning_policy() {
@@ -206,10 +207,11 @@ mod tests {
             Arc::clone(&schema),
         );
         let plan = builder.finish_with_host_sink(join);
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024 * 1024 * 1024, 512, 1, 3, 1)
-            .with_keyed_hash_join_strategy_options(
-                KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11),
-            );
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_keyed_hash_join_strategy_options(
+                    KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11),
+                );
 
         let decision = native_admission_decision(&plan, &execution_config).expect("the join plan is decidable");
         let admission = decision.admission().expect("a literal inner join is admitted");

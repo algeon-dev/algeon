@@ -7,8 +7,8 @@ use arrow::{
 };
 
 use super::{
-    Array, BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, GpuResultHandle, NodeId,
-    QueryError, QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
+    Array, BoundedExecutionAttempt, ExecutionMetrics, GpuDataFrame, GpuResultHandle, NodeId, QueryError,
+    QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
 };
 
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMetrics) -> Result<RecordBatch> {
@@ -46,17 +46,6 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
         .attach_to(error)
     });
     result.map_err(|error| host_materialization_failure_facts(execution.metrics()).attach_to_error(error))
-}
-
-pub(super) fn materialize_gpu_frame_to_host(
-    context: &ExecutionContext,
-    frame: GpuDataFrame,
-    executable_schema: SchemaRef,
-    output_schema: &SchemaRef,
-    metrics: &ExecutionMetrics,
-) -> Result<RecordBatch> {
-    let handle = GpuResultHandle::new(context, frame, executable_schema)?;
-    materialize_to_host_with_schema(handle, output_schema, metrics)
 }
 
 fn materialize_to_host_with_schema(

@@ -7,6 +7,11 @@ use algeon_datafusion::{
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
 
+/// Device budget, in bytes, that benchmark profiles carry when no budget
+/// override is configured. It equals the fallback capacity of
+/// [`GpuDeviceMemoryLimit::default`].
+pub(crate) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+
 pub(crate) fn build_installed_gpu_backend(
     native_optimizer_config: AlgeonNativeOptimizerConfig,
     device_memory_limit: GpuDeviceMemoryLimit,

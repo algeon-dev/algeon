@@ -55,7 +55,6 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
@@ -239,7 +238,6 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
@@ -381,7 +379,6 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed >= 13);

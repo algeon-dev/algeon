@@ -9,7 +9,7 @@ use algeon_datafusion::{
     },
     cuvs_sql::CuvsAlgoExec,
     error::DataFusionErrorExt,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
 };
@@ -1060,12 +1060,8 @@ fn cuvs_test_backend_with_mode(mode: AlgeonGpuExecutionMode) -> AlgeonGpuBackend
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     AlgeonGpuBackend::builder()
         .with_execution_mode(mode)
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            512 * 1024 * 1024,
-            256 * 1024 * 1024,
-            1,
-            3,
-            1,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(256 * 1024 * 1024, 1, 3, 1).expect("valid source chunking"),
         ))
         .devices([device])
         .with_attempt_completion_queue_capacity(8)

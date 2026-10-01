@@ -64,7 +64,7 @@ use crate::{
         graph_vertex_upper_bound_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
     },
     native_exec::{
-        GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget,
+        GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget, SourceChunking,
         admission::{
             QueryAdmissionTicket, query_admission_ticket_from_task_context, task_context_with_query_admission_ticket,
         },
@@ -584,9 +584,8 @@ fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
     spec.has_edge_id = true;
     let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
 
-    let error =
-        CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::bounded_default())
-            .expect_err("logical BFS edge-id input must fail capability preflight");
+    let error = CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::default())
+        .expect_err("logical BFS edge-id input must fail capability preflight");
     let algeon = error.find_algeon_error().expect("capability preflight must remain a structured adapter error");
 
     assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
@@ -603,7 +602,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         Vec::new(),
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("PageRank producer should build");
     assert_eq!(
@@ -617,7 +616,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         Vec::new(),
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("raw BFS producer should build");
     assert_eq!(
@@ -635,7 +634,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         Vec::new(),
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("normalized BFS producer should build");
     assert_eq!(
@@ -649,7 +648,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         Vec::new(),
         Some(vec![1]),
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("projected normalized BFS producer should build");
     assert_eq!(gpu_resident_producer_unique_output_key(&projected_normalized_bfs), None);
@@ -660,7 +659,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         vec![memory_string_path_target_source()],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("path BFS producer should build");
     assert!(gpu_resident_producer(&path_bfs).is_some());
@@ -675,7 +674,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         Vec::new(),
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("triangle-count producer should build");
     assert_eq!(
@@ -699,7 +698,7 @@ fn logical_bfs_include_edge_ids_capability_is_rejected_during_exec_construction(
         vec![predicate_source],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect_err("logical BFS include-edge-id input must fail capability preflight");
     let algeon = error.find_algeon_error().expect("capability preflight must remain a structured adapter error");
@@ -717,7 +716,7 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
         vec![],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("cuGraph exec should build");
 
@@ -760,7 +759,7 @@ fn bfs_path_exec_declares_ordering_only_while_path_index_is_preserved() {
         vec![memory_string_path_target_source()],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("bounded BFS path exec should build");
     assert!(ordered.properties().output_ordering().is_some());
@@ -771,7 +770,7 @@ fn bfs_path_exec_declares_ordering_only_while_path_index_is_preserved() {
         vec![memory_string_path_target_source()],
         Some(vec![1, 2, 3, 4]),
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("projected BFS path exec should build");
     assert!(projected.properties().output_ordering().is_none());
@@ -994,7 +993,7 @@ fn string_pagerank_subsumes_only_bounded_sorts() {
         vec![],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("string PageRank producer should build");
     let consumer_plan = |with_limit| {
@@ -1030,7 +1029,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         vec![],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("string PageRank should build as a GPU-resident graph execution");
     assert!(gpu_resident_producer(&pagerank).is_some());
@@ -1041,7 +1040,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         vec![],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("logical BFS should build as a GPU-resident graph execution");
     assert!(gpu_resident_producer(&logical).is_some());
@@ -1052,7 +1051,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         vec![memory_string_path_target_source()],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("logical BFS path should build as a GPU-resident graph execution");
     assert!(gpu_resident_producer(&numeric_path).is_some());
@@ -1075,7 +1074,7 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
         vec![source_exec],
         None,
         None,
-        AlgeonNativeExecutionConfig::bounded_default(),
+        AlgeonNativeExecutionConfig::default(),
     )
     .expect("numeric relation-backed BFS should build before schema corruption");
     let malformed_schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false)]));
@@ -1107,7 +1106,7 @@ async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() 
             vec![],
             None,
             None,
-            AlgeonNativeExecutionConfig::bounded_default(),
+            AlgeonNativeExecutionConfig::default(),
         )
         .expect("cuGraph producer should build"),
     );
@@ -1133,8 +1132,9 @@ async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() 
 #[tokio::test]
 async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
     let backend = test_gpu_backend();
-    let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&backend));
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
     let (_attempt, task_context) =
         attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -1169,8 +1169,9 @@ async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
 #[tokio::test]
 async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     let backend = test_gpu_backend();
-    let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&backend));
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
     let (_attempt, task_context) =
         attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -1223,7 +1224,7 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
 
 #[tokio::test]
 async fn cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_child() {
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let native = native_edge_source(vec![100, 200], &config);
     let staged = stage_cugraph_inputs(
         &triangle_spec(),
@@ -1259,8 +1260,9 @@ async fn cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_c
 #[tokio::test]
 async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission() {
     let backend = test_gpu_backend();
-    let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&backend));
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
     let (_attempt, task_context) =
         attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -1290,7 +1292,9 @@ async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission
 async fn cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_and_gpu_paths() {
     let backend = test_gpu_backend();
     let source = admission_source(&backend);
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
     let (_attempt, task_context) = attempt_task_context(&backend, TaskContext::default());
     let exec = Arc::new(
         CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(16), vec![], None, None, config)
@@ -1345,7 +1349,7 @@ async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
             vec![],
             None,
             None,
-            AlgeonNativeExecutionConfig::bounded_default(),
+            AlgeonNativeExecutionConfig::default(),
         )
         .expect("cuGraph producer should build"),
     );
@@ -1917,7 +1921,8 @@ fn bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache() {
 fn cugraph_pre_hydration_exec_leaves_backend_ticketless() {
     let backend = test_gpu_backend();
     let source = admission_source(&backend);
-    let base = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let base = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+        .with_query_admission_source(source);
 
     assert!(base.has_query_admission_authority());
     assert_eq!(base.query_admission_ticket_id(), None);
@@ -1930,7 +1935,7 @@ fn cugraph_pre_hydration_exec_leaves_backend_ticketless() {
 
 #[test]
 fn cugraph_algo_exec_records_graph_residency_for_native_edge_source() {
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = native_graph_residency_edge_source(&config);
 
     let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
@@ -1949,7 +1954,7 @@ fn cugraph_algo_exec_records_graph_residency_for_native_edge_source() {
 
 #[test]
 fn simple_directed_footer_omits_python_edge_normalization_through_native_edge_wrapper() {
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = native_graph_residency_edge_source(&config);
     let mut spec = bfs_spec();
     spec.graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
@@ -1968,7 +1973,7 @@ async fn cugraph_algo_exec_records_graph_residency_for_datafusion_parquet_edge_s
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = datafusion_parquet_edge_source(&path).await;
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -2039,9 +2044,8 @@ async fn simple_directed_footer_omits_python_edge_normalization_only_for_the_pro
     let mut spec = bfs_spec();
     spec.graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
 
-    let exec =
-        CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::bounded_default())
-            .expect("footer-proven simple directed edge source should plan");
+    let exec = CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::default())
+        .expect("footer-proven simple directed edge source should plan");
 
     assert!(
         !exec.edge_normalize_inserted(),
@@ -2058,9 +2062,8 @@ async fn simple_directed_footer_does_not_cross_a_rowset_changing_limit() {
     let mut spec = bfs_spec();
     spec.graph_options.construction_policy = CugraphGraphConstructionPolicy::PythonCugraph;
 
-    let exec =
-        CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::bounded_default())
-            .expect("scan-limited source should retain normal graph planning");
+    let exec = CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, AlgeonNativeExecutionConfig::default())
+        .expect("scan-limited source should retain normal graph planning");
 
     assert!(
         exec.edge_normalize_inserted(),
@@ -2073,7 +2076,7 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_datafusion_parquet_scan_
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst, weight FROM edges LIMIT 2").await;
 
     let exec = CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
@@ -2087,7 +2090,7 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_p
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_string_edge_parquet(&path);
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = datafusion_parquet_edge_source_sql(&path, "SELECT src, dst FROM edges").await;
 
     let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], None, None, config)
@@ -2306,7 +2309,7 @@ fn collect_cugraph_execs(plan: Arc<dyn ExecutionPlan>, output: &mut Vec<CugraphA
 
 #[test]
 fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
     let edge_source = native_graph_residency_edge_source(&config);
     let spec = triangle_spec();
     let exec = CugraphAlgoExec::try_new(spec.clone(), edge_source, vec![], None, None, config)
@@ -2324,7 +2327,8 @@ fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
 
 #[test]
 fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission() {
-    let config = AlgeonNativeExecutionConfig::bounded(2048, 512, 1, 3, 1);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
@@ -2354,8 +2358,9 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
 #[test]
 fn admission_backed_cugraph_allows_native_child_execution() {
     let backend = test_gpu_backend();
-    let config = AlgeonNativeExecutionConfig::bounded(2048, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&backend));
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(admission_source(&backend));
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
@@ -2374,7 +2379,7 @@ fn admission_backed_cugraph_allows_native_child_execution() {
 
 #[tokio::test]
 async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission() {
-    let config = AlgeonNativeExecutionConfig::bounded_default().with_lakehouse_footer_pruning(true);
+    let config = AlgeonNativeExecutionConfig::default().with_lakehouse_footer_pruning(true);
     let native_exec = native_edge_source(vec![100, 200], &config);
     let wrapped = Arc::new(
         RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1))

@@ -51,7 +51,7 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 4_000_000,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -114,7 +114,7 @@ fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -236,7 +236,7 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
     // concatenation needs three times the merged state; folding partitions
     // incrementally keeps the retained set at the merged state plus its final
     // concatenation.
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 400 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -281,7 +281,7 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
     // this cap, while each finalized partition fits beside the retained state.
     let (eager_plan, streamed_plan) = incremental_partitioned_merge_plans(&dir, 128, rows_per_row_group);
     let cap = 960 * 1024 * 1024;
-    let streamed_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let streamed_context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: cap,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -401,7 +401,7 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context())).unwrap();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).unwrap();
     let cap = 960 * 1024 * 1024;
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: cap,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,

@@ -749,6 +749,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::native_exec::SourceChunking;
 
     #[test]
     fn non_join_candidate_is_rejected_at_planning_with_its_missing_contract() {
@@ -773,7 +774,8 @@ mod tests {
             ])),
         );
         let plan = builder.finish_with_host_sink(window).clone_with_deferred_host_materialization_sink();
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024 * 1024 * 1024, 512, 1, 3, 1);
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
 
         let AdmissionDecision::Rejected(rejection) =
             native_admission_decision(&plan, &execution_config).expect("the candidate is decidable")
@@ -832,12 +834,13 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_expert_query_policy() {
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-            .with_dynamic_filter_execution_options(
-                DynamicFilterExecutionOptions::default()
-                    .with_max_build_rows(10)
-                    .with_large_local_parquet_range_producer_rows(11),
-            );
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_dynamic_filter_execution_options(
+                    DynamicFilterExecutionOptions::default()
+                        .with_max_build_rows(10)
+                        .with_large_local_parquet_range_producer_rows(11),
+                );
 
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
@@ -850,10 +853,11 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-            .with_keyed_hash_join_strategy_options(
-                KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(10),
-            );
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_keyed_hash_join_strategy_options(
+                    KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(10),
+                );
 
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
@@ -866,11 +870,12 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-            .with_aggregate_strategy_execution_options(
-                AggregateStrategyExecutionOptions::default()
-                    .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
-            );
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_aggregate_strategy_execution_options(
+                    AggregateStrategyExecutionOptions::default()
+                        .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
+                );
 
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
@@ -883,10 +888,11 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-            .with_source_chunk_planning_options(
-                SourceChunkPlanningOptions::default().with_local_parquet_throughput_min_device_budget_bytes(0),
-            );
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_source_chunk_planning_options(
+                    SourceChunkPlanningOptions::default().with_local_parquet_throughput_min_device_budget_bytes(0),
+                );
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
@@ -902,7 +908,8 @@ mod tests {
             semijoin_reduction: SemijoinReductionOptions { cost_threshold_multiplier: 0, ..Default::default() },
             ..NativeOptimizerOptions::disabled()
         };
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1);
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
 
         let error = native_optimizer_options_for_execution(&optimizer_options, &execution_config).unwrap_err();
 

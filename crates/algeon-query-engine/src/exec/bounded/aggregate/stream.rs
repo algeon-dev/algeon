@@ -364,7 +364,7 @@ impl<'a> CompiledStreamPartials<'a> {
         expected_partials: usize,
         expected_input_rows: Option<u64>,
     ) -> Result<Self> {
-        if should_execute_incremental_partitioned_final_aggregate_merge(execution.context(), aggregate, input_schema) {
+        if should_execute_incremental_partitioned_final_aggregate_merge(aggregate, input_schema) {
             return CompiledIncrementalPartitionedMerge::new(
                 execution.context(),
                 node_id,
@@ -910,10 +910,8 @@ fn should_split_compiled_aggregate_stream_frame(
 }
 
 fn compiled_aggregate_frame_retry_budget(context: &ExecutionContext) -> usize {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { max_retry_attempts, .. } => max_retry_attempts.saturating_sub(1),
-        MemoryControlPolicy::Unbounded => 0,
-    }
+    let MemoryControlPolicy { max_retry_attempts, .. } = context.memory_control_policy();
+    max_retry_attempts.saturating_sub(1)
 }
 
 fn split_compiled_aggregate_stream_frame(

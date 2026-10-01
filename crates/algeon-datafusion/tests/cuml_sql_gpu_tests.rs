@@ -11,7 +11,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     cuml_sql::{CumlAlgoExec, CumlModelStoreConfig, CumlSqlConfig},
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, classify_final_plan},
     session::AlgeonSessionStateBuilderExt,
@@ -37,12 +37,8 @@ fn backend() -> AlgeonGpuBackend {
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });
     AlgeonGpuBackend::builder()
         .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            512 * 1024 * 1024,
-            256 * 1024 * 1024,
-            1,
-            3,
-            1,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(256 * 1024 * 1024, 1, 3, 1).expect("valid source chunking"),
         ))
         .devices([AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()

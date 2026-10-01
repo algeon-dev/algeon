@@ -31,7 +31,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     cugraph_sql::CugraphSqlConfig,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::plan_with_native_diagnostics,
     report::CandidateOutcome,
@@ -55,6 +55,8 @@ use tokio::{
     sync::Barrier,
     time::{sleep, timeout},
 };
+
+use crate::gpu_backend::DEFAULT_NATIVE_DEVICE_BUDGET_BYTES;
 
 mod config;
 mod report;
@@ -246,18 +248,12 @@ struct WorkerRows {
 }
 
 fn build_backend(config: &HarnessConfig) -> Result<AlgeonGpuBackend, Box<dyn Error>> {
-    let execution_config = AlgeonNativeExecutionConfig::bounded(
-        config.device_budget_bytes.unwrap_or(AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES),
-        256 * 1024 * 1024,
-        1024,
-        3,
-        1,
-    );
+    let execution_config = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(256 * 1024 * 1024, 1024, 3, 1)?);
     let memory_limit = match config.device_budget_bytes {
         Some(limit_bytes) => GpuDeviceMemoryLimit::Explicit { limit_bytes },
         None => GpuDeviceMemoryLimit::Automatic {
             headroom_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
-            fallback_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            fallback_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
             fraction: config.budget_fraction.map(GpuMemoryFraction::new).transpose()?,
         },
     };

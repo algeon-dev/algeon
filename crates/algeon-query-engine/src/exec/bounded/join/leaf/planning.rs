@@ -112,10 +112,6 @@ pub(super) fn local_parquet_source_stream_chunk_planning_policy(
 }
 
 pub(super) fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } => {
-            (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
-        },
-        MemoryControlPolicy::Unbounded => (1, 1),
-    }
+    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
+    (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
 }
