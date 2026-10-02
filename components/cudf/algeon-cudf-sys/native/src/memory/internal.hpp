@@ -703,14 +703,13 @@ struct current_resource_allocation_record {
 struct device_memory_manager_state {
   int32_t device = -1;
   std::shared_ptr<memory_resource_owner> owner;
-  cudf_memory_manager_options_t options                 = default_memory_manager_options();
-  cudf_memory_failure_callback_t failure_callback       = nullptr;
-  cudf_memory_failure_callback_v2_t failure_callback_v2 = nullptr;
-  void* failure_callback_arg                            = nullptr;
-  bool failure_callback_installed                       = false;
-  bool current_resource_installed                       = false;
-  bool current_resource_install_retryable               = false;
-  bool current_resource_integrity_lost                  = false;
+  cudf_memory_manager_options_t options           = default_memory_manager_options();
+  cudf_memory_failure_callback_t failure_callback = nullptr;
+  void* failure_callback_arg                      = nullptr;
+  bool failure_callback_installed                 = false;
+  bool current_resource_installed                 = false;
+  bool current_resource_install_retryable         = false;
+  bool current_resource_integrity_lost            = false;
   cudf_memory_manager_installation_cause_t current_resource_install_cause =
     CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE;
   std::atomic<bool> failure_callback_panicked{false};
@@ -758,14 +757,6 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
   rmm::mr::device_memory_resource* upstream,
   cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudaMemPool_t pool,
-  int32_t device_ordinal,
-  allocator_event_ring* allocator_events,
-  std::atomic<bool>* callback_panicked = nullptr);
-std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
-  rmm::mr::device_memory_resource* upstream,
-  cudf_memory_failure_callback_v2_t callback,
   void* callback_arg,
   cudaMemPool_t pool,
   int32_t device_ordinal,

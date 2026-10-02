@@ -443,7 +443,7 @@ impl DeviceMemoryManager {
         let status = if let Some(identity) = installation_identity {
             let identity = installation_identity_to_sys(identity);
             unsafe {
-                cudf_sys::cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
+                cudf_sys::cudf_memory_manager_install_owned_with_failure_callback_and_options(
                     device.ordinal_raw(),
                     Some(failure_callback_trampoline),
                     callback_arg,
@@ -455,7 +455,7 @@ impl DeviceMemoryManager {
             }
         } else {
             unsafe {
-                cudf_sys::cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+                cudf_sys::cudf_memory_manager_for_device_with_failure_callback_and_options(
                     device.ordinal_raw(),
                     Some(failure_callback_trampoline),
                     callback_arg,

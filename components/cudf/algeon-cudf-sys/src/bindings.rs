@@ -13,9 +13,6 @@ pub type cudf_error_failure_source_t = core::ffi::c_uint;
 pub type cudf_stream_handle = *mut cudf_stream_handle_state;
 #[doc = " Opaque handle to an owning RMM device memory resource."]
 pub type cudf_memory_resource_handle = *mut cudf_memory_resource_handle_state;
-#[doc = " Observation callback invoked after an upstream RMM allocation failure.\n The return value is reserved and does not change allocation control flow;\n callbacks must not allocate through the same resource."]
-pub type cudf_memory_failure_callback_t =
-    ::core::option::Option<unsafe extern "C" fn(bytes: usize, callback_arg: *mut core::ffi::c_void) -> i32>;
 pub type _bindgen_ty_2 = core::ffi::c_uint;
 pub type _bindgen_ty_3 = core::ffi::c_uint;
 pub type _bindgen_ty_4 = core::ffi::c_uint;
@@ -25,8 +22,8 @@ pub type cudf_memory_failure_action_t = core::ffi::c_uint;
 pub type _bindgen_ty_6 = core::ffi::c_int;
 pub type cudf_memory_failure_source_t = core::ffi::c_uint;
 pub type cudf_memory_failure_domain_t = core::ffi::c_uint;
-#[doc = " Observe a failed allocation. The return value is reserved and ignored."]
-pub type cudf_memory_failure_callback_v2_t = ::core::option::Option<
+#[doc = " Observation callback invoked after an upstream RMM allocation failure.\n The return value is reserved and does not change allocation control flow;\n callbacks must not allocate through the same resource."]
+pub type cudf_memory_failure_callback_t = ::core::option::Option<
     unsafe extern "C" fn(info: *const cudf_memory_failure_info_t, callback_arg: *mut core::ffi::c_void) -> i32,
 >;
 #[doc = " Mirrors cudf::type_id with identical discriminant values.\n This enum is part of the Rust FFI ABI and must remain 32-bit compatible\n with Rust `#[repr(i32)]`. Keep `native/src/abi_checks.cpp` in sync."]
@@ -913,12 +910,6 @@ unsafe extern "C" {
     pub fn cudf_memory_resource_create_failure_callback(
         upstream: cudf_memory_resource_handle,
         callback: cudf_memory_failure_callback_t,
-        callback_arg: *mut core::ffi::c_void,
-        out: *mut cudf_memory_resource_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_resource_create_failure_callback_v2(
-        upstream: cudf_memory_resource_handle,
-        callback: cudf_memory_failure_callback_v2_t,
         callback_arg: *mut core::ffi::c_void,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
@@ -2653,18 +2644,6 @@ unsafe extern "C" {
         options: *const cudf_memory_manager_options_t,
         out: *mut cudf_memory_manager_handle,
     ) -> cudf_status_t;
-    pub fn cudf_memory_manager_for_device_with_failure_callback(
-        device: i32,
-        callback: cudf_memory_failure_callback_t,
-        callback_arg: *mut core::ffi::c_void,
-        out: *mut cudf_memory_manager_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_for_device_with_failure_callback_v2(
-        device: i32,
-        callback: cudf_memory_failure_callback_v2_t,
-        callback_arg: *mut core::ffi::c_void,
-        out: *mut cudf_memory_manager_handle,
-    ) -> cudf_status_t;
     pub fn cudf_memory_manager_for_device_with_failure_callback_and_options(
         device: i32,
         callback: cudf_memory_failure_callback_t,
@@ -2672,16 +2651,9 @@ unsafe extern "C" {
         options: *const cudf_memory_manager_options_t,
         out: *mut cudf_memory_manager_handle,
     ) -> cudf_status_t;
-    pub fn cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+    pub fn cudf_memory_manager_install_owned_with_failure_callback_and_options(
         device: i32,
-        callback: cudf_memory_failure_callback_v2_t,
-        callback_arg: *mut core::ffi::c_void,
-        options: *const cudf_memory_manager_options_t,
-        out: *mut cudf_memory_manager_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
-        device: i32,
-        callback: cudf_memory_failure_callback_v2_t,
+        callback: cudf_memory_failure_callback_t,
         callback_arg: *mut core::ffi::c_void,
         options: *const cudf_memory_manager_options_t,
         identity: *const cudf_memory_manager_installation_identity_t,

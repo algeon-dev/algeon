@@ -321,7 +321,7 @@ impl DeviceMemoryResource {
         // remains valid until the native resource is destroyed.
         error::check_status_in_with_details(
             unsafe {
-                cudf_sys::cudf_memory_resource_create_failure_callback_v2(
+                cudf_sys::cudf_memory_resource_create_failure_callback(
                     self.handle.raw(),
                     Some(failure_callback_trampoline),
                     Arc::as_ptr(&callback_state) as *mut c_void,
