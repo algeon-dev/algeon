@@ -133,6 +133,7 @@ pub algeon_datafusion::capability::CapabilityReason::NativeBoundedJoinUnsupporte
 pub algeon_datafusion::capability::CapabilityReason::NativeCompiledPipelineUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeDistributedAggregateUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeExactStatisticalInputPartitioned
+pub algeon_datafusion::capability::CapabilityReason::NativeLocalLimitPartitionUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeOrderedOutputUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativePartitionPreservingSortUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeSortPreservingMergeUnsupported
@@ -1868,19 +1869,32 @@ impl algeon_datafusion::report::CandidateOutcomeKind
 pub const fn algeon_datafusion::report::CandidateOutcomeKind::as_str(self) -> &'static str
 impl core::fmt::Display for algeon_datafusion::report::CandidateOutcomeKind
 pub fn algeon_datafusion::report::CandidateOutcomeKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct algeon_datafusion::report::CandidateShape
+impl algeon_datafusion::report::CandidateShape
+pub fn algeon_datafusion::report::CandidateShape::contains_operator(&self, &str) -> bool
+pub fn algeon_datafusion::report::CandidateShape::inputs(&self) -> &[algeon_datafusion::report::CandidateShape]
+pub fn algeon_datafusion::report::CandidateShape::leaf(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn algeon_datafusion::report::CandidateShape::new(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<algeon_datafusion::report::CandidateShape>) -> Self
+pub fn algeon_datafusion::report::CandidateShape::operator(&self) -> &str
+pub fn algeon_datafusion::report::CandidateShape::operator_count(&self) -> usize
+impl core::convert::From<&str> for algeon_datafusion::report::CandidateShape
+pub fn algeon_datafusion::report::CandidateShape::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for algeon_datafusion::report::CandidateShape
+pub fn algeon_datafusion::report::CandidateShape::from(alloc::string::String) -> Self
+impl core::fmt::Display for algeon_datafusion::report::CandidateShape
+pub fn algeon_datafusion::report::CandidateShape::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::report::DataLayoutFixableNotSupported<'a>
 pub algeon_datafusion::report::DataLayoutFixableNotSupported::candidate: &'a algeon_datafusion::report::GpuCandidate
 pub algeon_datafusion::report::DataLayoutFixableNotSupported::capability_reason: algeon_datafusion::capability::CapabilityReason
 pub algeon_datafusion::report::DataLayoutFixableNotSupported::outcome_index: usize
 pub algeon_datafusion::report::DataLayoutFixableNotSupported::property: &'static str
 pub struct algeon_datafusion::report::GpuCandidate
-pub algeon_datafusion::report::GpuCandidate::operator_count: usize
 pub algeon_datafusion::report::GpuCandidate::output_schema_fields: usize
 pub algeon_datafusion::report::GpuCandidate::plan_node_id: core::option::Option<query_planning::correlation::PlanNodeId>
-pub algeon_datafusion::report::GpuCandidate::shape: alloc::string::String
+pub algeon_datafusion::report::GpuCandidate::shape: algeon_datafusion::report::CandidateShape
 impl algeon_datafusion::report::GpuCandidate
-pub fn algeon_datafusion::report::GpuCandidate::new(impl core::convert::Into<alloc::string::String>, usize) -> Self
-pub fn algeon_datafusion::report::GpuCandidate::with_operator_count(impl core::convert::Into<alloc::string::String>, usize, usize) -> Self
+pub fn algeon_datafusion::report::GpuCandidate::new(impl core::convert::Into<algeon_datafusion::report::CandidateShape>, usize) -> Self
+pub fn algeon_datafusion::report::GpuCandidate::operator_count(&self) -> usize
 pub fn algeon_datafusion::report::GpuCandidate::with_plan_node_id(self, impl core::convert::Into<query_planning::correlation::PlanNodeId>) -> Self
 impl algeon_datafusion::report::GpuCandidate
 pub fn algeon_datafusion::report::GpuCandidate::to_json(&self) -> serde_json::value::Value

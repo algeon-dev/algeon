@@ -91,9 +91,9 @@ pub(crate) fn final_plan_requirement_error(
     .with_fact("physical_plan_root", plan.name());
     if let Some((candidate, capability_reason, detail)) = rejection {
         error = error
-            .with_fact("candidate_shape", candidate.shape.as_str())
+            .with_fact("candidate_shape", candidate.shape.to_string())
             .with_fact("capability_reason", capability_reason.code())
-            .with_fact("operator_count", candidate.operator_count);
+            .with_fact("operator_count", candidate.operator_count());
         if let Some(admission) = detail.admission_rejection() {
             // The admission rejection names the contract the candidate missed;
             // a validator refusal carries its own code, operation, and facts.

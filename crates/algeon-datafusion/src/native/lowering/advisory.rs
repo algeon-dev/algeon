@@ -80,6 +80,10 @@ pub(super) fn attach_input(
     input: &NormalizedNativeInput<'_>,
     output: &LoweredNativeInput,
 ) -> Result<(), QueryError> {
+    // Row-count weights carry one row per read unit, not the frontend rows.
+    if output.row_count_weights {
+        return Ok(());
+    }
     let frontend: &dyn ExecutionPlan = match input {
         NormalizedNativeInput::Filter(filter) => filter.filter,
         NormalizedNativeInput::Projection(projection) => projection.projection,

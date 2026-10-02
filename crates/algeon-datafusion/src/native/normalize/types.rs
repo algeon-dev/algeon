@@ -10,109 +10,25 @@ use query_engine::expr::LimitSpec;
 
 use super::{
     AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan, FilterExec, GpuCandidate,
-    HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec, WindowAggExec, wrap_shape,
+    HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec, WindowAggExec,
 };
+use crate::{native::DECLARED_OUTPUT_ORDERING_SORT_OPERATOR, report::CandidateShape};
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
-/// the native path knows how to lower.
+/// the native path knows how to lower: one recursive input tree whose root is
+/// the candidate's output.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativePlan<'a> {
-    /// Candidate metadata emitted in planning reports. The shape and operator
-    /// count must stay aligned with the normalized tree below.
+    /// Candidate metadata emitted in planning reports, derived from `input`.
     pub(in crate::native) candidate: GpuCandidate,
-    pub(in crate::native) root: NormalizedNativeRoot<'a>,
-    pub(in crate::native) sort: Option<NormalizedNativeSortExprs<'a>>,
-    pub(in crate::native) limit: Option<LimitSpec>,
+    pub(in crate::native) input: NormalizedNativeInput<'a>,
 }
 
 impl<'a> NormalizedNativePlan<'a> {
-    /// Returns the source-shaped aggregate input for the slice1 path.
-    ///
-    /// This only proves that the aggregate root input is a source variant,
-    /// optionally with a filter attached to that source. Parquet/source
-    /// validity is checked later during source lowering. Unary wrappers,
-    /// aggregate inputs, or join subtrees inside the normalized input subtree
-    /// use the general input lowering path instead; root-level pre/post
-    /// aggregate projection, sort, and limit may still belong to the slice1
-    /// path.
-    pub(in crate::native) fn single_source_input(&self) -> Option<&NormalizedNativeSource<'a>> {
-        let root = self.aggregate_root()?;
-        match &root.input {
-            NormalizedNativeInput::Source(source) => Some(source),
-            NormalizedNativeInput::GpuResidentSource(_) => None,
-            NormalizedNativeInput::LiteralSource(_)
-            | NormalizedNativeInput::Filter(_)
-            | NormalizedNativeInput::Projection(_)
-            | NormalizedNativeInput::Limit(_)
-            | NormalizedNativeInput::Aggregate(_)
-            | NormalizedNativeInput::Sort(_)
-            | NormalizedNativeInput::Window(_)
-            | NormalizedNativeInput::HashJoin(_)
-            | NormalizedNativeInput::CrossJoin(_)
-            | NormalizedNativeInput::NestedLoopJoin(_)
-            | NormalizedNativeInput::Union(_) => None,
-        }
+    pub(in crate::native) fn new(input: NormalizedNativeInput<'a>, output_schema_fields: usize) -> Self {
+        let candidate = GpuCandidate::new(input.shape(), output_schema_fields);
+        Self { candidate, input }
     }
-
-    pub(in crate::native) fn root_input(&self) -> &NormalizedNativeInput<'a> {
-        match &self.root {
-            NormalizedNativeRoot::Aggregate(root) => &root.input,
-            NormalizedNativeRoot::Input(root) => &root.input,
-        }
-    }
-
-    pub(in crate::native) fn aggregate_root(&self) -> Option<&NormalizedNativeAggregateRoot<'a>> {
-        match &self.root {
-            NormalizedNativeRoot::Aggregate(root) => Some(root),
-            NormalizedNativeRoot::Input(_) => None,
-        }
-    }
-}
-
-/// Native roots are either aggregate stacks or input stacks. Aggregate roots
-/// keep pre/post aggregate operators separate because distributed aggregate
-/// provenance and output schemas are semantic contracts.
-#[derive(Debug, Clone)]
-pub(in crate::native) enum NormalizedNativeRoot<'a> {
-    Aggregate(NormalizedNativeAggregateRoot<'a>),
-    Input(NormalizedNativeInputRoot<'a>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(in crate::native) enum PostAggregateProjectionOrder {
-    #[default]
-    BelowSort,
-    AboveSort,
-}
-
-/// Root aggregate plus the operators that DataFusion may place immediately
-/// before or after it in the supported native shapes.
-#[derive(Debug, Clone)]
-pub(in crate::native) struct NormalizedNativeAggregateRoot<'a> {
-    pub(in crate::native) input: NormalizedNativeInput<'a>,
-    pub(in crate::native) pre_aggregate_projection: Option<&'a ProjectionExec>,
-    pub(in crate::native) aggregate: &'a AggregateExec,
-    /// Whole final output statistics, before peeling a distributed partial/final pair.
-    pub(in crate::native) statistics_output: &'a AggregateExec,
-    /// True when `aggregate` is a safe partial side of a DataFusion
-    /// partial/final pair. Lowering may then accept partial aggregate state
-    /// layouts, but only after the safety predicates below have matched them.
-    pub(in crate::native) aggregate_allows_partial: bool,
-    /// Output schema for the native aggregate node. For distributed pairs this
-    /// is the final aggregate schema, even though `aggregate` points at the
-    /// partial `AggregateExec` that computes the state.
-    pub(in crate::native) aggregate_output_schema: SchemaRef,
-    pub(in crate::native) post_aggregate_projection: Option<&'a ProjectionExec>,
-    pub(in crate::native) projection_order: PostAggregateProjectionOrder,
-}
-
-/// Root whose result is the input subtree itself, optionally followed by a
-/// projection, sort, and fetch.
-#[derive(Debug, Clone)]
-pub(in crate::native) struct NormalizedNativeInputRoot<'a> {
-    pub(in crate::native) input: NormalizedNativeInput<'a>,
-    pub(in crate::native) projection: Option<&'a ProjectionExec>,
-    pub(in crate::native) projection_order: PostAggregateProjectionOrder,
 }
 
 /// Recursive native input tree. These variants are the boundary between shape
@@ -135,10 +51,9 @@ pub(in crate::native) enum NormalizedNativeInput<'a> {
 }
 
 impl NormalizedNativeInput<'_> {
-    // Shape strings are consumed by reports/tests, so these helpers describe
-    // the accepted physical tree rather than debug-printing implementation
-    // details.
-    pub(in crate::native) fn shape(&self) -> String {
+    // Shapes are consumed by reports and tests, so they describe the accepted
+    // physical operators rather than implementation details.
+    pub(in crate::native) fn shape(&self) -> CandidateShape {
         match self {
             Self::Source(source) => source.shape(),
             Self::GpuResidentSource(source) => source.shape(),
@@ -155,27 +70,6 @@ impl NormalizedNativeInput<'_> {
             Self::Union(union) => union.shape(),
         }
     }
-
-    // Operator counts are planning diagnostics. They should count the matched
-    // physical operators represented by the normalized tree and the root
-    // wrappers that candidate helpers add.
-    pub(in crate::native) fn operator_count(&self) -> usize {
-        match self {
-            Self::Source(source) => source.operator_count(),
-            Self::GpuResidentSource(source) => source.operator_count(),
-            Self::LiteralSource(source) => source.operator_count(),
-            Self::Filter(filter) => filter.operator_count(),
-            Self::Projection(projection) => projection.operator_count(),
-            Self::Limit(limit) => limit.operator_count(),
-            Self::Aggregate(aggregate) => aggregate.operator_count(),
-            Self::Sort(sort) => sort.operator_count(),
-            Self::Window(window) => window.operator_count(),
-            Self::HashJoin(join) => join.operator_count(),
-            Self::CrossJoin(join) => join.operator_count(),
-            Self::NestedLoopJoin(join) => join.operator_count(),
-            Self::Union(union) => union.operator_count(),
-        }
-    }
 }
 
 /// In-memory literal source recognized by native normalization.
@@ -190,16 +84,12 @@ pub(in crate::native) enum NormalizedNativeLiteralSource<'a> {
 }
 
 impl NormalizedNativeLiteralSource<'_> {
-    fn shape(&self) -> String {
+    fn shape(&self) -> CandidateShape {
         match self {
-            Self::PlaceholderRow(_) => "PlaceholderRowExec".to_string(),
-            Self::Empty(_) => "EmptyExec".to_string(),
-            Self::Memory(_) => "MemorySource".to_string(),
+            Self::PlaceholderRow(_) => CandidateShape::leaf("PlaceholderRowExec"),
+            Self::Empty(_) => CandidateShape::leaf("EmptyExec"),
+            Self::Memory(_) => CandidateShape::leaf("MemorySource"),
         }
-    }
-
-    fn operator_count(&self) -> usize {
-        1
     }
 }
 
@@ -214,12 +104,8 @@ pub(in crate::native) struct NormalizedNativeGpuResidentSource<'a> {
 }
 
 impl NormalizedNativeGpuResidentSource<'_> {
-    fn shape(&self) -> String {
-        self.source_exec.name().to_string()
-    }
-
-    fn operator_count(&self) -> usize {
-        1
+    fn shape(&self) -> CandidateShape {
+        CandidateShape::leaf("GpuResidentSource")
     }
 }
 
@@ -233,13 +119,9 @@ pub(in crate::native) struct NormalizedNativeSource<'a> {
 }
 
 impl NormalizedNativeSource<'_> {
-    fn shape(&self) -> String {
-        let source_shape = "LocalParquetScan".to_string();
-        if self.filter.is_some() { wrap_shape("FilterExec", source_shape) } else { source_shape }
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + usize::from(self.filter.is_some())
+    fn shape(&self) -> CandidateShape {
+        let source_shape = CandidateShape::leaf("LocalParquetScan");
+        if self.filter.is_some() { CandidateShape::new("FilterExec", vec![source_shape]) } else { source_shape }
     }
 }
 
@@ -251,12 +133,8 @@ pub(in crate::native) struct NormalizedNativeFilter<'a> {
 }
 
 impl NormalizedNativeFilter<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("FilterExec", self.input.shape())
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+    fn shape(&self) -> CandidateShape {
+        unary_shape("FilterExec", self.input.shape())
     }
 }
 
@@ -268,36 +146,41 @@ pub(in crate::native) struct NormalizedNativeProjection<'a> {
 }
 
 impl NormalizedNativeProjection<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("ProjectionExec", self.input.shape())
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+    fn shape(&self) -> CandidateShape {
+        unary_shape("ProjectionExec", self.input.shape())
     }
 }
 
-/// Global limit inside a recursive native input tree.
+/// A limit in a recursive native input tree: a global limit, a local limit
+/// over one partition, or a fetch-limited coalesce.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeLimit<'a> {
+    /// The DataFusion operator the limit came from, for the candidate shape.
+    pub(in crate::native) operator: &'static str,
     pub(in crate::native) spec: LimitSpec,
+    /// DataFusion reports an ordering for the limit's input, so the limit
+    /// keeps the first rows in that order.
+    pub(in crate::native) input_ordered: bool,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
 
 impl NormalizedNativeLimit<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("GlobalLimitExec", self.input.shape())
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+    fn shape(&self) -> CandidateShape {
+        unary_shape(self.operator, self.input.shape())
     }
 }
 
-/// Aggregate inside a recursive native input tree, for example above a join.
+/// Aggregate in a recursive native input tree, with the projection DataFusion
+/// placed directly below it.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeAggregate<'a> {
     pub(in crate::native) aggregate: &'a AggregateExec,
+    /// Projection directly below the executable aggregate; its expressions
+    /// are the aggregate's inputs.
+    pub(in crate::native) pre_aggregate_projection: Option<&'a ProjectionExec>,
+    /// The exchange between a distributed final aggregate and its partial,
+    /// when `aggregate` is the partial side of such a pair.
+    pub(in crate::native) distributed_exchange: Option<&'a str>,
     /// Whole final output statistics, before peeling a distributed partial/final pair.
     pub(in crate::native) statistics_output: &'a AggregateExec,
     /// Mirrors root aggregate semantics: true only for a validated partial
@@ -310,41 +193,72 @@ pub(in crate::native) struct NormalizedNativeAggregate<'a> {
 }
 
 impl NormalizedNativeAggregate<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("AggregateExec", self.input.shape())
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+    fn shape(&self) -> CandidateShape {
+        let mut input = self.input.shape();
+        if self.pre_aggregate_projection.is_some() {
+            input = unary_shape("ProjectionExec", input);
+        }
+        if !self.aggregate_allows_partial {
+            return unary_shape("AggregateExec", input);
+        }
+        let partial = unary_shape("PartialAggregateExec", input);
+        let exchanged = match self.distributed_exchange {
+            Some(exchange) => unary_shape(exchange, partial),
+            None => partial,
+        };
+        unary_shape("FinalAggregateExec", exchanged)
     }
 }
 
-/// Sort inside a recursive native input tree, for example as the ordering
-/// contract immediately below a native window.
+/// Sort inside a recursive native input tree, with the fetch of a limit or
+/// merge folded into it.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSort<'a> {
+    /// The DataFusion operator the sort came from, for the candidate shape.
+    pub(in crate::native) origin: NormalizedNativeSortOrigin,
     pub(in crate::native) sort: NormalizedNativeSortExprs<'a>,
     pub(in crate::native) fetch: Option<LimitSpec>,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
 
-impl NormalizedNativeSort<'_> {
-    fn shape(&self) -> String {
-        let name = if self.fetch.is_some() { "SortExec(fetch)" } else { "SortExec" };
-        wrap_shape(name, self.input.shape())
-    }
+/// Which DataFusion operator a native sort stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::native) enum NormalizedNativeSortOrigin {
+    Sort,
+    /// A merge of sorted partitions, which one native sort reproduces.
+    SortPreservingMerge,
+    /// A merge over the per-partition sort that produced its runs; one native
+    /// sort replaces both. `sort_fetch` records whether that sort had a fetch.
+    SortPreservingMergeOverSort {
+        sort_fetch: bool,
+    },
+    /// The plan's declared output ordering, made explicit above a fetch.
+    DeclaredOutputOrdering,
+}
 
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+impl NormalizedNativeSort<'_> {
+    fn shape(&self) -> CandidateShape {
+        let name = match (self.origin, self.fetch.is_some()) {
+            (NormalizedNativeSortOrigin::Sort, false) => "SortExec",
+            (NormalizedNativeSortOrigin::Sort, true) => "SortExec(fetch)",
+            (NormalizedNativeSortOrigin::SortPreservingMerge, false) => "SortPreservingMergeExec",
+            (NormalizedNativeSortOrigin::SortPreservingMerge, true) => "SortPreservingMergeExec(fetch)",
+            (NormalizedNativeSortOrigin::SortPreservingMergeOverSort { sort_fetch }, merge_fetch) => {
+                let merge = if merge_fetch { "SortPreservingMergeExec(fetch)" } else { "SortPreservingMergeExec" };
+                let sort = if sort_fetch { "SortExec(fetch)" } else { "SortExec" };
+                return unary_shape(merge, unary_shape(sort, self.input.shape()));
+            },
+            (NormalizedNativeSortOrigin::DeclaredOutputOrdering, _) => DECLARED_OUTPUT_ORDERING_SORT_OPERATOR,
+        };
+        unary_shape(name, self.input.shape())
     }
 }
 
 /// Sort ordering carried by a normalized native sort node.
 ///
-/// Most physical sort roots borrow the original DataFusion `SortExec`.
-/// Sort-preserving merge roots provide only an ordering contract, so the
-/// normalizer stores the ordering plus the schema it should be resolved
-/// against.
+/// A sort borrows the original DataFusion `SortExec`. A sort-preserving merge
+/// or a declared output ordering provides only an ordering, so the normalizer
+/// stores it with the schemas it resolves against.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSortExprs<'a> {
     ordering: &'a LexOrdering,
@@ -422,12 +336,8 @@ impl NormalizedNativeWindowExec<'_> {
 }
 
 impl NormalizedNativeWindow<'_> {
-    fn shape(&self) -> String {
-        wrap_shape(self.window.name(), self.input.shape())
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.input.operator_count()
+    fn shape(&self) -> CandidateShape {
+        unary_shape(self.window.name(), self.input.shape())
     }
 }
 
@@ -442,13 +352,9 @@ pub(in crate::native) struct NormalizedNativeHashJoin<'a> {
 }
 
 impl NormalizedNativeHashJoin<'_> {
-    fn shape(&self) -> String {
+    fn shape(&self) -> CandidateShape {
         let name = if self.fetch.is_some() { "HashJoinExec(fetch)" } else { "HashJoinExec" };
-        wrap_shape(name, format!("{},{}", self.left.shape(), self.right.shape()))
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.left.operator_count() + self.right.operator_count()
+        CandidateShape::new(name, vec![self.left.shape(), self.right.shape()])
     }
 }
 
@@ -461,12 +367,8 @@ pub(in crate::native) struct NormalizedNativeCrossJoin<'a> {
 }
 
 impl NormalizedNativeCrossJoin<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("CrossJoinExec", format!("{},{}", self.left.shape(), self.right.shape()))
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.left.operator_count() + self.right.operator_count()
+    fn shape(&self) -> CandidateShape {
+        CandidateShape::new("CrossJoinExec", vec![self.left.shape(), self.right.shape()])
     }
 }
 
@@ -479,12 +381,8 @@ pub(in crate::native) struct NormalizedNativeNestedLoopJoin<'a> {
 }
 
 impl NormalizedNativeNestedLoopJoin<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("NestedLoopJoinExec", format!("{},{}", self.left.shape(), self.right.shape()))
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.left.operator_count() + self.right.operator_count()
+    fn shape(&self) -> CandidateShape {
+        CandidateShape::new("NestedLoopJoinExec", vec![self.left.shape(), self.right.shape()])
     }
 }
 
@@ -496,12 +394,8 @@ pub(in crate::native) struct NormalizedNativeUnion<'a> {
 }
 
 impl NormalizedNativeUnion<'_> {
-    fn shape(&self) -> String {
-        wrap_shape("UnionExec", self.inputs.iter().map(NormalizedNativeInput::shape).collect::<Vec<_>>().join(","))
-    }
-
-    fn operator_count(&self) -> usize {
-        1 + self.inputs.iter().map(NormalizedNativeInput::operator_count).sum::<usize>()
+    fn shape(&self) -> CandidateShape {
+        CandidateShape::new("UnionExec", self.inputs.iter().map(NormalizedNativeInput::shape).collect())
     }
 }
 
@@ -513,22 +407,6 @@ pub(in crate::native) struct NativePlanRejection {
     pub(in crate::native) reason: CapabilityReason,
 }
 
-/// Supported root wrappers outside the aggregate/input subtree. These variants
-/// encode ordering semantics, not just display names.
-#[derive(Debug, Clone, Copy)]
-pub(in crate::native) enum NativeStackRoot {
-    LocalLimit,
-    Sort,
-    SortFetch,
-    SortPreservingMerge,
-    SortPreservingMergeFetch,
-    SortPreservingMergeSort,
-    SortPreservingMergeFetchSort,
-}
-
-/// Aggregate shape family used by diagnostics string builders.
-#[derive(Debug, Clone, Copy)]
-pub(in crate::native) enum NativeAggregateShapeKind {
-    Global,
-    SortStack(NativeStackRoot),
+fn unary_shape(operator: &str, input: CandidateShape) -> CandidateShape {
+    CandidateShape::new(operator, vec![input])
 }

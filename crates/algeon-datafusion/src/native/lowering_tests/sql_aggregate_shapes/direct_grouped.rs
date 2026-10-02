@@ -3,7 +3,7 @@ use query_engine::{
 };
 
 use super::*;
-use crate::{native::ParquetReadStrategyConfig, report::GpuCandidate};
+use crate::native::ParquetReadStrategyConfig;
 
 #[tokio::test]
 async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() {
@@ -20,15 +20,18 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL plan should lower to native");
     };
-    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
-    assert_eq!(candidate.operator_count, 5);
-    assert_eq!(result.plans.len(), 1);
+    assert_eq!(
+        candidate.shape.to_string(),
+        "ProjectionExec(SortExec(fetch)(AggregateExec(FilterExec(LocalParquetScan))))"
+    );
+    assert_eq!(candidate.operator_count(), 5);
+    assert!(result.plan.is_some());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].file_count, 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(source.reader_predicate.is_none());
 
     fs::remove_dir_all(dir).unwrap();
@@ -46,13 +49,13 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let functions = native_aggregate_functions(&result.plans[0]);
+    let functions = native_aggregate_functions(result.selected_plan());
     assert_eq!(functions, vec![AggregateFunction::Min, AggregateFunction::Max, AggregateFunction::Count]);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(source.reader_predicate.is_none());
     assert_eq!(
         source.read_columns,
@@ -74,7 +77,7 @@ async fn direct_friendly_sql_median_aggregate_lowers_to_native_median() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Median);
     assert_eq!(aggregate_exprs[0].alias, "median(bench.m00)");
@@ -114,7 +117,7 @@ async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
     assert_eq!(
-        native_aggregate_functions(&result.plans[0]),
+        native_aggregate_functions(result.selected_plan()),
         vec![
             AggregateFunction::StddevPop,
             AggregateFunction::VarSamp,
@@ -157,7 +160,7 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     assert_eq!(result.candidate_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::NUnique);
     assert!(!aggregate_exprs[0].distinct);
@@ -176,9 +179,12 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 2);
-    assert_eq!(native_aggregate_functions(&result.plans[0]), vec![AggregateFunction::Sum, AggregateFunction::Count]);
+    assert_eq!(
+        native_aggregate_functions(result.selected_plan()),
+        vec![AggregateFunction::Sum, AggregateFunction::Count]
+    );
     let count_expr = aggregate_exprs
         .iter()
         .find(|expr| expr.function == AggregateFunction::Count)
@@ -187,7 +193,7 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
         &count_expr.expr,
         Expr::Column(column) if column.name().starts_with("__algeon_native_aggregate_arg_")
     ));
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
@@ -217,12 +223,12 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
     assert_eq!(result.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
 
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(source.is_zero_column_count_source());
     assert!(source.read_columns.is_empty());
     assert!(source.read_column_file_indices.is_empty());
     assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "represented");
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == ZERO_COLUMN_COUNT_COLUMN));
@@ -248,7 +254,7 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
             .iter()
             .any(|diagnostics| { diagnostics.zero_column_count_disposition.as_str() == "represented" })
     );
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(!source.is_zero_column_count_source());
     assert_eq!(source.read_columns, vec!["key".to_string()]);
     assert_eq!(source.projected_output_columns, Vec::<String>::new());
@@ -258,7 +264,7 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);
     assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
     validate_local_parquet_source(source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);
     assert!(matches!(
@@ -281,25 +287,25 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Selected {
-            candidate: GpuCandidate::with_operator_count("ProjectionExec(AggregateExec(LocalParquetScan))", 1, 3,),
-        }
-    );
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
+        panic!("outcomes={:?}", result.report.outcomes());
+    };
+    assert_eq!(candidate.shape.to_string(), "ProjectionExec(AggregateExec(LocalParquetScan))");
+    assert_eq!(candidate.output_schema_fields, 1);
+    assert_eq!(candidate.operator_count(), 3);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].read_column_count, 0);
     assert_eq!(result.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
 
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(source.is_zero_column_count_source());
     assert!(source.read_columns.is_empty());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == ZERO_COLUMN_COUNT_COLUMN));
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Projection(_)));
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Projection(_)));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -320,14 +326,17 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL filter plan should lower to native");
     };
-    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
-    assert_eq!(candidate.operator_count, 5);
-    assert_eq!(result.plans.len(), 1);
-    assert_eq!(result.plans[0].node_count(), 8);
+    assert_eq!(
+        candidate.shape.to_string(),
+        "ProjectionExec(SortExec(fetch)(AggregateExec(FilterExec(LocalParquetScan))))"
+    );
+    assert_eq!(candidate.operator_count(), 5);
+    assert!(result.plan.is_some());
+    assert_eq!(result.selected_plan().node_count(), 7);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
@@ -354,9 +363,9 @@ async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let filter = native_filter_expr(&result.plans[0]);
+    let filter = native_filter_expr(result.selected_plan());
     assert_eq!(filter.to_string(), "NOT (payload < 10)");
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]

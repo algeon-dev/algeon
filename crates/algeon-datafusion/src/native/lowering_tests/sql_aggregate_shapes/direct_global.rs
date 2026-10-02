@@ -13,11 +13,11 @@ async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
     assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
     assert!(source.diagnostics.direct_device_read);
 
@@ -36,12 +36,12 @@ async fn direct_friendly_sql_global_avg_lowers_to_native_avg() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert!(native_aggregate_group_exprs(result.selected_plan()).is_empty());
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
     assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["m00".to_string(), "payload".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
@@ -59,12 +59,12 @@ async fn direct_friendly_sql_global_median_lowers_to_native_median() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert!(native_aggregate_group_exprs(result.selected_plan()).is_empty());
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Median);
     assert_eq!(aggregate_exprs[0].alias, "median(bench.m00)");
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["m00".to_string(), "payload".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
@@ -121,9 +121,9 @@ async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
+    assert!(native_aggregate_group_exprs(result.selected_plan()).is_empty());
     assert_eq!(
-        native_aggregate_functions(&result.plans[0]),
+        native_aggregate_functions(result.selected_plan()),
         vec![
             AggregateFunction::Sum,
             AggregateFunction::Min,
@@ -132,7 +132,7 @@ async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
             AggregateFunction::Avg,
         ]
     );
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["m00".to_string(), "m01".to_string(), "payload".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
@@ -153,17 +153,17 @@ async fn direct_friendly_sql_discounted_revenue_global_decimal_sum_lowers() {
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("discounted revenue global aggregate should lower to native");
     };
-    assert_eq!(candidate.shape, "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))");
-    assert_eq!(candidate.operator_count, 4);
-    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(candidate.shape.to_string(), "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))");
+    assert_eq!(candidate.operator_count(), 4);
+    assert!(native_aggregate_group_exprs(result.selected_plan()).is_empty());
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(
         &aggregate_exprs[0].expr,
         Expr::Column(column) if column.name().starts_with("__algeon_native_aggregate_arg_")
     ));
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec![
@@ -190,7 +190,7 @@ async fn direct_friendly_sql_filtered_avg_lowers() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    let aggregates = native_aggregate_nodes(result.selected_plan());
     assert_eq!(aggregates.len(), 1);
     assert_eq!(aggregates[0].spec.aggr_exprs.len(), 1);
     assert!(aggregates[0].spec.aggr_exprs[0].filter.is_some());
@@ -210,7 +210,7 @@ async fn direct_friendly_sql_distinct_avg_lowers_as_explicit_aggregate_stack() {
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
-        native_aggregate_nodes(&result.plans[0]).len() >= 2,
+        native_aggregate_nodes(result.selected_plan()).len() >= 2,
         "distinct AVG should be represented by DataFusion's explicit aggregate stack"
     );
 

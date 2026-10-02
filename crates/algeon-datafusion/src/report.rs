@@ -61,37 +61,104 @@ impl NotSupportedDetail {
     }
 }
 
+/// Operator token of a candidate whose root operator has no native
+/// counterpart.
+pub(crate) const UNSUPPORTED_NATIVE_PLAN_OPERATOR: &str = "UnsupportedNativePhysicalPlan";
+
+/// Physical operators a candidate covers, as a tree of operator tokens.
+///
+/// A token names one physical operator from a stable diagnostic vocabulary;
+/// variant labels are part of the token, as in `SortExec(fetch)`. The display
+/// grammar is a leaf `Op`, a unary `Op(child)`, or `Op(left,right)`. The
+/// broader families are named by the
+/// [`NATIVE_CANDIDATE_SHAPE_FAMILY_*`](crate::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN)
+/// constants and computed from this structure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateShape {
+    operator: String,
+    inputs: Vec<CandidateShape>,
+}
+
+impl CandidateShape {
+    /// One operator without covered inputs.
+    pub fn leaf(operator: impl Into<String>) -> Self {
+        Self { operator: operator.into(), inputs: Vec::new() }
+    }
+
+    /// One operator over the shapes of its covered inputs.
+    pub fn new(operator: impl Into<String>, inputs: Vec<CandidateShape>) -> Self {
+        Self { operator: operator.into(), inputs }
+    }
+
+    /// The operator token at the root of the shape.
+    pub fn operator(&self) -> &str {
+        &self.operator
+    }
+
+    /// The shapes of the root operator's covered inputs.
+    pub fn inputs(&self) -> &[CandidateShape] {
+        &self.inputs
+    }
+
+    /// Number of operators the shape covers.
+    pub fn operator_count(&self) -> usize {
+        1 + self.inputs.iter().map(Self::operator_count).sum::<usize>()
+    }
+
+    /// Whether any covered operator has this token.
+    pub fn contains_operator(&self, operator: &str) -> bool {
+        self.operator == operator || self.inputs.iter().any(|input| input.contains_operator(operator))
+    }
+}
+
+impl std::fmt::Display for CandidateShape {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.operator)?;
+        if let Some((first, rest)) = self.inputs.split_first() {
+            write!(formatter, "({first}")?;
+            for input in rest {
+                write!(formatter, ",{input}")?;
+            }
+            formatter.write_str(")")?;
+        }
+        Ok(())
+    }
+}
+
+impl From<&str> for CandidateShape {
+    fn from(operator: &str) -> Self {
+        Self::leaf(operator)
+    }
+}
+
+impl From<String> for CandidateShape {
+    fn from(operator: String) -> Self {
+        Self::leaf(operator)
+    }
+}
+
 /// Physical-plan candidate considered for native GPU execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuCandidate {
-    /// Stable diagnostic vocabulary used by planning and fallback reports,
-    /// not arbitrary display prose.
-    ///
-    /// The recursive grammar is a leaf `Op`, unary `Op(child)`, or binary
-    /// `Op(left,right)`. Fetch and other variant labels are part of the
-    /// operator token, as in `SortExec(fetch)(child)`. The broader families
-    /// are named by the
-    /// [`NATIVE_CANDIDATE_SHAPE_FAMILY_*`](crate::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN)
-    /// constants, and [`NativeDataFusionPlanningRow::native_candidate_shape`](crate::native_report::NativeDataFusionPlanningRow::native_candidate_shape)
+    /// Physical operators the candidate covers.
+    /// [`NativeDataFusionPlanningRow::native_candidate_shape`](crate::native_report::NativeDataFusionPlanningRow::native_candidate_shape)
     /// is the report projection of this value.
-    pub shape: String,
+    pub shape: CandidateShape,
     /// Native plan node that anchors this candidate, when lowering reached native IR.
     pub plan_node_id: Option<PlanNodeId>,
     /// Number of fields in the candidate output schema.
     pub output_schema_fields: usize,
-    /// Number of physical operators covered by the candidate.
-    pub operator_count: usize,
 }
 
 impl GpuCandidate {
-    /// Creates a single-operator candidate summary.
-    pub fn new(shape: impl Into<String>, output_schema_fields: usize) -> Self {
-        Self { shape: shape.into(), plan_node_id: None, output_schema_fields, operator_count: 1 }
+    /// Creates a candidate summary for the operators `shape` covers.
+    pub fn new(shape: impl Into<CandidateShape>, output_schema_fields: usize) -> Self {
+        Self { shape: shape.into(), plan_node_id: None, output_schema_fields }
     }
 
-    /// Creates a candidate summary with an explicit covered-operator count.
-    pub fn with_operator_count(shape: impl Into<String>, output_schema_fields: usize, operator_count: usize) -> Self {
-        Self { shape: shape.into(), plan_node_id: None, output_schema_fields, operator_count }
+    /// Number of physical operators covered by the candidate.
+    pub fn operator_count(&self) -> usize {
+        self.shape.operator_count()
     }
 
     /// Returns this candidate anchored to a native plan node.
@@ -102,8 +169,7 @@ impl GpuCandidate {
     }
 
     pub(crate) fn with_outer_operator(mut self, operator: &str) -> Self {
-        self.shape = format!("{operator}({})", self.shape);
-        self.operator_count += 1;
+        self.shape = CandidateShape::new(operator, vec![self.shape]);
         self.plan_node_id = None;
         self
     }
@@ -440,7 +506,7 @@ impl PlanningReport {
                 "data_layout_fixable_not_supported": true,
                 "data_layout_fixable_reason_code": not_supported.capability_reason.code(),
                 "data_layout_fixable_property": not_supported.property,
-                "data_layout_fixable_candidate_shape": not_supported.candidate.shape.as_str(),
+                "data_layout_fixable_candidate_shape": not_supported.candidate.shape.to_string(),
                 "data_layout_fixable_outcome_index": not_supported.outcome_index,
             }),
             None => json!({
@@ -545,10 +611,10 @@ impl GpuCandidate {
     /// Serializes this candidate summary as named JSON.
     pub fn to_json(&self) -> Value {
         json!({
-            "shape": self.shape,
+            "shape": self.shape.to_string(),
             "plan_node_id": self.plan_node_id.as_ref().map(PlanNodeId::as_str),
             "output_schema_fields": self.output_schema_fields,
-            "operator_count": self.operator_count,
+            "operator_count": self.operator_count(),
         })
     }
 }

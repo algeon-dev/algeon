@@ -19,11 +19,11 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
         panic!("q22 should lower to native");
     };
     assert_eq!(
-        candidate.shape,
-        "SortExec(ProjectionExec(AggregateExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),AggregateExec(FilterExec(LocalParquetScan)))))))"
+        candidate.shape.to_string(),
+        "ProjectionExec(SortExec(AggregateExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),AggregateExec(FilterExec(LocalParquetScan)))))))"
     );
 
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["cntrycode", "numcust", "totacctbal"]);
     assert!(

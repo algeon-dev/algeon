@@ -21,12 +21,13 @@ mod local_parquet;
 mod reader_pushdown;
 
 use local_parquet::lower_local_parquet_source_input;
+pub(in crate::native) use local_parquet::{parquet_column_requirements, parquet_reads_row_count_only};
 pub(super) use reader_pushdown::{
     reader_predicate_proves_local_parquet_at_most_one_row, source_reader_pushdown_predicate,
 };
 
 use super::{
-    LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+    Demand, FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, lower_physical_expr, lower_physical_expr_with_bindings},
     projection_outputs,
 };
@@ -38,18 +39,10 @@ use crate::{
 pub(super) fn lower_source_input(
     source: &NormalizedNativeSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_fields: &RequiredFields,
-    pushed_scan_limit: Option<usize>,
+    demand: &Demand,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    lower_local_parquet_source_input(
-        source.scan,
-        source.filter,
-        builder,
-        required_output_fields,
-        pushed_scan_limit,
-        source_reads,
-    )
+    lower_local_parquet_source_input(source.scan, source.filter, builder, demand, source_reads)
 }
 
 pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {
@@ -73,16 +66,11 @@ pub(super) fn preserve_resolved_source_diagnostics(
         diagnostics.rejected_features.is_empty() && resolved_source_diagnostics.direct_device_read;
 }
 
-pub(super) enum SourceUnprojectedFilterOutput {
-    PreserveScanOutput,
-    ProjectRequiredOutput,
-}
-
 pub(super) fn project_scan_output_columns(
     builder: &mut NativeQueryPlanBuilder,
     input_node: NodeId,
     input_schema: SchemaRef,
-    input_bindings: Vec<super::FieldBinding>,
+    input_bindings: Vec<FieldBinding>,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let selected_bindings = selected_source_bindings_in_frontend_order(&input_bindings, required_output_fields)?;
@@ -111,9 +99,9 @@ pub(super) fn project_scan_output_columns(
 }
 
 fn selected_source_bindings_in_frontend_order(
-    input_bindings: &[super::FieldBinding],
+    input_bindings: &[FieldBinding],
     required_output_fields: &RequiredFields,
-) -> Result<Vec<super::FieldBinding>, LoweringFailure> {
+) -> Result<Vec<FieldBinding>, LoweringFailure> {
     let mut selected_bindings = match required_output_fields {
         RequiredFields::All => input_bindings.to_vec(),
         RequiredFields::Only { .. } => {
@@ -136,7 +124,7 @@ fn selected_source_bindings_in_frontend_order(
     Ok(selected_bindings)
 }
 
-pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<super::FieldBinding> {
+pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<FieldBinding> {
     // Each native field binds the lowest unused frontend index with its name, so duplicate names
     // consume their frontend positions in order.
     let mut frontend_indices_by_name = HashMap::<&str, VecDeque<usize>>::new();
@@ -148,7 +136,7 @@ pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: Sc
         .iter()
         .filter_map(|field| {
             let frontend_index = frontend_indices_by_name.get_mut(field.name().as_str())?.pop_front()?;
-            Some(super::FieldBinding {
+            Some(FieldBinding {
                 frontend_index,
                 frontend_name: field.name().clone(),
                 native_name: field.name().clone(),
@@ -159,7 +147,7 @@ pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: Sc
 
 pub(super) fn source_unique_key_columns(
     source: &dyn ExecutionPlan,
-    bindings: &[super::FieldBinding],
+    bindings: &[FieldBinding],
 ) -> Vec<BTreeSet<String>> {
     let schema = source.schema();
     source
@@ -235,16 +223,60 @@ pub(super) fn add_source_filter_projection(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
+/// The filtered scan output read through the filter's output projection:
+/// each demanded filter output binds to the scan column it projects, and the
+/// node keeps the scan columns, which the parent selects from itself.
+fn bind_through_filter_projection(
+    builder: &NativeQueryPlanBuilder,
+    filtered_node: NodeId,
+    scan_output: &LoweredNativeInput,
+    filter_schema: SchemaRef,
+    projection: &[usize],
+    demand: &Demand,
+) -> Result<LoweredNativeInput, LoweringFailure> {
+    let bindings = demand
+        .fields
+        .requested_indices(filter_schema.fields().len())?
+        .into_iter()
+        .map(|output_index| {
+            let input_index = projection.get(output_index).copied().ok_or(CapabilityReason::UnsupportedExpression)?;
+            let input_binding = scan_output.binding_for_frontend_index(input_index)?;
+            Ok(FieldBinding {
+                frontend_index: output_index,
+                frontend_name: filter_schema.field(output_index).name().clone(),
+                native_name: input_binding.native_name.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    Ok(LoweredNativeInput::with_bindings(filtered_node, node_output_schema(builder, filtered_node)?, bindings))
+}
+
+/// The output schema the builder derived for `node`, which a filter may
+/// narrow from its input's, for example in nullability.
+pub(super) fn node_output_schema(builder: &NativeQueryPlanBuilder, node: NodeId) -> Result<SchemaRef, LoweringFailure> {
+    Ok(Arc::clone(builder.node_output_schema(node).ok_or(CapabilityReason::UnsupportedOperator)?))
+}
+
 pub(super) fn lower_source_filter_and_projection(
     builder: &mut NativeQueryPlanBuilder,
     scan_output: LoweredNativeInput,
     filter: &FilterExec,
     reader_pushdown_covers_filter: bool,
-    required_output_fields: &RequiredFields,
-    unprojected_output: SourceUnprojectedFilterOutput,
+    demand: &Demand,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
+    let required_output_fields = &demand.fields;
     if reader_pushdown_covers_filter {
         if let Some(projection) = filter.projection() {
+            if demand.extra_fields_allowed {
+                return bind_through_filter_projection(
+                    builder,
+                    scan_output.node,
+                    &scan_output,
+                    filter.schema(),
+                    projection,
+                    demand,
+                );
+            }
             return add_source_filter_projection(
                 builder,
                 scan_output.node,
@@ -254,7 +286,16 @@ pub(super) fn lower_source_filter_and_projection(
                 required_output_fields,
             );
         }
-        return unprojected_source_filter_output(builder, scan_output, required_output_fields, unprojected_output);
+        if demand.extra_fields_allowed {
+            return Ok(scan_output);
+        }
+        return project_scan_output_columns(
+            builder,
+            scan_output.node,
+            scan_output.schema,
+            scan_output.bindings,
+            required_output_fields,
+        );
     }
 
     let filtered_node = builder.add_filter(
@@ -262,6 +303,16 @@ pub(super) fn lower_source_filter_and_projection(
         lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&scan_output.bindings))?,
     )?;
     if let Some(projection) = filter.projection() {
+        if demand.extra_fields_allowed {
+            return bind_through_filter_projection(
+                builder,
+                filtered_node,
+                &scan_output,
+                filter.schema(),
+                projection,
+                demand,
+            );
+        }
         add_source_filter_projection(
             builder,
             filtered_node,
@@ -270,7 +321,13 @@ pub(super) fn lower_source_filter_and_projection(
             projection,
             required_output_fields,
         )
-    } else if matches!(unprojected_output, SourceUnprojectedFilterOutput::ProjectRequiredOutput) {
+    } else if demand.extra_fields_allowed {
+        Ok(LoweredNativeInput::with_bindings(
+            filtered_node,
+            node_output_schema(builder, filtered_node)?,
+            scan_output.bindings,
+        ))
+    } else {
         project_scan_output_columns(
             builder,
             filtered_node,
@@ -278,26 +335,6 @@ pub(super) fn lower_source_filter_and_projection(
             scan_output.bindings,
             required_output_fields,
         )
-    } else {
-        Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
-    }
-}
-
-fn unprojected_source_filter_output(
-    builder: &mut NativeQueryPlanBuilder,
-    scan_output: LoweredNativeInput,
-    required_output_fields: &RequiredFields,
-    unprojected_output: SourceUnprojectedFilterOutput,
-) -> Result<LoweredNativeInput, LoweringFailure> {
-    match unprojected_output {
-        SourceUnprojectedFilterOutput::PreserveScanOutput => Ok(scan_output),
-        SourceUnprojectedFilterOutput::ProjectRequiredOutput => project_scan_output_columns(
-            builder,
-            scan_output.node,
-            scan_output.schema,
-            scan_output.bindings,
-            required_output_fields,
-        ),
     }
 }
 

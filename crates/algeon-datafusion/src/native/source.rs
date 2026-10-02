@@ -46,19 +46,22 @@ mod diagnostics;
 mod s3_parquet;
 
 pub(super) use columns::{
-    NativeParquetColumnRequirements, native_source_output_schema, required_parquet_column_requirements,
+    NativeParquetColumnRequirements, native_source_output_schema, parquet_source_has_row_level_predicate,
     required_parquet_column_requirements_for_scan_columns,
 };
-pub(super) use diagnostics::{local_parquet_source_diagnostics, source_diagnostics_for_normalized_plan};
+pub(super) use diagnostics::{SourceRead, local_parquet_source_diagnostics, source_diagnostics_for_normalized_plan};
 pub(crate) use s3_parquet::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
 use s3_parquet::{ParquetSourceMetadata, resolve_parquet_source_with_metadata};
 
+/// `ordered` says whether the scan's parent reads its rows in the declared
+/// order.
 pub(super) fn validate_slice1_parquet_scan(
     file_scan: &FileScanConfig,
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
+    ordered: bool,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<(), CapabilityReason> {
     if !native_parquet_object_store_scan_is_supported(file_scan) {
@@ -71,10 +74,10 @@ pub(super) fn validate_slice1_parquet_scan(
     if !native_parquet_file_reader_factory_is_supported(parquet_source) {
         return Err(CapabilityReason::NativeSourceParquetFileReaderFactory);
     }
-    if !native_declared_output_ordering_scan_is_supported(file_scan) {
+    if !native_declared_output_ordering_scan_is_supported(file_scan, ordered) {
         return Err(CapabilityReason::NativeSourceOutputOrdering);
     }
-    if !native_preserve_order_scan_is_supported(file_scan) {
+    if !native_preserve_order_scan_is_supported(file_scan, ordered) {
         return Err(CapabilityReason::NativeSourcePreserveOrder);
     }
     if parquet_source
@@ -87,12 +90,20 @@ pub(super) fn validate_slice1_parquet_scan(
     Ok(())
 }
 
-pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig) -> bool {
-    !file_scan.preserve_order || native_scan_read_order_matches_file_groups(file_scan)
+/// DataFusion keeps file order when the scan declares an ordering or its
+/// limit is order sensitive. A limit keeps the first rows of each run, which a
+/// sequential read of several runs does not reproduce whatever the parent
+/// reads; without a limit, file order matters only to a parent that reads it.
+pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig, ordered: bool) -> bool {
+    !file_scan.preserve_order
+        || native_scan_read_order_matches_file_groups(file_scan)
+        || !ordered && file_scan.limit.is_none()
 }
 
-pub(super) fn native_declared_output_ordering_scan_is_supported(file_scan: &FileScanConfig) -> bool {
-    file_scan.output_ordering.is_empty() || native_scan_read_order_matches_file_groups(file_scan)
+/// A scan's declared ordering matters only to a parent that reads its rows in
+/// that order.
+pub(super) fn native_declared_output_ordering_scan_is_supported(file_scan: &FileScanConfig, ordered: bool) -> bool {
+    !ordered || file_scan.output_ordering.is_empty() || native_scan_read_order_matches_file_groups(file_scan)
 }
 
 /// Whether the native reader reproduces the row order of the scan's file

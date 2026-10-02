@@ -17,7 +17,8 @@ use crate::{
 pub(in crate::native) struct DistributedAggregatePeel<'a> {
     pub(in crate::native) aggregate: &'a AggregateExec,
     pub(in crate::native) aggregate_allows_partial: bool,
-    pub(in crate::native) has_distributed_aggregate: bool,
+    /// The repartition or coalesce between the final and partial aggregate.
+    pub(in crate::native) exchange: Option<&'a str>,
     pub(in crate::native) aggregate_output_schema: SchemaRef,
 }
 
@@ -32,7 +33,7 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         return Ok(DistributedAggregatePeel {
             aggregate,
             aggregate_allows_partial: false,
-            has_distributed_aggregate: false,
+            exchange: None,
             aggregate_output_schema: aggregate.schema(),
         });
     }
@@ -49,7 +50,7 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
     Ok(DistributedAggregatePeel {
         aggregate: partial,
         aggregate_allows_partial: true,
-        has_distributed_aggregate: true,
+        exchange: aggregate.input().downcast_ref::<AggregateExec>().is_none().then(|| aggregate.input().name()),
         aggregate_output_schema: aggregate.schema(),
     })
 }

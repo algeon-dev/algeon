@@ -58,8 +58,8 @@ pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
         graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec, source_reads)
     });
     let lowering = lower_physical_plan_to_native(edge_source, source_reads)?;
-    if lowering.plans.len() == 1 && lowering.selected_count() == 1 {
-        return Ok(graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec));
+    if let Some(plan) = &lowering.plan {
+        return Ok(graph_residency_descriptor_for_edge_plan(plan, native_spec));
     }
     Ok(direct_parquet_descriptor.map_or_else(
         || GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource),

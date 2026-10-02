@@ -29,7 +29,7 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
         assert_eq!(result.candidate_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
         assert_eq!(result.selected_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
         assert_eq!(result.not_selected_count(), 0, "{} outcomes={:?}", query.id, result.report.outcomes());
-        assert!(result.plans[0].contains_join(), "{} should lower to a join-bearing native plan", query.id);
+        assert!(result.selected_plan().contains_join(), "{} should lower to a join-bearing native plan", query.id);
     }
 
     fs::remove_dir_all(dir).unwrap();

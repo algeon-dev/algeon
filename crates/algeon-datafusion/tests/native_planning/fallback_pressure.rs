@@ -172,7 +172,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(
         distributed_avg.native_candidate_shape.as_deref(),
         Some(
-            "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan))))))))",
+            "SortPreservingMergeExec(fetch)(ProjectionExec(SortExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(LocalParquetScan)))))))",
         )
     );
     assert_eq!(
@@ -389,7 +389,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(count_only_row.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(
         count_only_row.native_candidate_shape.as_deref(),
-        Some("ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))")
+        Some("ProjectionExec(FinalAggregateExec(PartialAggregateExec(LocalParquetScan)))")
     );
     assert_eq!(
         count_only_row.native_candidate_shape_family.as_deref(),

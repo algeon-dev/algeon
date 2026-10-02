@@ -12,7 +12,7 @@
 
 use crate::server::{
     capability::{CapabilityReason, FlightSqlNativeNotSupportedClass},
-    report::{CandidateOutcome, DataLayoutFixableNotSupported, PlanningReport},
+    report::{CandidateOutcome, CandidateShape, DataLayoutFixableNotSupported, PlanningReport},
 };
 
 /// Emit the native planning diagnostics for a Flight SQL query, including a
@@ -43,7 +43,7 @@ pub fn log_native_planning_report_for_tables(query_id: &str, report: Option<&Pla
             tables = fields.tables,
             reason_code = fields.reason_code,
             layout_property = fields.layout_property,
-            native_candidate_shape = fields.native_candidate_shape,
+            native_candidate_shape = %fields.native_candidate_shape,
             outcome_index = fields.outcome_index,
             "algeon-datafusion native planning found a data-layout-fixable capability miss"
         );
@@ -56,7 +56,7 @@ pub(crate) struct DataLayoutFixablePlanningEventFields<'a> {
     pub tables: &'a str,
     pub reason_code: &'static str,
     pub layout_property: &'static str,
-    pub native_candidate_shape: &'a str,
+    pub native_candidate_shape: &'a CandidateShape,
     pub outcome_index: usize,
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn data_layout_fixable_planning_event_fields<'a>(
         tables,
         reason_code: capability_reason.code(),
         layout_property: property,
-        native_candidate_shape: candidate.shape.as_str(),
+        native_candidate_shape: &candidate.shape,
         outcome_index,
     })
 }
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(fields.tables, "public.sorted_lineitem");
         assert_eq!(fields.reason_code, "native_ordered_output_unsupported");
         assert_eq!(fields.layout_property, "declared_output_ordering");
-        assert_eq!(fields.native_candidate_shape, "AggregateExec(LocalParquetScan)");
+        assert_eq!(fields.native_candidate_shape.to_string(), "AggregateExec(LocalParquetScan)");
         assert_eq!(fields.outcome_index, 1);
     }
 }

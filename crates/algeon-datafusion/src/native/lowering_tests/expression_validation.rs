@@ -20,7 +20,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projection = native_projection_exprs(&result.plans[0])
+    let projection = native_projection_exprs(result.selected_plan())
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "x00"))
         .expect("native plan should include x00 projection");
@@ -38,7 +38,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
                     )
             )
     ));
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
@@ -56,7 +56,7 @@ fn scan_only_partial_reader_predicate_keeps_native_residual_filter() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     let reader_predicate = source
         .reader_predicate
         .as_ref()
@@ -65,7 +65,7 @@ fn scan_only_partial_reader_predicate_keeps_native_residual_filter() {
     assert!(reader_predicate.contains("payload = 10"), "{reader_predicate}");
     assert!(!reader_predicate.contains("LIKE"), "{reader_predicate}");
 
-    let filters = native_filter_exprs(&result.plans[0]);
+    let filters = native_filter_exprs(result.selected_plan());
     assert_eq!(filters.len(), 1, "unsupported scan predicate residual must remain as a native filter");
     let residual = filters[0].to_string();
     assert!(residual.contains("payload = 10"), "{residual}");
@@ -95,7 +95,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projection = native_projection_exprs(&result.plans[0])
+    let projection = native_projection_exprs(result.selected_plan())
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "ratio"))
         .expect("native plan should include ratio projection");
@@ -126,7 +126,7 @@ async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projection = native_projection_exprs(&result.plans[0])
+    let projection = native_projection_exprs(result.selected_plan())
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "segment"))
         .expect("native plan should include segment projection");
@@ -157,7 +157,7 @@ async fn sql_nullif_lowers_to_case_with_null_aware_comparison() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projection = native_projection_exprs(&result.plans[0])
+    let projection = native_projection_exprs(result.selected_plan())
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "maybe_payload"))
         .expect("native plan should include NULLIF projection");
@@ -206,7 +206,7 @@ async fn sql_ilike_ascii_pattern_remains_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -227,7 +227,7 @@ async fn sql_ilike_non_ascii_pattern_remains_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -253,7 +253,7 @@ async fn sql_trim_family_lowers_to_native_string_trim_expressions() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projections = native_projection_exprs(&result.plans[0]);
+    let projections = native_projection_exprs(result.selected_plan());
     assert!(projections.iter().any(|expr| matches!(
         expr,
         Expr::Alias { alias, expr }
@@ -329,7 +329,7 @@ fn string_predicates_lower_to_native_string_predicate_expressions() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let projections = native_projection_exprs(&result.plans[0]);
+    let projections = native_projection_exprs(result.selected_plan());
     assert!(projections.iter().any(|expr| matches!(
         expr,
         Expr::Alias { alias, expr }
@@ -433,7 +433,7 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -461,7 +461,7 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -552,7 +552,7 @@ fn dynamic_filter_expression_lowers_as_current_inner_expression() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
@@ -579,7 +579,7 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -602,7 +602,7 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "string cast should not lower");
+    assert!(result.plan.is_none(), "string cast should not lower");
     assert_eq!(result.not_selected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
     assert!(
         matches!(
@@ -635,7 +635,7 @@ fn integer_to_timestamp_cast_lowers_during_native_planning() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let native = result.plans.first().expect("timestamp cast should lower to a native plan").to_string();
+    let native = result.plan.as_ref().expect("timestamp cast should lower to a native plan").to_string();
     assert!(native.contains("CAST(payload AS Timestamp(ns))"), "{native}");
 
     fs::remove_dir_all(dir).unwrap();
@@ -655,7 +655,7 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
+    let native = result.plan.as_ref().expect("decimal cast should lower to a native plan").to_string();
     assert!(native.contains("CAST(payload AS Decimal128(10, 0))"), "{native}");
 
     fs::remove_dir_all(dir).unwrap();
@@ -676,7 +676,7 @@ fn decimal_to_float32_cast_lowers_through_float64() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
+    let native = result.plan.as_ref().expect("decimal cast should lower to a native plan").to_string();
     assert!(native.contains("CAST(CAST(CAST(payload AS Decimal128(10, 0)) AS Float64) AS Float32)"), "{native}");
 
     fs::remove_dir_all(dir).unwrap();
@@ -695,7 +695,7 @@ fn lossy_numeric_cast_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -720,14 +720,14 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL no-filter plan should lower to native");
     };
-    assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))");
-    assert_eq!(candidate.operator_count, 4);
-    assert_eq!(result.plans.len(), 1);
+    assert_eq!(candidate.shape.to_string(), "ProjectionExec(SortExec(fetch)(AggregateExec(LocalParquetScan)))");
+    assert_eq!(candidate.operator_count(), 4);
+    assert!(result.plan.is_some());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
 
     fs::remove_dir_all(dir).unwrap();
@@ -749,7 +749,7 @@ fn integer_division_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -776,7 +776,7 @@ fn integer_modulo_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],

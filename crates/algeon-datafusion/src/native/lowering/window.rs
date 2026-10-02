@@ -29,7 +29,7 @@ use query_engine::{
 };
 
 use super::{
-    FieldBinding, LoweredNativeInput, RequiredFields,
+    Demand, FieldBinding, LoweredNativeInput, RequiredFields,
     aggregate::{lower_native_aggregate_function, project_required_output_columns},
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
@@ -70,7 +70,8 @@ fn lower_unprojected_sort_input(
         collect_required_field_indices(&sort_expr.expr, sort.sort.input_schema(), &mut child_required)?;
     }
     child_required.extend(required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
-    let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required), source_reads)?;
+    let input =
+        lower_native_input(&sort.input, builder, &Demand::fields(RequiredFields::only(child_required)), source_reads)?;
     let sorted =
         lower_sort_ordering_unprojected_with_input(builder, sort.sort.ordering(), sort.sort.input_schema(), input)?;
     Ok(SortedNativeInput {
@@ -117,7 +118,10 @@ pub(super) fn lower_window_input(
                 .collect::<Vec<_>>();
             (sorted.input, keys)
         },
-        input => (lower_native_input(input, builder, &RequiredFields::all(), source_reads)?, Vec::new()),
+        // The native window reads its input in order.
+        input => {
+            (lower_native_input(input, builder, &Demand { ordered: true, ..Demand::all() }, source_reads)?, Vec::new())
+        },
     };
     let prepared = materialize_window_key_expressions(
         builder,

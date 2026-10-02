@@ -210,10 +210,7 @@ fn optimize_final_native_root(
         && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
     {
         let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()), &source_reads)?;
-        if native_leaf_lowering.plans.len() == 1
-            && native_leaf_lowering.selected_count() == 1
-            && boundary.accepts_native_leaf(&native_leaf_lowering.plans[0])
-        {
+        if native_leaf_lowering.plan.as_ref().is_some_and(|native_leaf| boundary.accepts_native_leaf(native_leaf)) {
             let mut native_leaf = replace_lowered_root_or_keep_plan(
                 Arc::clone(boundary.source()),
                 Some(boundary.native_equivalence_properties()),
@@ -281,7 +278,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
-    if lowering.plans.len() != 1 || lowering.selected_count() != 1 {
+    let Some(lowered_plan) = lowering.plan.take() else {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
@@ -290,8 +287,8 @@ fn replace_lowered_root_or_keep_plan_for_sink(
             capability_contract: NativeCapabilityContractDiagnostics::default(),
             rewritten: false,
         });
-    }
-    lowering.report.anchor_selected_candidates_to_plan_node(lowering.plans[0].root_id());
+    };
+    lowering.report.anchor_selected_candidates_to_plan_node(lowered_plan.root_id());
     let candidate_before_declared_output_sort = lowering
         .report
         .single_selected_candidate()
@@ -299,7 +296,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)?;
     let optimizer_result = optimize_query_plan(
-        lowering.plans[0].clone(),
+        lowered_plan,
         &optimizer_options,
         rapids_analysis_context(native_execution_config.planning_policy()),
         local_dimension_pruning_resolver(),
@@ -425,7 +422,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         }
     }
 
-    let datafusion_shape = candidate.shape.clone();
+    let datafusion_shape = candidate.shape.to_string();
     let capability_contract = accepted_plan_contract_diagnostics(candidate, native_execution_config, &admission)?;
     let plan = native_datafusion_exec_for_plan(
         Arc::clone(&plan),
@@ -486,8 +483,7 @@ fn rejection_capability_reason(plan: &QueryPlan, rejection: &AdmissionRejection)
 }
 
 fn whole_plan_has_unsupported_expression_miss(lowering: &NativeLoweringResult) -> bool {
-    lowering.plans.is_empty()
-        && lowering.selected_count() == 0
+    lowering.plan.is_none()
         && matches!(
             lowering.report.outcomes(),
             [CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }]

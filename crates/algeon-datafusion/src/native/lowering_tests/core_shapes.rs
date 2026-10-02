@@ -16,11 +16,11 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.plans.len(), 1);
-    assert_eq!(result.plans[0].node_count(), 6);
+    assert!(result.plan.is_some());
+    assert_eq!(result.selected_plan().node_count(), 6);
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     let PlanNode::Limit(limit) = &plan.root_node().kind else {
         panic!("native root should be a limit node");
     };
@@ -78,7 +78,7 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     assert_eq!(source.diagnostics.partition_column_disposition.as_str(), "absent");
     assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
     assert_eq!(source.diagnostics.schema_mapping_disposition.as_str(), "direct_by_name");
-    assert!(result.plans[0].to_string().contains("LocalParquetSource"));
+    assert!(result.selected_plan().to_string().contains("LocalParquetSource"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -96,7 +96,7 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     let source = plan
         .nodes()
         .iter()
@@ -136,7 +136,7 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 3][..]));
     assert_eq!(source.selected_row_group_count(), 2);
@@ -153,7 +153,7 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 0);
     assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    assert!(result.plans[0].to_string().contains("selected_row_groups=2"));
+    assert!(result.selected_plan().to_string().contains("selected_row_groups=2"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -169,7 +169,7 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -194,7 +194,7 @@ fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -213,7 +213,7 @@ fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -235,7 +235,7 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
@@ -256,7 +256,7 @@ fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -278,7 +278,7 @@ fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -301,7 +301,7 @@ fn parquet_sorting_columns_scan_limit_lowers_to_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.scan_limit, Some(1));
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -322,7 +322,7 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -336,7 +336,7 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
 }
 
 #[test]
-fn preserve_order_multi_file_group_without_scan_limit_remains_rejected() {
+fn preserve_order_multi_file_group_without_scan_limit_lowers_when_no_parent_reads_the_order() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-preserve-order-multi-group");
     write_numeric_parquet_file(&dir.join("part-000.parquet"));
     write_numeric_parquet_file(&dir.join("part-001.parquet"));
@@ -345,15 +345,11 @@ fn preserve_order_multi_file_group_without_scan_limit_remains_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.not_selected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourcePreserveOrder, .. }
-    ));
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(native_local_parquet_source(result.selected_plan()).file_count(), 2);
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "absent");
-    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "preserve_order"));
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -371,7 +367,7 @@ fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.file_count(), 1);
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics.len(), 1);
@@ -392,7 +388,7 @@ fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.file_count(), 1);
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics.len(), 1);
@@ -413,7 +409,7 @@ fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_s
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.file_count(), 2);
     assert!(source.diagnostics.rejected_features.is_empty());
     assert_eq!(result.source_diagnostics.len(), 1);
@@ -423,8 +419,8 @@ fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_s
 }
 
 #[test]
-fn declared_output_ordering_multi_file_group_scan_with_overlapping_keys_is_rejected() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-declared-output-ordering-multi-group");
+fn declared_output_ordering_sorted_runs_lower_when_no_parent_reads_the_scan_order() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-sorted-runs-unordered-parent");
     write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 3, 5]);
     write_sorted_numeric_parquet_file_with_keys(&dir.join("part-001.parquet"), &[2, 3, 4]);
     let scan = parquet_scan_with_declared_output_ordering_one_file_per_group(&dir);
@@ -433,8 +429,52 @@ fn declared_output_ordering_multi_file_group_scan_with_overlapping_keys_is_rejec
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.not_selected_count(), 1);
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(result.selected_plan());
+    assert_eq!(source.file_count(), 2);
+    assert!(source.diagnostics.rejected_features.is_empty(), "{:?}", source.diagnostics.rejected_features);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sort_preserving_merge_of_sorted_runs_lowers_to_one_native_sort() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-merge-sorted-runs");
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 3, 5]);
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-001.parquet"), &[2, 3, 4]);
+    let scan = parquet_scan_with_declared_output_ordering_one_file_per_group(&dir);
+    let ordering = scan.properties().output_ordering().cloned().expect("each run is sorted by key");
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let plan = result.selected_plan();
+    assert!(matches!(plan.root_node().kind, PlanNode::Sort(_)), "the merge should become one native sort: {plan}");
+    assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Sort(_))).count(), 1, "{plan}");
+    assert_eq!(native_local_parquet_source(plan).file_count(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_of_sorted_runs_read_by_the_output_is_rejected() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-sorted-runs-ordered-output");
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 3, 5]);
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-001.parquet"), &[2, 3, 4]);
+    let scan = parquet_scan_with_declared_output_ordering_one_file_per_group(&dir);
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("key", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(1))), &scan_schema)
+            .unwrap();
+    // The filter keeps the scan's per-run order, which the plan declares as
+    // its output ordering.
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+    assert!(plan.properties().output_ordering().is_some());
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert!(result.plan.is_none());
     assert!(matches!(
         result.report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceOutputOrdering, .. }
@@ -454,21 +494,18 @@ fn declared_output_ordering_claim_through_aggregate_is_reestablished_with_native
     let plan = grouped_sum_aggregate_plan(scan);
     assert!(plan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+    let (report, native_plan) = optimize_with_native_rule(plan);
 
-    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
-        panic!("ordered aggregate should lower with an explicit native sort");
+    let [CandidateOutcome::Selected { candidate }] = report.outcomes() else {
+        panic!("ordered aggregate should lower with an explicit native sort: {:?}", report.outcomes());
     };
     assert!(
-        candidate.shape.starts_with("SortExec(AggregateExec("),
+        candidate.shape.to_string().starts_with("SortExec(AggregateExec("),
         "appended declared-ordering sort should be visible in candidate shape: {}",
         candidate.shape
     );
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Sort(_)));
-    assert_eq!(result.source_diagnostics.len(), 1);
-    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let native_plan = native_plan.expect("the rule keeps the native plan");
+    assert!(matches!(native_plan.root_node().kind, PlanNode::Sort(_)), "{native_plan}");
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -484,9 +521,20 @@ fn declared_output_ordering_limit_above_aggregate_is_rejected_instead_of_sorted_
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(aggregate, 0, Some(5)));
     assert!(plan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+    let (report, native_plan) = optimize_with_native_rule(plan);
 
-    assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
+    assert!(native_plan.is_none());
+    assert!(
+        matches!(
+            report.outcomes(),
+            [CandidateOutcome::NotSupported {
+                capability_reason: CapabilityReason::NativeOrderedOutputUnsupported,
+                ..
+            }]
+        ),
+        "outcomes={:?}",
+        report.outcomes()
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -516,9 +564,20 @@ fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_rep
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(BoundedWindowAggExec::try_new(vec![window_expr], aggregate, InputOrderMode::Sorted, true).unwrap());
 
-    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+    let (report, native_plan) = optimize_with_native_rule(plan);
 
-    assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
+    assert!(native_plan.is_none());
+    assert!(
+        matches!(
+            report.outcomes(),
+            [CandidateOutcome::NotSupported {
+                capability_reason: CapabilityReason::NativeOrderedOutputUnsupported,
+                ..
+            }]
+        ),
+        "outcomes={:?}",
+        report.outcomes()
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -540,7 +599,7 @@ fn declared_output_ordering_multi_partition_memory_source_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -572,8 +631,8 @@ fn sort_preserving_merge_over_partition_preserving_memory_sort_lowers() {
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("partition-preserving SPM should lower to native");
     };
-    assert_eq!(candidate.shape, "SortPreservingMergeExec(SortExec(MemorySource))");
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Sort(_)));
+    assert_eq!(candidate.shape.to_string(), "SortPreservingMergeExec(SortExec(MemorySource))");
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Sort(_)));
 }
 
 #[test]
@@ -598,8 +657,8 @@ fn sort_preserving_merge_over_ordered_memory_source_lowers_without_child_sort() 
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("SPM over an ordered input should lower to native");
     };
-    assert_eq!(candidate.shape, "SortPreservingMergeExec(MemorySource)");
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Sort(_)));
+    assert_eq!(candidate.shape.to_string(), "SortPreservingMergeExec(MemorySource)");
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Sort(_)));
 }
 
 #[test]
@@ -636,11 +695,11 @@ fn projection_over_sort_preserving_merge_and_ordered_union_lowers() {
         panic!("SPM over an ordered union should lower to native");
     };
     assert_eq!(
-        candidate.shape,
-        "SortPreservingMergeExec(ProjectionExec(UnionExec(ProjectionExec(MemorySource),ProjectionExec(MemorySource))))"
+        candidate.shape.to_string(),
+        "ProjectionExec(SortPreservingMergeExec(UnionExec(ProjectionExec(MemorySource),ProjectionExec(MemorySource))))"
     );
-    assert!(result.plans[0].nodes().iter().any(|node| matches!(node.kind, PlanNode::Sort(_))));
-    assert!(result.plans[0].nodes().iter().any(|node| matches!(node.kind, PlanNode::Projection(_))));
+    assert!(result.selected_plan().nodes().iter().any(|node| matches!(node.kind, PlanNode::Sort(_))));
+    assert!(result.selected_plan().nodes().iter().any(|node| matches!(node.kind, PlanNode::Projection(_))));
 }
 
 #[test]
@@ -662,8 +721,8 @@ fn partition_preserving_sort_with_single_input_partition_lowers() {
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("single-partition partition-preserving sort should lower to native");
     };
-    assert_eq!(candidate.shape, "SortExec(MemorySource)");
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Sort(_)));
+    assert_eq!(candidate.shape.to_string(), "SortExec(MemorySource)");
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Sort(_)));
 }
 
 #[test]
@@ -682,7 +741,7 @@ fn partition_preserving_sort_with_multiple_input_partitions_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -691,6 +750,99 @@ fn partition_preserving_sort_with_multiple_input_partitions_is_rejected() {
             ..
         }
     ));
+}
+
+#[test]
+fn filter_over_computed_scan_projection_reads_the_projected_column() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-filter-computed-scan-projection");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let projection = ProjectionExec::try_new(
+        vec![
+            (Arc::new(CastExpr::new(col("key", &scan_schema).unwrap(), DataType::Int64, None)) as _, "key".to_string()),
+            (col("m00", &scan_schema).unwrap(), "m00".to_string()),
+        ],
+        Arc::clone(&scan),
+    )
+    .unwrap();
+    let scan = scan
+        .try_swapping_with_projection(&projection)
+        .unwrap()
+        .expect("the parquet scan takes the computed projection");
+    let projected_schema = scan.schema();
+    assert_eq!(projected_schema.field_with_name("key").unwrap().data_type(), &DataType::Int64);
+    let predicate = binary(
+        col("key", &projected_schema).unwrap(),
+        Operator::Gt,
+        lit(ScalarValue::Int64(Some(1))),
+        &projected_schema,
+    )
+    .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let plan = result.selected_plan();
+    let PlanNode::Filter(filter) = &plan.root_node().kind else {
+        panic!("root should be the native filter: {plan}");
+    };
+    let PlanNode::Projection(projection) = &plan.node(filter.input).expect("filter input").kind else {
+        panic!("the computed scan projection should run below the filter: {plan}");
+    };
+    assert!(
+        projection.outputs.iter().any(|output| output.field.name() == "key"
+            && output.field.data_type() == &DataType::Int64
+            && matches!(&output.expr, Expr::Alias { expr, .. } if matches!(expr.as_ref(), Expr::Cast { .. }))),
+        "projection should cast key before the filter reads it: {plan}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn local_limit_over_multiple_partitions_is_rejected() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let first_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 3]))]).unwrap();
+    let second_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 4]))]).unwrap();
+    let source =
+        MemorySourceConfig::try_new(&[vec![first_batch], vec![second_batch]], Arc::clone(&schema), None).unwrap();
+    let scan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
+    assert_eq!(scan.properties().output_partitioning().partition_count(), 2);
+    // Each partition keeps one row, so DataFusion returns two rows where one
+    // native global limit would return one.
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(LocalLimitExec::new(scan, 1));
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert!(result.plan.is_none());
+    assert!(matches!(
+        result.report.outcomes(),
+        [CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeLocalLimitPartitionUnsupported,
+            candidate,
+            ..
+        }] if candidate.shape.to_string() == "LocalLimitExec"
+    ));
+}
+
+#[test]
+fn local_limit_over_one_partition_lowers_to_native_limit() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+    let source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+    let scan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(LocalLimitExec::new(scan, 2));
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let PlanNode::Limit(limit) = &result.selected_plan().root_node().kind else {
+        panic!("root should be the native limit: {}", result.selected_plan());
+    };
+    assert_eq!(limit.spec, LimitSpec::fetch(2));
 }
 
 #[test]
@@ -705,11 +857,11 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
-    let PlanNode::Limit(limit) = &result.plans[0].root_node().kind else {
+    let PlanNode::Limit(limit) = &result.selected_plan().root_node().kind else {
         panic!("native root should be a limit node");
     };
     assert_eq!(limit.spec.fetch, Some(2));
-    let sort_node = result.plans[0].node(limit.input).expect("limit input should exist");
+    let sort_node = result.selected_plan().node(limit.input).expect("limit input should exist");
     assert!(matches!(sort_node.kind, PlanNode::Sort(_)));
 
     fs::remove_dir_all(dir).unwrap();
@@ -730,29 +882,34 @@ fn input_tree_sort_fetch_lowers_to_native_sort_plus_limit() {
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("input-tree top-k aggregate should lower to native");
     };
-    assert_eq!(candidate.shape, "AggregateExec(SortExec(fetch)(LocalParquetScan))");
-    let PlanNode::Aggregate(_aggregate) = &result.plans[0].root_node().kind else {
+    assert_eq!(candidate.shape.to_string(), "AggregateExec(SortExec(fetch)(LocalParquetScan))");
+    let PlanNode::Aggregate(_aggregate) = &result.selected_plan().root_node().kind else {
         panic!("native root should be an aggregate node");
     };
-    let has_sort_fetch_limit = result.plans[0].nodes().iter().any(|node| {
+    let has_sort_fetch_limit = result.selected_plan().nodes().iter().any(|node| {
         let PlanNode::Limit(limit) = &node.kind else {
             return false;
         };
         if limit.spec.fetch != Some(2) {
             return false;
         }
-        let Some(input) = result.plans[0].node(limit.input) else {
+        let Some(input) = result.selected_plan().node(limit.input) else {
             return false;
         };
         match &input.kind {
             PlanNode::Sort(_) => true,
-            PlanNode::Projection(projection) => {
-                result.plans[0].node(projection.input).is_some_and(|input| matches!(input.kind, PlanNode::Sort(_)))
-            },
+            PlanNode::Projection(projection) => result
+                .selected_plan()
+                .node(projection.input)
+                .is_some_and(|input| matches!(input.kind, PlanNode::Sort(_))),
             _ => false,
         }
     });
-    assert!(has_sort_fetch_limit, "native plan should keep SortExec.fetch as a limit above sort:\n{}", result.plans[0]);
+    assert!(
+        has_sort_fetch_limit,
+        "native plan should keep SortExec.fetch as a limit above sort:\n{}",
+        result.selected_plan()
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -770,8 +927,8 @@ fn sort_without_fetch_over_aggregate_lowers_without_native_limit() {
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
-    assert!(matches!(&result.plans[0].root_node().kind, PlanNode::Sort(_)));
-    assert!(!result.plans[0].nodes().iter().any(|node| matches!(&node.kind, PlanNode::Limit(_))));
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Sort(_)));
+    assert!(!result.selected_plan().nodes().iter().any(|node| matches!(&node.kind, PlanNode::Limit(_))));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -790,9 +947,9 @@ fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.scan_limit, None, "LIMIT after aggregate must not be applied before aggregate input");
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Limit(_)));
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Limit(_)));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -804,15 +961,15 @@ fn nested_limit_offsets_push_enough_rows_to_source() {
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
     let inner: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 50, Some(100)));
-    let outer: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(inner, 100, Some(10)));
+    let outer: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(inner, 10, Some(10)));
 
     let result = lower_physical_plan_to_native(outer, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(
         source.scan_limit,
-        Some(150),
+        Some(70),
         "source must keep the inner offset plus the rows needed by the outer limit"
     );
 
@@ -829,7 +986,7 @@ fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.scan_limit, Some(0), "LIMIT 0 can be answered without reading source rows");
 
     fs::remove_dir_all(dir).unwrap();
@@ -853,12 +1010,12 @@ fn sort_preserving_merge_without_fetch_lowers_to_native_sort() {
         panic!("non-fetch SPM should lower to native");
     };
     assert!(
-        candidate.shape.starts_with("SortPreservingMergeExec(SortExec(AggregateExec("),
+        candidate.shape.to_string().starts_with("SortPreservingMergeExec(SortExec(AggregateExec("),
         "unexpected candidate shape: {}",
         candidate.shape
     );
-    assert!(matches!(result.plans[0].root_node().kind, PlanNode::Sort(_)));
-    assert!(!result.plans[0].nodes().iter().any(|node| matches!(node.kind, PlanNode::Limit(_))));
+    assert!(matches!(result.selected_plan().root_node().kind, PlanNode::Sort(_)));
+    assert!(!result.selected_plan().nodes().iter().any(|node| matches!(node.kind, PlanNode::Limit(_))));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -877,11 +1034,11 @@ fn sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_pl
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let PlanNode::Limit(limit) = &result.plans[0].root_node().kind else {
-        panic!("SPM fetch should lower to a native limit above sort:\n{}", result.plans[0]);
+    let PlanNode::Limit(limit) = &result.selected_plan().root_node().kind else {
+        panic!("SPM fetch should lower to a native limit above sort:\n{}", result.selected_plan());
     };
     assert_eq!(limit.spec.fetch, Some(2));
-    let sort_node = result.plans[0].node(limit.input).expect("limit input should exist");
+    let sort_node = result.selected_plan().node(limit.input).expect("limit input should exist");
     assert!(matches!(sort_node.kind, PlanNode::Sort(_)));
 
     fs::remove_dir_all(dir).unwrap();
@@ -899,7 +1056,7 @@ fn sort_preserving_merge_fetch_without_child_ordering_is_rejected() {
 
     let result = lower_physical_plan_to_native(merge, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -931,7 +1088,7 @@ fn sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected() {
 
     let result = lower_physical_plan_to_native(merge, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -958,7 +1115,7 @@ fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
 
     let result = lower_physical_plan_to_native(merge, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -985,7 +1142,7 @@ fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() 
 
     let result = lower_physical_plan_to_native(merge, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
@@ -1009,59 +1166,33 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
-    let synthetic_projection = plan
-        .nodes()
-        .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::Projection(projection)
-                if projection.expressions().any(
-                    |expr| matches!(expr, Expr::Alias { alias, .. } if alias == "__algeon_native_aggregate_arg_0"),
-                ) =>
-            {
-                Some(projection)
-            },
+    let plan = result.selected_plan();
+    let aggregate = native_aggregate_nodes(plan).into_iter().next().expect("native plan should contain an aggregate");
+    let column_name = |expr: &Expr| match expr {
+        Expr::Alias { expr, .. } => match expr.as_ref() {
+            Expr::Column(column) => Some(column.name().to_string()),
             _ => None,
-        })
-        .expect("aggregate input should materialize synthetic aggregate arguments");
-    assert!(
-        synthetic_projection
-            .expressions()
-            .any(|expr| matches!(expr, Expr::Column(column) if column.name() == "payload")),
+        },
+        Expr::Column(column) => Some(column.name().to_string()),
+        _ => None,
+    };
+    assert_eq!(
+        column_name(&aggregate.spec.group_exprs[0]).as_deref(),
+        Some("payload"),
         "group expression should bind original payload, not compacted ordinal m00: {:?}",
-        synthetic_projection.expressions().collect::<Vec<_>>()
-    );
-    assert!(
-        synthetic_projection.expressions().any(|expr| {
-            matches!(
-                expr,
-                Expr::Alias { expr, alias }
-                    if alias == "__algeon_native_aggregate_arg_0"
-                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m00")
-            )
-        }),
-        "first aggregate arg should bind original m00, not compacted ordinal m01: {:?}",
-        synthetic_projection.expressions().collect::<Vec<_>>()
-    );
-    assert!(
-        synthetic_projection.expressions().any(|expr| {
-            matches!(
-                expr,
-                Expr::Alias { expr, alias }
-                    if alias == "__algeon_native_aggregate_arg_1"
-                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m01")
-            )
-        }),
-        "second aggregate arg should bind original m01: {:?}",
-        synthetic_projection.expressions().collect::<Vec<_>>()
+        aggregate.spec.group_exprs
     );
     let aggregate_exprs = native_aggregate_exprs(plan);
     assert_eq!(aggregate_exprs.len(), 2);
-    assert!(
-        matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__algeon_native_aggregate_arg_0")
+    assert_eq!(
+        column_name(&aggregate_exprs[0].expr).as_deref(),
+        Some("m00"),
+        "first aggregate arg should bind original m00, not compacted ordinal m01: {aggregate_exprs:?}"
     );
-    assert!(
-        matches!(&aggregate_exprs[1].expr, Expr::Column(column) if column.name() == "__algeon_native_aggregate_arg_1")
+    assert_eq!(
+        column_name(&aggregate_exprs[1].expr).as_deref(),
+        Some("m01"),
+        "second aggregate arg should bind original m01: {aggregate_exprs:?}"
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -1108,7 +1239,7 @@ fn sort_projection_sort_nested_shape_preserves_both_sort_orderings_and_fetches()
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
 
     let PlanNode::Limit(outer_limit) = &plan.root_node().kind else {
         panic!("root should be the outer limit node: {plan}");
@@ -1199,7 +1330,7 @@ fn projection_sort_projection_aggregate_nested_shape_preserves_both_projections(
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
 
     let PlanNode::Projection(outer_proj_node) = &plan.root_node().kind else {
         panic!("root should be outer projection: {plan}");
@@ -1218,8 +1349,11 @@ fn projection_sort_projection_aggregate_nested_shape_preserves_both_projections(
     let PlanNode::Projection(inner_proj_kind) = &inner_proj_node.kind else {
         panic!("sort input should be inner projection: {plan}");
     };
-    assert_eq!(inner_proj_kind.outputs.len(), 3);
-    assert_eq!(inner_proj_kind.outputs[2].field.name(), "derived");
+    // `sum_m00` has no reader above the inner projection.
+    assert_eq!(
+        inner_proj_kind.outputs.iter().map(|output| output.field.name().as_str()).collect::<Vec<_>>(),
+        vec!["key", "derived"]
+    );
 
     let agg_node = plan.node(inner_proj_kind.input).expect("aggregate node should exist");
     let PlanNode::Aggregate(agg_kind) = &agg_node.kind else {

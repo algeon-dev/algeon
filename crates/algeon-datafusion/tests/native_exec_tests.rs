@@ -44,7 +44,6 @@ use datafusion::{
         execution_plan::{Boundedness, EmissionType},
         filter::FilterExec,
         limit::LocalLimitExec,
-        projection::{ProjectionExec, ProjectionExpr},
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
@@ -554,7 +553,7 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
         panic!("ordered aggregate should be reported as rewritten");
     };
     assert!(
-        candidate.shape.starts_with("SortExec(AggregateExec("),
+        candidate.shape.to_string().starts_with("SortExec(AggregateExec("),
         "post-optimizer appended declared-ordering sort should be visible in candidate shape: {}",
         candidate.shape
     );
@@ -993,15 +992,7 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
-    let child_schema = child.schema();
-    let plan: Arc<dyn ExecutionPlan> = Arc::new(
-        ProjectionExec::try_new(
-            [ProjectionExpr { expr: col("key", &child_schema).unwrap(), alias: "key".to_string() }],
-            child,
-        )
-        .unwrap(),
-    );
+    let plan = partial_sort_parent_plan(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus));
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let (optimized, diagnostics) =
@@ -1036,15 +1027,7 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
     let dir = unique_temp_dir("algeon-datafusion-native-exec-composition-no-datafusion-cpu");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let child = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
-    let child_schema = child.schema();
-    let plan: Arc<dyn ExecutionPlan> = Arc::new(
-        ProjectionExec::try_new(
-            [ProjectionExpr { expr: col("key", &child_schema).unwrap(), alias: "key".to_string() }],
-            child,
-        )
-        .unwrap(),
-    );
+    let plan = partial_sort_parent_plan(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus));
     let config = AlgeonNativeOptimizerConfig::default()
         .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)
         .with_native_execution_config(bounded_config());

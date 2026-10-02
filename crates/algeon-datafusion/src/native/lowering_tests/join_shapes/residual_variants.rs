@@ -416,18 +416,18 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
         ],
     );
     assert_join_input_materializes_decimal_cast(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[0],
         "__algeon_native_join_residual_left_0",
         "l_payload",
     );
     assert_join_input_materializes_decimal_cast(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_right_0",
         "r_payload",
     );
-    let sources = native_local_parquet_sources(&result.plans[0]);
+    let sources = native_local_parquet_sources(result.selected_plan());
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string(), "l_payload".to_string()]);
     assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string(), "r_payload".to_string()]);
@@ -464,13 +464,13 @@ fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_pred
                 )
     ));
     assert_join_input_materializes_case_decimal_divide(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[0],
         "__algeon_native_join_residual_left_0",
         "l_payload",
     );
     assert_join_input_materializes_case_decimal_divide(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_right_0",
         "r_payload",
@@ -521,19 +521,19 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
                 )
     ));
     assert_join_input_materializes_substring(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[0],
         "__algeon_native_join_residual_left_0",
         "l_zip",
     );
     assert_join_input_materializes_substring(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[0],
         "__algeon_native_join_residual_left_1",
         "l_zip",
     );
     assert_join_input_materializes_substring(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_right_0",
         "r_zip",
@@ -568,7 +568,7 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
                 )
     ));
     assert_join_input_materializes_upper_utf8view_cast(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_right_0",
         "r_country",
@@ -608,13 +608,13 @@ fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_input
                 )
     ));
     assert_join_input_materializes_decimal_cast(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[0],
         "__algeon_native_join_residual_right_0",
         "r_payload",
     );
     assert_join_input_materializes_decimal_cast(
-        &result.plans[0],
+        result.selected_plan(),
         join.inputs[1],
         "__algeon_native_join_residual_left_0",
         "l_payload",
@@ -728,7 +728,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, expected_native_join_type);
     assert_eq!(join.spec.output_projection.len(), 1);
@@ -761,7 +761,8 @@ fn nested_loop_join_filter_lowers_to_native_residual_predicate() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let join = result.plans[0]
+    let join = result
+        .selected_plan()
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -799,7 +800,8 @@ fn full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let join = result.plans[0]
+    let join = result
+        .selected_plan()
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -831,7 +833,8 @@ fn inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let join = result.plans[0]
+    let join = result
+        .selected_plan()
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {

@@ -33,7 +33,7 @@ async fn tpch_native_optimizer_rule_rows_match_golden() {
             panic!("{} should produce a physical plan", item.query_id);
         };
         let lowered = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
-        for (fragment, native_plan) in lowered.plans.iter().enumerate() {
+        for (fragment, native_plan) in lowered.plan.iter().enumerate() {
             let optimized = optimize_query_plan(
                 native_plan.clone(),
                 &NativeOptimizerOptions::default(),
@@ -95,7 +95,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let optimized_q2 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
@@ -140,7 +140,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let optimized_q15 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
@@ -178,7 +178,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let decision = admit(
         native_plan,
         Default::default(),
@@ -196,7 +196,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let decision = admit(
         native_plan,
         Default::default(),
@@ -225,7 +225,7 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     let left_semi_joins = native_join_ids(plan, NativeJoinType::LeftSemi);
     assert_eq!(left_semi_joins.len(), 1, "Q18 before semijoin reduction should have one late left-semi join");
     let (_semi_id, semi_join) = left_semi_joins[0];
@@ -273,7 +273,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let optimized = optimize_query_plan(
-        result.plans[0].clone(),
+        result.selected_plan().clone(),
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
@@ -326,7 +326,7 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
     let options =
         NativeOptimizerOptions { semijoin_reduction: SemijoinReductionOptions::disabled(), ..Default::default() };
     let optimized = optimize_query_plan(
-        result.plans[0].clone(),
+        result.selected_plan().clone(),
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
@@ -378,7 +378,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let joins = native_joins(&result.plans[0]);
+    let joins = native_joins(result.selected_plan());
     assert!(
         joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LeftSemi)),
         "q21 should lower its EXISTS branch to a right-build native left-semi residual join"
@@ -389,7 +389,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
     );
 
     let optimized = optimize_query_plan(
-        result.plans[0].clone(),
+        result.selected_plan().clone(),
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
@@ -548,7 +548,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let decision = admit(
         native_plan,
         Default::default(),
@@ -618,7 +618,7 @@ async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let PlanNode::Sort(sort) = &native_plan.root_node().kind else {
         panic!("q8 native root should be the final ORDER BY sort");
     };
@@ -658,11 +658,11 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         panic!("q11 should lower to native");
     };
     assert_eq!(
-        candidate.shape,
+        candidate.shape.to_string(),
         "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))))))"
     );
 
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     assert_q11_keyless_proof_admitted(plan, "lowered q11");
     let decision =
         admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default()))
@@ -861,7 +861,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     let joins = native_joins(plan);
     assert_eq!(joins.len(), 1, "q13 should lower to exactly one native join");
     let join = joins[0];
@@ -997,11 +997,11 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         panic!("q16 should lower to native");
     };
     assert_eq!(
-        candidate.shape,
-        "SortExec(ProjectionExec(AggregateExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan))))))"
+        candidate.shape.to_string(),
+        "ProjectionExec(SortExec(AggregateExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan))))))"
     );
 
-    let plan = &result.plans[0];
+    let plan = result.selected_plan();
     assert!(
         admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default()))
             .expect("q16 bounded admission should not fail")

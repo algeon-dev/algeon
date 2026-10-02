@@ -56,7 +56,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use query_engine::{
-    expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue},
+    expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LimitSpec, LiteralValue},
     plan::{
         AggregateNode, JoinNode, JoinNullEquality as NativeJoinNullEquality,
         JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide, JoinType as NativeJoinType, NodeId,
@@ -69,11 +69,13 @@ use workloads::tpch::write_tiny_tpch_parquet_dataset;
 use crate::{
     capability::CapabilityReason,
     native::{FooterScope, NativeLoweringResult, lower_physical_plan_to_native},
+    native_exec::{AlgeonNativeExec, below_native_admission},
     native_report::{
         CandidateOutcomeKind, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
         NativeFallbackPressureWorkloadItem,
     },
-    report::CandidateOutcome,
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    report::{CandidateOutcome, PlanningReport},
 };
 
 mod advisory;
@@ -92,6 +94,8 @@ use self::{
 
 #[path = "lowering_tests/analytical_olap.rs"]
 mod analytical_olap;
+#[path = "lowering_tests/demand_plans.rs"]
+mod demand_plans;
 #[path = "lowering_tests/fixtures.rs"]
 mod fixtures;
 #[path = "lowering_tests/full_gpu_gap_analysis.rs"]
@@ -192,7 +196,7 @@ fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expecte
 }
 
 fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: CapabilityReason) {
-    assert!(result.plans.is_empty());
+    assert!(result.plan.is_none());
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 0);
     assert_eq!(result.not_selected_count(), 1);
@@ -200,6 +204,19 @@ fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: Capab
         panic!("expected rejected native candidate");
     };
     assert_eq!(capability_reason, expected_reason);
+}
+
+/// Runs the native optimizer rule, which lowers the plan, optimizes the
+/// native plan and then enforces its orderings, and returns the rule's report
+/// with the native plan it kept.
+fn optimize_with_native_rule(plan: Arc<dyn ExecutionPlan>) -> (PlanningReport, Option<QueryPlan>) {
+    let rule = AlgeonNativePhysicalOptimizerRule::new(AlgeonNativeOptimizerConfig::default());
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
+    let report = diagnostics.expect("the native rule reports its candidates").report;
+    let native_plan = below_native_admission(&optimized)
+        .downcast_ref::<AlgeonNativeExec>()
+        .map(|native| native.native_plan().clone());
+    (report, native_plan)
 }
 
 fn direct_friendly_sql_session_config() -> SessionConfig {
@@ -325,7 +342,8 @@ fn rewritten_native_join(result: &NativeLoweringResult) -> &JoinNode {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    result.plans[0]
+    result
+        .selected_plan()
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {

@@ -15,18 +15,6 @@ use super::{
 };
 use crate::{capability::CapabilityReason, native::LoweringFailure};
 
-pub(super) fn lower_sort_ordering_with_input(
-    builder: &mut NativeQueryPlanBuilder,
-    ordering: &LexOrdering,
-    sort_input_schema: &SchemaRef,
-    sort_output_schema: &SchemaRef,
-    input: LoweredNativeInput,
-    required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringFailure> {
-    let sorted = lower_sort_ordering_unprojected_with_input(builder, ordering, sort_input_schema, input)?;
-    project_sort_output(builder, sort_output_schema, sorted.input, required_output_fields)
-}
-
 /// A lowered sort before the projection back to the sort's output schema.
 pub(super) struct SortedNativeInput {
     /// The sort node's output, bound to the sort's frontend fields. Its schema

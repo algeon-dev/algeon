@@ -17,17 +17,17 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
         panic!("default SQL plan should lower to native");
     };
     assert_eq!(
-        candidate.shape,
-        "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan))))))))"
+        candidate.shape.to_string(),
+        "SortPreservingMergeExec(fetch)(ProjectionExec(SortExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(LocalParquetScan)))))))"
     );
-    assert_eq!(candidate.operator_count, 9);
-    assert_eq!(result.plans.len(), 1);
+    assert_eq!(candidate.operator_count(), 8);
+    assert!(result.plan.is_some());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].file_count, 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert!(source.reader_predicate.is_none());
     assert_eq!(
         source.read_columns,
@@ -50,14 +50,14 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
     assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
     assert!(
         matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__algeon_native_aggregate_arg_0")
     );
-    assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
+    assert!(native_projection_exprs(result.selected_plan()).iter().any(|expr| matches!(
         expr,
         Expr::Alias { expr, alias }
             if alias == "__algeon_native_aggregate_arg_0"
@@ -68,8 +68,11 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
                             && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m00")
                 )
     )));
-    assert_eq!(result.plans[0].output_schema().field_with_name("avg_m00").unwrap().data_type(), &DataType::Float64);
-    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        result.selected_plan().output_schema().field_with_name("avg_m00").unwrap().data_type(),
+        &DataType::Float64
+    );
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
     assert!(source.diagnostics.direct_device_read);
 
@@ -85,7 +88,7 @@ async fn default_sql_distributed_median_aggregate_remains_rejected() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(
         matches!(
@@ -114,7 +117,7 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    let aggregates = native_aggregate_nodes(result.selected_plan());
     assert_eq!(aggregates.len(), 1);
     let grouping_sets = aggregates[0].spec.grouping_sets.as_ref().expect("ROLLUP should lower as grouping sets");
     assert_eq!(grouping_sets.grouping_id_alias, "__grouping_id");
@@ -143,12 +146,14 @@ async fn grouping_sets_over_empty_local_parquet_lower_through_empty_literal_sour
         assert_eq!(result.candidate_count(), 1, "{label}");
         assert_eq!(result.selected_count(), 1, "{label}: outcomes={:?}", result.report.outcomes());
         assert_eq!(result.not_selected_count(), 0, "{label}: outcomes={:?}", result.report.outcomes());
-        assert!(native_local_parquet_sources(&result.plans[0]).is_empty(), "{label}");
-        let literal_sources = native_literal_batch_sources(&result.plans[0]);
+        assert!(native_local_parquet_sources(result.selected_plan()).is_empty(), "{label}");
+        let literal_sources = native_literal_batch_sources(result.selected_plan());
         assert_eq!(literal_sources.len(), 1, "{label}");
         assert_eq!(literal_sources[0].row_count(), 0, "{label}");
         assert!(
-            native_aggregate_nodes(&result.plans[0]).iter().all(|aggregate| aggregate.spec.grouping_sets.is_some()),
+            native_aggregate_nodes(result.selected_plan())
+                .iter()
+                .all(|aggregate| aggregate.spec.grouping_sets.is_some()),
             "{label} must retain native grouping-set semantics"
         );
     }
@@ -168,7 +173,7 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(
@@ -178,7 +183,7 @@ async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
         ),
         "distributed aggregate filter should be materialized once before the native aggregate"
     );
-    assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
+    assert!(native_projection_exprs(result.selected_plan()).iter().any(|expr| matches!(
         expr,
         Expr::Alias { alias, .. } if alias == "__algeon_native_aggregate_filter_0"
     )));
@@ -198,7 +203,7 @@ async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
-        native_aggregate_nodes(&result.plans[0]).len() >= 2,
+        native_aggregate_nodes(result.selected_plan()).len() >= 2,
         "distinct COUNT should be represented by DataFusion's explicit aggregate stack"
     );
 
@@ -216,7 +221,7 @@ async fn default_sql_mixed_distinct_and_count_over_union_lowers_to_one_native_ag
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    let aggregates = native_aggregate_nodes(result.selected_plan());
     assert_eq!(aggregates.len(), 1);
     assert_eq!(
         aggregates[0].spec.aggr_exprs.iter().map(|expr| (expr.function, expr.distinct)).collect::<Vec<_>>(),
@@ -301,7 +306,7 @@ async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert!(
         matches!(
