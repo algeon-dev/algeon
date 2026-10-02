@@ -3,7 +3,7 @@ use std::{ptr, sync::Arc};
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
     DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
-    testing::RawHandleTestingExt,
+    InstallSpec, testing::RawHandleTestingExt,
 };
 use cudf_sys::test_support;
 
@@ -11,11 +11,13 @@ use cudf_sys::test_support;
 fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
     let device = DeviceId::current().unwrap();
     let identity = DeviceMemoryManagerInstallationIdentity::new([0x51; 16], 1, [0x52; 16]);
-    let (manager, installed) = DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
+    let (manager, installed) = DeviceMemoryManager::install(
         device,
-        identity,
-        Arc::new(|_| {}),
-        DeviceMemoryManagerOptions::default(),
+        InstallSpec {
+            options: DeviceMemoryManagerOptions::default(),
+            owner: Some(identity),
+            on_failure: Some(Arc::new(|_| {})),
+        },
     )
     .unwrap();
     let generation = installed.state.installation_generation.unwrap();
@@ -49,11 +51,13 @@ fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
     assert_eq!(restored_but_unusable.retry, DeviceMemoryManagerInstallationRetry::PermanentlyUnusable);
     assert_eq!(restored_but_unusable.cause, DeviceMemoryManagerInstallationCause::CurrentResourceReplaced);
 
-    DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
+    DeviceMemoryManager::install(
         device,
-        identity,
-        Arc::new(|_| {}),
-        DeviceMemoryManagerOptions::default(),
+        InstallSpec {
+            options: DeviceMemoryManagerOptions::default(),
+            owner: Some(identity),
+            on_failure: Some(Arc::new(|_| {})),
+        },
     )
     .unwrap_err();
     assert_eq!(

@@ -488,6 +488,10 @@ cudf_status_t memory_manager_for_device_impl(
     auto& registry       = memory_manager_registry();
     auto it              = registry.find(device);
     bool created_by_call = false;
+    if (installation != nullptr) {
+      fill_installation_record(
+        it == registry.end() ? nullptr : it->second.get(), device, *installation);
+    }
     if (it == registry.end()) {
       it = registry
              .emplace(device,
@@ -498,6 +502,10 @@ cudf_status_t memory_manager_for_device_impl(
                                                              installation_identity))
              .first;
       created_by_call = true;
+      // Publish callback retention before later installation work can fail.
+      if (installation != nullptr) {
+        fill_installation_record(it->second.get(), device, *installation, created_by_call);
+      }
     } else if (options != nullptr &&
                !memory_manager_options_equal(it->second->options, resolved_options)) {
       if (installation != nullptr) {
@@ -616,7 +624,8 @@ cudf_status_t memory_manager_for_device_impl(
 #endif
     if (installation != nullptr) {
       fill_installation_record(it->second.get(), device, *installation, created_by_call);
-      if (installation->retry != CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE) {
+      if (installation_identity != nullptr &&
+          installation->retry != CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE) {
         set_error("device memory manager installation is not reusable");
         return CUDF_ERROR_INVALID_OPERATION;
       }
@@ -675,46 +684,24 @@ cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager
   return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, out, nullptr, nullptr);
 }
 
-cudf_status_t cudf_memory_manager_for_device_with_options(
-  int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(device, nullptr, nullptr, options, out, nullptr, nullptr);
-}
-
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
+cudf_status_t cudf_memory_manager_install(
   int32_t device,
+  cudf_memory_manager_options_t const* options,
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
-  cudf_memory_manager_options_t const* options,
-  cudf_memory_manager_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(
-    device, callback, callback_arg, options, out, nullptr, nullptr);
-}
-
-cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_and_options(
-  int32_t device,
-  cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudf_memory_manager_options_t const* options,
   cudf_memory_manager_installation_identity_t const* identity,
   cudf_memory_manager_handle* out,
   cudf_memory_manager_installation_record_t* installation)
 {
+  CUDF_RUST_NULL_CHECK(installation, "installation is null");
+  *installation = {};
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
-  CUDF_RUST_NULL_CHECK(callback, "callback is null");
   CUDF_RUST_NULL_CHECK(options, "options is null");
-  CUDF_RUST_NULL_CHECK(identity, "identity is null");
-  CUDF_RUST_NULL_CHECK(installation, "installation is null");
-  *installation                = {};
-  installation->struct_size    = sizeof(cudf_memory_manager_installation_record_t);
-  installation->device_ordinal = device;
+  if (identity != nullptr && callback == nullptr) {
+    set_error("installation identity requires a failure callback");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
   return memory_manager_for_device_impl(
     device, callback, callback_arg, options, out, identity, installation);
 }

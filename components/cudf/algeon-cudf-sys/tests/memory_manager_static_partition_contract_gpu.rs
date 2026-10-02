@@ -21,16 +21,53 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
         ..Default::default()
     };
     let mut manager = ptr::null_mut();
+    let mut installation = cudf_sys::cudf_memory_manager_installation_record_t::default();
     assert_eq!(
-        unsafe { cudf_sys::cudf_memory_manager_for_device_with_options(device, &invalid, &mut manager) },
+        unsafe {
+            cudf_sys::cudf_memory_manager_install(
+                device,
+                ptr::null(),
+                None,
+                ptr::null_mut(),
+                ptr::null(),
+                &mut manager,
+                &mut installation,
+            )
+        },
+        cudf_sys::CUDF_ERROR_NULL,
+    );
+    assert_eq!(installation.struct_size, 0, "a null-options request must clear the supplied record");
+    assert_eq!(
+        unsafe {
+            cudf_sys::cudf_memory_manager_install(
+                device,
+                &invalid,
+                None,
+                ptr::null_mut(),
+                ptr::null(),
+                &mut manager,
+                &mut installation,
+            )
+        },
         cudf_sys::CUDF_ERROR_INVALID_ARGUMENT,
     );
     assert!(manager.is_null());
+    assert_eq!(installation.struct_size, 0, "validation before registry access has no installation record");
 
     let options =
         cudf_sys::cudf_memory_manager_options_t { allocation_limit_bytes: LIMIT as u64, ..Default::default() };
     assert_eq!(
-        unsafe { cudf_sys::cudf_memory_manager_for_device_with_options(device, &options, &mut manager) },
+        unsafe {
+            cudf_sys::cudf_memory_manager_install(
+                device,
+                &options,
+                None,
+                ptr::null_mut(),
+                ptr::null(),
+                &mut manager,
+                &mut installation,
+            )
+        },
         cudf_sys::CUDF_SUCCESS,
     );
     assert!(!manager.is_null());
@@ -49,11 +86,21 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
     let mut conflicting_manager = ptr::null_mut();
     assert_eq!(
         unsafe {
-            cudf_sys::cudf_memory_manager_for_device_with_options(device, &conflicting, &mut conflicting_manager)
+            cudf_sys::cudf_memory_manager_install(
+                device,
+                &conflicting,
+                None,
+                ptr::null_mut(),
+                ptr::null(),
+                &mut conflicting_manager,
+                &mut installation,
+            )
         },
         cudf_sys::CUDF_ERROR_INVALID_OPERATION,
     );
     assert!(conflicting_manager.is_null());
+    assert_eq!(installation.cause, cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH);
+    assert_eq!(installation.effective_options.allocation_limit_bytes, LIMIT as u64);
 
     let mut resource = ptr::null_mut();
     assert_eq!(unsafe { cudf_sys::cudf_memory_manager_resource(manager, &mut resource) }, cudf_sys::CUDF_SUCCESS,);

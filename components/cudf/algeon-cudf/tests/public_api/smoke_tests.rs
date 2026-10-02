@@ -19,7 +19,8 @@ fn query_memory_manager_surface_is_publicly_importable() {
         AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,
         AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo,
         DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource,
-        ExecutionBudgetEnforcement, QueryMemoryDomainIdentity, ReservationUsage, Runtime, StreamReservationLease,
+        ExecutionBudgetEnforcement, InstallSpec, QueryMemoryDomainIdentity, ReservationUsage, Runtime,
+        StreamReservationLease,
     };
 
     let _ = cudf::ExecutionBudgetToken::resize;
@@ -27,8 +28,8 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ = DeviceMemoryManager::allocator_event_ring_bounds;
     let _ = DeviceMemoryManager::read_allocator_event;
     let _ = DeviceMemoryResource::with_failure_callback_details;
-    let _ = DeviceMemoryManager::install_for_device_with_failure_callback;
-    let _ = DeviceMemoryManager::install_for_device_with_failure_callback_details;
+    let _ = DeviceMemoryManager::install;
+    let _: Option<InstallSpec> = None;
     let _ = DeviceMemoryManager::failure_callback_state_for_device;
     let _ = DeviceMemoryManager::options_for_device;
     let _: Option<DeviceMemoryFailureInfo> = None;

@@ -11,7 +11,7 @@ use std::{
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerInstallationCause,
     DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationRetry,
-    DeviceMemoryManagerInstallationStatus,
+    DeviceMemoryManagerInstallationStatus, InstallSpec,
     runtime::{DeviceHealthStatus, device_health_snapshot},
 };
 use query_planning::{
@@ -680,52 +680,50 @@ fn install_device_memory_manager(
         1,
         partition_fingerprint(device.ordinal(), options.allocation_limit_bytes),
     );
-    let (manager, outcome) =
-        match DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
-            device,
-            identity,
-            memory_failure_tracker.failure_callback(),
-            options,
-        ) {
-            Ok(outcome) => outcome,
-            Err(failure) => {
-                let installation_state = failure.installation_state();
-                if let Some(state) = installation_state {
-                    if state.failure_callback_installed {
-                        if let Some(generation) = state.installation_generation {
-                            memory_failure_tracker.commit_installation_generation(generation)?;
-                        }
-                        memory_failure_tracker.mark_callback_installed();
-                    } else if !callback_was_installed {
-                        memory_failure_tracker.mark_callback_install_unavailable();
+    let (manager, outcome) = match DeviceMemoryManager::install(
+        device,
+        InstallSpec { options, owner: Some(identity), on_failure: Some(memory_failure_tracker.failure_callback()) },
+    ) {
+        Ok(outcome) => outcome,
+        Err(failure) => {
+            let installation_state = failure.installation_state();
+            if let Some(state) = installation_state {
+                if state.failure_callback_installed {
+                    if let Some(generation) = state.installation_generation {
+                        memory_failure_tracker.commit_installation_generation(generation)?;
                     }
+                    memory_failure_tracker.mark_callback_installed();
                 } else if !callback_was_installed {
                     memory_failure_tracker.mark_callback_install_unavailable();
                 }
+            } else if !callback_was_installed {
+                memory_failure_tracker.mark_callback_install_unavailable();
+            }
 
-                if let Some(state) = installation_state
-                    && state.cause == DeviceMemoryManagerInstallationCause::OptionsMismatch
-                {
-                    return Err(device_memory_manager_options_conflict(device, state, options)
-                        .with_source(failure.into_error()));
-                }
+            if let Some(state) = installation_state
+                && state.cause == DeviceMemoryManagerInstallationCause::OptionsMismatch
+            {
+                return Err(
+                    device_memory_manager_options_conflict(device, state, options).with_source(failure.into_error())
+                );
+            }
 
-                let error = cudf_query_error(
-                    "query_engine.gpu.device_registry.memory_manager",
-                    "failed to install or reuse the Algeon-owned device memory manager",
-                    failure.into_error(),
-                )
-                .with_fact("reason", "device_memory_manager_installation_rejected")
-                .with_fact("device_ordinal", device.ordinal());
-                return Err(match installation_state {
-                    Some(state) => error
-                        .with_fact("installation_status", format!("{:?}", state.status))
-                        .with_fact("installation_retry", format!("{:?}", state.retry))
-                        .with_fact("installation_cause", format!("{:?}", state.cause)),
-                    None => error,
-                });
-            },
-        };
+            let error = cudf_query_error(
+                "query_engine.gpu.device_registry.memory_manager",
+                "failed to install or reuse the Algeon-owned device memory manager",
+                failure.into_error(),
+            )
+            .with_fact("reason", "device_memory_manager_installation_rejected")
+            .with_fact("device_ordinal", device.ordinal());
+            return Err(match installation_state {
+                Some(state) => error
+                    .with_fact("installation_status", format!("{:?}", state.status))
+                    .with_fact("installation_retry", format!("{:?}", state.retry))
+                    .with_fact("installation_cause", format!("{:?}", state.cause)),
+                None => error,
+            });
+        },
+    };
     if outcome.state.status != DeviceMemoryManagerInstallationStatus::Owned
         || outcome.state.retry != DeviceMemoryManagerInstallationRetry::Reusable
     {

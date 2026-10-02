@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
     DeviceMemoryManagerInstallationOutcomeKind, DeviceMemoryManagerInstallationRetry,
-    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
+    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, InstallSpec,
 };
 use cudf_sys::test_support;
 
@@ -14,11 +14,9 @@ fn failed_current_resource_switch_is_retryable_but_never_reusable() {
     let options = DeviceMemoryManagerOptions::default();
 
     unsafe { test_support::cudf_test_memory_manager_fail_next_current_resource_install() };
-    let failure = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+    let failure = DeviceMemoryManager::install(
         device,
-        identity,
-        Arc::new(|_| {}),
-        options,
+        InstallSpec { options, owner: Some(identity), on_failure: Some(Arc::new(|_| {})) },
     )
     .unwrap_err();
 
@@ -33,14 +31,11 @@ fn failed_current_resource_switch_is_retryable_but_never_reusable() {
     assert_eq!(incomplete.identity, Some(identity));
     let generation = incomplete.installation_generation.expect("registered callback has a generation");
 
-    let (_manager, recovered) =
-        DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
-            device,
-            identity,
-            Arc::new(|_| {}),
-            options,
-        )
-        .unwrap();
+    let (_manager, recovered) = DeviceMemoryManager::install(
+        device,
+        InstallSpec { options, owner: Some(identity), on_failure: Some(Arc::new(|_| {})) },
+    )
+    .unwrap();
     assert_eq!(recovered.kind, DeviceMemoryManagerInstallationOutcomeKind::Reused);
     assert_eq!(recovered.state.status, DeviceMemoryManagerInstallationStatus::Owned);
     assert_eq!(recovered.state.retry, DeviceMemoryManagerInstallationRetry::Reusable);

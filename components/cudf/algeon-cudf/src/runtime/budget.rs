@@ -8,7 +8,7 @@ use std::{
 
 use super::{CudaStream, ExecutionOverrides, Runtime};
 use crate::core::{
-    error::{BudgetExhaustionDetail, Error, Result},
+    error::{BudgetExhaustionDetail, Error, ErrorCode, Result},
     memory::{
         DeviceMemoryManager, DeviceMemoryResource, QueryMemoryDomain, ReservationArena, ReservationArenaUsage,
         ReservationUsage, StreamReservationLease,
@@ -19,9 +19,9 @@ static NEXT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Request for a bounded operation execution.
 ///
-/// `budget_bytes` is enforced by attaching a hard live-byte reservation to
-/// the runtime stream. It is not a claim that cudf or libcudf can preflight
-/// every temporary workspace allocation for the operation.
+/// `budget_bytes` records the caller's stage request. A token over a shared
+/// lease retains that request without changing the member's allocation limit.
+/// The request does not predict temporary workspace allocations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionBudgetRequest {
     budget_bytes: usize,
@@ -40,7 +40,7 @@ impl ExecutionBudgetRequest {
         self
     }
 
-    /// Maximum live bytes allowed through the token's stream-bound reservation.
+    /// Bytes requested for this execution stage.
     pub fn budget_bytes(&self) -> usize {
         self.budget_bytes
     }
@@ -81,6 +81,7 @@ impl ExecutionBudgetEnforcement {
 pub struct ExecutionBudgetReport {
     request: ExecutionBudgetRequest,
     enforcement: ExecutionBudgetEnforcement,
+    member_limit_bytes: Option<usize>,
     allocator_high_water_bytes: Option<usize>,
     allocator_current_bytes: Option<usize>,
     allocator_peak_aligned_bytes: Option<usize>,
@@ -98,6 +99,7 @@ impl ExecutionBudgetReport {
         Self {
             request,
             enforcement,
+            member_limit_bytes: None,
             allocator_high_water_bytes: None,
             allocator_current_bytes: None,
             allocator_peak_aligned_bytes: None,
@@ -109,6 +111,7 @@ impl ExecutionBudgetReport {
     }
 
     pub(crate) fn with_allocator_usage(mut self, usage: ReservationUsage) -> Self {
+        self.member_limit_bytes = usize::try_from(usage.allocation_limit_bytes).ok();
         self.allocator_high_water_bytes = Some(usage.peak_bytes as usize);
         self.allocator_current_bytes = Some(usage.current_bytes as usize);
         self.allocator_peak_aligned_bytes = Some(usage.peak_aligned_bytes as usize);
@@ -146,6 +149,11 @@ impl ExecutionBudgetReport {
 
     pub fn enforcement(&self) -> ExecutionBudgetEnforcement {
         self.enforcement
+    }
+
+    /// Allocator-enforced member limit, when its usage snapshot was available.
+    pub fn member_limit_bytes(&self) -> Option<usize> {
+        self.member_limit_bytes
     }
 
     pub fn allocator_high_water_bytes(&self) -> Option<usize> {
@@ -326,6 +334,22 @@ impl ExecutionBudgetToken {
         self.lease.usage()
     }
 
+    /// Read the allocation limit enforced by this token's member lease.
+    ///
+    /// This can differ from the stage request. Reading the limit does not
+    /// change the member or its parent domain.
+    pub fn member_limit_bytes(&self) -> Result<usize> {
+        let usage = self.lease.usage()?;
+        usize::try_from(usage.allocation_limit_bytes).map_err(|_| {
+            Error::new_with(
+                ErrorCode::SizeOverflow,
+                "runtime::budget::ExecutionBudgetToken::member_limit_bytes",
+                "member allocation limit does not fit the platform allocation size",
+            )
+            .with_detail("allocation_limit_bytes", usage.allocation_limit_bytes.to_string())
+        })
+    }
+
     /// Snapshot parent arena usage counters when this token is an arena member.
     pub fn reservation_arena_usage(&self) -> Result<Option<ReservationArenaUsage>> {
         self.lease.reservation_arena().map(ReservationArena::usage).transpose()
@@ -349,13 +373,15 @@ impl ExecutionBudgetToken {
             .reanchor_if_needed(operation)
             .with_detail_if_absent("budget_operation", operation)
             .with_detail_if_absent("budget_boundary", self.request.boundary().to_string())
-            .with_detail_if_absent("budget_bytes", self.request.budget_bytes().to_string())
             .with_detail_if_absent("budget_enforcement", self.enforcement.as_str())
             .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
         match self.lease.usage() {
             Ok(usage) => {
+                let Ok(member_limit_bytes) = usize::try_from(usage.allocation_limit_bytes) else {
+                    return err;
+                };
                 let detail = BudgetExhaustionDetail::new(
-                    self.request.budget_bytes(),
+                    member_limit_bytes,
                     usage.peak_bytes as usize,
                     usage.peak_aligned_bytes as usize,
                     usage.current_bytes as usize,
@@ -365,6 +391,7 @@ impl ExecutionBudgetToken {
                     operation,
                 );
                 err.with_budget_exhaustion_if_absent(detail)
+                    .with_detail_if_absent("budget_bytes", member_limit_bytes.to_string())
                     .with_detail_if_absent("budget_peak_bytes", usage.peak_bytes.to_string())
                     .with_detail_if_absent("budget_current_bytes", usage.current_bytes.to_string())
                     .with_detail_if_absent("budget_peak_aligned_bytes", usage.peak_aligned_bytes.to_string())

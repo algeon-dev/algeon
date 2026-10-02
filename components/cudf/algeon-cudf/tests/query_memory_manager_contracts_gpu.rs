@@ -12,7 +12,7 @@ use cudf::{
     CudfErrorFailureSource, DataFrame, DataType, DeviceId, DeviceMemoryFailureAllocationDomain,
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
     DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
+    InstallSpec, QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
     core::DeviceBuffer,
     ops::expr::col,
     runtime::CudaStream,
@@ -197,11 +197,14 @@ fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
     // only the exclusive guard keeps sibling pool traffic from tearing the pair.
     let _pool_state = exclusive_device_pool_guard();
     let device = DeviceId::current().unwrap();
-    let manager = DeviceMemoryManager::install_for_device_with_options(
+    let (manager, _) = DeviceMemoryManager::install(
         device,
-        DeviceMemoryManagerOptions {
-            base: DeviceMemoryManagerBase::CudaAsync { initial_pool_size: None, release_threshold: None },
-            allocation_limit_bytes: None,
+        InstallSpec {
+            options: DeviceMemoryManagerOptions {
+                base: DeviceMemoryManagerBase::CudaAsync { initial_pool_size: None, release_threshold: None },
+                allocation_limit_bytes: None,
+            },
+            ..InstallSpec::default()
         },
     )
     .unwrap();
@@ -2294,18 +2297,28 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
 
     let first = cudf::ExecutionBudgetToken::from_shared_lease(
         &runtime,
-        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("first_shared_stage"),
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("first_shared_stage"),
         lease.clone(),
         ExecutionBudgetEnforcement::QueryDomainMember,
     );
     let second = cudf::ExecutionBudgetToken::from_shared_lease(
         &runtime,
-        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("second_shared_stage"),
+        ExecutionBudgetRequest::new(128 * 1024 * 1024).with_boundary("second_shared_stage"),
         lease.clone(),
         ExecutionBudgetEnforcement::QueryDomainMember,
     );
     let first_outcome = runtime.series_from_value_with_budget(3i32, 1_000_000, &first).unwrap();
     let second_outcome = runtime.series_from_value_with_budget(5i32, 1_000_000, &second).unwrap();
+    assert_eq!(first.member_limit_bytes().unwrap(), 64 * 1024 * 1024);
+    assert_eq!(second.member_limit_bytes().unwrap(), 64 * 1024 * 1024);
+    assert_eq!(first_outcome.report().request().budget_bytes(), 1024 * 1024);
+    assert_eq!(second_outcome.report().request().budget_bytes(), 128 * 1024 * 1024);
+    assert_eq!(first_outcome.report().member_limit_bytes(), Some(64 * 1024 * 1024));
+    assert_eq!(second_outcome.report().member_limit_bytes(), Some(64 * 1024 * 1024));
+
+    let error = runtime.series_from_value_with_budget(7i32, 20_000_000, &first).unwrap_err();
+    assert_eq!(error.budget_exhaustion().unwrap().hard_budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(common::error_context_value(&error, "budget_bytes"), Some((64 * 1024 * 1024).to_string()));
 
     drop(first);
     drop(second);

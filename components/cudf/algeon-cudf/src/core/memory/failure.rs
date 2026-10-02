@@ -10,10 +10,7 @@ use std::{
     },
 };
 
-use super::{
-    installation::{DeviceMemoryManagerInstallationError, DeviceMemoryManagerInstallationState},
-    usage::DeviceMemoryPoolUsage,
-};
+use super::usage::DeviceMemoryPoolUsage;
 use crate::{
     DeviceId,
     core::error::{self, Result},
@@ -270,29 +267,6 @@ pub enum AllocatorEventRead {
 
 pub(super) type FailureCallback = dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static;
 
-pub(super) struct CallbackInstallationFailure {
-    pub(super) error: error::Error,
-    state: Option<Box<DeviceMemoryManagerInstallationState>>,
-}
-
-impl CallbackInstallationFailure {
-    pub(super) fn with_state(error: error::Error, state: Option<DeviceMemoryManagerInstallationState>) -> Self {
-        Self { error, state: state.map(Box::new) }
-    }
-}
-
-impl From<error::Error> for CallbackInstallationFailure {
-    fn from(error: error::Error) -> Self {
-        Self { error, state: None }
-    }
-}
-
-impl From<CallbackInstallationFailure> for DeviceMemoryManagerInstallationError {
-    fn from(failure: CallbackInstallationFailure) -> Self {
-        Self { error: failure.error, state: failure.state }
-    }
-}
-
 pub(super) struct FailureCallbackState {
     callback: Arc<FailureCallback>,
     panicked: AtomicBool,
@@ -313,7 +287,7 @@ impl FailureCallbackState {
         if generation == 0 {
             return Err(error::Error::new_with(
                 error::ErrorCode::ForeignInvariantViolation,
-                "memory::device_memory_manager::install_owned",
+                "memory::device_memory_manager::install",
                 "native installation record returned a zero callback generation",
             ));
         }
@@ -322,7 +296,7 @@ impl FailureCallbackState {
             Err(existing) if existing == generation => Ok(()),
             Err(existing) => Err(error::Error::new_with(
                 error::ErrorCode::InvariantViolation,
-                "memory::device_memory_manager::install_owned",
+                "memory::device_memory_manager::install",
                 "callback state was rebound to a different installation generation",
             )
             .with_detail("existing_generation", existing.to_string())

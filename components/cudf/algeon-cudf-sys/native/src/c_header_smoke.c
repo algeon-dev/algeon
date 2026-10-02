@@ -51,7 +51,7 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_resource_destroy, cudf_memory_resource_handle, int32_t);
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_resource_raw, cudf_memory_resource_handle, void**);
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_resource_create_failure_callback, cudf_memory_resource_handle, cudf_memory_failure_callback_t, void*, cudf_memory_resource_handle*);
-  SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_for_device_with_failure_callback_and_options, int32_t, cudf_memory_failure_callback_t, void*, cudf_memory_manager_options_t const*, cudf_memory_manager_handle*);
+  SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_install, int32_t, cudf_memory_manager_options_t const*, cudf_memory_failure_callback_t, void*, cudf_memory_manager_installation_identity_t const*, cudf_memory_manager_handle*, cudf_memory_manager_installation_record_t*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_failure_callback_state, int32_t, int32_t*, int32_t*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_route_current_resource, cudf_memory_manager_handle, cudf_stream_handle, cudf_memory_resource_handle, cudf_current_resource_route_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_current_resource_route_destroy, cudf_current_resource_route_handle);

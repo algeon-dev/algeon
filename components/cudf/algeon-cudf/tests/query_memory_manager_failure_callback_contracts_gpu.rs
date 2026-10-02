@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest,
+    DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest, InstallSpec,
     QueryMemoryDomainOptions, Runtime, testing::prelude::*,
 };
 
@@ -29,7 +29,9 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
             callback_member_id.store(member_id, Ordering::SeqCst);
         }
     });
-    let manager = DeviceMemoryManager::install_for_device_with_failure_callback_details(device, callback).unwrap();
+    let (manager, _) =
+        DeviceMemoryManager::install(device, InstallSpec { on_failure: Some(callback), ..InstallSpec::default() })
+            .unwrap();
     let state = DeviceMemoryManager::failure_callback_state_for_device(device).unwrap();
     assert!(state.exists);
     assert!(state.failure_callback_installed);

@@ -67,7 +67,7 @@ pub struct BudgetedExecutionEvent {
     pub operation: String,
     /// Lower-level budget boundary label.
     pub boundary: String,
-    /// Budget limit in bytes.
+    /// Bytes requested for this execution stage, which can differ from the member limit.
     pub budget_bytes: u64,
     /// Lower-level budget enforcement label.
     pub enforcement: String,

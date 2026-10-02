@@ -557,6 +557,8 @@ pub fn cudf::core::error::Error::message(&self) -> &str
 pub fn cudf::core::error::Error::operation(&self) -> &'static str
 pub fn cudf::core::error::Error::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn cudf::core::error::Error::status(&self) -> cudf::core::error::code::ErrorStatus
+impl core::convert::From<cudf::core::error::Error> for cudf::DeviceMemoryManagerInstallationError
+pub fn cudf::DeviceMemoryManagerInstallationError::from(cudf::core::error::Error) -> Self
 impl core::error::Error for cudf::core::error::Error
 pub fn cudf::core::error::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for cudf::core::error::Error
@@ -687,14 +689,7 @@ pub fn cudf::DeviceMemoryManager::allocator_event_ring_bounds(&self) -> cudf::co
 pub fn cudf::DeviceMemoryManager::device(&self) -> cudf::runtime::device::DeviceId
 pub fn cudf::DeviceMemoryManager::failure_callback_state_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::DeviceMemoryManagerFailureCallbackState>
 pub fn cudf::DeviceMemoryManager::for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::for_device_with_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(usize) + core::marker::Send + core::marker::Sync + 'static)>) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_and_options(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(usize) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details_and_options(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerInstallationIdentity, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome)>
+pub fn cudf::DeviceMemoryManager::install(cudf::runtime::device::DeviceId, cudf::InstallSpec) -> core::result::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome), cudf::DeviceMemoryManagerInstallationError>
 pub fn cudf::DeviceMemoryManager::installation_state_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::DeviceMemoryManagerInstallationState>
 pub fn cudf::DeviceMemoryManager::options_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<core::option::Option<cudf::DeviceMemoryManagerOptions>>
 pub fn cudf::DeviceMemoryManager::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
@@ -706,7 +701,6 @@ pub fn cudf::DeviceMemoryManager::resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::DeviceMemoryManager::route_current_resource(&self, &cudf::runtime::stream::CudaStream, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::CurrentResourceRouteLease>
 pub unsafe fn cudf::DeviceMemoryManager::route_current_resource_raw(&self, *mut core::ffi::c_void, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::RawCurrentResourceRouteLease>
 pub fn cudf::DeviceMemoryManager::trim_to(&self, u64) -> cudf::core::error::Result<()>
-pub fn cudf::DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerInstallationIdentity, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> core::result::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome), cudf::DeviceMemoryManagerInstallationError>
 pub struct cudf::core::memory::DeviceMemoryManagerFailureCallbackState
 pub cudf::core::memory::DeviceMemoryManagerFailureCallbackState::current_resource_installed: bool
 pub cudf::core::memory::DeviceMemoryManagerFailureCallbackState::exists: bool
@@ -717,6 +711,8 @@ impl cudf::DeviceMemoryManagerInstallationError
 pub fn cudf::DeviceMemoryManagerInstallationError::error(&self) -> &cudf::core::error::Error
 pub fn cudf::DeviceMemoryManagerInstallationError::installation_state(&self) -> core::option::Option<cudf::DeviceMemoryManagerInstallationState>
 pub fn cudf::DeviceMemoryManagerInstallationError::into_error(self) -> cudf::core::error::Error
+impl core::convert::From<cudf::core::error::Error> for cudf::DeviceMemoryManagerInstallationError
+pub fn cudf::DeviceMemoryManagerInstallationError::from(cudf::core::error::Error) -> Self
 impl core::error::Error for cudf::DeviceMemoryManagerInstallationError
 pub fn cudf::DeviceMemoryManagerInstallationError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Display for cudf::DeviceMemoryManagerInstallationError
@@ -788,6 +784,10 @@ impl core::convert::From<cudf::ReservationUsage> for cudf::DeviceMemoryResourceU
 pub fn cudf::DeviceMemoryResourceUsage::from(cudf::ReservationUsage) -> Self
 impl core::convert::From<cudf_sys::bindings::cudf_memory_resource_usage_t> for cudf::DeviceMemoryResourceUsage
 pub fn cudf::DeviceMemoryResourceUsage::from(cudf_sys::bindings::cudf_memory_resource_usage_t) -> Self
+pub struct cudf::core::memory::InstallSpec
+pub cudf::core::memory::InstallSpec::on_failure: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>>
+pub cudf::core::memory::InstallSpec::options: cudf::DeviceMemoryManagerOptions
+pub cudf::core::memory::InstallSpec::owner: core::option::Option<cudf::DeviceMemoryManagerInstallationIdentity>
 pub struct cudf::core::memory::QueryMemoryDomain
 impl cudf::QueryMemoryDomain
 pub fn cudf::QueryMemoryDomain::device(&self) -> cudf::runtime::device::DeviceId
@@ -1488,6 +1488,8 @@ pub fn cudf::core::error::Error::message(&self) -> &str
 pub fn cudf::core::error::Error::operation(&self) -> &'static str
 pub fn cudf::core::error::Error::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn cudf::core::error::Error::status(&self) -> cudf::core::error::code::ErrorStatus
+impl core::convert::From<cudf::core::error::Error> for cudf::DeviceMemoryManagerInstallationError
+pub fn cudf::DeviceMemoryManagerInstallationError::from(cudf::core::error::Error) -> Self
 impl core::error::Error for cudf::core::error::Error
 pub fn cudf::core::error::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for cudf::core::error::Error
@@ -6447,6 +6449,7 @@ pub fn cudf::ExecutionBudgetReport::allocator_high_water_bytes(&self) -> core::o
 pub fn cudf::ExecutionBudgetReport::allocator_peak_aligned_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::context_facts(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub fn cudf::ExecutionBudgetReport::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
+pub fn cudf::ExecutionBudgetReport::member_limit_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::output_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
@@ -6465,6 +6468,7 @@ pub fn cudf::ExecutionBudgetToken::from_runtime(&cudf::Runtime, cudf::ExecutionB
 pub fn cudf::ExecutionBudgetToken::from_runtime_in_arena(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::ReservationArena) -> cudf::core::error::Result<Self>
 pub fn cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::QueryMemoryDomain) -> cudf::core::error::Result<Self>
 pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease, cudf::ExecutionBudgetEnforcement) -> Self
+pub fn cudf::ExecutionBudgetToken::member_limit_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::ExecutionBudgetToken::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::ExecutionBudgetToken::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetToken::reservation_arena_usage(&self) -> cudf::core::error::Result<core::option::Option<cudf::ReservationArenaUsage>>
@@ -7772,14 +7776,7 @@ pub fn cudf::DeviceMemoryManager::allocator_event_ring_bounds(&self) -> cudf::co
 pub fn cudf::DeviceMemoryManager::device(&self) -> cudf::runtime::device::DeviceId
 pub fn cudf::DeviceMemoryManager::failure_callback_state_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::DeviceMemoryManagerFailureCallbackState>
 pub fn cudf::DeviceMemoryManager::for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::for_device_with_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(usize) + core::marker::Send + core::marker::Sync + 'static)>) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_and_options(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(usize) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details_and_options(cudf::runtime::device::DeviceId, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<Self>
-pub fn cudf::DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerInstallationIdentity, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> cudf::core::error::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome)>
+pub fn cudf::DeviceMemoryManager::install(cudf::runtime::device::DeviceId, cudf::InstallSpec) -> core::result::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome), cudf::DeviceMemoryManagerInstallationError>
 pub fn cudf::DeviceMemoryManager::installation_state_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::DeviceMemoryManagerInstallationState>
 pub fn cudf::DeviceMemoryManager::options_for_device(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<core::option::Option<cudf::DeviceMemoryManagerOptions>>
 pub fn cudf::DeviceMemoryManager::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
@@ -7791,7 +7788,6 @@ pub fn cudf::DeviceMemoryManager::resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::DeviceMemoryManager::route_current_resource(&self, &cudf::runtime::stream::CudaStream, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::CurrentResourceRouteLease>
 pub unsafe fn cudf::DeviceMemoryManager::route_current_resource_raw(&self, *mut core::ffi::c_void, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::RawCurrentResourceRouteLease>
 pub fn cudf::DeviceMemoryManager::trim_to(&self, u64) -> cudf::core::error::Result<()>
-pub fn cudf::DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(cudf::runtime::device::DeviceId, cudf::DeviceMemoryManagerInstallationIdentity, alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>, cudf::DeviceMemoryManagerOptions) -> core::result::Result<(Self, cudf::DeviceMemoryManagerInstallationOutcome), cudf::DeviceMemoryManagerInstallationError>
 pub struct cudf::DeviceMemoryManagerFailureCallbackState
 pub cudf::DeviceMemoryManagerFailureCallbackState::current_resource_installed: bool
 pub cudf::DeviceMemoryManagerFailureCallbackState::exists: bool
@@ -7802,6 +7798,8 @@ impl cudf::DeviceMemoryManagerInstallationError
 pub fn cudf::DeviceMemoryManagerInstallationError::error(&self) -> &cudf::core::error::Error
 pub fn cudf::DeviceMemoryManagerInstallationError::installation_state(&self) -> core::option::Option<cudf::DeviceMemoryManagerInstallationState>
 pub fn cudf::DeviceMemoryManagerInstallationError::into_error(self) -> cudf::core::error::Error
+impl core::convert::From<cudf::core::error::Error> for cudf::DeviceMemoryManagerInstallationError
+pub fn cudf::DeviceMemoryManagerInstallationError::from(cudf::core::error::Error) -> Self
 impl core::error::Error for cudf::DeviceMemoryManagerInstallationError
 pub fn cudf::DeviceMemoryManagerInstallationError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Display for cudf::DeviceMemoryManagerInstallationError
@@ -7895,6 +7893,8 @@ pub fn cudf::core::error::Error::message(&self) -> &str
 pub fn cudf::core::error::Error::operation(&self) -> &'static str
 pub fn cudf::core::error::Error::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn cudf::core::error::Error::status(&self) -> cudf::core::error::code::ErrorStatus
+impl core::convert::From<cudf::core::error::Error> for cudf::DeviceMemoryManagerInstallationError
+pub fn cudf::DeviceMemoryManagerInstallationError::from(cudf::core::error::Error) -> Self
 impl core::error::Error for cudf::core::error::Error
 pub fn cudf::core::error::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for cudf::core::error::Error
@@ -7908,6 +7908,7 @@ pub fn cudf::ExecutionBudgetReport::allocator_high_water_bytes(&self) -> core::o
 pub fn cudf::ExecutionBudgetReport::allocator_peak_aligned_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::context_facts(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub fn cudf::ExecutionBudgetReport::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
+pub fn cudf::ExecutionBudgetReport::member_limit_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::output_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
@@ -7926,6 +7927,7 @@ pub fn cudf::ExecutionBudgetToken::from_runtime(&cudf::Runtime, cudf::ExecutionB
 pub fn cudf::ExecutionBudgetToken::from_runtime_in_arena(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::ReservationArena) -> cudf::core::error::Result<Self>
 pub fn cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::QueryMemoryDomain) -> cudf::core::error::Result<Self>
 pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease, cudf::ExecutionBudgetEnforcement) -> Self
+pub fn cudf::ExecutionBudgetToken::member_limit_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::ExecutionBudgetToken::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::ExecutionBudgetToken::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetToken::reservation_arena_usage(&self) -> cudf::core::error::Result<core::option::Option<cudf::ReservationArenaUsage>>
@@ -7965,6 +7967,10 @@ pub fn cudf::GroupBy<'a>::with_execution<'ctx, 'handles>(self, &'ctx cudf::runti
 pub struct cudf::GroupByOptions
 impl core::default::Default for cudf::GroupByOptions
 pub fn cudf::GroupByOptions::default() -> Self
+pub struct cudf::InstallSpec
+pub cudf::InstallSpec::on_failure: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn(cudf::DeviceMemoryFailureInfo) + core::marker::Send + core::marker::Sync + 'static)>>
+pub cudf::InstallSpec::options: cudf::DeviceMemoryManagerOptions
+pub cudf::InstallSpec::owner: core::option::Option<cudf::DeviceMemoryManagerInstallationIdentity>
 pub struct cudf::MergeOptions
 impl cudf::MergeOptions
 pub fn cudf::MergeOptions::how(self, cudf::JoinType) -> Self

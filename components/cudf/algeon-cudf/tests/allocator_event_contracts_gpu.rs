@@ -5,7 +5,7 @@ use std::sync::{
 
 use cudf::{
     AllocatorEventAction, AllocatorEventRead, DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource,
-    DeviceMemoryManager, ErrorKind, QueryMemoryDomainOptions, Runtime,
+    DeviceMemoryManager, ErrorKind, InstallSpec, QueryMemoryDomainOptions, Runtime,
 };
 
 #[test]
@@ -13,13 +13,17 @@ fn allocator_event_ring_retains_callback_domain_identity_and_reports_overwrite()
     let device = DeviceId::current().unwrap();
     let callback_count = Arc::new(AtomicUsize::new(0));
     let observed_callbacks = Arc::clone(&callback_count);
-    let manager = DeviceMemoryManager::install_for_device_with_failure_callback_details(
+    let manager = DeviceMemoryManager::install(
         device,
-        Arc::new(move |_| {
-            observed_callbacks.fetch_add(1, Ordering::SeqCst);
-        }),
+        InstallSpec {
+            on_failure: Some(Arc::new(move |_| {
+                observed_callbacks.fetch_add(1, Ordering::SeqCst);
+            })),
+            ..InstallSpec::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .0;
     let runtime =
         Runtime::builder().with_device(device).with_memory_resource(manager.resource().clone()).build().unwrap();
     let domain_id = 71_001;

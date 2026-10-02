@@ -2,15 +2,18 @@ use super::{ExecutionBudgetReport, QueryError, QueryErrorCode, Result};
 
 pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Result<u64> {
     let bytes = report.retained_bytes().ok_or_else(|| {
-        QueryError::new(
+        let error = QueryError::new(
             QueryErrorCode::Internal,
             "query_engine.final_sort.prepare",
             "prepared final sort budget report did not include retained sorted-order bytes",
         )
         .with_fact("budget_boundary", report.request().boundary())
-        .with_fact("budget_bytes", report.request().budget_bytes())
         .with_fact("budget_enforcement", report.enforcement().as_str())
-        .with_fact("budget_status", "reservation_enforced")
+        .with_fact("budget_status", "reservation_enforced");
+        match report.member_limit_bytes() {
+            Some(member_limit_bytes) => error.with_fact("budget_bytes", member_limit_bytes),
+            None => error,
+        }
     })?;
     Ok(bytes as u64)
 }

@@ -11,6 +11,7 @@ namespace cudf::rust::test_support {
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
 
 void record_exec_context(std::uintptr_t stream_raw, void* mr_raw);
+void record_parquet_pass_read_limit(std::uint64_t bytes);
 void record_synchronized_stream(std::uintptr_t stream_raw);
 void record_memory_resource_destroy(void* mr_raw);
 
@@ -54,6 +55,7 @@ cudf_status_t apply_io_metadata_fault(int32_t fault, char*** out_names, int32_t*
 #else
 
 inline void record_exec_context(std::uintptr_t, void*) {}
+inline void record_parquet_pass_read_limit(std::uint64_t) {}
 inline void record_synchronized_stream(std::uintptr_t) {}
 inline void record_memory_resource_destroy(void*) {}
 

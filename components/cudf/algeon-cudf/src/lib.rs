@@ -124,7 +124,7 @@
 //!   registry-lookup lock that never spans GPU work. cudf owns the
 //!   memory management of the devices it uses;
 //!   services should claim devices explicitly at startup via
-//!   [`DeviceMemoryManager::install_for_device`].
+//!   [`DeviceMemoryManager::install`].
 //! - **Pipeline**: one pipeline = one [`Runtime`] (its own CUDA stream),
 //!   plus a [`StreamReservationLease`] when the pipeline needs its own memory
 //!   budget. Query engines can create a [`ReservationArena`] as a parent
@@ -140,10 +140,14 @@
 //!   operation's stream.
 //!
 //! ```no_run
-//! use cudf::{DeviceId, DeviceMemoryManager, Runtime};
+//! use cudf::{DeviceId, DeviceMemoryManager, InstallSpec, Runtime};
 //!
 //! // Service startup: one explicit memory-domain install per device.
-//! DeviceMemoryManager::install_for_device(DeviceId::new(0).unwrap()).unwrap();
+//! DeviceMemoryManager::install(
+//!     DeviceId::new(0).unwrap(),
+//!     InstallSpec::default(),
+//! )
+//! .unwrap();
 //!
 //! // Each pipeline: its own Runtime (own stream) + a budget reservation.
 //! let rt = Runtime::builder().build().unwrap();
@@ -244,9 +248,9 @@ pub use core::{
         DeviceMemoryManagerInstallationOutcome, DeviceMemoryManagerInstallationOutcomeKind,
         DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationState,
         DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, DeviceMemoryPoolUsage, DeviceMemoryResource,
-        DeviceMemoryResourceUsage, QueryMemoryDomain, QueryMemoryDomainAllocation, QueryMemoryDomainIdentity,
-        QueryMemoryDomainOptions, QueryMemoryDomainUsage, RawCurrentResourceRouteLease, RawStreamReservationLease,
-        ReservationArena, ReservationArenaUsage, ReservationUsage, StreamReservationLease,
+        DeviceMemoryResourceUsage, InstallSpec, QueryMemoryDomain, QueryMemoryDomainAllocation,
+        QueryMemoryDomainIdentity, QueryMemoryDomainOptions, QueryMemoryDomainUsage, RawCurrentResourceRouteLease,
+        RawStreamReservationLease, ReservationArena, ReservationArenaUsage, ReservationUsage, StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},

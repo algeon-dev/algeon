@@ -5,7 +5,7 @@ use std::sync::{
 
 use cudf::{
     DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource, DeviceMemoryManager,
-    DeviceMemoryManagerOptions, ErrorKind, QueryMemoryDomainOptions, Runtime,
+    DeviceMemoryManagerOptions, ErrorKind, InstallSpec, QueryMemoryDomainOptions, Runtime,
 };
 
 const STATIC_PARTITION_BYTES: usize = 64 * 1024 * 1024;
@@ -36,7 +36,7 @@ fn static_partition_allows_query_memory_domain_on_shared_pool() {
         allocation_limit_bytes: Some(STATIC_PARTITION_BYTES),
         ..DeviceMemoryManagerOptions::default()
     };
-    let manager = DeviceMemoryManager::install_for_device_with_options(device, options).unwrap();
+    let manager = DeviceMemoryManager::install(device, InstallSpec { options, ..InstallSpec::default() }).unwrap().0;
 
     let domain = manager
         .query_memory_domain(
@@ -53,14 +53,18 @@ fn static_partition_allows_query_memory_domain_on_shared_pool() {
 fn static_partition_domain_oom_reports_query_identity_without_trim_or_retry() {
     let _guard = static_partition_test_lock().lock().unwrap();
     let device = DeviceId::current().unwrap();
-    let manager = DeviceMemoryManager::install_for_device_with_options(
+    let manager = DeviceMemoryManager::install(
         device,
-        DeviceMemoryManagerOptions {
-            allocation_limit_bytes: Some(STATIC_PARTITION_BYTES),
-            ..DeviceMemoryManagerOptions::default()
+        InstallSpec {
+            options: DeviceMemoryManagerOptions {
+                allocation_limit_bytes: Some(STATIC_PARTITION_BYTES),
+                ..DeviceMemoryManagerOptions::default()
+            },
+            ..InstallSpec::default()
         },
     )
-    .unwrap();
+    .unwrap()
+    .0;
 
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let seen_source = Arc::new(AtomicU32::new(u32::MAX));

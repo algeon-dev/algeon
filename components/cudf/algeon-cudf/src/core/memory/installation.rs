@@ -1,6 +1,8 @@
 //! Installation identity, native state records, and install outcomes.
 
-use super::options::DeviceMemoryManagerOptions;
+use std::sync::Arc;
+
+use super::{failure::DeviceMemoryFailureInfo, options::DeviceMemoryManagerOptions};
 use crate::core::error::{self, Result};
 
 /// Whether cudf has already installed a process-local device memory manager
@@ -27,6 +29,20 @@ impl DeviceMemoryManagerInstallationIdentity {
     pub const fn new(owner_fingerprint: [u8; 16], callback_version: u32, partition_fingerprint: [u8; 16]) -> Self {
         Self { owner_fingerprint, callback_version, partition_fingerprint }
     }
+}
+
+/// Process-lifetime allocator configuration for one device.
+///
+/// `owner` requires `on_failure`. Identified reuse requires the same owner
+/// and physical-base options; the first callback remains installed. Without
+/// an owner, callback installation retains the original callback on reuse.
+#[derive(Clone, Default)]
+pub struct InstallSpec {
+    pub options: DeviceMemoryManagerOptions,
+    pub owner: Option<DeviceMemoryManagerInstallationIdentity>,
+    /// Runs on the allocating thread. It must not re-enter the allocator,
+    /// block on application locks, or unwind across the native boundary.
+    pub on_failure: Option<Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>>,
 }
 
 pub(super) fn installation_identity_to_sys(
@@ -101,21 +117,21 @@ pub struct DeviceMemoryManagerInstallationState {
     pub failure_callback_panicked: bool,
 }
 
-/// Whether an identity-aware install created or reused the process manager.
+/// Whether an explicit install created or reused the process manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceMemoryManagerInstallationOutcomeKind {
     Installed,
     Reused,
 }
 
-/// Result of one successful identity-aware installation transaction.
+/// Result of one successful explicit installation transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceMemoryManagerInstallationOutcome {
     pub kind: DeviceMemoryManagerInstallationOutcomeKind,
     pub state: DeviceMemoryManagerInstallationState,
 }
 
-/// Failure from an identity-aware install together with the exact native
+/// Failure from an explicit install together with the exact native
 /// record returned by that same locked transaction, when one was available.
 #[derive(Debug)]
 pub struct DeviceMemoryManagerInstallationError {
@@ -123,7 +139,17 @@ pub struct DeviceMemoryManagerInstallationError {
     pub(super) state: Option<Box<DeviceMemoryManagerInstallationState>>,
 }
 
+impl From<error::Error> for DeviceMemoryManagerInstallationError {
+    fn from(error: error::Error) -> Self {
+        Self { error, state: None }
+    }
+}
+
 impl DeviceMemoryManagerInstallationError {
+    pub(super) fn with_state(error: error::Error, state: Option<DeviceMemoryManagerInstallationState>) -> Self {
+        Self { error, state: state.map(Box::new) }
+    }
+
     /// The ordinary cudf error for callers that do not need recovery state.
     pub fn error(&self) -> &error::Error {
         &self.error
@@ -131,9 +157,10 @@ impl DeviceMemoryManagerInstallationError {
 
     /// The authoritative record returned by the rejected native transaction.
     ///
-    /// This is `None` only when validation or Rust callback-registry access
-    /// failed before the native install/inspect transaction ran, or when the
-    /// native record itself violated its ABI contract.
+    /// This is `None` when Rust callback-ownership checks or native validation
+    /// reject before the install transaction reaches its registry, or when
+    /// the native record itself violates its ABI contract. A preliminary
+    /// diagnostic inspection does not supply transactional installation state.
     pub fn installation_state(&self) -> Option<DeviceMemoryManagerInstallationState> {
         self.state.as_deref().copied()
     }

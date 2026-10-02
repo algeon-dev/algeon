@@ -19,6 +19,7 @@ unsafe extern "C" {
     pub fn cudf_test_checked_owning_handle_size_mul(left: usize, right: usize, out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_fail_next_provenance_destroy(status: cudf_status_t);
     pub fn cudf_test_exec_reset_observation();
+    pub fn cudf_test_exec_last_parquet_pass_read_limit(out: *mut u64) -> cudf_status_t;
     pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_exec_last_sync_stream_value(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_exec_last_sync_sequence(out: *mut u64) -> cudf_status_t;

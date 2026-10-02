@@ -1,18 +1,23 @@
-use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, ErrorCode};
+use cudf::{
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, ErrorCode, InstallSpec,
+};
 
 #[test]
 fn pool_request_after_default_async_install_is_rejected_without_mutation() {
     let device = DeviceId::current().unwrap();
     let async_options = DeviceMemoryManagerOptions::default();
-    DeviceMemoryManager::install_for_device(device).unwrap();
-    DeviceMemoryManager::install_for_device_with_options(
+    DeviceMemoryManager::install(device, InstallSpec::default()).unwrap();
+    DeviceMemoryManager::install(
         device,
-        DeviceMemoryManagerOptions {
-            base: DeviceMemoryManagerBase::CudaAsync {
-                initial_pool_size: Some(0),
-                release_threshold: Some(usize::MAX),
+        InstallSpec {
+            options: DeviceMemoryManagerOptions {
+                base: DeviceMemoryManagerBase::CudaAsync {
+                    initial_pool_size: Some(0),
+                    release_threshold: Some(usize::MAX),
+                },
+                allocation_limit_bytes: None,
             },
-            allocation_limit_bytes: None,
+            ..InstallSpec::default()
         },
     )
     .unwrap();
@@ -24,9 +29,11 @@ fn pool_request_after_default_async_install_is_rejected_without_mutation() {
         },
         allocation_limit_bytes: None,
     };
-    let mismatch = DeviceMemoryManager::install_for_device_with_options(device, pool_options).unwrap_err();
+    let mismatch =
+        DeviceMemoryManager::install(device, InstallSpec { options: pool_options, ..InstallSpec::default() })
+            .unwrap_err();
 
-    assert_eq!(mismatch.code(), ErrorCode::RuntimeBindingMismatch);
+    assert_eq!(mismatch.error().code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(
         DeviceMemoryManager::options_for_device(device).unwrap(),
         Some(async_options),

@@ -53,6 +53,12 @@ unwind across the C boundary, allocate through the same memory resource, or
 re-enter a conflicting operation on the same resource. Return only the action
 value documented by the callback's header.
 
+`cudf_memory_manager_install` borrows its callback and argument for the
+process lifetime after its installation record reports creation. An incomplete
+current-resource switch still retains that binding. Identity-aware reuse must
+supply the same callback function and argument; it cannot replace them. Read
+the returned record before releasing callback state on an installation error.
+
 ## Destruction and threads
 
 Destroy owning handles only once, after dependent asynchronous work completes,
