@@ -1,6 +1,6 @@
 //! Admitted-plan capability validation for execution contexts.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use query_planning::{
     admission::AttemptCapabilityEvidence,
@@ -14,19 +14,51 @@ use super::{
 };
 use crate::observability::AttemptComposedScheduleProjection;
 
+/// The plan identities an admitted attempt may execute: the evidence its
+/// claim submitted, then each fragment that joined its grant after the claim.
+/// Identities are only added; the claim's placement is never revisited. A
+/// placement-only claim starts empty, and its plans fail closed until a
+/// fragment joins.
+#[derive(Debug, Default)]
+pub(in crate::runtime) struct AdmittedPlanIdentities {
+    evidence: Mutex<Option<Arc<AttemptCapabilityEvidence>>>,
+}
+
+impl AdmittedPlanIdentities {
+    pub(in crate::runtime) fn new(evidence: Option<AttemptCapabilityEvidence>) -> Self {
+        Self { evidence: Mutex::new(evidence.map(Arc::new)) }
+    }
+
+    /// The identities admitted so far.
+    pub(in crate::runtime) fn current(&self) -> Option<Arc<AttemptCapabilityEvidence>> {
+        self.evidence.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Adds a fragment whose capabilities the granted device already
+    /// provides.
+    pub(in crate::runtime) fn join(&self, fragment: &AttemptCapabilityEvidence) -> Result<()> {
+        let mut evidence = self.evidence.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut joined = evidence.as_deref().cloned().unwrap_or_default();
+        joined.join(fragment)?;
+        *evidence = Some(Arc::new(joined));
+        Ok(())
+    }
+}
+
 impl ExecutionContext {
     /// The admitted evidence and immutable grant a plan validates against, or
     /// `None` for a standalone context. The grant, allocation domain, and
     /// attempt identity come from one admission binding, so only the
-    /// evidence can be missing: a placement-only admission carries none.
+    /// evidence can be missing: a placement-only admission carries none
+    /// until a fragment joins it.
     fn validated_admitted_identity(
         &self,
         plan: &QueryPlan,
-    ) -> Result<Option<(&AttemptCapabilityEvidence, MemoryGrant)>> {
+    ) -> Result<Option<(Arc<AttemptCapabilityEvidence>, MemoryGrant)>> {
         let Some(attempt) = self.admitted() else {
             return Ok(None);
         };
-        let evidence = attempt.capability_evidence.as_deref().ok_or_else(|| {
+        let evidence = attempt.plan_identities.current().ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "query_engine.runtime.context",
@@ -108,7 +140,7 @@ impl ExecutionContext {
                 }
                 &activated.capability_evidence
             },
-            _ => submitted_evidence,
+            _ => submitted_evidence.as_ref(),
         };
         self.validate_admitted_capability_evidence(evidence, plan)?;
         if let Some(occurrence_ids) = occurrence_ids {
@@ -123,7 +155,7 @@ impl ExecutionContext {
         let Some((evidence, _)) = self.validated_admitted_identity(plan)? else {
             return Ok(());
         };
-        self.validate_admitted_capability_evidence(evidence, plan)
+        self.validate_admitted_capability_evidence(&evidence, plan)
     }
 
     /// Activates the deferred-resident phase for `plan` from its exact
@@ -184,7 +216,7 @@ impl ExecutionContext {
                 })
             })
             .unwrap_or(expected_scopes[0]);
-        let mut capability_evidence = submitted_evidence.clone();
+        let mut capability_evidence = submitted_evidence.as_ref().clone();
         capability_evidence.attest_cugraph_graph_execution_scope(plan);
         let inputs = expected_scope
             .producer_occurrences()

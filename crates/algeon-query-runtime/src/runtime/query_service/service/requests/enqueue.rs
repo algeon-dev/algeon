@@ -157,6 +157,12 @@ impl QueryService {
         gpu_resource_permit: Option<GpuResourcePermit>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<QueryAdmissionWaiter> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        let (request, test_attempt) = {
+            let mut request = request;
+            let test_attempt = request.test_attempt.take();
+            (request, test_attempt)
+        };
         let prepared =
             self.prepare_submission(request, observation_permit, gpu_resource_permit, completion_dispatcher)?;
         let PreparedSubmission {
@@ -245,6 +251,8 @@ impl QueryService {
             execution_cancellation,
             terminal,
             queued: true,
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_attempt,
         })
     }
 }

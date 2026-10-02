@@ -117,6 +117,10 @@ impl TicketQueryHandle {
         self.0.device_budget_bytes()
     }
 
+    fn join_fragment(&self, fragment: &AttemptCapabilityEvidence) -> QueryEngineResult<()> {
+        self.0.join_fragment(fragment)
+    }
+
     async fn acquire_context_with_cancellation_async(
         &self,
         cancellation: ExecutionCancellation,
@@ -144,8 +148,8 @@ pub(crate) struct QueryAdmissionTicket {
     /// services may admit it for resource-only use, while exact profiles
     /// reject it and execution cannot use it to authorize a native plan.
     attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
-    /// Prepared fragments may refine evidence while the outer DataFusion
-    /// stream already owns this ticket but before admission starts.
+    /// The evidence as fragments bind to the ticket: refined before the
+    /// claim, then joined by fragments planned after it.
     rebound_capability_evidence: Mutex<Option<AttemptCapabilityEvidence>>,
     admission: Mutex<TicketAdmission>,
     notify: Arc<Notify>,
@@ -154,9 +158,14 @@ pub(crate) struct QueryAdmissionTicket {
 /// The attempt's one admission as fragments reach it.
 #[derive(Debug, Default)]
 struct TicketAdmission {
-    handle: Option<Arc<TicketQueryHandle>>,
+    /// What the attempt's one admission resolved to: the handle every
+    /// fragment shares, or the error every fragment reports.
+    outcome: Option<QueryEngineResult<Arc<TicketQueryHandle>>>,
     admitting: bool,
     admission_facts_recorded: bool,
+    /// Fragments bound while the claim was in flight; they join its grant
+    /// when it resolves.
+    pending_fragments: Vec<AttemptCapabilityEvidence>,
 }
 
 /// The ticket of one DataFusion execution of a native admission root, with
@@ -261,11 +270,12 @@ impl TicketAdmissionContext {
     }
 }
 
-/// Clears an in-flight admission that ends without a handle, so a waiting
-/// fragment does not wait on it forever.
-struct TicketAdmitResetGuard {
+/// Resolves an in-flight admission whose claiming fragment stopped waiting
+/// for it. The attempt has no second claim, so the fragments waiting on that
+/// admission get its abandonment rather than a claim of their own.
+struct TicketAdmissionGuard {
     ticket: Arc<QueryAdmissionTicket>,
-    disarmed: bool,
+    resolved: bool,
 }
 
 impl QueryAdmissionTicket {
@@ -363,16 +373,20 @@ impl QueryAdmissionTicket {
             .or_else(|| self.attempt_capability_evidence.clone())
     }
 
-    /// Atomically extends this ticket's evidence before admission starts.
-    /// Prepared fragments contribute deltas so one preparation cannot replace
-    /// another fragment's scope or the final invocation manifest. Once the
-    /// attempt has started its admission, a fragment's evidence must already
-    /// be part of what it admits: the attempt has no second claim.
-    pub(crate) fn extend_capability_evidence_before_admission(
+    /// Binds the evidence of fragments this ticket's attempt executes.
+    ///
+    /// Before the attempt claims its admission, fragments contribute deltas
+    /// to the evidence the claim submits, so one preparation cannot replace
+    /// another fragment's scope or the final invocation manifest. The claim
+    /// fixes placement. A fragment it does not cover then joins the grant:
+    /// the runtime checks that the granted device provides every capability
+    /// the fragment requires and adds the fragment's plan identity. A
+    /// fragment bound while the claim is in flight joins when it resolves.
+    pub(crate) fn bind_fragment_evidence(
         &self,
         fragments: impl IntoIterator<Item = AttemptCapabilityEvidence>,
     ) -> QueryEngineResult<()> {
-        let admission = self.lock_admission()?;
+        let mut admission = self.lock_admission()?;
         let mut rebound = self.rebound_capability_evidence.lock().map_err(|_| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -382,19 +396,23 @@ impl QueryAdmissionTicket {
             .with_fact("reason", "capability_evidence_rebind_lock_poisoned")
         })?;
         let current = rebound.as_ref().or(self.attempt_capability_evidence.as_ref()).cloned();
-        if admission.admitting || admission.handle.is_some() {
-            let admitted = current.unwrap_or_default();
-            if fragments.into_iter().all(|fragment| admitted.covers(&fragment)) {
-                return Ok(());
-            }
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "algeon_datafusion.native_exec.admission_ticket",
-                "cannot extend query admission capability evidence after admission has started",
-            )
-            .with_fact("reason", "capability_evidence_extension_after_admission"));
+        if !admission.admitting && admission.outcome.is_none() {
+            *rebound = Some(AttemptCapabilityEvidence::aggregate(current.into_iter().chain(fragments))?);
+            return Ok(());
         }
-        *rebound = Some(AttemptCapabilityEvidence::aggregate(current.into_iter().chain(fragments))?);
+        let mut evidence = current.unwrap_or_default();
+        for fragment in fragments {
+            if evidence.covers(&fragment) {
+                continue;
+            }
+            match &admission.outcome {
+                Some(Ok(handle)) => handle.join_fragment(&fragment)?,
+                Some(Err(error)) => return Err(error.clone()),
+                None => admission.pending_fragments.push(fragment.clone()),
+            }
+            evidence.join(&fragment)?;
+        }
+        *rebound = Some(evidence);
         Ok(())
     }
 
@@ -454,8 +472,9 @@ impl QueryAdmissionTicket {
             tokio::pin!(notified);
             let action = {
                 let mut admission = self.lock_admission()?;
-                match admission.handle.as_ref() {
-                    Some(handle) => TicketAcquireAction::Reuse(Arc::clone(handle)),
+                match admission.outcome.as_ref() {
+                    Some(Ok(handle)) => TicketAcquireAction::Reuse(Arc::clone(handle)),
+                    Some(Err(error)) => return Err(error.clone()),
                     None if admission.admitting => {
                         notified.as_mut().enable();
                         TicketAcquireAction::Wait
@@ -478,9 +497,10 @@ impl QueryAdmissionTicket {
         }
     }
 
-    /// Requests the attempt's one admission. Callers set `admitting` first.
+    /// Requests the attempt's one admission and records its outcome for
+    /// every fragment. Callers set `admitting` first.
     async fn admit(self: &Arc<Self>) -> QueryEngineResult<Arc<TicketQueryHandle>> {
-        let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), disarmed: false };
+        let mut guard = TicketAdmissionGuard { ticket: Arc::clone(self), resolved: false };
         let request = QueryAdmissionRequest::new(self.attempt.admission_binding.clone())
             .with_execution_cancellation(self.attempt_cancellation());
         let request = match self.attempt.requested_query_cap_bytes {
@@ -495,20 +515,30 @@ impl QueryAdmissionTicket {
             Some(deadline) => request.with_queue_deadline(deadline),
             None => request,
         };
-        let handle = match self.source.session.admit_async_with_request(request).await {
-            Ok(handle) => Arc::new(TicketQueryHandle(Arc::new(handle))),
-            Err(error) => {
-                self.terminalize_attempt_admission_error(&error);
-                reset_guard.reset();
-                return Err(error);
-            },
-        };
+        let admitted = self
+            .source
+            .session
+            .admit_async_with_request(request)
+            .await
+            .map(|handle| Arc::new(TicketQueryHandle(Arc::new(handle))));
         let mut admission = self.lock_admission()?;
+        // A fragment bound while the claim was in flight joins its grant now.
+        // One the granted device cannot run fails the attempt's admission:
+        // the attempt has no second claim to place it elsewhere.
+        let outcome = admitted.and_then(|handle| {
+            for fragment in mem::take(&mut admission.pending_fragments) {
+                handle.join_fragment(&fragment)?;
+            }
+            Ok(handle)
+        });
+        if let Err(error) = &outcome {
+            self.terminalize_attempt_admission_error(error);
+        }
         admission.admitting = false;
-        admission.handle = Some(Arc::clone(&handle));
-        reset_guard.disarmed = true;
+        admission.outcome = Some(outcome.clone());
+        guard.resolved = true;
         self.notify.notify_waiters();
-        Ok(handle)
+        outcome
     }
 
     async fn acquire_from_handle(
@@ -545,12 +575,18 @@ impl QueryAdmissionTicket {
         !mem::replace(&mut admission.admission_facts_recorded, true)
     }
 
-    fn reset_admitting(&self) {
+    fn abandon_admission(&self) {
         let Ok(mut admission) = self.admission.lock() else {
-            tracing::warn!("failed to reset poisoned query admission ticket state");
+            tracing::warn!("failed to resolve poisoned query admission ticket state");
             return;
         };
         admission.admitting = false;
+        admission.outcome = Some(Err(QueryError::new(
+            QueryErrorCode::Cancelled,
+            "algeon_datafusion.native_exec.admission_ticket",
+            "the attempt's admission was abandoned before it resolved",
+        )
+        .with_fact("reason", "attempt_admission_abandoned")));
         self.notify.notify_waiters();
     }
 
@@ -571,18 +607,11 @@ enum TicketAcquireAction {
     Wait,
 }
 
-impl TicketAdmitResetGuard {
-    fn reset(&mut self) {
-        if !self.disarmed {
-            self.disarmed = true;
-            self.ticket.reset_admitting();
-        }
-    }
-}
-
-impl Drop for TicketAdmitResetGuard {
+impl Drop for TicketAdmissionGuard {
     fn drop(&mut self) {
-        self.reset();
+        if !self.resolved {
+            self.ticket.abandon_admission();
+        }
     }
 }
 

@@ -449,7 +449,7 @@ fn plan_native_admission(
     if let Some((ticket, false)) =
         invocation.and_then(|invocation| invocation.attempt_admission_ticket(source.clone(), Some(evidence.clone())))
     {
-        ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(ticket_ask_error)?;
+        ticket.bind_fragment_evidence(fragment_evidence_items).map_err(ticket_ask_error)?;
     }
     Ok(Some((source, evidence)))
 }

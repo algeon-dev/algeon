@@ -42,7 +42,7 @@ use query_engine::{
     },
     metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig},
+    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeTerminalOutcome},
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
@@ -205,7 +205,7 @@ impl Deref for AdmittedPlanContext {
 
 impl AdmittedPlanContext {
     fn finish(&self) {
-        self.handle.finish();
+        self.handle.end_test_attempt();
     }
 }
 
@@ -370,13 +370,13 @@ impl BackendQueryContext {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
-        let result = result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()));
-        if result.is_err()
-            || result.as_ref().is_ok_and(|result| !matches!(result.output(), QueryOutput::GpuResident(_)))
-        {
-            admitted.finish();
-        }
-        result
+        // The attempt ends with the execution's outcome, as a frontend
+        // commits it; a resident output then stays frozen past the attempt.
+        admitted.handle.commit_test_attempt(match &result {
+            Ok(_) => RuntimeTerminalOutcome::Succeeded,
+            Err(error) => RuntimeTerminalOutcome::from_query_error(error),
+        });
+        result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()))
     }
 }
 

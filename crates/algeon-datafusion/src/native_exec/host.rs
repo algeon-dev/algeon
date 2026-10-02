@@ -289,10 +289,10 @@ impl ExecutionPlan for AlgeonNativeExec {
                             .with_fact("ticket_evidence_scope", "different_native_plan"),
                         ));
                     }
-                    ticket.extend_capability_evidence_before_admission([evidence]).map_err(|error| {
+                    ticket.bind_fragment_evidence([evidence]).map_err(|error| {
                         DataFusionError::from(Error::from_native(
                             "algeon_datafusion.native_exec.admission_evidence",
-                            "failed to rebind the native host admission ticket before query-service admission",
+                            "failed to bind the native host fragment to its attempt admission",
                             error,
                         ))
                     })?;

@@ -256,7 +256,6 @@ async fn probe_native_observed(
 
     drop(result);
     drop(admitted_context);
-    query_handle.finish();
     let seal_deadline = Instant::now() + Duration::from_secs(10);
     let sealed = loop {
         if let Some(snapshot) = observation.sealed_snapshot() {

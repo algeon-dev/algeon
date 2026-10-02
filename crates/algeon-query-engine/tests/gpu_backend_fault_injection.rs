@@ -72,9 +72,9 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
 
     let post_ack = session.admit_query().expect("healthy device remains admissible after quarantine acknowledgement");
     assert_eq!(post_ack.device_ordinal(), 1, "post-ack placement falls back from the quarantined device");
-    post_ack.finish();
+    post_ack.end_test_attempt();
     drop(post_ack);
-    pre_ack.finish();
+    pre_ack.end_test_attempt();
     drop(pre_ack);
 
     let release_deadline = Instant::now() + Duration::from_secs(10);

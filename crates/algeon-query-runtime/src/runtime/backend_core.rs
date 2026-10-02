@@ -2082,7 +2082,8 @@ mod tests {
             drop(context);
         }
 
-        handle.finish();
+        // Ending the attempt releases its grant; the handle releases nothing.
+        drop(attempt);
         drop(handle);
 
         completed
@@ -2125,7 +2126,7 @@ mod tests {
         let handle =
             backend.session_capability().admit_query_with_request(QueryAdmissionRequest::new(binding)).unwrap();
         drop(handle.acquire_context().expect("query acquires a service-stream context"));
-        handle.finish();
+        drop(attempt);
         drop(handle);
 
         entered_receiver
@@ -2181,13 +2182,13 @@ mod tests {
         drop(first.acquire_context().expect("first query acquires a service-stream context"));
         drop(second.acquire_context().expect("second query acquires a service-stream context"));
 
-        first.finish();
+        drop(first_attempt);
         drop(first);
         entered_receiver
             .recv_timeout(Duration::from_secs(10))
             .expect("first activity begins its reentrant backend close");
 
-        second.finish();
+        second.end_test_attempt();
         drop(second);
 
         let close = completion_receiver

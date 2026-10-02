@@ -512,10 +512,10 @@ fn complete_composed_admission_evidence(
     // revoke the deferred host cursor before it reaches EOF. Update that
     // still-unadmitted ambient ticket in place.
     if let Some(active_ticket) = canonical_ticket {
-        active_ticket.extend_capability_evidence_before_admission([complete_evidence]).map_err(|error| {
+        active_ticket.bind_fragment_evidence([complete_evidence]).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "algeon_datafusion.native_composed.admission_evidence",
-                "failed to rebind the active composed admission ticket before query-service admission",
+                "failed to bind the composed fragment to the active admission ticket",
                 error,
             ))
         })?;
@@ -533,10 +533,10 @@ fn complete_composed_admission_evidence(
         Some((ticket, true)) => ticket,
         // Another fragment of this invocation minted the ticket first.
         Some((ticket, false)) => {
-            ticket.extend_capability_evidence_before_admission([complete_evidence]).map_err(|error| {
+            ticket.bind_fragment_evidence([complete_evidence]).map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "algeon_datafusion.native_composed.admission_evidence",
-                    "failed to extend the invocation admission ticket before query-service admission",
+                    "failed to bind the composed fragment to the invocation admission ticket",
                     error,
                 ))
             })?;

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use cudf::{Runtime as CudfRuntime, StreamReservationLease};
 use query_planning::{
-    admission::AttemptCapabilityEvidence, capability::AggregateStrategyExecutionOptions,
-    chunk::SourceChunkPlanningOptions, mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy,
+    capability::AggregateStrategyExecutionOptions, chunk::SourceChunkPlanningOptions,
+    mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy,
 };
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -28,8 +28,8 @@ use super::{
         io_lifecycle::IoLifecycle,
         object_store::SourceObjectStoreRegistry,
     },
-    ActivatedDeferredResidentPhase, AttemptAuxiliaryPermit, AttemptAuxiliarySlots, ExecutionCancellation,
-    QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch,
+    ActivatedDeferredResidentPhase, AdmittedPlanIdentities, AttemptAuxiliaryPermit, AttemptAuxiliarySlots,
+    ExecutionCancellation, QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch,
 };
 use crate::{
     attempt::AttemptHandle,
@@ -101,15 +101,16 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// Revocable lifetime for this attempt's outward resources.
     pub(in crate::runtime) query_epoch: QueryResourceEpoch,
     pub(in crate::runtime) cancellation: ExecutionCancellation,
-    /// Records each plan's outcome as the attempt's release fallback.
+    /// The attempt this context executes under; its plans record their
+    /// boundaries on its observation.
     pub(in crate::runtime) attempt: AttemptHandle,
     /// Carrier for exact resident-cache allocator failures, sealed into the
     /// attempt report.
     #[cfg(feature = "cugraph")]
     pub(in crate::runtime) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
-    /// Post-grant evidence shared with the query handle; absent for a
-    /// placement-only admission, whose plans then fail closed.
-    pub(in crate::runtime) capability_evidence: Option<Arc<AttemptCapabilityEvidence>>,
+    /// The plan identities this attempt may execute, shared with the query
+    /// handle so a fragment that joins the grant reaches every context.
+    pub(in crate::runtime) plan_identities: Arc<AdmittedPlanIdentities>,
     /// The service policy with its device budget set to the grant, fixed at admission.
     pub(in crate::runtime) memory_control_policy: MemoryControlPolicy,
     pub(in crate::runtime) auxiliary_slots: Arc<AttemptAuxiliarySlots>,

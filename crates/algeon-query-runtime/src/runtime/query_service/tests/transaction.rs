@@ -68,7 +68,7 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
         assert_eq!(worker_scope.pool_id(), pool.snapshot().pool_id);
         assert_eq!(root_capacity, ledger_after.max_active_attempts);
         assert!(aux_capacity >= ledger_after.max_active_attempts);
-        handle.finish();
+        handle.end_test_attempt();
         drop(handle);
         wait_for_transaction_cleanup(&service, &format!("release returns the ledger slot at {step:?}"));
         assert_eq!(device.ledger().snapshot().expect("ledger snapshot").active_attempts, 0);
@@ -115,7 +115,7 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
     assert_eq!(root_out, 0);
 
     let replacement = service.admit_query().expect("capacity becomes reusable after cleanup quiesces");
-    replacement.finish();
+    replacement.end_test_attempt();
     drop(replacement);
 }
 
@@ -301,7 +301,7 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
         .expect("complete envelope must publish after the pause is released");
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     wait_for_transaction_cleanup(&service, "released provisional test handle must drain");
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
@@ -334,7 +334,7 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
     assert_eq!(domain_id, Some(grant_id));
     drop(context);
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     wait_for_transaction_cleanup(&service, "release returns stream, lane, and ledger slot");
     let (root_out, _, _, _) = device.stream_pool().class_counters();

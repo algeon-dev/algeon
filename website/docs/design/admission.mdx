@@ -11,11 +11,14 @@ selected device, and one immutable memory grant. Embedded DataFusion sessions
 and the Flight SQL server share the same process-scoped `AlgeonGpuBackend`,
 `QueryService`, bounded queue, and per-device ledgers. Each attempt has one
 lazy admission ticket. Planning does not reserve a GPU slot; the ticket claims
-admission when the attempt's first native stream is polled. Every later native
-fragment of the attempt, such as the result of a CTAS whose input already ran,
-reuses that admission and grant. The grant is released once the attempt is
-terminal and no fragment is running. `EXPLAIN` does not admit or execute the
-plan.
+admission when the attempt's first native stream is polled, and the claim fixes
+the device. Every later native fragment of the attempt reuses that admission
+and grant. A fragment planned after the claim, such as the result of a CTAS
+whose input already ran, joins the grant when the granted device provides every
+capability the fragment requires; otherwise it fails with a typed error. If the
+claim fails, every fragment of the attempt reports that failure. The grant is
+released once the attempt is terminal and no fragment is running; dropping a
+query handle releases nothing. `EXPLAIN` does not admit or execute the plan.
 
 Admission governs device memory. Host memory remains a DataFusion `MemoryPool`
 concern.
@@ -34,7 +37,7 @@ QueryPlan
 
 | Term | Meaning |
 | --- | --- |
-| `AttemptCapabilityEvidence` | Planning-owned evidence for required device capabilities and exact executable plan scopes. It contains no memory estimate. |
+| `AttemptCapabilityEvidence` | Planning-owned evidence for required device capabilities, which decide placement at the claim, and exact executable plan scopes, which grow as later fragments join the grant. It contains no memory estimate. |
 | Attempt | One bounded native execution of one admitted query on one selected device. |
 | `DeviceLedger` | The per-device integer accounting authority for immutable grants, resident cache charges, and attempt slots. |
 | `MemoryGrant` | The service-configured byte cap committed to one attempt. It becomes the ceiling of the query allocation domain. |
@@ -61,8 +64,8 @@ one evidence set. Runtime activation validates producer scope, occurrence,
 schema, and resident ownership before execution uses the frames. The composed
 query uses one ticket, one selected device, and one grant.
 
-Manual `AlgeonGpuBackend::admit_query()` handles are resource-only. Native
-execution also requires planning-issued capability and scope evidence.
+Native execution requires planning-issued capability and scope evidence; an
+admission without it can execute no native plan.
 
 ## Device profiles and grants
 

@@ -1,7 +1,7 @@
 //! Device placement and immutable-grant admission against per-device ledgers.
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability},
+    admission::{AttemptRequirement, ExecutionCapability, capability_labels},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -16,6 +16,7 @@ use super::{
 use crate::{
     observability::{AdmissionRequestId, AttemptId},
     runtime::{
+        context::AdmittedPlanIdentities,
         gpu::{
             DeviceAdmissionHealth, PlacementRequest,
             placement::{
@@ -34,6 +35,29 @@ pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
 }
 
 impl QueryService {
+    /// Joins a fragment planned after an attempt's claim to the grant placed
+    /// on `device_ordinal`. The claim's placement stands: the fragment joins
+    /// only when that device provides every capability it requires, and
+    /// neither the queue nor the ledger changes.
+    pub(in crate::runtime::query_service) fn join_admitted_fragment(
+        &self,
+        device_ordinal: usize,
+        identities: &AdmittedPlanIdentities,
+        fragment: &AttemptRequirement,
+    ) -> Result<()> {
+        if !self.device_supports_capabilities(device_ordinal, &fragment.required_capabilities) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "query_engine.query_service.admitted_fragment",
+                "the granted device does not support every native capability the fragment requires",
+            )
+            .with_fact("reason", "granted_device_capability_unavailable")
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("required_capabilities", capability_labels(&fragment.required_capabilities)));
+        }
+        identities.join(fragment)
+    }
+
     /// Folds persistent native CUDA faults into their owning scheduler ledgers.
     ///
     /// Callers own deferred shared-waiter notification: queue maintenance may

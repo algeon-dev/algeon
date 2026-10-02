@@ -21,6 +21,7 @@ use datafusion::{
 };
 use futures::{
     FutureExt, StreamExt,
+    future::join,
     stream::{empty, once, poll_fn},
 };
 use query_engine::{
@@ -248,41 +249,57 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
+async fn fragments_bound_after_the_claim_join_its_grant() {
     let backend = InstalledTestGpuBackend::new();
     let first_plan = resident_host_plan("first-fragment");
     let second_plan = resident_host_plan("second-fragment");
     let (_attempt, ticket) =
         attempt_ticket_for_test(admission_source(&backend), Some(AttemptCapabilityEvidence::empty()));
 
-    ticket
-        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
-        .unwrap();
-    ticket
-        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&second_plan)])
-        .unwrap();
+    // Before the claim, each fragment adds its delta to the claim's evidence.
+    ticket.bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&first_plan)]).unwrap();
+    ticket.bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&second_plan)]).unwrap();
     let evidence = ticket.attempt_capability_evidence().unwrap();
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&first_plan)));
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&second_plan)));
 
     let context = ticket.acquire_context(Arc::new(TaskContext::default())).await.expect("the combined evidence admits");
+    let admitted = backend.backend().admission_snapshot().unwrap();
     ticket
-        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
-        .expect("evidence the admission already covers extends nothing");
+        .bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
+        .expect("evidence the claim covers binds nothing new");
     let third_plan = resident_host_plan("third-fragment");
-    let error = ticket
-        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
-        .expect_err("the admitted evidence is fixed once admission starts");
-    assert_eq!(error.fact_value("reason"), Some("capability_evidence_extension_after_admission"));
+    ticket
+        .bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
+        .expect("a fragment planned after the claim joins its grant");
+    assert_eq!(
+        backend.backend().admission_snapshot().unwrap(),
+        admitted,
+        "joining the grant changes neither the queue nor the ledger"
+    );
+    let execution = context.context().context();
+    execution.validate_admitted_plan_capabilities(&third_plan).expect("the joined fragment may execute");
+    let never_bound = resident_host_plan("never-bound-fragment");
+    let error = execution
+        .validate_admitted_plan_capabilities(&never_bound)
+        .expect_err("a plan no fragment bound stays outside the admitted identities");
+    assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
 
-    // The admission belongs to the attempt, not to the fragment that
-    // acquired the context: once that context ends, the attempt still has no
-    // second claim to admit new evidence under.
+    // The grant belongs to the attempt, not to the fragment that acquired
+    // the context: once that context ends, a later fragment still joins it.
     drop(context);
-    let error = ticket
-        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
-        .expect_err("a finished fragment does not reopen the admitted evidence");
-    assert_eq!(error.fact_value("reason"), Some("capability_evidence_extension_after_admission"));
+    let fourth_plan = resident_host_plan("fourth-fragment");
+    ticket
+        .bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&fourth_plan)])
+        .expect("a finished fragment does not end the attempt's grant");
+    let context =
+        ticket.acquire_context(Arc::new(TaskContext::default())).await.expect("the attempt's grant is reused");
+    context
+        .context()
+        .context()
+        .validate_admitted_plan_capabilities(&fourth_plan)
+        .expect("the joined fragment may execute");
+    assert_eq!(backend.backend().admission_snapshot().unwrap(), admitted);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -342,7 +359,7 @@ async fn admission_ticket_propagates_attempt_cancellation_to_admission() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_failure_clears_the_in_flight_admission_and_ends_the_attempt_admission() {
+async fn a_failed_admission_is_the_outcome_every_later_fragment_gets() {
     let backend = InstalledTestGpuBackend::new();
     let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     attempt.cancellation().cancel();
@@ -357,19 +374,71 @@ async fn admission_failure_clears_the_in_flight_admission_and_ends_the_attempt_a
     {
         let admission = ticket.admission.lock().expect("ticket admission mutex");
         assert!(!admission.admitting, "a failed admission must not strand its in-flight marker");
-        assert!(admission.handle.is_none(), "a rejected admission cannot retain a query handle");
+        assert!(matches!(admission.outcome, Some(Err(_))), "a failed admission records its error, not a handle");
     }
 
     let retry = timeout(Duration::from_secs(5), ticket.acquire_context(Arc::new(TaskContext::default())))
         .await
-        .expect("a retry must not wait on the rejected admission")
+        .expect("a later fragment must not wait on the resolved admission")
         .expect_err("an attempt admits at most once");
-    assert_eq!(retry.fact_value("reason"), Some("attempt_admission_already_claimed"));
+    assert_eq!(
+        (retry.code(), retry.operation(), retry.message(), retry.facts()),
+        (error.code(), error.operation(), error.message(), error.facts()),
+        "a later fragment gets the admission's own error, not a second claim's"
+    );
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+}
 
-    let admission = ticket.admission.lock().expect("ticket admission mutex");
-    assert!(!admission.admitting, "a refused claim must not strand its in-flight marker");
-    assert!(admission.handle.is_none());
+/// Fragments waiting while another fragment claims the attempt's admission
+/// get that admission's outcome; none of them claims again.
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_fragments_share_the_one_admission_outcome() {
+    let backend = InstalledTestGpuBackend::with_config(
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        ),
+        AlgeonGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_max_active_attempts(1),
+        AlgeonGpuQueuePolicy::default(),
+    );
+    let (holder_attempt, holder) = attempt_ticket_for_test(admission_source(&backend), None);
+    let held_context = holder
+        .acquire_context(Arc::new(TaskContext::default()))
+        .await
+        .expect("the holder must consume the device-local admission slot");
+
+    // The claim queues behind the holder until the waiting attempt's
+    // deadline rejects it, while a second fragment waits on that claim.
+    let (_waiting_attempt, waiting) = attempt_ticket_with_options_for_test(
+        admission_source(&backend),
+        None,
+        AttemptOptions { deadline: Some(Instant::now() + Duration::from_millis(200)), ..AttemptOptions::default() },
+    );
+    let (claiming, waiting_fragment) = timeout(
+        Duration::from_secs(5),
+        join(
+            waiting.acquire_context(Arc::new(TaskContext::default())),
+            waiting.acquire_context(Arc::new(TaskContext::default())),
+        ),
+    )
+    .await
+    .expect("both fragments resolve at the claim's deadline");
+    let claiming = claiming.expect_err("the claim is rejected at its deadline");
+    let waiting_fragment = waiting_fragment.expect_err("the waiting fragment gets the claim's outcome");
+    assert_eq!(claiming.fact_value("reason"), Some("deadline_expired"));
+    assert_eq!(
+        (waiting_fragment.code(), waiting_fragment.operation(), waiting_fragment.message(), waiting_fragment.facts()),
+        (claiming.code(), claiming.operation(), claiming.message(), claiming.facts()),
+        "the waiting fragment gets the same typed error instead of claiming again"
+    );
+    let snapshot = backend.backend().admission_snapshot().unwrap();
+    assert_eq!(snapshot.active_queries, 1, "only the holder owns a grant");
+    assert_eq!(snapshot.queued_queries, 0);
+    assert_eq!(snapshot.queue_high_watermark, 1, "the attempt queued one admission request");
+
+    drop(held_context);
+    drop(holder_attempt);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -449,7 +518,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_
     {
         let admission = waiter.admission.lock().expect("waiter ticket admission mutex");
         assert!(!admission.admitting, "deadline cleanup must clear the in-flight marker");
-        assert!(admission.handle.is_none());
+        assert!(matches!(admission.outcome, Some(Err(_))));
     }
 
     drop(held_context);

@@ -461,7 +461,7 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
             )
             .unwrap_or_else(|error| panic!("{label} consumer must admit on the CPU-only test backend: {error}"));
         assert_eq!(execute_count.load(Ordering::SeqCst), 0, "{label} admission does not execute producers");
-        handle.finish();
+        handle.end_test_attempt();
         drop(handle);
         drop(completed_ticket);
         drop(prepared_inputs);

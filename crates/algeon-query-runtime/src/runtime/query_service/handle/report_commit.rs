@@ -676,7 +676,6 @@ mod tests {
             .admit_query_with_request(QueryAdmissionRequest::new(attempt.owner.admission_binding()))
             .expect("attempt-bound admission");
         attempt.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
-        handle.finish();
         drop(handle);
 
         let report = completion.wait_timeout(Duration::from_secs(10)).expect("the claim publishes after cleanup");

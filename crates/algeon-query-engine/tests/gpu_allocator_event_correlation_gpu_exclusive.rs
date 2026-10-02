@@ -235,8 +235,6 @@ async fn overlapping_query_domains_keep_real_physical_allocator_events_exact_and
     drop(second_executor);
     drop(first.context);
     drop(second.context);
-    first.handle.finish();
-    second.handle.finish();
     drop(first.handle);
     drop(second.handle);
 
@@ -269,7 +267,7 @@ async fn overlapping_query_domains_keep_real_physical_allocator_events_exact_and
         .expect("healthy reuse allocates after pressure release");
     drop(reuse_buffer);
     drop(reuse_context);
-    reuse.finish();
+    reuse.end_test_attempt();
     drop(reuse);
     wait_for_device_release(&core, device);
 

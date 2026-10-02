@@ -530,7 +530,7 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
     assert_eq!(usage.current_allocations, 0, "no build partition may outlive the cancelled build: {usage:?}");
 
     drop(admitted);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     fs::remove_dir_all(dir).unwrap();
 }

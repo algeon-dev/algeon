@@ -19,7 +19,10 @@ use std::{
     future::Future,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::Instant,
 };
@@ -138,6 +141,9 @@ struct AttemptExecutionState {
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
     sealed_metrics_target: Mutex<Option<(SealedAttemptMetricsTarget, FinalPlanCoverage)>>,
+    /// Set once the terminal authority moved into the attempt's one result
+    /// stream; planning after that cannot replace the executing target.
+    result_stream_started: AtomicBool,
     /// Typed graph claim/peak rows frozen by the elected target at the same
     /// seal point as the immutable attempt report.
     sealed_graph_claim_calibration: OnceLock<SealedAttemptGraphClaimCalibrationSnapshot>,
@@ -237,7 +243,9 @@ impl InvocationAttempt {
     pub(crate) fn native_admission_planned(&self, plan: &dyn ExecutionPlan) {
         let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
         let _ = self.state.handle.record_planning_finished();
-        self.state.set_sealed_metrics_target(plan);
+        if !self.state.result_stream_started.load(Ordering::Acquire) {
+            self.state.set_sealed_metrics_target(plan);
+        }
     }
 }
 
@@ -271,9 +279,9 @@ impl AlgeonGpuBackend {
 
     /// Begins an attempt that requests an exact immutable query memory cap.
     ///
-    /// The cap is carried through the attempt-bound admission ticket and
-    /// passed to query-service admission for every native execution round.
-    /// Admission rejects a cap that cannot fit instead of resizing it.
+    /// The cap is carried through the attempt-bound admission ticket into the
+    /// attempt's one query-service admission. Admission rejects a cap that
+    /// cannot fit instead of resizing it.
     pub fn begin_attempt_with_query_cap_bytes(
         &self,
         options: AttemptOptions,
@@ -325,6 +333,7 @@ impl AlgeonAttempt {
             query_cap_bytes,
             cancellation: begin.owner.cancellation(),
             sealed_metrics_target: Mutex::new(None),
+            result_stream_started: AtomicBool::new(false),
             sealed_graph_claim_calibration: OnceLock::new(),
             sealed_native_execution: OnceLock::new(),
         });
@@ -450,13 +459,15 @@ impl AlgeonAttempt {
     /// Moves the terminalization authority into the result stream. An attempt
     /// executes exactly one invocation.
     fn take_owner(&self) -> DataFusionResult<AttemptOwner> {
-        self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| {
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| {
             DataFusionError::from(Error::new(
                 ErrorCode::Internal,
                 "algeon_datafusion.attempt.execute",
                 "execution attempt already has a result stream",
             ))
-        })
+        })?;
+        self.state.result_stream_started.store(true, Ordering::Release);
+        Ok(owner)
     }
 
     fn invocation_state(&self, state: SessionState) -> SessionState {
@@ -762,9 +773,8 @@ fn commit_adapter_error(owner: &AttemptOwner, error: &Error) {
 /// stream initiates cooperative cancellation without blocking the runtime
 /// worker it is dropped on.
 pub struct AttemptStream {
-    /// Kept only until the wrapper commits its terminal outcome. Releasing it
-    /// afterwards drops a native admission round, so its cleanup commit sees
-    /// the attempt's canonical terminal state before it returns capacity.
+    /// Kept only until the wrapper commits its terminal outcome. Dropping it
+    /// releases no grant: the attempt's terminal commit does that.
     inner: Option<SendableRecordBatchStream>,
     schema: SchemaRef,
     owner: AttemptOwner,
@@ -795,9 +805,8 @@ impl AttemptStream {
     }
 
     /// Commits the outer terminal result before destroying the physical
-    /// stream. Native admission rounds release their query handle from that
-    /// stream's drop path, and their `AttemptTerminalCommit` must therefore
-    /// observe this terminal state rather than racing it at EOF or error.
+    /// stream, so the attempt's outcome is the root stream's result rather
+    /// than a state its inputs' teardown reached first.
     fn finish_terminal(&mut self, outcome: RuntimeTerminalOutcome) {
         self.terminal = true;
         self.commit(outcome);

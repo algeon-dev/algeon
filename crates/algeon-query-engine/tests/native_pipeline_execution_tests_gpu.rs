@@ -25,7 +25,7 @@ use query_engine::{
         AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
-    attempt::BeginAttemptRequest,
+    attempt::{AttemptOwner, BeginAttemptRequest},
     capability::CapabilityRejectionProjection,
     dynamic_filter::DynamicFilterProducer,
     error::{QueryErrorCode, Result},
@@ -56,8 +56,7 @@ use query_engine::{
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
-        resident::GpuResidentInputMap,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
@@ -187,15 +186,14 @@ mod cudf {
             attempt.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
             let binding = attempt.admission_binding();
             let observation = binding.observation_handle();
-            // The activity lease keeps the attempt owner alive until query-service cleanup completes;
-            // dropping the owner earlier would commit a `Dropped` outcome over the admission.
             let handle = session.admit_query_with_request(
-                QueryAdmissionRequest::new(binding)
-                    .with_query_plan_capability_evidence(evidence)
-                    .with_runtime_observation_activity_result(Ok(QueryActivityLease::new(attempt))),
+                QueryAdmissionRequest::new(binding).with_query_plan_capability_evidence(evidence),
             )?;
             let context = handle.acquire_context()?;
-            Ok((PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) }, observation))
+            Ok((
+                PipelineTestContext { context, _handle: handle, _attempt: Some(attempt), _request: Arc::clone(self) },
+                observation,
+            ))
         }
 
         pub(super) fn acquire_context_for_compiled_executor_test(
@@ -218,7 +216,7 @@ mod cudf {
                     QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
                 )?;
             let context = handle.acquire_context()?;
-            Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
+            Ok(PipelineTestContext { context, _handle: handle, _attempt: None, _request: Arc::clone(self) })
         }
     }
 }
@@ -226,6 +224,8 @@ mod cudf {
 struct PipelineTestContext {
     context: AdmittedQueryContext,
     _handle: QueryHandle,
+    // Declared after `_handle`: dropping the owner commits `Dropped` and releases the grant.
+    _attempt: Option<AttemptOwner>,
     _request: Arc<cudf::Runtime>,
 }
 

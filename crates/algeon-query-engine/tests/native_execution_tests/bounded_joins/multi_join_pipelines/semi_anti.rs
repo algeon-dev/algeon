@@ -425,7 +425,7 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
     assert_attempt_domain_released(admitted.context());
 
     drop(admitted);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     wait_for_ledger_release(context.policy);
     fs::remove_dir_all(dir).unwrap();

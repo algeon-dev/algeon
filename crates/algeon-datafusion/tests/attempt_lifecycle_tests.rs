@@ -928,3 +928,166 @@ async fn ctas_inner_plan_runs_inside_one_attempt() {
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled), "{:?}", report.outcome);
     assert!(report.admission.is_some(), "the cancelled attempt had admitted its inner plan");
 }
+
+/// Planning again in an attempt whose result stream already started cannot
+/// replace the executing native root as the target of the sealed metrics.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn planning_after_the_result_stream_started_keeps_the_sealed_metrics_target() {
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let mut stream = attempt.sql(&ctx, NATIVE_AGGREGATE_SQL).await.unwrap();
+    attempt.plan_sql(&ctx, NATIVE_AGGREGATE_SQL).await.expect("the attempt still plans");
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    drop(stream);
+    completion.await;
+    let sealed = attempt.sealed_native_execution_snapshot().expect("the executed native root seals its metrics");
+    assert!(sealed.metrics.parquet_files > 0, "the sealed metrics are the executed root's: {:?}", sealed.metrics);
+    assert!(sealed.metrics.device_to_host_materializations > 0, "{:?}", sealed.metrics);
+}
+
+/// Holds the attempt's grant until the root stream ends: an operator above
+/// the native fragment that drops its input early (as `SortExec`, TopK, and
+/// `LimitStream` do) must neither release the grant nor seal the report, and
+/// a failure after that drop is the attempt's outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn internal_attempt_holds_its_grant_until_the_root_stream_ends() {
+    use datafusion::{
+        arrow::record_batch::RecordBatch,
+        common::DataFusionError,
+        execution::TaskContext,
+        physical_plan::{
+            DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+            execution_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions},
+            stream::RecordBatchStreamAdapter,
+        },
+    };
+    use futures::{TryStreamExt, stream::iter};
+
+    /// Drains and drops its input before it emits anything, then emits the
+    /// input's batches, then optionally fails.
+    #[derive(Debug)]
+    struct DrainThenEmitExec {
+        input: std::sync::Arc<dyn ExecutionPlan>,
+        fail_after: bool,
+    }
+    impl DisplayAs for DrainThenEmitExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DrainThenEmitExec")
+        }
+    }
+    impl ExecutionPlan for DrainThenEmitExec {
+        fn name(&self) -> &str {
+            "DrainThenEmitExec"
+        }
+        fn properties(&self) -> &std::sync::Arc<PlanProperties> {
+            self.input.properties()
+        }
+        fn children(&self) -> Vec<&std::sync::Arc<dyn ExecutionPlan>> {
+            vec![&self.input]
+        }
+        fn with_new_children(
+            self: std::sync::Arc<Self>,
+            children: Vec<std::sync::Arc<dyn ExecutionPlan>>,
+        ) -> DataFusionResult<std::sync::Arc<dyn ExecutionPlan>> {
+            let [input] = children.try_into().expect("one child");
+            Ok(std::sync::Arc::new(Self { input, fail_after: self.fail_after }))
+        }
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&std::sync::Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+        fn execute(
+            &self,
+            partition: usize,
+            context: std::sync::Arc<TaskContext>,
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            let input = self.input.execute(partition, context)?;
+            let schema = input.schema();
+            let fail_after = self.fail_after;
+            let stream = once(async move {
+                let batches = input.try_collect::<Vec<RecordBatch>>().await?;
+                let mut items = batches.into_iter().map(Ok).collect::<Vec<_>>();
+                if fail_after {
+                    items.push(Err(DataFusionError::Execution("injected failure after the native input".into())));
+                }
+                Ok::<_, DataFusionError>(iter(items))
+            })
+            .try_flatten();
+            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        }
+    }
+
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let planned = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().create_physical_plan().await.unwrap();
+    assert_eq!(planned.name(), "NativeAdmissionExec");
+    let native = std::sync::Arc::clone(below_native_admission(&planned));
+
+    for fail_after in [false, true] {
+        let drain = std::sync::Arc::new(DrainThenEmitExec { input: std::sync::Arc::clone(&native), fail_after });
+        let plan = std::sync::Arc::clone(&planned)
+            .replace_children(vec![drain], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap();
+        // No attempt: the admission root begins an internal attempt.
+        let mut stream = execute_stream(plan, ctx.task_ctx()).unwrap();
+        stream.next().await.expect("the drained rows are emitted").expect("the first batch succeeds");
+        assert_eq!(
+            backend.admission_snapshot().unwrap().active_queries,
+            1,
+            "the native fragment ended, but the root stream still holds the attempt's grant"
+        );
+        assert!(backend.take_abandoned_attempt_reports(8).is_empty(), "no report before the root stream ends");
+        let last = stream.next().await;
+        if fail_after {
+            assert!(matches!(last, Some(Err(_))), "the injected failure ends the root stream");
+        } else {
+            assert!(last.is_none(), "the root stream ends after its one batch");
+        }
+        drop(stream);
+        let report = sole_abandoned_report(&backend).await;
+        if fail_after {
+            assert!(matches!(report.outcome, RuntimeTerminalOutcome::Failed { .. }), "{:?}", report.outcome);
+        } else {
+            assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded), "{:?}", report.outcome);
+        }
+    }
+}
+
+/// Under NativeRequired the CTAS result relation, a zero-column literal, is
+/// native as well. It is planned after the inner plan claimed the attempt's
+/// admission, so it joins that grant rather than claiming a second one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_required_ctas_result_joins_the_inner_plans_grant() {
+    let backend = BackendFixture::with_execution_mode(
+        Some(8),
+        AlgeonGpuQueuePolicy::default(),
+        AlgeonGpuExecutionMode::NativeRequired,
+    );
+    let ctx = native_context(&backend).await;
+    let begun = backend.attempt_counters_snapshot().attempts_begun;
+
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan = attempt
+        .plan_sql(&ctx, &format!("CREATE TABLE required_totals AS {NATIVE_AGGREGATE_SQL}"))
+        .await
+        .expect("the result relation planned after the claim joins the attempt's grant");
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
+    assert!(!completion.is_ready(), "the report waits for the statement's own result stream");
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    drop(stream);
+    let report = completion.await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded), "{:?}", report.outcome);
+    assert!(report.admission.is_some(), "both plans run under the attempt's one admission");
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1, "no plan begins an internal attempt");
+    let rows = ctx.sql("SELECT COUNT(*) FROM required_totals").await.unwrap().collect().await.unwrap();
+    assert_eq!(rows[0].num_rows(), 1, "the table exists after the statement succeeds");
+}

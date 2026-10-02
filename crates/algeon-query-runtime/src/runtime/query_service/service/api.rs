@@ -384,6 +384,10 @@ pub struct QueryAdmissionRequest {
     /// The admitted attempt's observation and cleanup attachment.
     attempt: AttemptAdmissionBinding,
     runtime_observation_activity: Option<Result<QueryActivityLease>>,
+    /// The owner of a [`Self::test_attempt`] request, handed to the admitted
+    /// query handle.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::runtime::query_service) test_attempt: Option<AttemptOwner>,
 }
 
 pub(in crate::runtime::query_service::service) struct AdmissionObservation {
@@ -432,21 +436,24 @@ impl QueryAdmissionRequest {
             execution_cancellation: ExecutionCancellation::default(),
             attempt,
             runtime_observation_activity: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_attempt: None,
         }
     }
 
     /// Creates the request of a fresh attempt classified as native, for
     /// tests that admit without a planning frontend.
     ///
-    /// The attempt owner rides in the request's activity lease, which the
-    /// service drops last, after the attempt report is published; until then
-    /// the owner cannot commit a `Dropped` outcome over the admission.
+    /// The admitted query handle owns the attempt: only an attempt's terminal
+    /// commit releases its grant, so dropping that handle ends the attempt as
+    /// `Dropped` and the release follows.
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn test_attempt() -> Self {
         let owner = AttemptOwner::native_for_test();
-        Self::new(owner.admission_binding())
-            .with_runtime_observation_activity_result(Ok(QueryActivityLease::new(owner)))
+        let mut request = Self::new(owner.admission_binding());
+        request.test_attempt = Some(owner);
+        request
     }
 
     /// Requests an exact immutable query cap. Admission never clamps it.

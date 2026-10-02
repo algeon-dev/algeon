@@ -493,6 +493,54 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
     remove_fixture(dir);
 }
 
+/// Two host fragments of one attempt: the first claims the attempt's
+/// admission, and footer pruning refines the second after that claim. The
+/// refined plan is not the planned one, so it joins the claim's grant and
+/// then reaches the fixture's intentionally unsupported native read.
+#[tokio::test]
+async fn native_host_refined_after_the_claim_joins_its_grant() {
+    let backend = hermetic_backend();
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-after-claim");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let first_gets = register_tracking_parquet_store(&runtime_env, "s3://host-claim-first", &bytes).await;
+    let second_gets = register_tracking_parquet_store(&runtime_env, "s3://host-claim-second", &bytes).await;
+    let (first_plan, _) = prunable_query_plan("s3://host-claim-first/table/data.parquet", bytes.len(), false);
+    let (second_plan, _) = prunable_query_plan("s3://host-claim-second/table/data.parquet", bytes.len(), false);
+    let planned_evidence = AttemptCapabilityEvidence::aggregate([
+        AttemptCapabilityEvidence::for_query_plan(&first_plan),
+        AttemptCapabilityEvidence::for_query_plan(&second_plan),
+    ])
+    .expect("test evidence has one manifest");
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let (_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(planned_evidence));
+
+    for plan in [first_plan, second_plan] {
+        let config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_query_admission_source(source.clone())
+                .with_existing_query_admission_ticket(Arc::clone(&ticket))
+                .with_lakehouse_footer_pruning(true);
+        let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
+        let mut stream = exec
+            .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
+            .expect("native host execution should return a lazy stream");
+        let error = stream
+            .next()
+            .await
+            .expect("native host stream should resolve once")
+            .expect_err("the fixture reaches the intentionally unsupported native read");
+        let native = error.find_algeon_error().expect("native execution failure remains structured");
+        assert_eq!(native.operation(), "algeon_datafusion.native_exec.execute", "{native:?}");
+    }
+    assert!(first_gets.load(Ordering::Relaxed) > 0 && second_gets.load(Ordering::Relaxed) > 0);
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1, "both fragments share one grant");
+    remove_fixture(dir);
+}
+
 #[tokio::test]
 async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
     let backend = hermetic_backend();
