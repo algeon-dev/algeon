@@ -15,7 +15,6 @@ pub mod device_safety;
 pub mod dictionary;
 pub mod error;
 pub mod interop;
-pub mod memory;
 pub mod series;
 
 use crate::{

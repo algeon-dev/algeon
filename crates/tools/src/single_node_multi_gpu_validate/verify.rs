@@ -358,6 +358,7 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
         "/provenance/cuml_build_inputs/libcuml_rust_resolved/sha256",
         "/provenance/cuml_build_inputs/version",
         "/provenance/native_libraries/libcudf_resolved/sha256",
+        "/provenance/native_libraries/libcudf_rust_resolved/sha256",
         "/provenance/native_libraries/libcugraph_resolved/sha256",
         "/provenance/runner/executable/sha256",
         "/provenance/process/boot_id",
@@ -610,6 +611,17 @@ mod tests {
         );
 
         let artifact_path = bundle.join("run-10.json");
+        let mut artifact: Value = serde_json::from_slice(&fs::read(&artifact_path).unwrap()).unwrap();
+        artifact["provenance"]["native_libraries"].as_object_mut().unwrap().remove("libcudf_rust_resolved");
+        fs::write(&artifact_path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+        fs::write(&gate, gate_log(revision)).unwrap();
+        assert!(
+            verify_bundle(&manifest, &bundle, &gate, &root.join("missing-cudf-shim-report"))
+                .unwrap_err()
+                .to_string()
+                .contains("missing identity /provenance/native_libraries/libcudf_rust_resolved/sha256")
+        );
+        fs::write(&artifact_path, serde_json::to_vec(&qualifying_artifact(&profile_sha256, 10)).unwrap()).unwrap();
         let mut artifact: Value = serde_json::from_slice(&fs::read(&artifact_path).unwrap()).unwrap();
         artifact["provenance"].as_object_mut().unwrap().remove("cuml_build_inputs");
         fs::write(&artifact_path, serde_json::to_vec(&artifact).unwrap()).unwrap();

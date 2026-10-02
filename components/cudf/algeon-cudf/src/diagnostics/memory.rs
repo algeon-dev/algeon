@@ -1,10 +1,10 @@
-//! Unstable physical-memory-pressure support for integration tests.
+//! Bounded physical CUDA memory pressure for diagnostic qualification.
 //!
 //! This helper first read-only verifies that the service installed its memory
 //! manager, then deliberately allocates through one short-lived CUDA sidecar
 //! resource. It neither installs nor wraps that manager, so allocator callbacks
 //! and the bounded allocator-event ring retain their production ownership and
-//! semantics while a test creates physical pressure.
+//! semantics while diagnostic workloads create physical pressure.
 
 use crate::{
     DeviceId, DeviceMemoryManager, DeviceMemoryResource, Runtime,
@@ -61,14 +61,14 @@ impl PhysicalMemoryPressureFacts {
         let request = self.free_under_pressure_bytes.checked_add(ALLOCATION_GRANULARITY_BYTES).ok_or_else(|| {
             Error::new_with(
                 ErrorCode::SizeOverflow,
-                "testing::memory::PhysicalMemoryPressureFacts::request_bytes_above_pressure",
+                "diagnostics::memory::PhysicalMemoryPressureFacts::request_bytes_above_pressure",
                 "physical-pressure request size overflowed while adding allocator granularity",
             )
         })?;
         usize::try_from(request).map_err(|_| {
             Error::new_with(
                 ErrorCode::SizeOverflow,
-                "testing::memory::PhysicalMemoryPressureFacts::request_bytes_above_pressure",
+                "diagnostics::memory::PhysicalMemoryPressureFacts::request_bytes_above_pressure",
                 "physical-pressure request size does not fit this platform",
             )
             .with_detail("request_bytes", request.to_string())
@@ -78,14 +78,14 @@ impl PhysicalMemoryPressureFacts {
 
 /// RAII owner of a bounded physical-memory-pressure sidecar.
 ///
-/// Establishment requires a manager already installed by the service under
-/// test. The lease then creates an independent [`DeviceMemoryResource::cuda_on`]
+/// Establishment requires a manager already installed by the service. The
+/// lease creates an independent [`DeviceMemoryResource::cuda_on`]
 /// resource and a dedicated [`Runtime`] / stream for its buffers. It does not
 /// install, wrap, or configure the process manager, its callbacks, or its
 /// allocator-event ring.
 ///
-/// Always prefer [`Self::release_and_verify`] in a test so CUDA
-/// synchronization and memory-recovery facts are observed. [`Drop`] is only a
+/// Use [`Self::release_and_verify`] to observe CUDA synchronization and
+/// memory recovery. [`Drop`] provides a
 /// device-aware best-effort fallback for unwinding paths.
 pub struct PhysicalMemoryPressureLease {
     facts: PhysicalMemoryPressureFacts,
@@ -124,7 +124,7 @@ impl PhysicalMemoryPressureLease {
 
         let free_before = device
             .available_memory()
-            .map_err(|error| error.reanchor("testing::memory::PhysicalMemoryPressureLease::establish"))?
+            .map_err(|error| error.reanchor("diagnostics::memory::PhysicalMemoryPressureLease::establish"))?
             .free_bytes;
         let plan = PressurePlan::from_free_bytes(free_before)?;
         let planned_bytes_held = plan.bytes_held;
@@ -132,12 +132,12 @@ impl PhysicalMemoryPressureLease {
         // This resource is deliberately independent from the process manager:
         // it creates actual CUDA pressure without changing manager ownership.
         let sidecar_resource = DeviceMemoryResource::cuda_on(device)
-            .map_err(|error| error.reanchor("testing::memory::PhysicalMemoryPressureLease::establish"))?;
+            .map_err(|error| error.reanchor("diagnostics::memory::PhysicalMemoryPressureLease::establish"))?;
         let runtime = Runtime::builder()
             .with_device(device)
             .with_memory_resource(sidecar_resource)
             .build()
-            .map_err(|error| error.reanchor("testing::memory::PhysicalMemoryPressureLease::establish"))?;
+            .map_err(|error| error.reanchor("diagnostics::memory::PhysicalMemoryPressureLease::establish"))?;
 
         let mut lease = Self {
             facts: PhysicalMemoryPressureFacts {
@@ -187,7 +187,7 @@ impl PhysicalMemoryPressureLease {
         if free_under_pressure < MINIMUM_RETAINED_FREE_BYTES {
             let error = Error::new_with(
                 ErrorCode::OutOfMemory,
-                "testing::memory::PhysicalMemoryPressureLease::establish",
+                "diagnostics::memory::PhysicalMemoryPressureLease::establish",
                 "bounded sidecar plan left less than the required safe CUDA free-memory reserve",
             )
             .with_detail("reason", "safe_reserve_not_preserved")
@@ -199,7 +199,7 @@ impl PhysicalMemoryPressureLease {
         if free_under_pressure >= free_before {
             let error = Error::new_with(
                 ErrorCode::OutOfMemory,
-                "testing::memory::PhysicalMemoryPressureLease::establish",
+                "diagnostics::memory::PhysicalMemoryPressureLease::establish",
                 "sidecar buffers did not reduce the observed CUDA free-memory snapshot",
             )
             .with_detail("reason", "physical_pressure_not_observed")
@@ -234,28 +234,28 @@ impl PhysicalMemoryPressureLease {
 
     fn ensure_manager_is_already_installed(device: DeviceId) -> Result<()> {
         let options = DeviceMemoryManager::options_for_device(device)
-            .map_err(|error| error.reanchor("testing::memory::PhysicalMemoryPressureLease::establish"))?;
+            .map_err(|error| error.reanchor("diagnostics::memory::PhysicalMemoryPressureLease::establish"))?;
         if options.is_some() {
             return Ok(());
         }
 
         Err(Error::new_with(
             ErrorCode::ExecutionBindingUnavailable,
-            "testing::memory::PhysicalMemoryPressureLease::establish",
-            "physical pressure requires a device memory manager installed by the service under test",
+            "diagnostics::memory::PhysicalMemoryPressureLease::establish",
+            "physical pressure requires a device memory manager installed by the service",
         )
         .with_detail("device", device.ordinal().to_string())
         .with_detail("reason", "device_memory_manager_not_installed")
         .with_detail(
             "remedy",
-            "install the service-owned device memory manager before establishing physical test pressure",
+            "install the service-owned device memory manager before establishing physical diagnostic pressure",
         ))
     }
 
     fn establishment_failure(&mut self, error: Error, reason: &'static str) -> Error {
         let cleanup_error = self.release_inner().err();
         let mut error = error
-            .reanchor_if_needed("testing::memory::PhysicalMemoryPressureLease::establish")
+            .reanchor_if_needed("diagnostics::memory::PhysicalMemoryPressureLease::establish")
             .with_detail("reason", reason)
             .with_detail("device", self.facts.device.ordinal().to_string())
             .with_detail("free_before_bytes", self.facts.free_before_bytes.to_string())
@@ -285,7 +285,7 @@ impl PhysicalMemoryPressureLease {
             .facts
             .device
             .available_memory()
-            .map_err(|error| error.reanchor("testing::memory::PhysicalMemoryPressureLease::release_and_verify"))?
+            .map_err(|error| error.reanchor("diagnostics::memory::PhysicalMemoryPressureLease::release_and_verify"))?
             .free_bytes;
         let recovered_bytes = free_after_release.saturating_sub(self.facts.free_under_pressure_bytes);
         self.facts.free_after_release_bytes = Some(free_after_release);
@@ -293,7 +293,7 @@ impl PhysicalMemoryPressureLease {
 
         if let Some(error) = synchronization_error {
             return Err(error
-                .reanchor("testing::memory::PhysicalMemoryPressureLease::release_and_verify")
+                .reanchor("diagnostics::memory::PhysicalMemoryPressureLease::release_and_verify")
                 .with_detail("free_after_release_bytes", free_after_release.to_string())
                 .with_detail("recovered_bytes", recovered_bytes.to_string()));
         }
@@ -301,7 +301,7 @@ impl PhysicalMemoryPressureLease {
         if recovered_bytes == 0 {
             return Err(Error::new_with(
                 ErrorCode::OutOfMemory,
-                "testing::memory::PhysicalMemoryPressureLease::release_and_verify",
+                "diagnostics::memory::PhysicalMemoryPressureLease::release_and_verify",
                 "releasing sidecar buffers did not recover observed CUDA free memory",
             )
             .with_detail("reason", "physical_pressure_recovery_not_observed")
@@ -329,7 +329,7 @@ impl PressurePlan {
         if free_before_bytes < minimum_required {
             return Err(Error::new_with(
                 ErrorCode::OutOfMemory,
-                "testing::memory::PhysicalMemoryPressureLease::establish",
+                "diagnostics::memory::PhysicalMemoryPressureLease::establish",
                 "insufficient CUDA free memory for a bounded physical-pressure sidecar and its safe reserve",
             )
             .with_detail("reason", "safe_pressure_unavailable")
@@ -352,14 +352,14 @@ impl PressurePlan {
         let base_chunk_bytes = usize::try_from(base_chunk_bytes).map_err(|_| {
             Error::new_with(
                 ErrorCode::SizeOverflow,
-                "testing::memory::PhysicalMemoryPressureLease::establish",
+                "diagnostics::memory::PhysicalMemoryPressureLease::establish",
                 "bounded physical-pressure chunk size does not fit this platform",
             )
         })?;
         let final_chunk_bytes = usize::try_from(final_chunk_bytes).map_err(|_| {
             Error::new_with(
                 ErrorCode::SizeOverflow,
-                "testing::memory::PhysicalMemoryPressureLease::establish",
+                "diagnostics::memory::PhysicalMemoryPressureLease::establish",
                 "bounded physical-pressure final chunk size does not fit this platform",
             )
         })?;
@@ -401,7 +401,7 @@ mod tests {
         let error = PressurePlan::from_free_bytes(minimum_required - 1).expect_err("insufficient memory must fail");
 
         assert_eq!(error.code(), ErrorCode::OutOfMemory);
-        assert_eq!(error.operation(), "testing::memory::PhysicalMemoryPressureLease::establish");
+        assert_eq!(error.operation(), "diagnostics::memory::PhysicalMemoryPressureLease::establish");
         assert_eq!(error.detail_value("reason"), Some("safe_pressure_unavailable"));
     }
 

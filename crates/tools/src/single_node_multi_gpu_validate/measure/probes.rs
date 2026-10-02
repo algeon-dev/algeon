@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cudf::testing::memory::{PhysicalMemoryPressureFacts, PhysicalMemoryPressureLease};
+use cudf::diagnostics::memory::{PhysicalMemoryPressureFacts, PhysicalMemoryPressureLease};
 use datafusion::common::DataFusionError;
 use tokio::{task::JoinHandle, time::sleep};
 

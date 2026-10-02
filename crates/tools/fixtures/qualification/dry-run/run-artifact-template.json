@@ -22,6 +22,11 @@
     },
     "native_libraries": {
       "libcudf_resolved": {"path": "/fixture/libcudf.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "libcudf_rust_resolved": {
+        "path": "/fixture/libcudf_rust.so",
+        "size_bytes": 1,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
       "libcugraph_resolved": {"path": "/fixture/libcugraph.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
     },
     "runner": {"executable": {"path": "/fixture/algeon_tools", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}

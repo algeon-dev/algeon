@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cudf::{DeviceId, DeviceMemoryManager, ErrorKind, testing::memory::PhysicalMemoryPressureLease};
+use cudf::{DeviceId, DeviceMemoryManager, ErrorKind, diagnostics::memory::PhysicalMemoryPressureLease};
 use query_engine::{
     attempt::{AttemptBegin, AttemptCompletion, AttemptOwner, BeginAttemptRequest},
     error::QueryErrorCode,

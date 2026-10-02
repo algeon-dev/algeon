@@ -214,6 +214,7 @@
 
 pub mod core;
 pub mod device;
+pub mod diagnostics;
 pub mod frame;
 pub mod hash;
 pub mod interop;

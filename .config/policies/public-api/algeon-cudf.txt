@@ -1583,6 +1583,28 @@ pub mod cudf::device::inventory
 pub struct cudf::device::inventory::DeviceMemory
 pub cudf::device::inventory::DeviceMemory::free_bytes: u64
 pub cudf::device::inventory::DeviceMemory::total_bytes: u64
+pub mod cudf::diagnostics
+pub mod cudf::diagnostics::memory
+pub struct cudf::diagnostics::memory::PhysicalMemoryPressureFacts
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::bytes_held: u64
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::device: cudf::runtime::device::DeviceId
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::free_after_release_bytes: core::option::Option<u64>
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::free_before_bytes: u64
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::free_under_pressure_bytes: u64
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::method: &'static str
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::recovered_bytes: core::option::Option<u64>
+pub cudf::diagnostics::memory::PhysicalMemoryPressureFacts::reserve_target_bytes: u64
+impl cudf::diagnostics::memory::PhysicalMemoryPressureFacts
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureFacts::request_bytes_above_pressure(&self) -> cudf::core::error::Result<usize>
+pub struct cudf::diagnostics::memory::PhysicalMemoryPressureLease
+impl cudf::diagnostics::memory::PhysicalMemoryPressureLease
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureLease::device(&self) -> cudf::runtime::device::DeviceId
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureLease::establish(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureLease::facts(&self) -> cudf::diagnostics::memory::PhysicalMemoryPressureFacts
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureLease::release_and_verify(self) -> cudf::core::error::Result<cudf::diagnostics::memory::PhysicalMemoryPressureFacts>
+impl core::ops::drop::Drop for cudf::diagnostics::memory::PhysicalMemoryPressureLease
+pub fn cudf::diagnostics::memory::PhysicalMemoryPressureLease::drop(&mut self)
+pub const cudf::diagnostics::memory::PHYSICAL_MEMORY_PRESSURE_METHOD: &str
 pub mod cudf::frame
 pub mod cudf::frame::dataframe
 pub enum cudf::frame::dataframe::DropNaHow
