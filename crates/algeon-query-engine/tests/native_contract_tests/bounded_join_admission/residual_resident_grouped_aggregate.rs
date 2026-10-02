@@ -18,7 +18,12 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_variants_a
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
         assert!(
-            unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
+            unsupported_facts(
+                &plan,
+                StatisticalAggregateExecutionMode::default(),
+                rapids_analysis_context(PlanningPolicy::default())
+            )
+            .is_none(),
             "{variant:?}"
         );
     }

@@ -9,7 +9,7 @@ use super::{
     read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error, split_retryable_chunk,
 };
 use crate::{
-    chunk::SourceChunkBatch, exec::retry::backoff_before_retry, observability::SourceReadFact,
+    chunk::SourceChunkBatch, exec::retry::backoff_before_retry, observability::SourceReadFact, policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -263,10 +263,9 @@ fn generic_source_chunk_batches(
 // chunk carrying `scan_limit_rows`.
 fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool {
     source.partition_columns.is_empty()
-        && source
-            .reader_predicate
-            .as_ref()
-            .is_none_or(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
+        && source.reader_predicate.as_ref().is_none_or(|predicate| {
+            source.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default()))
+        })
 }
 
 fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {

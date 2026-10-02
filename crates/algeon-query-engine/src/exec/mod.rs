@@ -143,7 +143,7 @@ use crate::{
 /// decide; frontends call this only for a plan they check before it can be
 /// admitted, such as the schema plan of a GPU relation function.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
-    validate_query_plan(plan, rapids_analysis_context())
+    validate_query_plan(plan, rapids_analysis_context(PlanningPolicy::default()))
 }
 
 /// Admits the executable plan once and hands the artifact to the caller.

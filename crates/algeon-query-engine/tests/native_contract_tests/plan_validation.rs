@@ -9,6 +9,7 @@ use query_engine::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions, GraphEdgeColumnBindings,
         QueryPlan, graph_result_schema_for_vertex_type,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     validate_query_plan,
 };
@@ -23,7 +24,7 @@ fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates()
     let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(filter);
 
-    validate_query_plan(&plan, rapids_analysis_context())
+    validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect("large q08-class filter predicate should validate without generic lowering");
 }
 
@@ -51,7 +52,7 @@ fn validate_rejects_global_whole_partition_aggregate_window() {
     );
     let plan = builder.finish_with_host_sink(window);
 
-    let error = validate_query_plan(&plan, rapids_analysis_context())
+    let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect_err("global whole-partition aggregate windows are unsupported");
     assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.operation(), "query_engine.window.validate");
@@ -75,7 +76,7 @@ fn validate_graph_algorithm_rejects_incompatible_directedness() {
     let graph = builder.add_graph_algorithm(source, spec);
     let plan = builder.finish_with_host_sink(graph);
 
-    let error = validate_query_plan(&plan, rapids_analysis_context())
+    let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect_err("SCC must reject undirected graph construction");
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "query_engine.graph_algorithm.validate");
@@ -103,7 +104,7 @@ fn validate_graph_algorithm_rejects_int64_for_c_api_int32_only_algorithms() {
                 Field::new("weight", ArrowDataType::Float64, false),
             ])),
         );
-        let error = validate_query_plan(&int64_plan, rapids_analysis_context())
+        let error = validate_query_plan(&int64_plan, rapids_analysis_context(PlanningPolicy::default()))
             .expect_err("cuGraph C API algorithms must reject Int64 vertices");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(error.operation(), "query_engine.graph_algorithm.validate");
@@ -122,7 +123,7 @@ fn validate_graph_algorithm_rejects_int64_for_c_api_int32_only_algorithms() {
                 Field::new("weight", ArrowDataType::Float64, false),
             ])),
         );
-        validate_query_plan(&int32_plan, rapids_analysis_context())
+        validate_query_plan(&int32_plan, rapids_analysis_context(PlanningPolicy::default()))
             .expect("cuGraph C API algorithms must keep accepting Int32 vertices");
     }
 }
@@ -147,7 +148,8 @@ fn validate_local_parquet_source_uses_output_schema_override_for_available_colum
     );
     let plan = builder.finish_with_host_sink(projection);
 
-    validate_query_plan(&plan, rapids_analysis_context()).expect("logical output alias should be available downstream");
+    validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
+        .expect("logical output alias should be available downstream");
 }
 
 fn left_deep_zip_range_disjunction(count: usize) -> Expr {

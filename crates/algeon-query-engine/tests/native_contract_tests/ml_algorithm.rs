@@ -16,6 +16,7 @@ use query_engine::{
         VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema,
         ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
@@ -88,7 +89,7 @@ fn random_forest_contracts_validate_roles_types_options_and_schemas() {
         let PlanNode::MlAlgorithm(node) = &plan.root_node().kind else { panic!("RF plan") };
         assert_eq!(node.inputs.len(), 2);
         assert_eq!(node.output_schema().field(2).data_type(), &label_type);
-        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
         let pipeline = compile_pipeline(&plan, &analysis).unwrap();
         pipeline.validate().unwrap();
         assert_eq!(
@@ -136,7 +137,7 @@ fn supervised_bindings_validate_both_relations_and_compile_role_order() {
     assert_eq!(node.inputs.len(), 2);
     assert!(plan.to_string().contains("training=("));
     assert!(plan.to_string().contains("predict=("));
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let roles = analysis
         .edges
         .iter()
@@ -350,7 +351,7 @@ fn clustering_and_embedding_options_and_pipeline_contracts() {
             builder.try_add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, Arc::clone(&expected))).unwrap();
         let plan = builder.finish_with_host_sink(root);
         preflight_query_plan(&plan).expect("new ML algorithm must be supported");
-        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
         assert!(matches!(
             analysis.nodes.iter().find(|node| node.node_id == root).unwrap().executable,
             CapabilityDecision::Satisfied
@@ -375,7 +376,7 @@ fn builder_display_and_pipeline_preserve_ml_contract() {
     assert_eq!(ml.output_schema().as_ref(), vector_pca_output_schema(DataType::Int64, 1).as_ref());
     assert!(plan.to_string().contains(&format!("algorithm={algorithm}")));
     assert!(plan.to_string().contains("features:x0|x1"));
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let edge = analysis.edges.iter().find(|edge| edge.consumer == EdgeConsumer::Node(plan.root_id())).unwrap();
     assert_eq!(edge.input_role, InputRole::MlAlgorithmInput { role: MlRelationRole::Input });
     assert!(edge.contract_kinds.contains(&EdgeContractKind::MlAlgorithmInput { role: MlRelationRole::Input }));
@@ -439,7 +440,7 @@ fn validation_and_capability_reject_bad_ml_contracts() {
             assert_eq!(error.fact_value("supported_types"), Some(supported));
         }
         let root = plan
-            .capability_analysis(rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context(PlanningPolicy::default()))
             .nodes
             .into_iter()
             .find(|node| node.node_id == plan.root_id())
@@ -503,7 +504,7 @@ fn optimizer_remaps_both_supervised_inputs() {
     let optimized = optimize_query_plan(
         builder.finish_with_host_sink(root),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
     .plan;
@@ -542,7 +543,7 @@ fn rewrite_remaps_ml_relation_inputs() {
     let optimized = optimize_query_plan(
         builder.finish_with_host_sink(ml),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
     .plan;
@@ -572,7 +573,8 @@ fn ml_pipeline_keeps_relational_handoffs() {
         vector_pca_output_schema(DataType::Int64, 1),
     ));
     let plan = builder.finish_with_host_sink(ml);
-    let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context())).unwrap();
+    let pipeline =
+        compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()))).unwrap();
     pipeline.validate().unwrap();
     let ml_task = pipeline.tasks().iter().find(|task| task.plan_node() == Some(ml)).unwrap();
     let filter_task = pipeline.tasks().iter().find(|task| task.plan_node() == Some(filtered)).unwrap();
@@ -691,7 +693,7 @@ fn forest_feature_count_mismatch_rejects_preflight_and_capability() {
     let error = preflight_query_plan(&plan).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("forest_feature_count_mismatch"));
     let root = plan
-        .capability_analysis(rapids_analysis_context())
+        .capability_analysis(rapids_analysis_context(PlanningPolicy::default()))
         .nodes
         .into_iter()
         .find(|node| node.node_id == plan.root_id())

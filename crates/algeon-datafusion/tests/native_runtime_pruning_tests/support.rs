@@ -95,7 +95,25 @@ pub(super) struct TemplatedNativeOptimization {
 }
 
 pub(super) fn optimize_with_pruning_template(plan: Arc<dyn ExecutionPlan>) -> TemplatedNativeOptimization {
-    let rule = AlgeonNativePhysicalOptimizerRule::new(pruning_template_optimizer_config());
+    optimize_with_optimizer_config(plan, pruning_template_optimizer_config())
+}
+
+/// The same optimization without a DataFusion CPU fallback, so a plan that
+/// reads no column data still lowers to native.
+pub(super) fn optimize_with_pruning_template_requiring_native(
+    plan: Arc<dyn ExecutionPlan>,
+) -> TemplatedNativeOptimization {
+    optimize_with_optimizer_config(
+        plan,
+        pruning_template_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    )
+}
+
+fn optimize_with_optimizer_config(
+    plan: Arc<dyn ExecutionPlan>,
+    config: AlgeonNativeOptimizerConfig,
+) -> TemplatedNativeOptimization {
+    let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let (optimized, diagnostics) = rule
         .optimize_with_diagnostics(plan, &ConfigOptions::default())
         .expect("pruning template rule must optimize the plan");

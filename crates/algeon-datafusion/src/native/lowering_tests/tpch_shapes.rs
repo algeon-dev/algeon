@@ -32,7 +32,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let optimized_q2 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert!(
@@ -43,16 +43,26 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_q02_reassociated_supplier_filter_precedes_partsupp_join(&optimized_q2.plan);
     assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(&optimized_q2.plan);
     assert!(
-        admit(&optimized_q2.plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("optimized q02 bounded admission should not fail")
-            .admission()
-            .is_some(),
+        admit(
+            &optimized_q2.plan,
+            Default::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .expect("optimized q02 bounded admission should not fail")
+        .admission()
+        .is_some(),
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
     );
-    let decision = admit(native_plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("q02 bounded admission should not fail");
-    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
+    let decision = admit(
+        native_plan,
+        Default::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("q02 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
         .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -66,20 +76,30 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let optimized_q15 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert!(
-        admit(&optimized_q15.plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("optimized q15 bounded admission should not fail")
-            .admission()
-            .is_some(),
+        admit(
+            &optimized_q15.plan,
+            Default::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .expect("optimized q15 bounded admission should not fail")
+        .admission()
+        .is_some(),
         "optimized q15 should be admitted as a shared aggregate fanout pipeline:\n{}",
         optimized_q15.plan
     );
-    let decision = admit(native_plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("q15 bounded admission should not fail");
-    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
+    let decision = admit(
+        native_plan,
+        Default::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("q15 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
         .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -90,9 +110,14 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let decision = admit(native_plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("q18 bounded admission should not fail");
-    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
+    let decision = admit(
+        native_plan,
+        Default::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("q18 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
         .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -103,9 +128,14 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let decision = admit(native_plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("q20 bounded admission should not fail");
-    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
+    let decision = admit(
+        native_plan,
+        Default::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("q20 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
         .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -176,7 +206,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
     let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -228,7 +258,7 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
     let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -290,7 +320,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
     let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     for build_side in [NativeJoinSide::Right, NativeJoinSide::Left] {
@@ -304,8 +334,13 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
             }
         }
         let plan = optimized.plan.with_nodes_for_test(nodes);
-        let decision = admit(&plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("q21 bounded admission should not fail");
+        let decision = admit(
+            &plan,
+            Default::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+        )
+        .expect("q21 bounded admission should not fail");
         assert!(
             decision.admission().is_some(),
             "the complete optimized q21 pipeline must admit residual semi/anti joins with {build_side:?} build side: {:?}\n{plan}",
@@ -442,10 +477,20 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let decision = admit(native_plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("bounded admission should not fail");
+    let decision = admit(
+        native_plan,
+        Default::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("bounded admission should not fail");
     assert!(
-        bounded_join_unsupported_shape_facts(native_plan, &decision, rapids_analysis_context()).is_none(),
+        bounded_join_unsupported_shape_facts(
+            native_plan,
+            &decision,
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none(),
         "q07 should use the bounded multi-join native path:\n{native_plan}"
     );
     let nation_projection = native_plan
@@ -547,9 +592,13 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let plan = &result.plans[0];
     assert_q11_keyless_proof_admitted(plan, "lowered q11");
-    let decision = admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("bounded admission should not fail");
-    assert!(bounded_join_unsupported_shape_facts(plan, &decision, rapids_analysis_context()).is_none());
+    let decision =
+        admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default()))
+            .expect("bounded admission should not fail");
+    assert!(
+        bounded_join_unsupported_shape_facts(plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(
@@ -621,7 +670,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_q11_keyless_proof_admitted(&optimized.plan, "optimized q11");
@@ -693,9 +742,10 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 }
 
 fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-    let decision = admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect("bounded admission should not fail");
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
+    let decision =
+        admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default()))
+            .expect("bounded admission should not fail");
     assert!(
         decision.admission().is_some(),
         "{context} should be bounded executable: {:?}\n{plan}",
@@ -802,7 +852,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
@@ -879,7 +929,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
 
     let plan = &result.plans[0];
     assert!(
-        admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
+        admit(plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default()))
             .expect("q16 bounded admission should not fail")
             .admission()
             .is_some(),
@@ -888,14 +938,19 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
     let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert!(
-        admit(&optimized.plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("optimized q16 bounded admission should not fail")
-            .admission()
-            .is_some(),
+        admit(
+            &optimized.plan,
+            Default::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .expect("optimized q16 bounded admission should not fail")
+        .admission()
+        .is_some(),
         "optimized q16 should remain admitted as one grouped aggregate pipeline:\n{}",
         optimized.plan
     );

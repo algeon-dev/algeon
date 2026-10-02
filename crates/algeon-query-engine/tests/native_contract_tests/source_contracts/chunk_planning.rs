@@ -12,6 +12,7 @@ use query_engine::{
         DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet, apply_dynamic_filters_to_local_parquet_source,
     },
     plan::NodeId,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -624,7 +625,7 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -664,7 +665,7 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -702,7 +703,7 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -772,7 +773,7 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -817,13 +818,13 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::none(),
     )
     .unwrap();
 
     let predicate = rewritten.reader_predicate.as_ref().expect("static reader predicate should remain");
-    assert!(rewritten.reader_predicate_is_supported(predicate, rapids_analysis_context()));
+    assert!(rewritten.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default())));
 }
 
 #[test]
@@ -848,7 +849,7 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
         &source,
         &[&route],
         &filters,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();

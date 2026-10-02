@@ -958,7 +958,7 @@ fn source_adjacent_raw_source_batches(
     if !bounded.source.partition_columns.is_empty()
         || bounded.source.scan_limit.is_some()
         || bounded.source.reader_predicate.as_ref().is_some_and(|predicate| {
-            !bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context())
+            !bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default()))
         })
     {
         return singleton_source_chunk_batches(chunks);

@@ -4,6 +4,7 @@
 
 use query_engine::{
     pipeline::{ShadowBytes, ShadowMemoryModels, ShadowResourceModel, compile_pipeline},
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -18,7 +19,8 @@ fn shadow_envelope_releases_last_consumers_and_separates_borrowed_allocations() 
         builder.add_projection(source, vec![ProjectionOutput::new(Expr::column("key"), schema.field(0).clone())]);
     let root = builder.add_limit(projection, LimitSpec::fetch(10), schema);
     let plan = builder.finish_gpu_resident(root);
-    let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context())).unwrap();
+    let pipeline =
+        compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()))).unwrap();
     let mut models = ShadowMemoryModels {
         task_workspace: vec![ShadowBytes::estimated(1, "fixture workspace"); pipeline.tasks().len()],
         resources: pipeline

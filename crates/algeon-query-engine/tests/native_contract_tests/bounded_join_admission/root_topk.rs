@@ -20,7 +20,7 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
             bounded_pipeline_admission(&plan).expect("bounded admission should not fail").is_some(),
             "{variant:?}: a full scan is a capacity question, not a support gap"
         );
-        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "{variant:?}");
+        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "{variant:?}");
     }
 }
 
@@ -57,7 +57,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         (RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout, "projection"),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
         let has_expected_shared_producer = analysis.invariants.iter().any(|invariant| {
             if !matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
@@ -113,7 +113,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
 fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals() {
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(false);
 
-    assert!(modeled_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_some());
+    assert!(modeled_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_some());
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
     ] {
         let plan = optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &NativeOptimizerOptions::default(), rapids_analysis_context(),local_dimension_pruning_resolver())
+            &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()),local_dimension_pruning_resolver())
         .plan;
 
         assert!(
@@ -297,7 +297,7 @@ fn compositional_join_build_input_form(
     ResidentDataForm,
     ResourceSharing,
 ) {
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(plan, &analysis)
         .expect("compositional fixture should compile");
     let build = pipeline
@@ -332,7 +332,7 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
     );
     let plan = builder.finish_with_host_sink(filter);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
     let limit_task = pipeline
@@ -371,7 +371,7 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
         .expect("bounded admission should not fail")
         .expect("join sort limit filter should be admitted");
     let _ = admission;
-    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "no post-limit rejection may remain");
+    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "no post-limit rejection may remain");
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn bounded_compositional_admission_accepts_join_limit_filter_without_sort() {
     bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("join limit filter should be admitted");
-    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "no post-root limit rejection may remain");
+    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "no post-root limit rejection may remain");
 }
 
 #[test]
@@ -491,7 +491,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
     let mut plain_builder = QueryPlanBuilder::new();
     let (plain_join, _) = compositional_inner_join_base(&mut plain_builder);
     let plain = plain_builder.finish_with_host_sink(plain_join);
-    let plain_tasks = compile_pipeline(&plain, &plain.capability_analysis(rapids_analysis_context()))
+    let plain_tasks = compile_pipeline(&plain, &plain.capability_analysis(rapids_analysis_context(PlanningPolicy::default())))
         .expect("plain join should compile")
         .tasks()
         .len();
@@ -502,7 +502,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
         .expect("bounded admission should not fail")
         .expect("alias projection above join should be admitted");
     let aliased_pipeline =
-        compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis(rapids_analysis_context()))
+        compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default())))
             .expect("aliased join should compile");
     assert_eq!(aliased_pipeline.tasks().len(), plain_tasks + 1, "aliasing adds exactly one unary task");
     assert_eq!(
@@ -570,7 +570,7 @@ fn bounded_compositional_support_admits_graph_task_on_sink_path() {
     // sink like any other stage output.
     let (plan, _) = compositional_edge_normalize_plan();
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis).expect("join edge-normalize plan should compile");
     let support = compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail");
     assert!(matches!(support, CompiledBoundedPipelineSupport::Supported));
@@ -684,7 +684,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     let union = builder.add_union(vec![edge_normalize, passthrough], edge_schema);
     let plan = builder.finish_with_host_sink(union);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let error =
         compile_pipeline(&plan, &analysis).expect_err("shared exclusive input must not compile");
     let reason = error.fact_value("capability_reason").expect("compile rejection names its contract");
@@ -695,7 +695,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "shared edge-normalize input must not be admitted");

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::RecordBatch,
+    array::{Int64Array, RecordBatch},
+    compute::cast,
     datatypes::{DataType, Field, Schema},
 };
 use datafusion::{
@@ -107,7 +108,11 @@ fn native_cuml_context(schema: Arc<Schema>) -> SessionContext {
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
-    let batch = RecordBatch::new_empty(Arc::clone(&schema));
+    // One row: an empty table lowers to a zero-row literal, which DataFusion
+    // keeps by cost instead of a native input producer.
+    let zero = Int64Array::from(vec![0]);
+    let columns = schema.fields().iter().map(|field| cast(&zero, field.data_type()).unwrap()).collect();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     ctx.register_table("t", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
     ctx
 }

@@ -5,6 +5,7 @@ use query_engine::{
     backend::BackendCapabilities,
     datatypes::is_narrow_decimal_carry_type,
     exec::preflight_query_plan,
+    policy::PlanningPolicy,
     rapids_backend::{rapids_analysis_context, rapids_backend},
 };
 
@@ -40,7 +41,7 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
 
 #[test]
 fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let cases = [
         (DataType::Decimal32(9, 2), TypeId::Decimal32, -2),
         (DataType::Decimal32(9, -1), TypeId::Decimal32, 1),
@@ -89,7 +90,7 @@ fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() 
 
 #[test]
 fn timestamp_with_timezone_type_support_policy_is_carry_only() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let timestamp_tz = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     assert!(is_supported_arrow_type(&timestamp_tz));
@@ -101,7 +102,7 @@ fn timestamp_with_timezone_type_support_policy_is_carry_only() {
 
 #[test]
 fn temporal_type_support_policy_accepts_date64_and_time_types() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let cases = [
         (DataType::Date64, TypeId::TimestampMilliseconds),
         (DataType::Time32(TimeUnit::Second), TypeId::DurationSeconds),
@@ -119,7 +120,7 @@ fn temporal_type_support_policy_accepts_date64_and_time_types() {
 
 #[test]
 fn basic_list_type_support_policy_is_exact_and_carry_only() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let supported_children = [
         DataType::Boolean,
         DataType::Int8,
@@ -184,7 +185,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
 
 #[test]
 fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     for child in [
         DataType::Int8,
         DataType::Int16,
@@ -614,7 +615,7 @@ fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilde
 
 #[test]
 fn decimal128_cast_support_uses_type_support_policy() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let valid_source = DataType::Decimal128(20, -1);
     let valid_target = DataType::Decimal128(38, 2);
     let float64_target = DataType::Float64;
@@ -645,7 +646,7 @@ fn decimal128_cast_support_uses_type_support_policy() {
 
 #[test]
 fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let float64_source = DataType::Float64;
     let int64_target = DataType::Int64;
     let int32_target = DataType::Int32;

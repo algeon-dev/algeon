@@ -23,7 +23,12 @@ fn bounded_mixed_residual_semi_anti_root_projects_only_left_columns() {
     );
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 
     // Projecting a right column from a semi join is malformed IR.
@@ -49,7 +54,12 @@ fn bounded_mixed_residual_semi_anti_root_projects_only_left_columns() {
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 }
 
@@ -61,7 +71,12 @@ fn bounded_keyless_conditional_left_semi_join_admits_left_reservation_orientatio
 
     let plan = keyless_conditional_left_semi_plan(left_schema, right_schema, output_schema, JoinSide::Left);
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none(),
         "keyless conditional left semi joins use the left side as the explicit reservation orientation"
     );
 }
@@ -93,6 +108,11 @@ fn bounded_mixed_residual_full_root_supports_pair_projection() {
     );
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 }

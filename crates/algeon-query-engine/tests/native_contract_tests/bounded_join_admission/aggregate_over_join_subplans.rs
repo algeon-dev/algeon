@@ -16,7 +16,12 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
@@ -25,7 +30,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         unsupported_facts(
             &preaggregate_leaf_plan,
             StatisticalAggregateExecutionMode::default(),
-            rapids_analysis_context()
+            rapids_analysis_context(PlanningPolicy::default())
         )
         .is_none()
     );
@@ -50,7 +55,12 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
         assert!(
-            unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
+            unsupported_facts(
+                &plan,
+                StatisticalAggregateExecutionMode::default(),
+                rapids_analysis_context(PlanningPolicy::default())
+            )
+            .is_none(),
             "{variant:?}"
         );
     }
@@ -70,7 +80,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         unsupported_facts(
             &limit_after_root_plan,
             StatisticalAggregateExecutionMode::default(),
-            rapids_analysis_context()
+            rapids_analysis_context(PlanningPolicy::default())
         )
         .is_none(),
         "LimitAfterRoot is admitted, not a support gap"
@@ -84,13 +94,17 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
     assert!(
-        unsupported_facts(&optimized.plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .is_none(),
+        unsupported_facts(
+            &optimized.plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none(),
         "projection simplification must preserve bounded aggregate-over-join input wrappers"
     );
 }

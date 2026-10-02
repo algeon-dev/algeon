@@ -7,6 +7,7 @@ use datafusion::{
 };
 use query_engine::{
     expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr},
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::LocalParquetSource as NativeLocalParquetSource,
 };
@@ -107,7 +108,8 @@ pub(super) fn supported_reader_pushdown_predicate(
     native_source: &NativeLocalParquetSource,
     allow_expr: impl Fn(&NativeExpr) -> bool,
 ) -> Option<SupportedReaderPushdownPredicate> {
-    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate, rapids_analysis_context())
+    if let Some(expr) = native_source
+        .reader_predicate_supported_expression(predicate, rapids_analysis_context(PlanningPolicy::default()))
         && allow_expr(&expr)
     {
         return Some(SupportedReaderPushdownPredicate { expr, covers_predicate: true });
@@ -125,7 +127,8 @@ fn collect_supported_reader_pushdown_conjuncts(
     allow_expr: &impl Fn(&NativeExpr) -> bool,
     conjuncts: &mut Vec<NativeExpr>,
 ) {
-    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate, rapids_analysis_context())
+    if let Some(expr) = native_source
+        .reader_predicate_supported_expression(predicate, rapids_analysis_context(PlanningPolicy::default()))
         && allow_expr(&expr)
     {
         conjuncts.push(expr);

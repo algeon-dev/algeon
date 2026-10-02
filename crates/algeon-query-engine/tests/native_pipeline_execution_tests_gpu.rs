@@ -65,15 +65,25 @@ use query_engine::{
 };
 
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
-    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())?
-        .admission()
-        .cloned())
+    Ok(admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )?
+    .admission()
+    .cloned())
 }
 
 fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
-    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())?
-        .rejection_projection()
-        .cloned())
+    Ok(admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )?
+    .rejection_projection()
+    .cloned())
 }
 
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {

@@ -45,7 +45,7 @@ fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
     let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);

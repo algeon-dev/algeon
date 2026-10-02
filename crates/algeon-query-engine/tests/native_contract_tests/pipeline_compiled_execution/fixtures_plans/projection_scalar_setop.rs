@@ -810,7 +810,7 @@ fn composed_pipeline_keeps_scalar_fanout_cardinality_as_node_facts() {
         ("max-rows-driver", projection_root_scalar_fanout_max_rows_driver_plan()),
         ("limit-driver", projection_root_scalar_fanout_limit_driver_plan()),
     ] {
-        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
         assert!(
             analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)),
             "{label} should keep a one-row node fact"
@@ -829,7 +829,7 @@ fn composed_pipeline_refuses_keyless_anti_join_fanout_as_malformed() {
     // refuses the IR itself while the scalar aggregates keep their one-row
     // facts.
     let plan = projection_root_scalar_fanout_unsupported_join_plan();
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     assert!(analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)));
     let error = bounded_pipeline_rejection_projection(&plan).expect_err("a keyless anti join without residual");
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);

@@ -2,7 +2,7 @@
 fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_evidence() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     assert!(analysis.edges.iter().any(|edge| edge.contract_kinds.contains(&EdgeContractKind::SharedProducer)));
     assert!(analysis.invariants.iter().any(|invariant| {
@@ -33,8 +33,8 @@ fn bounded_keyed_hash_join_resident_subplan_non_matching_variants_are_admitted()
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
-        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "{variant:?}");
-        assert!(modeled_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_some(), "{variant:?}");
+        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "{variant:?}");
+        assert!(modeled_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_some(), "{variant:?}");
     }
 }
 
@@ -55,10 +55,10 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
             variant,
             KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate
         ) {
-            assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "{variant:?}");
+            assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "{variant:?}");
             continue;
         }
-        let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default()))
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
@@ -69,7 +69,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
 fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_post_root_filtering_join() {
     let plan =
         aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     assert!(
         bounded_pipeline_admission(&plan).expect("bounded admission should not fail").is_some(),
@@ -100,7 +100,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_variants_follow_compiled_
     ] {
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
 
-        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "{variant:?}");
+        assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "{variant:?}");
     }
 
     let plan = aggregate_over_join_subplan_topk_variant_plan(
@@ -108,10 +108,10 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_variants_follow_compiled_
     );
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_some(),
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_some(),
         "unsupported projection expression should remain rejected with bounded unsupported-shape facts"
     );
-    let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).expect("rejected aggregate-over-join TopK variant should produce facts");
+    let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).expect("rejected aggregate-over-join TopK variant should produce facts");
     assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
     assert!(facts.contains_key("bounded_join_rejection_reason"));
 
@@ -124,13 +124,13 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_variants_follow_compiled_
         bounded_pipeline_admission(&plan).expect("bounded admission should not fail").is_some(),
         "ShallowMultiJoinSide should be admitted"
     );
-    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(), "ShallowMultiJoinSide is admitted, not a bounded support gap");
+    assert!(unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context(PlanningPolicy::default())).is_none(), "ShallowMultiJoinSide is admitted, not a bounded support gap");
 }
 
 #[test]
 fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_evidence() {
     let plan = resident_grouped_aggregate_subquery_filter_plan(false);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     // Sort acyclicity is no longer a plan invariant: the compiled schedule's
     // barrier dominance check owns it, so no FinalBarrierOrder evidence is

@@ -9,6 +9,7 @@ use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver,
     optimizer::{NativeOptimizerChange, SEMIJOIN_REDUCTION_RULE_NAME, optimize_query_plan},
     plan::JoinNode,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -50,7 +51,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
     let optimized = optimize_query_plan(
         direct_plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);

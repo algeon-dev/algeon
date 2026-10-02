@@ -23,11 +23,9 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
     bounded.has_source_adjacent_stages()
         && bounded.source.partition_columns.is_empty()
         && bounded.source.scan_limit.is_none()
-        && bounded
-            .source
-            .reader_predicate
-            .as_ref()
-            .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
+        && bounded.source.reader_predicate.as_ref().is_none_or(|predicate| {
+            bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context(context.planning_policy()))
+        })
         && bounded_source_adjacent_chunk_batches(context, bounded, chunks).iter().any(|batch| batch.chunk_count() > 1)
 }
 

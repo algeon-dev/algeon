@@ -2,7 +2,7 @@
 fn semijoin_reduction_pushes_left_semi_into_left_inner_join_child() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Left);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -30,7 +30,7 @@ fn semijoin_reduction_pushes_left_semi_into_left_inner_join_child() {
 fn semijoin_reduction_pushes_left_semi_into_right_inner_join_child() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -49,7 +49,7 @@ fn semijoin_reduction_pushes_left_semi_into_right_inner_join_child() {
 fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
     let plan = root_semijoin_over_nested_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -75,7 +75,7 @@ fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
 fn semijoin_reduction_pushes_across_projections_and_filters_between_joins() {
     let plan = root_semijoin_over_projection_filter_nested_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -88,7 +88,7 @@ fn semijoin_reduction_pushes_across_projections_and_filters_between_joins() {
 fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filtering() {
     let plan = root_semijoin_over_fact_date_dimension_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -126,7 +126,7 @@ fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filt
 fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive_fact_filtering() {
     let plan = root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 2);
@@ -173,7 +173,7 @@ fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive
 fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     let plan = root_semijoin_over_inner_join_plan_with_raw_keyset(SemijoinTarget::Right);
 
-    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -745,7 +745,7 @@ fn assert_left_semi_input(
 }
 
 fn assert_semijoin_rejection(plan: QueryPlan, reason: SemijoinReductionRejectedReason) {
-    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 0);

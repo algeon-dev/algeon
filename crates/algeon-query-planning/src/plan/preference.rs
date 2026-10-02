@@ -315,11 +315,16 @@ pub fn native_plan_cost_decision(
     NativePlanCostDecision::ContinueNative { facts }
 }
 
+/// Whether every source is a literal without column values: no columns, or no
+/// rows (a relation DataFusion folded to empty, such as `WHERE false` or
+/// `LIMIT 0`), and no GPU algorithm node runs.
 fn reads_no_column_data(plan: &QueryPlan) -> bool {
     plan.nodes().iter().all(|node| match &node.kind {
-        PlanNode::Source(source) => {
-            matches!(source.as_ref(), SourceNode::LiteralBatch(literal) if literal.schema.fields().is_empty())
-        },
+        PlanNode::Source(source) => matches!(
+            source.as_ref(),
+            SourceNode::LiteralBatch(literal)
+                if literal.schema.fields().is_empty() || literal.batches.iter().all(|batch| batch.num_rows() == 0)
+        ),
         PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
         _ => true,
     })

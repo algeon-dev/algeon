@@ -68,7 +68,7 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     let native = &optimize_query_plan(
         lowered.plans[0].clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
     .plan;
@@ -77,7 +77,7 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
         native,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .unwrap()
     .admission()

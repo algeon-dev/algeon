@@ -14,7 +14,7 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -45,7 +45,7 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -177,7 +177,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -304,7 +304,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -437,7 +437,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -510,7 +510,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
@@ -545,7 +545,7 @@ fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
 
     assert!(discover_dimension_derived_pruning_requests(&plan).is_empty());
 
-    let seeded = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context());
+    let seeded = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default()));
     let requests = discover_dimension_derived_pruning_requests(&seeded);
 
     assert_eq!(requests.len(), 1);
@@ -567,7 +567,7 @@ fn dimension_pruning_does_not_seed_unsupported_reader_predicate() {
         ),
     );
 
-    let seeded = seed_dimension_derived_reader_predicates(plan.clone(), rapids_analysis_context());
+    let seeded = seed_dimension_derived_reader_predicates(plan.clone(), rapids_analysis_context(PlanningPolicy::default()));
 
     assert_eq!(seeded, plan);
     assert!(discover_dimension_derived_pruning_requests(&seeded).is_empty());
@@ -661,7 +661,7 @@ fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -686,7 +686,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -1086,7 +1086,7 @@ fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
     let route = test_dynamic_filter_route(source_node_id);
     let plan = builder.finish_with_host_sink(filter).with_dynamic_filter_routes(vec![route.clone()]);
 
-    let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context());
+    let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default()));
 
     assert_eq!(result.dynamic_filter_routes(), &[route]);
     let source = local_parquet_source(&result, source_node_id).unwrap();
@@ -1129,7 +1129,7 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
     let result = optimize_dimension_derived_row_group_pruning(
         plan,
         &DimensionDerivedRowGroupPruningOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 

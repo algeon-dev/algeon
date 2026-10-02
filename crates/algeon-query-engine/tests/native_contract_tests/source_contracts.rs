@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use query_engine::{
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::{ByteRangeDisposition, LocalParquetFile, LocalParquetSource, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
@@ -41,7 +42,7 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     )
     .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()]);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.files[0].stable_id, "source_contract:3235196281");
     assert!(source.is_direct_device_read());
     assert_eq!(source.read_column_count(), 2);
@@ -91,7 +92,7 @@ fn local_parquet_source_reader_predicate_sets_reader_pushdown_diagnostics() {
     .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()])
     .with_reader_predicate(predicate);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.diagnostics.predicate_disposition, PredicateDisposition::ReaderPushdown);
     assert!(source.reader_predicate.is_some());
 }
@@ -117,7 +118,7 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
         Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 15, scale: 2 }),
     );
 
-    assert!(source.reader_predicate_is_supported(&predicate, rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(&predicate, rapids_analysis_context(PlanningPolicy::default())));
 }
 
 #[test]
@@ -136,19 +137,28 @@ fn local_parquet_source_reader_predicate_rejects_degenerate_roots() {
         vec!["id".to_string(), "flag".to_string()],
     );
 
-    assert!(!source.reader_predicate_is_supported(&Expr::column("flag"), rapids_analysis_context()));
     assert!(
-        !source.reader_predicate_is_supported(&Expr::literal(LiteralValue::Boolean(true)), rapids_analysis_context())
+        !source
+            .reader_predicate_is_supported(&Expr::column("flag"), rapids_analysis_context(PlanningPolicy::default()))
     );
     assert!(!source.reader_predicate_is_supported(
+        &Expr::literal(LiteralValue::Boolean(true)),
+        rapids_analysis_context(PlanningPolicy::default())
+    ));
+    assert!(!source.reader_predicate_is_supported(
         &Expr::Alias { expr: Box::new(Expr::column("flag")), alias: "flag_alias".to_string() },
-        rapids_analysis_context()
+        rapids_analysis_context(PlanningPolicy::default())
     ));
 
     let safe_operation_root =
         Expr::binary(Expr::column("flag"), BinaryOp::Eq, Expr::literal(LiteralValue::Boolean(true)));
-    assert!(source.reader_predicate_is_supported(&safe_operation_root, rapids_analysis_context()));
-    assert!(source.reader_predicate_is_supported(&Expr::logical_not(Expr::column("flag")), rapids_analysis_context()));
+    assert!(
+        source.reader_predicate_is_supported(&safe_operation_root, rapids_analysis_context(PlanningPolicy::default()))
+    );
+    assert!(source.reader_predicate_is_supported(
+        &Expr::logical_not(Expr::column("flag")),
+        rapids_analysis_context(PlanningPolicy::default())
+    ));
 }
 
 #[test]
@@ -168,7 +178,7 @@ fn local_parquet_source_reader_predicate_rejects_list_carry_columns() {
     );
     let predicate = Expr::is_not_null(Expr::column("tags"));
 
-    assert!(!source.reader_predicate_is_supported(&predicate, rapids_analysis_context()));
+    assert!(!source.reader_predicate_is_supported(&predicate, rapids_analysis_context(PlanningPolicy::default())));
 }
 
 #[test]
@@ -188,10 +198,10 @@ fn local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns() 
             vec!["key".to_string(), "amount".to_string()],
         );
 
-        assert!(
-            !source
-                .reader_predicate_is_supported(&Expr::is_not_null(Expr::column("amount")), rapids_analysis_context())
-        );
+        assert!(!source.reader_predicate_is_supported(
+            &Expr::is_not_null(Expr::column("amount")),
+            rapids_analysis_context(PlanningPolicy::default())
+        ));
     }
 }
 
@@ -229,9 +239,13 @@ fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in
         negated: false,
     };
 
-    assert!(source.reader_predicate_is_supported(&range_predicate, rapids_analysis_context()));
-    assert!(source.reader_predicate_is_supported(&equality_predicate, rapids_analysis_context()));
-    assert!(source.reader_predicate_is_supported(&in_list_predicate, rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(&range_predicate, rapids_analysis_context(PlanningPolicy::default())));
+    assert!(
+        source.reader_predicate_is_supported(&equality_predicate, rapids_analysis_context(PlanningPolicy::default()))
+    );
+    assert!(
+        source.reader_predicate_is_supported(&in_list_predicate, rapids_analysis_context(PlanningPolicy::default()))
+    );
 }
 
 #[test]
@@ -255,9 +269,11 @@ fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals()
     let string_match =
         Expr::binary(Expr::column("payload"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("ok".to_string())));
 
-    assert!(source.reader_predicate_is_supported(&widened_integer, rapids_analysis_context()));
-    assert!(!source.reader_predicate_is_supported(&mismatched_string, rapids_analysis_context()));
-    assert!(source.reader_predicate_is_supported(&string_match, rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(&widened_integer, rapids_analysis_context(PlanningPolicy::default())));
+    assert!(
+        !source.reader_predicate_is_supported(&mismatched_string, rapids_analysis_context(PlanningPolicy::default()))
+    );
+    assert!(source.reader_predicate_is_supported(&string_match, rapids_analysis_context(PlanningPolicy::default())));
 }
 
 #[test]
@@ -280,12 +296,12 @@ fn local_parquet_source_reader_predicate_rewrites_fixed_ascii_substring_prefix_i
         vec![Expr::literal(LiteralValue::Utf8("13".to_string())), Expr::literal(LiteralValue::Utf8("31".to_string()))],
     );
 
-    assert!(!source.reader_predicate_is_supported(&predicate, rapids_analysis_context()));
+    assert!(!source.reader_predicate_is_supported(&predicate, rapids_analysis_context(PlanningPolicy::default())));
     let rewritten = source
-        .reader_predicate_supported_expression(&predicate, rapids_analysis_context())
+        .reader_predicate_supported_expression(&predicate, rapids_analysis_context(PlanningPolicy::default()))
         .expect("fixed ASCII prefix substring IN list should rewrite to reader ranges");
 
-    assert!(source.reader_predicate_is_supported(&rewritten, rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(&rewritten, rapids_analysis_context(PlanningPolicy::default())));
     let rewritten_text = rewritten.to_string();
     assert!(!rewritten_text.contains("SUBSTRING"), "{rewritten_text}");
     assert!(rewritten_text.contains("phone >= \"13\""), "{rewritten_text}");
@@ -311,7 +327,7 @@ fn local_parquet_source_reader_predicate_prefix_rewrite_preserves_filter_truth_b
         vec![Expr::literal(LiteralValue::Utf8("13".to_string())), Expr::literal(LiteralValue::Utf8("31".to_string()))],
     );
     let rewritten = source
-        .reader_predicate_supported_expression(&predicate, rapids_analysis_context())
+        .reader_predicate_supported_expression(&predicate, rapids_analysis_context(PlanningPolicy::default()))
         .expect("fixed ASCII prefix substring IN list should rewrite to reader ranges");
 
     for phone in [
@@ -365,9 +381,24 @@ fn local_parquet_source_reader_predicate_rejects_unsafe_substring_prefix_rewrite
         vec![Expr::literal(LiteralValue::Utf8("éa".to_string()))],
     );
 
-    assert!(source.reader_predicate_supported_expression(&wrong_start, rapids_analysis_context()).is_none());
-    assert!(source.reader_predicate_supported_expression(&shorter_literal, rapids_analysis_context()).is_none());
-    assert!(source.reader_predicate_supported_expression(&non_ascii_literal, rapids_analysis_context()).is_none());
+    assert!(
+        source
+            .reader_predicate_supported_expression(&wrong_start, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
+    assert!(
+        source
+            .reader_predicate_supported_expression(&shorter_literal, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
+    assert!(
+        source
+            .reader_predicate_supported_expression(
+                &non_ascii_literal,
+                rapids_analysis_context(PlanningPolicy::default())
+            )
+            .is_none()
+    );
 }
 
 fn eval_prefix_rewrite_filter_truth(expr: &Expr, phone: Option<&str>) -> bool {
@@ -435,7 +466,7 @@ fn local_parquet_source_represents_order_insensitive_scan_limit() {
     )
     .with_scan_limit(Some(9));
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.scan_limit, Some(9));
     assert_eq!(source.diagnostics.scan_limit_disposition, ScanLimitDisposition::Represented);
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -456,7 +487,7 @@ fn local_parquet_source_represents_partition_columns_as_synthetic_source_columns
     .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)])
     .with_column_roles(vec!["key".to_string(), "part".to_string()], vec!["payload".to_string(), "part".to_string()]);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.partition_column_count(), 1);
     assert_eq!(source.read_columns, vec!["key".to_string(), "payload".to_string()]);
     assert_eq!(
@@ -483,7 +514,7 @@ fn local_parquet_source_allows_partition_only_columns_with_row_count_metadata() 
     .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)])
     .with_column_roles(vec!["part".to_string()], Vec::new());
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.read_columns, Vec::<String>::new());
     assert_eq!(source.partition_column_count(), 1);
     assert_eq!(source.projected_output_column_source_refs, vec![SourceColumnRef::Partition(0)]);
@@ -504,7 +535,7 @@ fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
     .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
     .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert_eq!(source.missing_columns.len(), 1);
     assert_eq!(
         source.projected_output_column_source_refs,
@@ -527,7 +558,7 @@ fn local_parquet_source_rejects_nullable_physical_field_for_required_output_over
     .with_column_roles(vec!["status".to_string()], Vec::new())
     .with_output_schema_override(output_schema);
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_mismatch"));
     assert_eq!(error.fact_value("source_nullable"), Some("true"));
@@ -551,7 +582,7 @@ fn local_parquet_output_override_allows_list_child_field_name_drift() {
     .with_column_roles(vec!["tags".to_string()], Vec::new())
     .with_output_schema_override(output_schema);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 }
 
 #[test]
@@ -576,7 +607,7 @@ fn local_parquet_output_override_allows_only_fixed_size_list_child_name_drift() 
 
     validate_local_parquet_source(
         &source(DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2)),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .unwrap();
 
@@ -592,7 +623,9 @@ fn local_parquet_output_override_allows_only_fixed_size_list_child_name_drift() 
             2,
         ),
     ] {
-        let error = validate_local_parquet_source(&source(output_type), rapids_analysis_context()).unwrap_err();
+        let error =
+            validate_local_parquet_source(&source(output_type), rapids_analysis_context(PlanningPolicy::default()))
+                .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_mismatch"));
         assert_eq!(error.fact_value("field_name"), Some("features"));
     }
@@ -617,7 +650,7 @@ fn local_parquet_output_override_rejects_non_parquet_list_child_metadata_drift()
     .with_column_roles(vec!["tags".to_string()], Vec::new())
     .with_output_schema_override(output_schema);
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_mismatch"));
     assert_eq!(error.fact_value("field_name"), Some("tags"));
@@ -637,7 +670,7 @@ fn local_parquet_output_override_allows_timestamp_timezone_normalization_for_log
     .with_column_roles(vec!["event_ts".to_string()], Vec::new())
     .with_output_schema_override(output_schema);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 }
 
 #[test]
@@ -653,7 +686,7 @@ fn local_parquet_source_rejects_output_override_missing_execution_schema_field()
     .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
     .with_output_schema_override(output_schema);
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_absent"));
     assert_eq!(error.fact_value("field_name"), Some("status"));
@@ -674,7 +707,7 @@ fn local_parquet_source_accepts_missing_nullable_list_columns() {
     .with_missing_columns(vec![MissingColumn::new("missing_tags", list_type, true)])
     .with_column_roles(vec!["key".to_string(), "missing_tags".to_string()], Vec::new());
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 }
 
 #[test]
@@ -692,7 +725,7 @@ fn local_parquet_source_rejects_missing_lists_with_unsupported_children() {
     .with_missing_columns(vec![MissingColumn::new("missing_values", list_type, true)])
     .with_column_roles(vec!["key".to_string(), "missing_values".to_string()], Vec::new());
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.fact_value("reason"), Some("unsupported_missing_column_type"));
     assert_eq!(error.fact_value("missing_column"), Some("missing_values"));
@@ -712,7 +745,7 @@ fn local_parquet_source_rejects_non_nullable_missing_columns() {
     .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, false)])
     .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("non_nullable_missing_column"));
     assert_eq!(error.fact_value("missing_column"), Some("missing_payload"));
@@ -731,7 +764,7 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     )
     .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("partition_value_count_mismatch"));
     assert_eq!(error.fact_value("partition_columns"), Some("1"));
     assert_eq!(error.fact_value("partition_values"), Some("0"));
@@ -743,7 +776,8 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     )
     .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
 
-    let error = validate_local_parquet_source(&wrong_type, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&wrong_type, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("partition_value_type_mismatch"));
     assert_eq!(error.fact_value("partition_column"), Some("part"));
 }
@@ -765,7 +799,8 @@ fn local_parquet_source_rejects_narrow_decimal_partition_values_locally() {
         )
         .with_partition_columns(vec![PartitionColumn::new("part", partition_type.clone(), true)]);
 
-        let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+        let error =
+            validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(error.fact_value("reason"), Some("narrow_decimal_partition_unsupported"));
         assert_eq!(error.fact_value("partition_type"), Some(format!("{partition_type:?}").as_str()));
@@ -789,7 +824,7 @@ fn local_parquet_source_rejects_null_partition_value_for_non_nullable_column() {
     )
     .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
 
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "query_engine.local_parquet_source.validate");
     assert_eq!(error.fact_value("reason"), Some("non_nullable_partition_value_null"));
@@ -839,7 +874,8 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let empty_columns = LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), Vec::new());
 
-    let error = validate_local_parquet_source(&empty_columns, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&empty_columns, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("empty_read_columns"));
     assert_eq!(empty_columns.diagnostics.zero_column_count_disposition, ZeroColumnCountDisposition::Rejected);
@@ -851,7 +887,8 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
         vec!["key".to_string()],
     );
 
-    let error = validate_local_parquet_source(&overflow_row_group, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&overflow_row_group, rapids_analysis_context(PlanningPolicy::default()))
+        .unwrap_err();
     let expected_row_group = usize::MAX.to_string();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("row_group"), Some(expected_row_group.as_str()));
@@ -870,7 +907,7 @@ fn local_parquet_source_validation_rejects_unusable_unique_key_facts() {
     );
 
     let valid = source.clone().with_unique_key_columns(vec![BTreeSet::from(["key".to_string()])]);
-    validate_local_parquet_source(&valid, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&valid, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 
     for (key, expected_reason) in [
         (BTreeSet::new(), "empty_unique_key"),
@@ -879,7 +916,7 @@ fn local_parquet_source_validation_rejects_unusable_unique_key_facts() {
     ] {
         let error = validate_local_parquet_source(
             &source.clone().with_unique_key_columns(vec![key]),
-            rapids_analysis_context(),
+            rapids_analysis_context(PlanningPolicy::default()),
         )
         .unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
@@ -888,7 +925,8 @@ fn local_parquet_source_validation_rejects_unusable_unique_key_facts() {
 
     let duplicate =
         source.with_unique_key_columns(vec![BTreeSet::from(["key".to_string()]), BTreeSet::from(["key".to_string()])]);
-    let error = validate_local_parquet_source(&duplicate, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&duplicate, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("duplicate_unique_key"));
 }
 
@@ -902,7 +940,7 @@ fn zero_column_count_source_contract_is_represented_without_data_columns() {
             .with_row_group_rows(vec![10, 20, 30]),
     ]);
 
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     assert!(source.is_zero_column_count_source());
     assert!(source.is_direct_device_read());
     assert_eq!(source.read_column_count(), 0);
@@ -926,7 +964,8 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
 
     let mut rejected_byte_range = base.clone();
     rejected_byte_range.diagnostics.byte_range_disposition = ByteRangeDisposition::Rejected;
-    let error = validate_local_parquet_source(&rejected_byte_range, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&rejected_byte_range, rapids_analysis_context(PlanningPolicy::default()))
+        .unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("unsupported_source_contract_fact"));
     assert_eq!(error.fact_value("field"), Some("byte_range"));
@@ -934,24 +973,33 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
 
     let mut inconsistent_partition_columns = base.clone();
     inconsistent_partition_columns.diagnostics.partition_column_disposition = PartitionColumnDisposition::Represented;
-    let error = validate_local_parquet_source(&inconsistent_partition_columns, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(
+        &inconsistent_partition_columns,
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("empty_partition_columns"));
 
     let mut rejected_zero_column_count = base.clone();
     rejected_zero_column_count.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
-    let error = validate_local_parquet_source(&rejected_zero_column_count, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&rejected_zero_column_count, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("invalid_zero_column_count_columns"));
     assert_eq!(error.fact_value("read_columns"), Some("1"));
 
     let mut rejected_schema_mapping = base.clone();
     rejected_schema_mapping.diagnostics.schema_mapping_disposition = SchemaMappingDisposition::Rejected;
-    let error = validate_local_parquet_source(&rejected_schema_mapping, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&rejected_schema_mapping, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("field"), Some("schema_mapping"));
     assert_eq!(error.fact_value("disposition"), Some("rejected"));
 
     let mut rejected_feature = base;
     rejected_feature.diagnostics.rejected_features.push(RejectedSourceFeature::RowSelection);
-    let error = validate_local_parquet_source(&rejected_feature, rapids_analysis_context()).unwrap_err();
+    let error = validate_local_parquet_source(&rejected_feature, rapids_analysis_context(PlanningPolicy::default()))
+        .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("rejected_source_features"));
     assert_eq!(error.fact_value("rejected_features"), Some("row_selection"));
 }
@@ -971,14 +1019,18 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     missing_projected_read.diagnostics.direct_device_read = true;
     missing_projected_read.diagnostics.schema_mapping_disposition = SchemaMappingDisposition::DirectByName;
     missing_projected_read.projected_output_column_source_refs.push(SourceColumnRef::File(1));
-    let error = validate_local_parquet_source(&missing_projected_read, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&missing_projected_read, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("projected_column_not_available"));
     assert_eq!(error.fact_value("column"), Some("payload"));
 
     let mut mismatched_diagnostics =
         LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), vec!["key".to_string()]);
     mismatched_diagnostics.diagnostics.read_column_count = 2;
-    let error = validate_local_parquet_source(&mismatched_diagnostics, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&mismatched_diagnostics, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("diagnostic_column_count_mismatch"));
     assert_eq!(error.fact_value("diagnostic_read_columns"), Some("2"));
     assert_eq!(error.fact_value("read_columns"), Some("1"));
@@ -986,7 +1038,9 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     let missing_schema_mapping =
         LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), vec!["missing".to_string()]);
     assert_eq!(missing_schema_mapping.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::Rejected);
-    let error = validate_local_parquet_source(&missing_schema_mapping, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&missing_schema_mapping, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("rejected_source_features"));
     assert_eq!(error.fact_value("rejected_features"), Some("schema_mapping"));
 
@@ -999,7 +1053,9 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
         schema,
         vec!["key".to_string()],
     );
-    let error = validate_local_parquet_source(&row_group_outside_contract, rapids_analysis_context()).unwrap_err();
+    let error =
+        validate_local_parquet_source(&row_group_outside_contract, rapids_analysis_context(PlanningPolicy::default()))
+            .unwrap_err();
     assert_eq!(error.fact_value("reason"), None);
     assert_eq!(error.fact_value("row_group"), Some("2"));
     assert_eq!(error.fact_value("max_row_group"), Some("1"));

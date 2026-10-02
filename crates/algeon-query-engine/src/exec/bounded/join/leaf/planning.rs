@@ -68,7 +68,7 @@ fn plan_bounded_local_parquet_source_stream(
     chunk_cap_hints: Option<SourceAdjacentAggregateChunkCapHints>,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
-    validate_local_parquet_source(source, rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context(context.planning_policy()))?;
     let mut planning_policy = local_parquet_source_stream_chunk_planning_policy(context, source, memory_model);
     if let Some(chunk_cap_hints) = chunk_cap_hints {
         planning_policy = apply_source_adjacent_aggregate_chunk_caps(planning_policy, chunk_cap_hints);

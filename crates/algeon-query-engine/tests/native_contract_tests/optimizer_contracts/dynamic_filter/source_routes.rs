@@ -5,7 +5,7 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
     let result = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -46,7 +46,7 @@ fn native_optimizer_rejects_large_keyset_route_to_dimension_sized_local_parquet_
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -131,7 +131,7 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -163,7 +163,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_ru
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -191,7 +191,7 @@ fn native_optimizer_uses_custom_dynamic_filter_runtime_limit_for_route_discovery
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context().with_policy(policy),
+        rapids_analysis_context(policy),
         local_dimension_pruning_resolver(),
     );
 
@@ -242,7 +242,7 @@ fn native_optimizer_keeps_filtered_producer_when_unfiltered_row_estimate_exceeds
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -294,7 +294,7 @@ fn native_optimizer_rejects_large_keyset_dimension_route_when_producer_is_larger
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -348,7 +348,7 @@ fn native_optimizer_keeps_large_keyset_dimension_route_when_many_row_groups_cons
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -372,7 +372,7 @@ fn native_optimizer_keeps_dimension_sized_consumer_route_when_producer_keyset_is
     let result = optimize_query_plan(
         plan,
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -397,7 +397,7 @@ fn native_optimizer_discovers_dynamic_filter_route_for_inner_keyed_residual_join
     let result = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 

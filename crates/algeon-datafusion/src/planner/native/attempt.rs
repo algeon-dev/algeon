@@ -295,7 +295,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
     let optimizer_result = optimize_query_plan(
         lowering.plans[0].clone(),
         &optimizer_options,
-        rapids_analysis_context().with_policy(native_execution_config.planning_policy()),
+        rapids_analysis_context(native_execution_config.planning_policy()),
         local_dimension_pruning_resolver(),
     );
     let native_optimizer = optimizer_result.diagnostics;

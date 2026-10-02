@@ -16,7 +16,7 @@ use query_planning::{
 };
 
 use super::{SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, metadata::read_parquet_metadata};
-use crate::{rapids_backend::rapids_analysis_context, runtime::ExecutionContext};
+use crate::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context, runtime::ExecutionContext};
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
 pub fn plan_local_parquet_source_chunks(
@@ -75,7 +75,10 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
 /// The backend inputs chunk planning consumes: the cuDF reader's minimum
 /// source-read budget and its Arrow type support.
 fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
-    SourceReadSizing::new(rapids_analysis_context(), cudf::DataFrame::minimum_parquet_source_read_budget_bytes() as u64)
+    SourceReadSizing::new(
+        rapids_analysis_context(PlanningPolicy::default()),
+        cudf::DataFrame::minimum_parquet_source_read_budget_bytes() as u64,
+    )
 }
 
 /// Plans chunks for a local Parquet source using a caller-owned footer cache

@@ -34,7 +34,7 @@ fn native_optimizer_discovers_dynamic_filter_routes_for_union_probe_branches() {
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 2);
@@ -162,7 +162,7 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 2);
@@ -304,7 +304,7 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);

@@ -112,7 +112,7 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
         vec!["order_id".to_string(), "amount".to_string()],
     )
     .with_reader_predicate(predicate);
-    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context())));
+    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default()))));
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));

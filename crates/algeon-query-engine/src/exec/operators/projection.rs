@@ -14,6 +14,7 @@ use crate::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
     plan::ProjectionOutput,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -473,7 +474,11 @@ fn coerce_projection_output_schema(
             .with_fact("field_name", field_name)
             .with_fact("field_index", field_index)
         })?;
-        if !is_supported_arrow_implicit_cast(&actual_type, expected_type, rapids_analysis_context()) {
+        if !is_supported_arrow_implicit_cast(
+            &actual_type,
+            expected_type,
+            rapids_analysis_context(PlanningPolicy::default()),
+        ) {
             return Err(projection_schema_mismatch_error_with_budget(
                 token,
                 field_index,

@@ -32,8 +32,12 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             let plan = mixed_residual_multi_join_plan(join_type, build_side, projection.clone());
 
             assert!(
-                unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-                    .is_none()
+                unsupported_facts(
+                    &plan,
+                    StatisticalAggregateExecutionMode::default(),
+                    rapids_analysis_context(PlanningPolicy::default())
+                )
+                .is_none()
             );
         }
     }
@@ -48,7 +52,12 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
         ],
     );
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 
     // A mixed Left join building on the left is not a supported kernel shape:
@@ -61,8 +70,12 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("left-build mixed left should produce facts");
+    let facts = unsupported_facts(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("left-build mixed left should produce facts");
     assert_rejection_facts_are_family_free(&facts, "left_build_mixed_left");
     assert_eq!(
         facts.get("bounded_join_rejection_reason").map(String::as_str),
@@ -81,7 +94,12 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
     let plan = valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(JoinType::LeftAnti, JoinType::Full);
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 }
 
@@ -110,7 +128,12 @@ fn bounded_multi_join_admits_aggregate_inputs_below_join_subtrees() {
     let plan = mixed_residual_multi_join_with_aggregate_leaf_plan();
 
     assert!(
-        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
+        unsupported_facts(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context(PlanningPolicy::default())
+        )
+        .is_none()
     );
 
     for aggregate_leaf in
@@ -119,7 +142,12 @@ fn bounded_multi_join_admits_aggregate_inputs_below_join_subtrees() {
         let plan = hash_multi_join_with_aggregate_leaf_plan(aggregate_leaf);
 
         assert!(
-            unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
+            unsupported_facts(
+                &plan,
+                StatisticalAggregateExecutionMode::default(),
+                rapids_analysis_context(PlanningPolicy::default())
+            )
+            .is_none(),
             "{aggregate_leaf:?}"
         );
     }

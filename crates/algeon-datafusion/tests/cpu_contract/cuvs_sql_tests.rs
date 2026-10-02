@@ -24,7 +24,7 @@ use algeon_datafusion::{
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
-    array::{Array, BooleanArray, Int64Array, StringArray, TimestampMillisecondArray},
+    array::{Array, ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, TimestampMillisecondArray},
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -1323,7 +1323,18 @@ fn register_partitioned_vectors(ctx: &SessionContext) {
         Field::new("d0", DataType::Float32, false),
         Field::new("d1", DataType::Float32, false),
     ]));
-    let partitions = (0..3).map(|_| vec![RecordBatch::new_empty(Arc::clone(&schema))]).collect();
+    // One row per partition: an empty table lowers to a zero-row literal,
+    // which DataFusion keeps by cost instead of a native input producer.
+    let partitions = (0..3)
+        .map(|item_id| {
+            let columns: Vec<ArrayRef> = vec![
+                Arc::new(Int64Array::from(vec![item_id])),
+                Arc::new(Float32Array::from(vec![0.0])),
+                Arc::new(Float32Array::from(vec![1.0])),
+            ];
+            vec![RecordBatch::try_new(Arc::clone(&schema), columns).unwrap()]
+        })
+        .collect();
     ctx.register_table("partitioned_vectors", Arc::new(MemTable::try_new(schema, partitions).unwrap())).unwrap();
 }
 
