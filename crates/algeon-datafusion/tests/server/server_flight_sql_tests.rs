@@ -14,7 +14,6 @@ use algeon_datafusion::server::ERROR_OPERATION_METADATA_KEY;
 use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuBackend, GpuDeviceMemoryLimit, GpuMemoryOwnership},
-    gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION,
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
     server::{

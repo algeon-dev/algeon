@@ -804,7 +804,7 @@ fn attempt_has_accounted_cache_residency(attempt: &AttemptRow) -> bool {
 }
 
 /// Finds the largest total resident cache charge observed in the canonical
-/// ledger reports. They are public, versioned snapshot DTOs retained verbatim
+/// ledger reports. They are public snapshot DTOs retained verbatim
 /// in the artifact, so this does not manufacture a parallel cache counter.
 fn peak_cache_residency(run: &MeasuredRunArtifact) -> Option<u64> {
     let mut peak = None;

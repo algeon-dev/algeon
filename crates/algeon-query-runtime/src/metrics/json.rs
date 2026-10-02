@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Identifies the layout of the JSON document [`QueryMetrics::to_json`] emits.
-pub const QUERY_METRICS_JSON_SCHEMA: &str = "query_engine.query_metrics.v2";
+pub const QUERY_METRICS_JSON_SCHEMA: &str = "query_engine.query_metrics";
 
 impl QueryMetrics {
     /// Serializes query metrics as a nested, self-describing JSON document.

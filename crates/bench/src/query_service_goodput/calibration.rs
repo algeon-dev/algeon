@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, error::Error, fmt::Write as _, fs, path::Path};
 
 use super::workload::WorkloadFamily;
 
-pub(super) const CALIBRATION_SCHEMA: &str = "algeon-goodput-calibration-v1";
+pub(super) const CALIBRATION_SCHEMA: &str = "algeon-goodput-calibration";
 
 const COLUMNS: &[&str] = &[
     "item_id",

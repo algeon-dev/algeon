@@ -1184,10 +1184,6 @@ impl AlgeonNativeMetrics {
                     aggregate_fact(facts, "prior_cardinality_evidence_scope"),
                 )
                 .with_new_label(
-                    "aggregate_strategy_options_version",
-                    aggregate_fact(facts, "aggregate_strategy_options_version"),
-                )
-                .with_new_label(
                     "aggregate_encoded_key_partial_low_cardinality_threshold_ppm",
                     aggregate_fact(facts, "aggregate_encoded_key_partial_low_cardinality_threshold_ppm"),
                 )
@@ -1480,7 +1476,7 @@ mod tests {
         metrics::QueryMetrics,
         observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
-            AttemptId, AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            AttemptId, AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA,
             SealedAttemptLabels, SealedAttemptProjection,
         },
         plan::GraphAlgorithm,
@@ -1567,7 +1563,7 @@ mod tests {
     #[test]
     fn sealed_attempt_metric_labels_derive_from_the_sealed_projection() {
         let projection = SealedAttemptProjection {
-            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA,
             attempt_id: AttemptId::mint(),
             disposition: AttemptDisposition::Native,
             outcome: RuntimeTerminalOutcome::Panicked,

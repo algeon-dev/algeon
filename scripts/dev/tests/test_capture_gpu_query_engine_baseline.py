@@ -41,7 +41,7 @@ class LoadedLibrarySnapshotTests(unittest.TestCase):
     def write_snapshot(self, libraries):
         snapshot = self.root / "loaded-native-libraries.json"
         snapshot.write_text(
-            json.dumps({"schema_version": 2, "source": "/proc/self/maps", "binary": self.entry(self.binary), "libraries": libraries}) + "\n",
+            json.dumps({"source": "/proc/self/maps", "binary": self.entry(self.binary), "libraries": libraries}) + "\n",
             encoding="utf-8",
         )
         return snapshot

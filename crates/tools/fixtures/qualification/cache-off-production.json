@@ -1,12 +1,11 @@
 {
-  "schema": "algeon_tools.single_node_multi_gpu.qualification_manifest.v1",
-  "version": 1,
+  "schema": "algeon_tools.single_node_multi_gpu.qualification_manifest",
   "target_claim": "cache-off production-qualified",
   "cells": [
     {
       "name": "pagerank-topk",
       "profile_path": "pagerank-topk.json",
-      "profile_sha256": "9a48ead000ef2c757d6e1ad3fb8a8aaa6074e3fed05ce6a0a6548ec3bc627d8d",
+      "profile_sha256": "0182a73c552d02a78f4b171a3a9cc76da7bad0ad00840203176b547431dd9a17",
       "minimum_repeats": 3,
       "maximum_sample_gap_ms": 1000,
       "required_queries": ["pagerank_topk"]
@@ -14,7 +13,7 @@
     {
       "name": "bfs-topk",
       "profile_path": "bfs-topk.json",
-      "profile_sha256": "c60cb011493508e621630a2323ecfedd4b26ac38deb3b027a25414dc53dd11f3",
+      "profile_sha256": "98b00c8135aaecbb2650d8a990757b2aac4d6b9ea46af0ab9a80e7f22b9cef7c",
       "minimum_repeats": 3,
       "maximum_sample_gap_ms": 1000,
       "required_queries": ["bfs_topk"]
@@ -22,7 +21,7 @@
     {
       "name": "conservative-owner-sum",
       "profile_path": "../p6-isolated-pagerank-cache-off.json",
-      "profile_sha256": "4e07131eac5a60d08772f9a4eba7fd728e098cf93e003e20c11c611ce4aa8f6f",
+      "profile_sha256": "b218e19506922088349e0d4e032bcb482fb55a1a13946947986658d1af3a14e0",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_queries": ["pagerank"]
@@ -30,7 +29,7 @@
     {
       "name": "four-gpu-mixed",
       "profile_path": "four-gpu-mixed.json",
-      "profile_sha256": "7153d3a7f08359fdfa3f1585c68294fa28790322a5960560b0f7b1ed60a96e18",
+      "profile_sha256": "f1a84bbb5b2b1a12757f5dc0abe2af7cd0fbfd0de0a0bec122558372af3bdc50",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_queries": ["pagerank_topk", "bfs_topk", "pagerank"],
@@ -48,7 +47,7 @@
     {
       "name": "overload-fairness",
       "profile_path": "../p6-overload-fairness-profile.json",
-      "profile_sha256": "a3ad5166a81e76e18bd74e6b9a70643bb36e10637fba5a50bbbe855f84df8156",
+      "profile_sha256": "69cd72be76b381aad95252366ea99ffed08fe66f5a7ff9fd553f3681201476c4",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_evidence": ["/execution/measurement/aggregate/scenarios/overload_fairness"],
@@ -57,7 +56,7 @@
     {
       "name": "device-quarantine",
       "profile_path": "../p6-concurrent-quarantine-profile.json",
-      "profile_sha256": "89c1c2935fbca79bb2d5a0302aeb7806a1319a156e1dc3d65523a90b910d36c1",
+      "profile_sha256": "996817a1134b2ad9f0b6b42792d6940cab8e38340777b6b9347e4ce665637b58",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_evidence": ["/execution/measurement/aggregate/quarantine_fallback"],
@@ -66,7 +65,7 @@
     {
       "name": "after-admission-deadline",
       "profile_path": "../p6-after-admission-deadline-profile.json",
-      "profile_sha256": "b4d61dd58291d72a927431c5f80a393c3a1d47d39f257a1a85c30103afd9259a",
+      "profile_sha256": "03a2ca35b19edd22eb5c6499a795d04a4b9395cbc0af04b2b15f05c7eea7e6a8",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_evidence": ["/execution/measurement/deadline_barrier"],
@@ -75,7 +74,7 @@
     {
       "name": "caller-cancellation",
       "profile_path": "../p6-measured-run-profile.json",
-      "profile_sha256": "e7b0140ba5960764b416778efc4e2c95abcbb18beb9a4379cdb2aa1967e47633",
+      "profile_sha256": "b9dfe7e4b248faeca73447d38a318cd4f1f7b824cf4b30a422048c35b5b901e8",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_evidence": ["/execution/measurement/cancellation_barrier"],

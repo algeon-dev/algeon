@@ -18,8 +18,8 @@ pub use attempt_report::{
     AttemptFailureFactValue, AttemptFailureOperation, AttemptFailureStatus, AttemptFailureSummary,
     AttemptFinalDomainUsage, AttemptHealthTransition, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
     AttemptRetryRecovery, AttemptTimestamps, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
-    MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport,
-    RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels, SealedAttemptProjection,
+    MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA, QueryAttemptReport,
+    RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA, SealedAttemptLabels, SealedAttemptProjection,
 };
 pub(crate) use attempt_report::{
     AttemptAllocatorEvent, AttemptAllocatorEventAction, AttemptAllocatorPoolUsage, AttemptAlternateDeviceEligibility,
@@ -50,7 +50,7 @@ pub(crate) use query_planning::execution_contracts::{RuntimeAttemptId, TaskAttem
 pub use query_planning::{
     error::AttemptFailureCode,
     execution_contracts::RuntimeTaskId,
-    schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1},
+    schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA},
 };
 #[cfg(test)]
 pub(crate) use recorder::RuntimeObservationDeliveryGate;

@@ -156,7 +156,6 @@ impl QueryAdmission {
 
     pub fn diagnostics_payload(&self) -> ServerResult<String> {
         let mut output = String::new();
-        let _ = writeln!(output, "# algeon_admission_stats=2");
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
                 let queue_policy = backend.queue_policy();
@@ -435,7 +434,6 @@ mod tests {
 
         let payload = admission.diagnostics_payload().unwrap();
 
-        assert!(payload.contains("# algeon_admission_stats=2\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
         assert!(payload.contains("# device_0_max_active_attempts=2\n"), "{payload}");
@@ -464,7 +462,6 @@ mod tests {
 
         let payload = admission.diagnostics_payload().unwrap();
 
-        assert!(payload.contains("# algeon_admission_stats=2\n"), "{payload}");
         assert!(payload.contains("# backend=test_only\n"), "{payload}");
     }
 }

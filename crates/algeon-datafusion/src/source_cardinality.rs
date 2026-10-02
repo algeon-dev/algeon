@@ -12,7 +12,7 @@ use query_engine::expr::{BinaryOp, Expr, LiteralValue};
 
 /// Arrow schema/field metadata key carrying a JSON array of source unique-key
 /// column-name arrays.
-pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "algeon_datafusion.source_unique_keys.v2";
+pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "algeon_datafusion.source_unique_keys";
 
 /// Returns a copy of `schema` with the declared source unique-key groups
 /// recorded on the key columns' fields.
@@ -222,18 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn source_unique_key_metadata_ignores_v1_delimiter_encoding() {
-        let schema = Schema::new_with_metadata(
-            vec![Field::new("id", DataType::Int32, false)],
-            HashMap::from([("algeon_datafusion.source_unique_keys.v1".to_string(), "id".to_string())]),
-        );
-        let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
-
-        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
-    }
-
-    #[test]
-    fn source_unique_key_metadata_rejects_malformed_v2_values() {
+    fn source_unique_key_metadata_rejects_malformed_values() {
         let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
         for value in ["not json", r#"["id"]"#, "[[]]"] {
             let schema = Schema::new_with_metadata(

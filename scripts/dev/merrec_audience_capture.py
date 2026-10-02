@@ -155,7 +155,6 @@ def main() -> None:
         *(RESEARCH / "sql" / "probes" / f"{name}.sql" for name in ("cuml_umap", "cuml_hdbscan")),
     ]
     capture = {
-        "schemaVersion": 1,
         "source": "MerRec captured audience and category-share results",
         "rows": EXPECTED_ROWS,
         "joinKey": "id",

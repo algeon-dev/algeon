@@ -857,7 +857,6 @@ def main() -> int:
         sources_map["captions"] = source_entry(captions_csv, args.skip_sha256)
 
     manifest = {
-        "schema_version": 1,
         "generator": GENERATOR,
         "generated_at_unix": int(time.time()),
         "dataset": {"source": SOURCE, "variant": args.variant},

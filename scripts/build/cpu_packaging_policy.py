@@ -22,7 +22,6 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = ROOT / ".config" / "policies" / "cpu-packaging.toml"
 SERVER_BINARY = "algeon_server"
-MANIFEST_SCHEMA_VERSION = 1
 
 
 class PolicyError(RuntimeError):
@@ -255,7 +254,6 @@ def create_build_record(
     if not binary.is_file():
         raise PolicyError(f"canonical Cargo build did not produce {binary}")
     record = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
         "record_kind": "canonical-build-record",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "policy_fingerprint": artifact_affecting_fingerprint(policy),
@@ -285,8 +283,6 @@ def verify_build_record(
     record_path: Path,
 ) -> dict[str, Any]:
     record = load_json(record_path)
-    if record.get("schema_version") != MANIFEST_SCHEMA_VERSION:
-        raise PolicyError(f"build record schema_version mismatch: {record.get('schema_version')}")
     expected_fingerprint = artifact_affecting_fingerprint(policy)
     if record.get("policy_fingerprint") != expected_fingerprint:
         raise PolicyError(
@@ -435,7 +431,6 @@ def command_create_manifest(args: argparse.Namespace) -> None:
         raise PolicyError(f"staged binary {staged_binary_rel} missing from dist")
 
     manifest = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
         "manifest_kind": "cpu-payload-manifest",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "policy_fingerprint": expected_fingerprint,
@@ -457,9 +452,6 @@ def command_verify_manifest(args: argparse.Namespace) -> None:
     dist_dir = args.dist_dir.resolve()
     manifest_path = args.manifest.resolve()
     manifest = load_json(manifest_path)
-
-    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
-        raise PolicyError(f"manifest schema_version mismatch: {manifest.get('schema_version')}")
 
     expected_fingerprint = artifact_affecting_fingerprint(policy)
     if manifest.get("policy_fingerprint") != expected_fingerprint:

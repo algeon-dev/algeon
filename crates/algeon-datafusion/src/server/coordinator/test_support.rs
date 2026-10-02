@@ -4,15 +4,14 @@ use std::sync::Arc;
 
 use query_engine::observability::{
     AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId,
-    AttemptRetryAdvice, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport,
-    RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
-    SealedRuntimeObservationSnapshot,
+    AttemptRetryAdvice, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA, QueryAttemptReport, RuntimeObservationConfig,
+    RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
 };
 
 /// A succeeded, not-admitted attempt report for `query_id`.
 pub(crate) fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
     QueryAttemptReport {
-        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
+        schema: QUERY_ATTEMPT_REPORT_SCHEMA.to_string(),
         attempt_id: AttemptId::mint(),
         query_id: Some(AttemptQueryId::new(query_id).expect("test query id is a valid attempt correlation")),
         trace_context: None,

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use super::{
     E2eResult,
-    params::{EVIDENCE_SCHEMA, EVIDENCE_VERSION, ObservabilityLimits, RuntimeParams},
+    params::{EVIDENCE_SCHEMA, ObservabilityLimits, RuntimeParams},
     validation::{parse_u64_field, tsv_section, tsv_section_single_row},
 };
 
@@ -61,7 +61,6 @@ pub(super) const FATAL_PATTERNS: &[&str] = &[
 #[derive(Debug, Serialize)]
 pub(super) struct RunEvidence {
     pub(super) schema: &'static str,
-    pub(super) version: u32,
     pub(super) status: String,
     pub(super) failure: Option<String>,
     pub(super) started_unix_ms: u128,
@@ -82,7 +81,6 @@ impl RunEvidence {
     pub(super) fn new(params: &RuntimeParams) -> Self {
         Self {
             schema: EVIDENCE_SCHEMA,
-            version: EVIDENCE_VERSION,
             status: "running".to_string(),
             failure: None,
             started_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_millis()),

@@ -317,7 +317,6 @@ def main() -> int:
         model_results[model] = entry
 
     report = {
-        "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "runtime": {
             "cpu_file_evaluation": True,

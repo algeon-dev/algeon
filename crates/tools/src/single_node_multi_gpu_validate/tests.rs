@@ -279,10 +279,9 @@ fn overload_fairness_profile_is_a_finite_bounded_cohort() {
 }
 
 #[test]
-fn profile_v1_defaults_preserve_complete_runner_sections() {
+fn profile_defaults_preserve_complete_runner_sections() {
     let profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
     assert_eq!(profile.schema, RUN_PROFILE_SCHEMA);
-    assert_eq!(profile.version, RUN_PROFILE_VERSION);
     assert_eq!(profile.backend.device_profiles.len(), 0);
     assert_eq!(profile.backend.queue.max_queued_attempts, 64);
     assert_eq!(profile.session.shared_session_count, 1);
@@ -374,17 +373,10 @@ fn normal_cugraph_s1_profile_is_rejected_by_the_base_runner() {
 }
 
 #[test]
-fn profile_rejects_schema_version_unknown_and_invalid_values() {
-    for (replacement, expected) in [("algeon_datafusion.other.v1", "run profile schema"), ("2", "run profile version")]
-    {
-        let profile = if replacement == "2" {
-            valid_profile_json().replace("\"version\": 1", "\"version\": 2")
-        } else {
-            valid_profile_json().replace(RUN_PROFILE_SCHEMA, replacement)
-        };
-        let error = RunProfile::parse_bytes(profile.as_bytes()).unwrap_err();
-        assert!(error.to_string().contains(expected), "{error}");
-    }
+fn profile_rejects_foreign_schema_unknown_and_invalid_values() {
+    let foreign = valid_profile_json().replace(RUN_PROFILE_SCHEMA, "algeon_datafusion.other");
+    let error = RunProfile::parse_bytes(foreign.as_bytes()).unwrap_err();
+    assert!(error.to_string().contains("run profile schema"), "{error}");
     let unknown = valid_profile_json().replace("\"workloads\": []", "\"unknown\": true, \"workloads\": []");
     assert!(RunProfile::parse_bytes(unknown.as_bytes()).is_err());
     let invalid_rate = valid_profile_json()
@@ -645,7 +637,6 @@ fn write_dblp_fixture(root: &Path, graph_vertex_upper_bound: Option<&str>) {
         })
     };
     let manifest = serde_json::json!({
-        "schema_version": 1,
         "generator": "fixture/graph/dblp_ingest.py",
         "dataset": {"dataset_id": "citation-network", "source": "test source"},
         "max_papers": 3,
@@ -659,7 +650,6 @@ fn write_dblp_fixture(root: &Path, graph_vertex_upper_bound: Option<&str>) {
         "paper_fos": entry("paper_fos")
     });
     let source = serde_json::json!({
-        "schema_version": 1,
         "dataset_id": "citation-network",
         "source": "test source",
         "source_json": {"path": "/data/dblp.v12.json", "bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}

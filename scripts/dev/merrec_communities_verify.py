@@ -500,7 +500,6 @@ def main() -> int:
         failed.append("24_market_collections")
 
     report = {
-        "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "runtime": {
             "cpu_only_assessment": True,

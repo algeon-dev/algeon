@@ -27,10 +27,9 @@ use query_engine::{
 
 use super::{
     CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-    NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
-    NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
-    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-    NativeDynamicFilterRuntimeMetricRow,
+    NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
 };
 use crate::{
     capability::CapabilityReason,
@@ -223,9 +222,9 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_status.as_deref(), Some("measured"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_error_code, None);
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 107);
-    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.starts_with("schema\tquery_id\t"));
-    assert!(text.contains(&format!("\n{NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA}\tq01\t")));
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 106);
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.starts_with("query_id\t"));
+    assert!(text.contains("\nq01\t"));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
     ));

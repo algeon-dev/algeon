@@ -906,7 +906,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             }),
             Ok(arrow_flight::ActionType {
                 r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
-                description: "Returns a versioned control frame and sealed native runtime JSONL artifact".to_string(),
+                description: "Returns a control frame and sealed native runtime JSONL artifact".to_string(),
             }),
             Ok(arrow_flight::ActionType {
                 r#type: GET_ADMISSION_STATS_ACTION.to_string(),

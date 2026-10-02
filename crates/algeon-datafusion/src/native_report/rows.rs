@@ -11,8 +11,7 @@ use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOpti
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
     schema::{
-        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA,
-        NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA,
+        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS,
         NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
@@ -290,7 +289,6 @@ impl TsvRow for NativeDataFusionPlanningRow {
 
     fn fields(&self) -> Vec<String> {
         vec![
-            NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA.to_string(),
             self.query_id.clone(),
             self.physical_root.clone(),
             self.physical_shape.clone(),
@@ -323,7 +321,6 @@ impl TsvRow for NativeDataFusionExecutionRow {
             row.query_id.clone_from(&self.query_id);
         }
         vec![
-            NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA.to_string(),
             self.query_id.clone(),
             self.physical_root.clone(),
             self.physical_shape.clone(),
@@ -501,7 +498,7 @@ mod tests {
         assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
         assert_eq!(
             planning.to_tsv_line(),
-            "algeon_datafusion.native_datafusion_planning_tsv.v2\tq\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
+            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
         );
 
         let execution = NativeDataFusionExecutionRow {
@@ -533,7 +530,6 @@ mod tests {
         let expected_execution_fields = NativeDataFusionExecutionRow::COLUMNS
             .iter()
             .map(|column| match *column {
-                "schema" => NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA,
                 "query_id" => "q",
                 "physical_root" | "post_native_plan_root" => "Root",
                 "physical_shape" => "Root(Source)",
@@ -687,7 +683,6 @@ mod tests {
         assert_eq!(
             execution.to_tsv_line(),
             concat!(
-                "algeon_datafusion.native_datafusion_execution_tsv.v2\t",
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\tselected\tnone\tnone\t",
                 "none\tnone\tAlgeonNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",

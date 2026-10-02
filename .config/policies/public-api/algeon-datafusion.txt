@@ -879,7 +879,6 @@ pub algeon_datafusion::gpu_coverage::QueryGpuValidatedUnder::optimizer_config_so
 pub algeon_datafusion::gpu_coverage::QueryGpuValidatedUnder::optimizer_fingerprint: alloc::string::String
 pub algeon_datafusion::gpu_coverage::QueryGpuValidatedUnder::session_config_fingerprint: alloc::string::String
 pub const algeon_datafusion::gpu_coverage::ALGEON_EXPLAIN_COVERAGE_FUNCTION: &str
-pub const algeon_datafusion::gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION: u8
 pub fn algeon_datafusion::gpu_coverage::parse_explain_gpu(&str) -> algeon_datafusion::error::Result<core::option::Option<algeon_datafusion::gpu_coverage::ExplainGpuStatement>>
 pub fn algeon_datafusion::gpu_coverage::validate_query<'a>(&'a datafusion::execution::context::SessionContext, impl core::convert::AsRef<str> + core::marker::Send + 'a) -> futures_core::future::BoxFuture<'a, algeon_datafusion::error::Result<algeon_datafusion::gpu_coverage::QueryGpuCoverage>>
 pub mod algeon_datafusion::gpu_functions
@@ -1141,7 +1140,6 @@ pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregat
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregate_source_adjacent_prepared_sort_groupby_max_fan_in: usize
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregate_source_adjacent_prepared_sort_groupby_max_row_groups: usize
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes: usize
-pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregate_strategy_options_version: alloc::string::String
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::aggregate_structural_key: alloc::string::String
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::chunk_count: usize
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::chunk_row_count: usize
@@ -1682,9 +1680,7 @@ pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_M
 pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE: &str
 pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str
-pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str
-pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA: &str
 pub const algeon_datafusion::native_report::NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str
 pub fn algeon_datafusion::native_report::format_native_aggregate_strategy_metric_rows(&[algeon_datafusion::native_report::NativeAggregateStrategyMetricRow]) -> alloc::string::String
 pub fn algeon_datafusion::native_report::format_native_dynamic_filter_runtime_metric_rows(&[algeon_datafusion::native_report::NativeDynamicFilterRuntimeMetricRow]) -> alloc::string::String

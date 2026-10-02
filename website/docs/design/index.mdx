@@ -250,7 +250,7 @@ UDTFs. The recommended workflow for either family is:
    `WHERE provider = 'cugraph'` or `'cuvs'` for one family.
 2. `gpu_describe_function('<fn>')` to inspect the fixed descriptor, including
    signatures, options, schemas, examples, and limitations.
-3. `gpu_validate_call('<fn>', '<call_json>')` to check a versioned envelope
+3. `gpu_validate_call('<fn>', '<call_json>')` to check a JSON envelope
    containing named relations and options without scanning inputs or
    launching CUDA.
 4. Execute the UDTF once validation returns `valid = true`.

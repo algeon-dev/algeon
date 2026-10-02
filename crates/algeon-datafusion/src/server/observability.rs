@@ -29,6 +29,10 @@ use crate::server::{
     planner::NativePlanningDiagnostics,
 };
 
+/// First line of every query stats payload. A retained artifact whose stats
+/// cannot hold at least this line is not composed.
+pub(super) const QUERY_STATS_HEADER_LINE: &str = "# algeon_datafusion_query_stats\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum CaptureLossKind {
     RetainedByteLimit,
@@ -769,7 +773,7 @@ impl CapturedQuery {
             self.capture.losses.keys().map(|kind| kind.as_str().len().saturating_add(48)).sum::<usize>();
         let trailer_reserve = loss_metadata_bytes.saturating_add(512).min(max_bytes);
         let mut output = BoundedText::new(max_bytes.saturating_sub(trailer_reserve));
-        let _ = writeln!(output, "# algeon_datafusion_query_stats=1");
+        let _ = output.write_str(QUERY_STATS_HEADER_LINE);
         let _ = writeln!(output, "# query_id={}", StableValue(&self.query_id));
         if let Some(correlation_id) = &self.correlation_id {
             let _ = writeln!(output, "# correlation_id={}", StableValue(correlation_id));
@@ -978,10 +982,8 @@ impl ShutdownCaptureSnapshot {
         max_bytes: usize,
     ) -> QueryStatsPayload {
         let mut output = BoundedText::new(max_bytes);
-        let mut lines = vec![
-            "# algeon_datafusion_query_stats=1\n".to_string(),
-            format!("# query_id={}\n", StableValue(&self.query_id)),
-        ];
+        let mut lines =
+            vec![QUERY_STATS_HEADER_LINE.to_string(), format!("# query_id={}\n", StableValue(&self.query_id))];
         if let Some(correlation_id) = &self.correlation_id {
             lines.push(format!("# correlation_id={}\n", StableValue(correlation_id)));
         }
@@ -1235,11 +1237,11 @@ mod tests {
     fn cancelled_attempt_report() -> QueryAttemptReport {
         use query_engine::observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptTimestamps,
-            QUERY_ATTEMPT_REPORT_SCHEMA_V2,
+            QUERY_ATTEMPT_REPORT_SCHEMA,
         };
 
         QueryAttemptReport {
-            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
+            schema: QUERY_ATTEMPT_REPORT_SCHEMA.to_string(),
             attempt_id: AttemptId::mint(),
             query_id: None,
             trace_context: None,

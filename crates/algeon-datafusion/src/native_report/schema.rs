@@ -19,7 +19,6 @@ pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\t
 
 /// Planning-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
-    "schema",
     "query_id",
     "physical_root",
     "physical_shape",
@@ -40,14 +39,11 @@ pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
     "host_datafusion_boundary_count",
     "rejected_before_execution",
 ];
-/// Value of the leading `schema` column of every planning-report TSV row.
-pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA: &str = "algeon_datafusion.native_datafusion_planning_tsv.v2";
 /// Planning-report TSV header. Nested row columns use stable key/value escaping.
-pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "schema\tquery_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution";
 
 /// Execution-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
-    "schema",
     "query_id",
     "physical_root",
     "physical_shape",
@@ -155,11 +151,9 @@ pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "lakehouse_cache_fill_event_snapshot_rows",
     "plan_task_mapping_rows",
 ];
-/// Value of the leading `schema` column of every execution-report TSV row.
-pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA: &str = "algeon_datafusion.native_datafusion_execution_tsv.v2";
 /// Execution-report TSV header. Byte columns are bytes unless a name says otherwise.
 pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = concat!(
-    "schema\tquery_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\t",
+    "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\t",
     "planning_outcome\treason_code\tunsupported_category\tcapability_decision_rows\t",
     "capability_compiled_graphs\tpost_native_plan_root\tpost_native_execution_path\t",
     "native_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution\t",

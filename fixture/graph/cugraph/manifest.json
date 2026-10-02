@@ -1,5 +1,4 @@
 {
-  "schema_version": 1,
   "description": "Local cuGraph datasets and reference outputs prepared from the root-managed cuGraph gitlink.",
   "source_repo": "https://github.com/algeon-dev/cugraph",
   "source_repo_path": "components/cugraph/cugraph",

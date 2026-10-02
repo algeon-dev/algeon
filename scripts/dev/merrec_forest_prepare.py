@@ -216,7 +216,6 @@ def main() -> int:
 
     model_matches = export_error <= EXPORTED_SCORE_TOLERANCE
     report = {
-        "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "task": "predict at least one like in the next chronological window",
         "target": {

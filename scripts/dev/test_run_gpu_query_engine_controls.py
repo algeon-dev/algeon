@@ -66,7 +66,6 @@ class ControlValidatorTests(unittest.TestCase):
         for path in (self.native_library, self.core_library):
             libraries.append({**self._file_snapshot(path), "mapped_path": str(path), "mapped_device": "00:00"})
         snapshot = {
-            "schema_version": 2,
             "source": "/proc/self/maps",
             "binary": self._file_snapshot(CONTROLS.GOODPUT_BINARY),
             "libraries": libraries,

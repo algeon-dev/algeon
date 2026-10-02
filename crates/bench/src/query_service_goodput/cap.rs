@@ -7,7 +7,7 @@ use super::workload::{WorkloadFamily, WorkloadItem};
 /// The workload item shape and the public report schemas deliberately do not
 /// carry this configuration. A manifest can assign caps by sequence, item or
 /// family, with the most specific matching rule winning at arrival time.
-pub(super) const CAP_ASSIGNMENT_SCHEMA: &str = "algeon-goodput-cap-assignment-v1";
+pub(super) const CAP_ASSIGNMENT_SCHEMA: &str = "algeon-goodput-cap-assignment";
 
 const COLUMNS: [&str; 3] = ["kind", "key", "cap_bytes"];
 

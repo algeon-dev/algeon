@@ -31,7 +31,7 @@ A published comparison must therefore quote the calibration values it was judged
 against inline in its evidence, rather than pointing at this directory.
 
 The optional request-cap manifest is an independent TSV input with schema
-`algeon-goodput-cap-assignment-v1` and columns `kind`, `key`, `cap_bytes`. Rows
+`algeon-goodput-cap-assignment` and columns `kind`, `key`, `cap_bytes`. Rows
 may assign `default`, `family`, `item`, or `sequence` caps. Sequence, item,
 family, and default rules are applied in that order for arrivals; calibration
 requires an item, family, or default rule so its cap is unambiguous.

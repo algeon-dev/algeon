@@ -37,9 +37,9 @@ use query_engine::{
     attempt::{AttemptOwner, BeginAttemptRequest},
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     observability::{
-        AttemptDisposition, AttemptQueryId, LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA,
-        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeOperatorStageState,
-        RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
+        AttemptDisposition, AttemptQueryId, LiveRuntimeObservationSnapshot, RuntimeObservationConfig,
+        RuntimeObservationHandle, RuntimeObservationPayload, RuntimeOperatorStageState, RuntimeTerminalOutcome,
+        SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
     },
     runtime::{
         ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
@@ -82,7 +82,6 @@ enum ProbeMode {
 #[derive(Debug, Serialize)]
 struct ProbeVerdict {
     schema: &'static str,
-    version: u32,
     query_id: String,
     profile: String,
     mode: String,
@@ -274,8 +273,7 @@ async fn probe_native_observed(
 
     let stage_summary = summarize_stages(sealed.as_ref(), &live_dir);
     Ok(ProbeVerdict {
-        schema: "algeon_datafusion.clickbench_stage_probe.v1",
-        version: 1,
+        schema: "algeon_datafusion.clickbench_stage_probe",
         query_id: query_id.to_string(),
         profile: profile.profile_name.to_string(),
         mode: "native_observed".to_string(),
@@ -364,8 +362,7 @@ async fn probe_datafusion_collect(
     }
 
     Ok(ProbeVerdict {
-        schema: "algeon_datafusion.clickbench_stage_probe.v1",
-        version: 1,
+        schema: "algeon_datafusion.clickbench_stage_probe",
         query_id: query_id.to_string(),
         profile: profile.profile_name.to_string(),
         mode: "datafusion_collect".to_string(),
@@ -525,7 +522,7 @@ fn write_runtime_observation_jsonl_live(
         "{}",
         serde_json::json!({
             "record_type": "live_marker",
-            "schema": RUNTIME_OBSERVATION_JSONL_SCHEMA,
+            "schema": "algeon_datafusion.clickbench_stage_probe.live_observation",
             "event_count": snapshot.events().len(),
         })
     )?;

@@ -61,10 +61,8 @@ use crate::SINGLE_NODE_RUN_ARTIFACT_SCHEMA;
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const NO_ERROR_CLASS: &str = "none";
-const PROFILE_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_profile.v1";
-const PROFILE_VERSION: u32 = 1;
-const ARTIFACT_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_artifact.v1";
-const ARTIFACT_VERSION: u32 = 1;
+const PROFILE_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_profile";
+const ARTIFACT_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_artifact";
 const USAGE: &str = "flight-sql-stress --config flight-stress-profile.json --out-dir DIR";
 
 const ATTEMPT_COLUMNS: &[&str] = &[
@@ -178,7 +176,6 @@ struct CancelConfig {
 #[serde(deny_unknown_fields)]
 struct FlightStressProfile {
     schema: String,
-    version: u32,
     name: String,
     server: FlightServerProfile,
     statement: FlightStatementProfile,
@@ -244,9 +241,6 @@ impl FlightStressProfile {
     fn validate(&self) -> Result<(), String> {
         if self.schema != PROFILE_SCHEMA {
             return Err(format!("Flight stress profile schema must be {PROFILE_SCHEMA}"));
-        }
-        if self.version != PROFILE_VERSION {
-            return Err(format!("Flight stress profile version must be {PROFILE_VERSION}"));
         }
         if !is_identifier(&self.name) {
             return Err("profile.name must be a 1-64 character ASCII identifier".to_string());
@@ -835,7 +829,6 @@ fn build_summary(config: &StressConfig, records: &[AttemptRecord], wall: Duratio
     let latencies = &reduction.succeeded_latencies_ns;
     serde_json::json!({
         "schema": ARTIFACT_SCHEMA,
-        "version": ARTIFACT_VERSION,
         "profile": {
             "name": config.profile_name,
             "sha256": config.profile_sha256,
@@ -1376,7 +1369,6 @@ mod tests {
     fn profile_json() -> serde_json::Value {
         serde_json::json!({
             "schema": PROFILE_SCHEMA,
-            "version": PROFILE_VERSION,
             "name": "stress-s8-flight-sf1",
             "server": {
                 "url": "http://flight.example.com:5050",

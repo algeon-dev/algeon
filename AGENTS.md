@@ -218,15 +218,16 @@ uses the same commands: `cargo nt -E 'package(bench)'`.
 ## Public contracts
 
 - Treat reports, TSV families, metrics, and native execution-plan wrappers as
-  explicit contracts. Before publication, change a contract atomically with all
-  workspace consumers and fixtures; do not retain deprecated paths or fabricate
-  values for removed behavior. Version persisted report and TSV schemas when
-  fields, units, or defined value semantics change. Each changed TSV family
-  carries an explicit schema field and a matching header constant. Rename a
-  metric in `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES` when its meaning or unit
-  changes; preserve its name otherwise. Internal Rust refactors and fixes that
-  restore documented semantics do not by themselves require a wire-schema
-  version change.
+  explicit contracts. Algeon has no external consumers before its first
+  release, so each output format has exactly one shape: change it in place,
+  atomically with all workspace consumers, goldens, and fixtures. Do not add or
+  bump version numbers, keep an old shape beside the new one, branch a reader
+  on a version, or fabricate values for removed behavior. A format identifier
+  names the format only: no `.vN`, `_vN`, or `-vN` suffix, no integer `version`
+  or `schema_version` field, no `=N` header value. Fingerprint domain tags are
+  hash inputs, not formats. Name a metric in
+  `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES` after its meaning and unit, and
+  rename it when they change.
 - TSV, DataFusion metrics, and `QueryMetrics` are projections of the runtime
   observation snapshot, not a second event store.
 - Preserve workload environment variables and item shapes.

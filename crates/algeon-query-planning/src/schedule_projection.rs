@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize, de};
 
 use crate::util::StableFnv1a64;
 
-pub const COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1: &str = "query_engine.composed_schedule_projection.v1";
+pub const COMPOSED_SCHEDULE_PROJECTION_SCHEMA: &str = "query_engine.composed_schedule_projection";
 
 static NEXT_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -106,7 +106,7 @@ impl AttemptComposedScheduleProjection {
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn for_test(device_ordinal: usize, grant_id: u64, grant_bytes: u64) -> Self {
         let mut projection = Self {
-            schema: COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1.to_owned(),
+            schema: COMPOSED_SCHEDULE_PROJECTION_SCHEMA.to_owned(),
             attempt_id: AttemptId::mint(),
             device_ordinal,
             grant_id,
@@ -131,7 +131,7 @@ impl AttemptComposedScheduleProjection {
     }
 
     pub fn fingerprint_matches_contents(&self) -> bool {
-        self.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1
+        self.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA
             && self.fingerprint
                 == Self::fingerprint_for(
                     self.attempt_wide_fixed_bytes,
@@ -152,7 +152,7 @@ impl AttemptComposedScheduleProjection {
         complete_peak_bytes: u64,
     ) -> String {
         let mut hasher = StableFnv1a64::new();
-        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1);
+        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA);
         hasher.update_field(&attempt_wide_fixed_bytes.to_string());
         hasher.update_field(&producer_occurrences.len().to_string());
         for occurrence in producer_occurrences {

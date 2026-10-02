@@ -249,7 +249,7 @@ fn concurrent_authorized_terminal_race_returns_one_winner() {
 }
 
 #[test]
-fn jsonl_is_schema_versioned_ordered_and_round_trips() {
+fn jsonl_is_schema_labeled_ordered_and_round_trips() {
     let (session, clock) = test_session(RuntimeObservationConfig::bounded(16, LARGE_BYTE_LIMIT));
     let execution = PlanExecutionId::new("execution-1");
     session.record_topology(RuntimeObservationRecordClass::PlanNode, || {
@@ -324,7 +324,7 @@ fn jsonl_is_schema_versioned_ordered_and_round_trips() {
 }
 
 #[test]
-fn jsonl_v2_matches_fixed_golden_bytes() {
+fn jsonl_matches_fixed_golden_bytes() {
     let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1_234)));
     let session = RuntimeObservationSession::with_clock(
         "golden-query",
@@ -389,8 +389,8 @@ fn jsonl_v2_matches_fixed_golden_bytes() {
 
     let mut actual = Vec::new();
     write_runtime_observation_jsonl(&snapshot, &mut actual).expect("golden JSONL exports");
-    let expected = include_bytes!("../fixtures/runtime_observation_v2.jsonl");
-    assert_eq!(actual.as_slice(), expected, "JSONL v2 bytes changed:\n{}", String::from_utf8_lossy(&actual));
+    let expected = include_bytes!("../fixtures/runtime_observation.jsonl");
+    assert_eq!(actual.as_slice(), expected, "JSONL bytes changed:\n{}", String::from_utf8_lossy(&actual));
     assert!(actual.ends_with(b"\n"));
 }
 

@@ -559,7 +559,6 @@ pub struct ParityReference {
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct ParityManifest {
-    pub schema_version: u32,
     pub source_repo: String,
     pub license: String,
     pub datasets: Vec<ParityDataset>,
@@ -578,7 +577,6 @@ impl ParityManifest {
 pub enum ParityManifestError {
     MissingManifest { path: PathBuf, source: std::io::Error },
     InvalidManifest { path: PathBuf, source: serde_json::Error },
-    UnsupportedSchema { path: PathBuf, version: u32 },
 }
 
 impl std::fmt::Display for ParityManifestError {
@@ -590,11 +588,6 @@ impl std::fmt::Display for ParityManifestError {
             Self::InvalidManifest { path, source } => {
                 write!(f, "cuGraph manifest at {} could not be parsed: {source}", path.display())
             },
-            Self::UnsupportedSchema { path, version } => write!(
-                f,
-                "cuGraph manifest at {} has unexpected schema_version={version}; harness understands version 1",
-                path.display()
-            ),
         }
     }
 }
@@ -604,7 +597,6 @@ impl std::error::Error for ParityManifestError {
         match self {
             Self::MissingManifest { source, .. } => Some(source),
             Self::InvalidManifest { source, .. } => Some(source),
-            Self::UnsupportedSchema { .. } => None,
         }
     }
 }
@@ -633,10 +625,6 @@ pub fn load_manifest(data_root: &Path) -> Result<ParityManifest, ParityManifestE
         .map_err(|source| ParityManifestError::MissingManifest { path: manifest_path.clone(), source })?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|source| ParityManifestError::InvalidManifest { path: manifest_path.clone(), source })?;
-    let schema_version = value.get("schema_version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    if schema_version != 1 {
-        return Err(ParityManifestError::UnsupportedSchema { path: manifest_path, version: schema_version });
-    }
     let datasets = value
         .get("datasets")
         .and_then(|v| v.as_array())
@@ -652,7 +640,6 @@ pub fn load_manifest(data_root: &Path) -> Result<ParityManifest, ParityManifestE
         .map(parity_reference_from_json)
         .collect::<Vec<_>>();
     Ok(ParityManifest {
-        schema_version,
         source_repo: value.get("source_repo").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         license: value.get("license").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         datasets,

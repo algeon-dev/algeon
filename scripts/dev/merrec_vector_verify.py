@@ -886,7 +886,6 @@ def main() -> int:
         for path in provenance_paths
     }
     report = {
-        "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "validator": str(Path(__file__).relative_to(ROOT)),
         "validator_sha256": sha256_file(Path(__file__).resolve()),

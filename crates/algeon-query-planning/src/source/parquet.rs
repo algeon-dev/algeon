@@ -43,7 +43,7 @@ pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__algeon_native_zero_column_row_coun
 /// The producer must derive the value from the same edge artifact it writes.
 /// Consumers only use it when the native source still represents the complete,
 /// unfiltered file rowset; it is deliberately not a query/session override.
-pub const GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str = "algeon.graph.vertex_upper_bound.v1";
+pub const GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str = "algeon.graph.vertex_upper_bound";
 
 /// Parquet-footer key for a complete, simple directed edge rowset.
 ///
@@ -52,8 +52,7 @@ pub const GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str = "algeon.graph.ve
 /// non-null and each ordered endpoint pair appears exactly once. Consumers use
 /// it only for one complete, unfiltered file; a per-file proof cannot establish
 /// uniqueness across a multi-file source.
-pub const GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str =
-    "algeon.graph.simple_directed_edge_topology.v1";
+pub const GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str = "algeon.graph.simple_directed_edge_topology";
 
 /// Footer-proven topology needed to skip Python-compatible edge normalization.
 ///

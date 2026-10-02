@@ -86,8 +86,6 @@ def source_contracts() -> None:
 
 def surface_inventory(snapshot_dir: Path, policy_path: Path = POLICY) -> None:
     policy = tomllib.loads(policy_path.read_text())
-    if policy.get("version") != 1:
-        fail(f"{policy_path} must declare version = 1")
 
     surfaces = policy.get("surfaces")
     if not isinstance(surfaces, dict):

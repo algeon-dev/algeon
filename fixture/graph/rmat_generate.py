@@ -44,8 +44,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-SCHEMA_VERSION = 1
-
 EDGE_SCHEMA = pa.schema(
     [
         pa.field("src", pa.int64(), nullable=False),
@@ -230,7 +228,6 @@ def main() -> int:
         digest = sha256_file(edges_path)
 
         manifest = {
-            "schema_version": SCHEMA_VERSION,
             "command": shlex.join(sys.argv),
             "scale": args.scale,
             "edge_factor": args.edge_factor,

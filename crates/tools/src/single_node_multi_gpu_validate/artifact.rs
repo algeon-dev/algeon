@@ -187,7 +187,7 @@ pub(super) struct ValidationExecution {
     /// Machine-readable, closed-vocabulary reasons why composed evidence
     /// cannot qualify. Empty is the only qualifying composed state.
     pub(super) qualification_failures: Vec<QualificationFailure>,
-    /// Independent versioned evidence for every composed graph attempt the
+    /// Independent evidence for every composed graph attempt the
     /// runner observed. Each row originates in the sealed engine report.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) composed_schedules: Vec<ComposedScheduleArtifact>,
@@ -294,13 +294,12 @@ pub(super) struct QualificationFailure {
     pub(super) attempt_id: Option<String>,
 }
 
-/// Versioned composed-schedule evidence. Every byte field is copied from one
+/// Composed-schedule evidence. Every byte field is copied from one
 /// sealed engine attempt report; telemetry supplies only independent physical
 /// witnesses and is never used to derive a schedule value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct ComposedScheduleArtifact {
     pub(super) schema: &'static str,
-    pub(super) version: u32,
     pub(super) attempt_id: String,
     pub(super) selected_ordinal: usize,
     pub(super) grant_id: u64,
@@ -332,7 +331,6 @@ impl ComposedScheduleArtifact {
     pub(super) fn test_complete() -> Self {
         Self {
             schema: super::COMPOSED_SCHEDULE_SCHEMA,
-            version: super::COMPOSED_SCHEDULE_VERSION,
             attempt_id: "attempt-1".to_string(),
             selected_ordinal: 0,
             grant_id: 1,
@@ -367,12 +365,6 @@ impl ComposedScheduleArtifact {
 
     fn failures(&self) -> Vec<QualificationFailure> {
         let mut failures = Vec::new();
-        if self.schema != super::COMPOSED_SCHEDULE_SCHEMA || self.version != super::COMPOSED_SCHEDULE_VERSION {
-            failures.push(QualificationFailure {
-                code: "composed_schedule_version_mismatch",
-                attempt_id: Some(self.attempt_id.clone()),
-            });
-        }
         if self.attempt_id.is_empty() || self.grant_id == 0 {
             failures.push(QualificationFailure {
                 code: "composed_schedule_identity_missing",
@@ -1006,7 +998,7 @@ pub(super) enum BackendCloseOutcome {
     Failed { failure: BackendCloseFailure },
 }
 
-/// CPU-only, versioned projection of the engine close snapshot.
+/// CPU-only projection of the engine close snapshot.
 ///
 /// The runner artifact must remain testable without linking the optional
 /// GPU/engine dependency. `measure.rs` copies this bounded public snapshot at
@@ -1313,12 +1305,11 @@ mod composed_schedule_tests {
     use super::ComposedScheduleArtifact;
 
     #[test]
-    fn complete_schedule_validates_and_serializes_as_versioned_evidence() {
+    fn complete_schedule_validates_and_serializes_as_evidence() {
         let schedule = ComposedScheduleArtifact::test_complete();
         assert!(schedule.failures().is_empty());
         let value: Value = serde_json::to_value(schedule).unwrap();
-        assert_eq!(value["schema"], "algeon_tools.single_node_multi_gpu.composed_schedule.v1");
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["schema"], "algeon_tools.single_node_multi_gpu.composed_schedule");
         assert_eq!(value["occurrences"].as_array().unwrap().len(), 2);
         assert_eq!(value["occurrences"][0]["order"], 0);
         assert_eq!(value["consumer_structural_scope"], "scope-consumer");

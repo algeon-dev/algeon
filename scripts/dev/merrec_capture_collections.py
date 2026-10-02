@@ -122,7 +122,6 @@ def main() -> None:
         raise ValueError("The saved CPU collection assessment is incomplete")
 
     capture = {
-        "schema_version": 1,
         "query": {
             "name": record["name"],
             "query_id": record["query_id"],

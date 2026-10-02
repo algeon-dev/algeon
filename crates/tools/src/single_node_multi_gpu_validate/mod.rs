@@ -1,4 +1,4 @@
-//! Versioned production-validation run artifacts.
+//! Production-validation run artifacts.
 //!
 //! The dry run, read-only fixture preflight, and measured public-API run are
 //! separate modes. Config parsing, arrival planning, aggregation, and artifact
@@ -33,11 +33,10 @@ use provenance::Provenance;
 
 use crate::ToolResult;
 
-const RUN_PROFILE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_profile.v1";
-const RUN_PROFILE_VERSION: u32 = 1;
-const COMPOSED_SCHEDULE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.composed_schedule.v1";
-const COMPOSED_SCHEDULE_VERSION: u32 = 1;
-const REDACTION_POLICY: &str = "algeon_tools.single_node_multi_gpu.redaction.v1";
+const RUN_PROFILE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_profile";
+#[cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
+const COMPOSED_SCHEDULE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.composed_schedule";
+const REDACTION_POLICY: &str = "algeon_tools.single_node_multi_gpu.redaction";
 const ARTIFACT_FILE_NAME: &str = "run-artifact.json";
 const MAX_TOOL_VERSION_BYTES: usize = 16 * 1024;
 

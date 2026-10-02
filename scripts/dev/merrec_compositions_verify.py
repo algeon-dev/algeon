@@ -532,7 +532,6 @@ def main() -> int:
     if missing_sources:
         add_check(checks, "cpu_reference_inputs", "pending", {"missing_files": missing_sources})
         report = {
-            "schema_version": 1,
             "checked_at_utc": datetime.now(timezone.utc).isoformat(),
             "validator": "scripts/dev/merrec_compositions_verify.py",
             "overall_status": "pending",
@@ -661,7 +660,6 @@ def main() -> int:
         str(path.relative_to(ROOT)) for path in output_paths.values() if not path.is_file()
     ]
     report = {
-        "schema_version": 1,
         "checked_at_utc": datetime.now(timezone.utc).isoformat(),
         "validator": "scripts/dev/merrec_compositions_verify.py",
         "validator_sha256": sha256_file(Path(__file__).resolve()),

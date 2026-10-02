@@ -1,4 +1,4 @@
-//! Versioned run-profile parsing and fail-closed validation.
+//! Run-profile parsing and fail-closed validation.
 
 use std::{
     collections::BTreeSet,
@@ -9,7 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{RUN_PROFILE_SCHEMA, RUN_PROFILE_VERSION, redact::ensure_redacted_json, util::sha256_bytes};
+use super::{RUN_PROFILE_SCHEMA, redact::ensure_redacted_json, util::sha256_bytes};
 use crate::ToolResult;
 
 /// Upper bound on attempts a single profile may schedule. It keeps the
@@ -17,12 +17,11 @@ use crate::ToolResult;
 #[cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 pub(super) const MAX_PLANNED_ATTEMPTS: usize = 100_000;
 
-/// The v1 profile fixes every top-level section the runner consumes.
+/// The profile fixes every top-level section the runner consumes.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RunProfile {
     pub(super) schema: String,
-    pub(super) version: u32,
     pub(super) name: String,
     /// Extra bounded time after the warmup-plus-measurement submission window
     /// for already-admitted attempts to reach a native safe boundary, release
@@ -708,9 +707,6 @@ impl RunProfile {
     pub(super) fn validate(&self) -> ToolResult<()> {
         if self.schema != RUN_PROFILE_SCHEMA {
             return Err(format!("run profile schema must be {RUN_PROFILE_SCHEMA}").into());
-        }
-        if self.version != RUN_PROFILE_VERSION {
-            return Err(format!("run profile version must be {RUN_PROFILE_VERSION}").into());
         }
         if !is_profile_name(&self.name) {
             return Err(

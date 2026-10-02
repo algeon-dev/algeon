@@ -59,7 +59,7 @@ pub fn estimate_compiled_pipeline(plan: &QueryPlan, pipeline: &CompiledPipeline)
         .iter()
         .map(|task| match task.kind() {
             PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
-                ShadowBytes::estimated(0, "source_import_retained_allocation_model_v1")
+                ShadowBytes::estimated(0, "source_import_retained_allocation_model")
             },
             kind => ShadowBytes::unknown(format!("component_workspace_model_unavailable:{}", kind.as_str())),
         })
@@ -77,9 +77,7 @@ pub fn estimate_compiled_pipeline(plan: &QueryPlan, pipeline: &CompiledPipeline)
                     },
                     SourceNode::LiteralBatch(source) => {
                         let bytes = match estimate_record_batches_import_required_budget_bytes(&source.batches) {
-                            Ok(bytes) => {
-                                ShadowBytes::estimated(bytes as u64, "cudf_arrow_import_aligned_allocations_v1")
-                            },
+                            Ok(bytes) => ShadowBytes::estimated(bytes as u64, "cudf_arrow_import_aligned_allocations"),
                             Err(error) => ShadowBytes::unknown(format!("cudf_arrow_import_model:{}", error.code())),
                         };
                         ShadowResourceModel { borrowed: false, bytes }
