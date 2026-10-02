@@ -1,4 +1,4 @@
-//! The versioned run artifact and its atomic, redaction-checked writer.
+//! The run artifact and its atomic, redaction-checked writer.
 //!
 //! The measured-run sections are only constructed by the measured run, so the
 //! CPU-only feature reaches them from tests alone.
@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{
-    REDACTION_POLICY, RUN_ARTIFACT_SCHEMA, RUN_ARTIFACT_VERSION,
+    REDACTION_POLICY,
     aggregate::{
         ClauseStatus, DomainExhaustionEvidence, GraphClaimCalibrationEvidence, MeasuredAggregate,
         PhysicalAllocatorPressureEvidence, QuarantineCyclesEvidence, StepAggregate,
@@ -33,12 +33,11 @@ use super::{
     util::write_new_artifact,
     workload::SelectedQueryDescriptor,
 };
-use crate::ToolResult;
+use crate::{SINGLE_NODE_RUN_ARTIFACT_SCHEMA, ToolResult};
 
 #[derive(Debug, Serialize)]
 pub(super) struct RunArtifact {
     pub(super) schema: &'static str,
-    pub(super) version: u32,
     pub(super) status: &'static str,
     pub(super) created_unix_ms: u128,
     pub(super) profile: ArtifactProfile,
@@ -141,8 +140,7 @@ impl RunArtifact {
         fixtures: Vec<FixturePreflightArtifact>,
     ) -> Self {
         Self {
-            schema: RUN_ARTIFACT_SCHEMA,
-            version: RUN_ARTIFACT_VERSION,
+            schema: SINGLE_NODE_RUN_ARTIFACT_SCHEMA,
             status,
             created_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis()),
             profile: ArtifactProfile { profile, sha256: config_sha256 },

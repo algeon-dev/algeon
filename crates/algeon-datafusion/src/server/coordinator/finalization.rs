@@ -242,8 +242,12 @@ impl QueryCoordinator {
                     .is_some_and(|footer| footer.truncated || footer.degraded)
                     .then_some(RetainedUnavailableReason::CaptureTruncated)
             });
-        let control =
-            sealed_runtime_control(inputs.key.query_id(), inputs.attempt_report.as_deref(), incomplete_reason);
+        let control = sealed_runtime_control(
+            inputs.key.query_id(),
+            inputs.attempt_report.as_deref(),
+            snapshot.is_some(),
+            incomplete_reason,
+        );
         let jsonl = match &snapshot {
             Some(snapshot) => {
                 let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(control.len() as u64) else {
@@ -298,6 +302,7 @@ impl QueryCoordinator {
             let control = sealed_runtime_control(
                 inputs.key.query_id(),
                 inputs.attempt_report.as_deref(),
+                jsonl.is_some(),
                 Some(RetainedUnavailableReason::CaptureTruncated),
             );
             let Some(recomposed) = compose_terminal_artifact(control, jsonl, inputs.artifact_max_bytes, |remaining| {

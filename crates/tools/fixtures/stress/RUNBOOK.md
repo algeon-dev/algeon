@@ -493,7 +493,8 @@ S8 needs the same host, a release `algeon_server` built with
 `cugraph`, and the named TPC-H fixture. The Flight profile records the
 driver, SQL label, warmup/measurement window, connection mode, server TOML
 companion, and the exact in-process artifact/cell. `flight-sql-stress` refuses
-to start unless that artifact is schema v2, measured, selects the same query,
+to start unless that artifact is a measured single-node multi-GPU run artifact
+(`algeon_tools.single_node_multi_gpu.run_artifact`), selects the same query,
 and has the matching load cell. It writes only hashes and redacted projections;
 raw SQL and server configuration are not copied to `summary.json`.
 

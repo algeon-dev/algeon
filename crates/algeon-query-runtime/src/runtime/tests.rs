@@ -1,4 +1,5 @@
 use std::{
+    fs,
     sync::{Arc, Barrier},
     time::Duration,
 };
@@ -178,53 +179,15 @@ fn snapshot_json_shape(value: &Value) -> Value {
     }
 }
 
-/// Each snapshot's shape golden lives under the version of that snapshot's
-/// JSON shape.
 fn p6_snapshot_json_golden(name: &str) -> Value {
-    let fixture = match name {
-        "backend_metrics_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v2/backend_metrics_snapshot.json"
-        )),
-        "query_service_admission_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/query_service_admission_snapshot.json"
-        )),
-        "query_service_device_admission_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/query_service_device_admission_snapshot.json"
-        )),
-        "device_ledger_report" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/device_ledger_report.json"
-        )),
-        "device_memory_failure_report" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/device_memory_failure_report.json"
-        )),
-        "device_telemetry_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/device_telemetry_snapshot.json"
-        )),
-        "gpu_execution_pool_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/gpu_execution_pool_snapshot.json"
-        )),
-        "gpu_execution_query_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/gpu_execution_query_snapshot.json"
-        )),
-        "gpu_backend_close_snapshot" => include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/gpu_backend_close_snapshot.json"
-        )),
-        _ => panic!("missing backend snapshot JSON golden: {name}"),
-    };
-    serde_json::from_str(fixture).expect("versioned backend snapshot JSON golden is valid")
+    let path = format!("{}/tests/fixtures/backend_snapshot_json/{name}.json", env!("CARGO_MANIFEST_DIR"));
+    let fixture = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("missing backend snapshot JSON golden {path}: {error}"));
+    serde_json::from_str(&fixture).expect("backend snapshot JSON golden is valid")
 }
 
 #[test]
-fn p6_snapshot_json_shapes_match_versioned_goldens() {
+fn p6_snapshot_json_shapes_match_goldens() {
     for (name, value) in p6_snapshot_json_samples() {
         assert_eq!(
             snapshot_json_shape(&value),

@@ -20,9 +20,11 @@ use super::{
     validation::{parse_u64_field, tsv_section, tsv_section_single_row},
 };
 
-pub(super) const CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control.v1";
-pub(super) const CONTROL_SCHEMA_V2: &str = "algeon_datafusion.query_runtime_artifact.control.v2";
-pub(super) const CONTROL_SCHEMA_V3: &str = "algeon_datafusion.query_runtime_artifact.control.v3";
+pub(super) const CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control";
+/// Every runtime artifact control carries exactly these fields, whatever its
+/// state.
+const CONTROL_FIELDS: [&str; 8] =
+    ["schema", "query_id", "state", "retryable", "reason", "incomplete", "runtime_jsonl_follows", "attempt"];
 pub(super) const QUERY_ID_METADATA: &str = "x-algeon-query-id";
 pub(super) const CORRELATION_HEADER: &str = "x-algeon-correlation-id";
 pub(super) const FLIGHT_MAX_ENCODED_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -325,21 +327,23 @@ pub(super) fn artifact_charge(runtime_wire_bytes: usize, stats_bytes: usize) -> 
         .ok_or_else(|| "runtime artifact exact byte charge overflowed".into())
 }
 
-/// A sealed artifact with an attempt projection uses control v2; every other
-/// state keeps v1.
-fn is_known_control_schema(control: &Value) -> bool {
-    matches!(
-        (control.get("schema").and_then(Value::as_str), control.get("version").and_then(Value::as_u64)),
-        (Some(CONTROL_SCHEMA), Some(1)) | (Some(CONTROL_SCHEMA_V2), Some(2)) | (Some(CONTROL_SCHEMA_V3), Some(3))
-    )
+fn parse_control(query_id: &str, frames: &[Vec<u8>]) -> E2eResult<Value> {
+    let first = frames.first().ok_or("runtime artifact action returned no frames")?;
+    let control: Value = serde_json::from_slice(first)?;
+    let has_control_shape = control.as_object().is_some_and(|fields| {
+        fields.len() == CONTROL_FIELDS.len() && CONTROL_FIELDS.iter().all(|field| fields.contains_key(*field))
+    });
+    if !has_control_shape
+        || control.get("schema").and_then(Value::as_str) != Some(CONTROL_SCHEMA)
+        || control.get("query_id").and_then(Value::as_str) != Some(query_id)
+    {
+        return Err(format!("invalid runtime artifact control for {query_id}: {control}").into());
+    }
+    Ok(control)
 }
 
 pub(super) fn control_state(query_id: &str, frames: &[Vec<u8>]) -> E2eResult<String> {
-    let first = frames.first().ok_or("runtime artifact action returned no frames")?;
-    let control: Value = serde_json::from_slice(first)?;
-    if !is_known_control_schema(&control) || control.get("query_id").and_then(Value::as_str) != Some(query_id) {
-        return Err(format!("invalid runtime artifact control for {query_id}: {control}").into());
-    }
+    let control = parse_control(query_id, frames)?;
     Ok(control
         .get("state")
         .and_then(Value::as_str)
@@ -381,12 +385,7 @@ pub(super) fn parse_artifact(
     expected_limits: Option<&ObservabilityLimits>,
 ) -> E2eResult<ArtifactEvidence> {
     let wire_bytes = frames.iter().map(Vec::len).sum();
-    let control_frame = frames.first().ok_or("runtime artifact action returned no frames")?;
-    let control: Value = serde_json::from_slice(control_frame)?;
-    let control_schema = control.get("schema").and_then(Value::as_str);
-    if !is_known_control_schema(&control) || control.get("query_id").and_then(Value::as_str) != Some(query_id) {
-        return Err(format!("invalid runtime artifact control frame for {query_id}: {control}").into());
-    }
+    let control = parse_control(query_id, frames)?;
     let state = control
         .get("state")
         .and_then(Value::as_str)
@@ -396,13 +395,14 @@ pub(super) fn parse_artifact(
         .and_then(Value::as_bool)
         .ok_or_else(|| format!("runtime artifact control lacks retryable: {control}"))?;
     let reason = control.get("reason").and_then(Value::as_str).map(str::to_string);
-    // A v3 control belongs to a statement without a runtime observation, so
-    // even a sealed one has no runtime JSONL frame.
-    let without_observation = control_schema == Some(CONTROL_SCHEMA_V3);
-    if without_observation && control.get("runtime_observation").and_then(Value::as_str) != Some("none") {
-        return Err(format!("v3 runtime artifact control lacks runtime_observation=none: {control}").into());
+    let runtime_jsonl_follows = control
+        .get("runtime_jsonl_follows")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("runtime artifact control lacks runtime_jsonl_follows: {control}"))?;
+    if runtime_jsonl_follows && state != "sealed" {
+        return Err(format!("runtime artifact {query_id} state {state} announces a runtime JSONL frame").into());
     }
-    let expected_frame_count = if state == "sealed" && !without_observation { 2 } else { 1 };
+    let expected_frame_count = 1 + usize::from(runtime_jsonl_follows);
     if frames.len() != expected_frame_count {
         return Err(format!(
             "runtime artifact {query_id} state {state} returned {} frames, expected {expected_frame_count}",
@@ -423,24 +423,29 @@ pub(super) fn parse_artifact(
     if state == "unavailable" && reason.is_none() {
         return Err(format!("runtime artifact {query_id} unavailable control lacks reason").into());
     }
-    if control_schema == Some(CONTROL_SCHEMA_V2) && state == "sealed" {
-        let attempt = control
-            .get("attempt")
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("sealed v2 runtime artifact control lacks attempt projection: {control}"))?;
-        let retry_advice = attempt
-            .get("retry_advice")
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("sealed v2 runtime artifact control lacks retry advice: {control}"))?;
-        if retry_advice.get("recovery").and_then(Value::as_str).is_none()
-            || retry_advice.get("prerequisite").and_then(Value::as_str).is_none()
-        {
-            return Err(format!("sealed v2 runtime artifact control has incomplete retry advice: {control}").into());
-        }
+    // A runtime observation belongs to an attempt, so a control followed by
+    // its JSONL frame always projects that attempt's sealed report.
+    match control.get("attempt") {
+        Some(Value::Null) if runtime_jsonl_follows => {
+            return Err(format!("sealed runtime artifact control lacks attempt projection: {control}").into());
+        },
+        Some(Value::Null) => {},
+        Some(Value::Object(attempt)) => {
+            let retry_advice = attempt
+                .get("retry_advice")
+                .and_then(Value::as_object)
+                .ok_or_else(|| format!("runtime artifact control attempt lacks retry advice: {control}"))?;
+            if retry_advice.get("recovery").and_then(Value::as_str).is_none()
+                || retry_advice.get("prerequisite").and_then(Value::as_str).is_none()
+            {
+                return Err(format!("runtime artifact control attempt has incomplete retry advice: {control}").into());
+            }
+        },
+        _ => return Err(format!("runtime artifact control attempt is not an object or null: {control}").into()),
     }
-    if state != "sealed" || without_observation {
+    if !runtime_jsonl_follows {
         if expected_terminal.is_some() {
-            let observation = if without_observation { " without a runtime observation" } else { "" };
+            let observation = if state == "sealed" { " without a runtime observation" } else { "" };
             return Err(format!("runtime artifact {query_id} is {state}{observation}, expected sealed terminal").into());
         }
         return Ok(ArtifactEvidence {

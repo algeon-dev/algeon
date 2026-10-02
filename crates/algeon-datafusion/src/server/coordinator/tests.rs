@@ -27,9 +27,8 @@ use super::{
     super::observability::{CapturedError, QueryStatsPayload},
     artifacts::{
         ArtifactEgressLimiter, FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult,
-        LiveStatsWaiter, QUERY_STATS_HEADER_LINE, RUNTIME_ARTIFACT_CONTROL_SCHEMA, RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2,
-        RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3, compose_terminal_artifact, incomplete_runtime_control,
-        install_coordinator_render_probe,
+        LiveStatsWaiter, QUERY_STATS_HEADER_LINE, RUNTIME_ARTIFACT_CONTROL_SCHEMA, compose_terminal_artifact,
+        incomplete_runtime_control, install_coordinator_render_probe,
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,
@@ -187,9 +186,9 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
 
     let (control, jsonl) = coordinator.artifact_frames(&query_id).expect("retained attempt artifact");
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
-    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2);
-    assert_eq!(control["version"], 2);
+    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA);
     assert_eq!(control["state"], "sealed");
+    assert_eq!(control["runtime_jsonl_follows"], true);
     assert_eq!(control["retryable"], false, "delivery retryability remains distinct from attempt advice");
     assert_eq!(control["attempt"]["attempt_id"], report.attempt_id.to_string());
     assert_eq!(control["attempt"]["retry_advice"]["recovery"], "no_retry_needed");
@@ -421,7 +420,9 @@ fn execution_tsv_projects_the_sealed_attempt_fact_matrix() {
 }
 
 /// A statement with no attempt, such as a metadata query, has no runtime
-/// observation: it retains its captured stats and a sealed control frame.
+/// observation: it retains its captured stats and a sealed control frame. That
+/// control has the shape of an attempt-owned statement's sealed control; only
+/// the values state that no JSONL frame follows and no attempt exists.
 #[test]
 fn coordinator_only_statement_retains_stats_without_runtime_observation() {
     let coordinator = QueryCoordinator::new(config());
@@ -430,14 +431,40 @@ fn coordinator_only_statement_retains_stats_without_runtime_observation() {
     let (control, jsonl) = coordinator.artifact_frames("coordinator-only").expect("runtime artifact retained");
     assert!(jsonl.is_none(), "a coordinator-only statement has no runtime observation");
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
-    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3);
-    assert_eq!(control["version"], 3);
-    assert_eq!(control["state"], "sealed");
-    assert_eq!(control["runtime_observation"], "none", "the control states that no runtime observation exists");
-    assert!(control["reason"].is_null(), "{control}");
     let stats = String::from_utf8(coordinator.query_stats("coordinator-only").unwrap().to_vec()).unwrap();
     assert!(stats.contains("# outcome=succeeded\n"), "{stats}");
     assert!(!stats.contains("unavailable_reason"), "{stats}");
+
+    let attempt_coordinator = QueryCoordinator::new(config());
+    let planning = attempt_coordinator
+        .register_with_id_with_attempt_observation(
+            "attempt-owned",
+            "select 1",
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("attempt-owned query registers");
+    let (report, snapshot) = sealed_attempt_report_snapshot(cpu_attempt_report("attempt-owned"));
+    attempt_coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
+        .expect("sealed attempt report attaches to its exact coordinator generation");
+    planning.into_execution().expect("planning promotes to execution").succeed();
+    let (attempt_control, attempt_jsonl) =
+        attempt_coordinator.artifact_frames("attempt-owned").expect("attempt runtime artifact retained");
+    assert!(attempt_jsonl.is_some(), "an attempt-owned statement retains its runtime observation");
+    let attempt_control: serde_json::Value = serde_json::from_slice(&attempt_control).unwrap();
+    let fields = |control: &serde_json::Value| {
+        control.as_object().expect("control frame is a JSON object").keys().cloned().collect::<Vec<_>>()
+    };
+    assert_eq!(fields(&control), fields(&attempt_control), "{control} {attempt_control}");
+    for (control, runtime_jsonl_follows) in [(&control, false), (&attempt_control, true)] {
+        assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA, "{control}");
+        assert_eq!(control["state"], "sealed", "{control}");
+        assert_eq!(control["runtime_jsonl_follows"], runtime_jsonl_follows, "{control}");
+        assert!(control["reason"].is_null(), "{control}");
+    }
+    assert!(control["attempt"].is_null(), "a coordinator-only statement has no attempt: {control}");
+    assert!(attempt_control["attempt"].is_object(), "{attempt_control}");
 }
 
 #[test]
@@ -1472,7 +1499,7 @@ fn artifact_frames_preserve_control_schema_escape_ids_and_never_expose_sql() {
     assert!(jsonl.is_none());
     let pending: serde_json::Value = serde_json::from_slice(&pending).unwrap();
     assert_eq!(pending["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA);
-    assert_eq!(pending["version"], 1);
+    assert_eq!(pending["runtime_jsonl_follows"], false);
     assert_eq!(pending["query_id"], query_id);
     assert_eq!(pending["state"], "pending");
     assert_eq!(pending["retryable"], true);
@@ -2013,7 +2040,7 @@ fn artifact_egress_lease_bounds_concurrency_and_releases_on_response_drop() {
 }
 
 #[test]
-fn retained_unavailable_runtime_artifact_v2_keeps_attempt_projection_when_capture_truncates() {
+fn retained_unavailable_runtime_artifact_keeps_attempt_projection_when_capture_truncates() {
     let coordinator = QueryCoordinator::new(config());
     let planning = coordinator
         .register_with_id_with_attempt_observation(
@@ -2043,9 +2070,9 @@ fn retained_unavailable_runtime_artifact_v2_keeps_attempt_projection_when_captur
 
     let (control, jsonl) = coordinator.artifact_frames("bounded-capture").unwrap();
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
-    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2);
-    assert_eq!(control["version"], 2);
+    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA);
     assert_eq!(control["state"], "unavailable");
+    assert_eq!(control["runtime_jsonl_follows"], false);
     assert_eq!(control["reason"], "capture_budget");
     assert_eq!(control["attempt"]["attempt_id"], report.attempt_id.to_string());
     assert_eq!(control["attempt"]["retry_advice"]["recovery"], "do_not_retry");

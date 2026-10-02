@@ -35,8 +35,6 @@ use crate::ToolResult;
 
 const RUN_PROFILE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_profile.v1";
 const RUN_PROFILE_VERSION: u32 = 1;
-const RUN_ARTIFACT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_artifact.v8";
-const RUN_ARTIFACT_VERSION: u32 = 8;
 const COMPOSED_SCHEDULE_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.composed_schedule.v1";
 const COMPOSED_SCHEDULE_VERSION: u32 = 1;
 const REDACTION_POLICY: &str = "algeon_tools.single_node_multi_gpu.redaction.v1";
