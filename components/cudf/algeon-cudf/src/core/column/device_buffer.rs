@@ -152,7 +152,8 @@ impl fmt::Debug for ValidatedInt64DeviceBufferRange<'_> {
 // SAFETY: DeviceBuffer owns a GPU device allocation via an opaque C++ handle.
 // The handle is not thread-local. Send is safe because ownership transfer
 // between threads is supported by the CUDA runtime. Sync is safe because all
-// methods that observe state create independent FFI queries.
+// shared methods do not mutate the allocation; host copies and mutable pointer
+// access require exclusive ownership.
 unsafe impl Send for DeviceBuffer {}
 unsafe impl Sync for DeviceBuffer {}
 
@@ -208,7 +209,7 @@ impl DeviceBuffer {
     /// the driver's staged copy path.
     ///
     /// [`CudaEvent`]: crate::runtime::CudaEvent
-    pub(crate) fn copy_from_host_range_async(&self, dst_offset: usize, data: &[u8]) -> Result<()> {
+    pub(crate) fn copy_from_host_range_async(&mut self, dst_offset: usize, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }

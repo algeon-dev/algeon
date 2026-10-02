@@ -1,6 +1,6 @@
 //! RecordBatch to DataFrame import entry points and DataFrame export.
 
-use std::sync::Arc;
+use std::{cell::Cell, mem, slice, sync::Arc};
 
 use arrow::{
     array::{Array, ArrayData},
@@ -28,6 +28,7 @@ use crate::{
     runtime::{
         CudaEvent, Runtime,
         device_guard::DeviceGuard,
+        device_health::quarantine_device_resource,
         host_staging::{PinnedSlabLease, pinned_staging_pool},
         stream::CudaStream,
     },
@@ -414,16 +415,21 @@ fn staged_fixed_width_column(
     slices: &[&[u8]],
 ) -> Result<Column> {
     let total_bytes: usize = slices.iter().map(|slice| slice.len()).sum();
-    let device_buffer = DeviceBuffer::new_in_runtime(runtime, total_bytes)?;
+    let mut upload = StagedDeviceBuffer {
+        buffer: Some(DeviceBuffer::new_in_runtime(runtime, total_bytes)?),
+        quarantine: Cell::new(false),
+    };
     if total_bytes > 0 {
         let _device_guard =
             DeviceGuard::new(runtime.device()).map_err(|error| error.reanchor("arrow::staged_fixed_width_column"))?;
         let pool = pinned_staging_pool();
-        let mut leases = [pool.acquire()?, pool.acquire()?];
-        let events = [CudaEvent::new()?, CudaEvent::new()?];
-        let mut event_pending = [false, false];
-        let slab_capacity = pool.slab_bytes();
         let stream = runtime.stream();
+        let mut slabs = [
+            StagingSlab::new(pool.acquire()?, stream, &upload.quarantine)?,
+            StagingSlab::new(pool.acquire()?, stream, &upload.quarantine)?,
+        ];
+        let device_buffer = upload.buffer.as_mut().expect("staged upload retains its destination");
+        let slab_capacity = pool.slab_bytes();
 
         let mut current = 0usize;
         let mut fill = 0usize;
@@ -432,57 +438,187 @@ fn staged_fixed_width_column(
             let mut consumed = 0usize;
             while consumed < slice.len() {
                 if fill == slab_capacity {
-                    flush_staging_slab(
-                        &device_buffer,
-                        &mut leases[current],
-                        fill,
-                        &mut dst_offset,
-                        &events[current],
-                        stream,
-                    )?;
-                    event_pending[current] = true;
+                    slabs[current].flush(device_buffer, fill, &mut dst_offset)?;
                     current ^= 1;
-                    if event_pending[current] {
-                        events[current].synchronize()?;
-                        event_pending[current] = false;
-                    }
+                    slabs[current].complete()?;
                     fill = 0;
                 }
                 let take = (slab_capacity - fill).min(slice.len() - consumed);
-                leases[current].slab().write_at(fill, &slice[consumed..consumed + take]);
+                slabs[current].lease.slab().write_at(fill, &slice[consumed..consumed + take]);
                 fill += take;
                 consumed += take;
             }
         }
         if fill > 0 {
-            flush_staging_slab(&device_buffer, &mut leases[current], fill, &mut dst_offset, &events[current], stream)?;
-            event_pending[current] = true;
+            slabs[current].flush(device_buffer, fill, &mut dst_offset)?;
         }
         debug_assert_eq!(dst_offset, total_bytes);
-        for (index, pending) in event_pending.iter().enumerate() {
-            if *pending {
-                events[index].synchronize()?;
+        for slab in &mut slabs {
+            slab.complete()?;
+        }
+    }
+    runtime.column_from_device_buffer(
+        upload.buffer.take().expect("completed upload retains its destination"),
+        total_rows,
+        type_id,
+    )
+}
+
+struct StagedDeviceBuffer {
+    buffer: Option<DeviceBuffer>,
+    quarantine: Cell<bool>,
+}
+
+impl Drop for StagedDeviceBuffer {
+    fn drop(&mut self) {
+        if self.quarantine.get()
+            && let Some(buffer) = self.buffer.take()
+        {
+            // Retain the allocation and its domain because a failed teardown
+            // fence cannot prove that the asynchronous destination is unused.
+            mem::forget(buffer);
+        }
+    }
+}
+
+struct StagingSlab<'a> {
+    lease: PinnedSlabLease,
+    event: CudaEvent,
+    stream: &'a CudaStream,
+    quarantine_destination: &'a Cell<bool>,
+    pending: bool,
+}
+
+impl<'a> StagingSlab<'a> {
+    fn new(lease: PinnedSlabLease, stream: &'a CudaStream, quarantine_destination: &'a Cell<bool>) -> Result<Self> {
+        Ok(Self { lease, event: CudaEvent::new()?, stream, quarantine_destination, pending: false })
+    }
+
+    fn flush(&mut self, device_buffer: &mut DeviceBuffer, fill: usize, dst_offset: &mut usize) -> Result<()> {
+        let slab = self.lease.slab();
+        // A failed copy or event record may follow submission. Teardown must
+        // prove stream completion before the pinned source returns to the pool.
+        self.pending = true;
+        // SAFETY: `write_at` initialized `fill` bytes; this owner retains the
+        // lease until event completion or quarantines it on teardown failure.
+        let staged = unsafe { slice::from_raw_parts(slab.as_ptr(), fill) };
+        device_buffer.copy_from_host_range_async(*dst_offset, staged)?;
+        self.event.record(self.stream)?;
+        *dst_offset += fill;
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<()> {
+        if self.pending {
+            self.event.synchronize()?;
+            self.pending = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagingSlab<'_> {
+    fn drop(&mut self) {
+        if self.pending
+            && let Err(error) = self.stream.synchronize_for_teardown("arrow::staging_slab_teardown")
+        {
+            self.lease.quarantine();
+            if !self.quarantine_destination.replace(true) {
+                quarantine_device_resource(self.stream.device(), "arrow::staging_destination_teardown", &error);
+            }
+            quarantine_device_resource(self.stream.device(), "arrow::staging_slab_teardown", &error);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::Arc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use arrow::{
+        array::{ArrayRef, Int64Array},
+        record_batch::RecordBatch,
+    };
+    use cudf_sys::{CUDF_SUCCESS, test_support};
+
+    use crate::{Runtime, runtime::host_staging::pinned_staging_pool, testing::device_safety::DeviceSafetyTestScope};
+
+    struct SynchronizationFailure;
+
+    impl Drop for SynchronizationFailure {
+        fn drop(&mut self) {
+            unsafe {
+                test_support::cudf_test_event_allow_synchronize();
+                test_support::cudf_test_stream_allow_synchronize();
+                test_support::cudf_test_stream_unblock_synchronize();
             }
         }
     }
-    runtime.column_from_device_buffer(device_buffer, total_rows, type_id)
-}
 
-fn flush_staging_slab(
-    device_buffer: &DeviceBuffer,
-    lease: &mut PinnedSlabLease,
-    fill: usize,
-    dst_offset: &mut usize,
-    event: &CudaEvent,
-    stream: &CudaStream,
-) -> Result<()> {
-    let slab = lease.slab();
-    // SAFETY: the slab holds at least `fill` initialized bytes written via
-    // `write_at`, and the lease keeps the region alive until the recorded
-    // event is awaited.
-    let staged = unsafe { std::slice::from_raw_parts(slab.as_ptr(), fill) };
-    device_buffer.copy_from_host_range_async(*dst_offset, staged)?;
-    event.record(stream)?;
-    *dst_offset += fill;
-    Ok(())
+    fn fail_staged_import(fail_teardown: bool) -> (Runtime, i32) {
+        let runtime = Runtime::new().unwrap();
+        let batch =
+            RecordBatch::try_from_iter(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)]).unwrap();
+        unsafe {
+            test_support::cudf_test_stream_synchronize_reset();
+            test_support::cudf_test_event_fail_synchronize();
+            if fail_teardown {
+                test_support::cudf_test_stream_fail_synchronize();
+            }
+        }
+        let failure = SynchronizationFailure;
+        let error = runtime.dataframe_from_record_batches(&[batch.clone(), batch]).unwrap_err();
+        assert_eq!(error.operation(), "arrow::dataframe_from_record_batches");
+        let mut count = 0;
+        assert_eq!(unsafe { test_support::cudf_test_stream_synchronize_call_count(&mut count) }, CUDF_SUCCESS);
+        drop(failure);
+        (runtime, count)
+    }
+
+    #[test]
+    fn staged_import_fences_pinned_sources_after_event_failure() {
+        let pool = pinned_staging_pool();
+        let leases_before = pool.leased_count();
+        unsafe {
+            test_support::cudf_test_stream_synchronize_reset();
+            test_support::cudf_test_stream_block_synchronize();
+        }
+        let failure = SynchronizationFailure;
+        let upload = thread::spawn(|| fail_staged_import(false));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut count = 0;
+            assert_eq!(unsafe { test_support::cudf_test_stream_synchronize_call_count(&mut count) }, CUDF_SUCCESS);
+            if count > 0 || upload.is_finished() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "staged cleanup did not reach its stream fence");
+            thread::yield_now();
+        }
+        // Read while teardown is blocked. A lease returned before the fence
+        // would permit another upload to overwrite the pending CUDA source.
+        let retained = pool.leased_count();
+        unsafe { test_support::cudf_test_stream_unblock_synchronize() };
+        let (runtime, count) = upload.join().unwrap();
+        drop(failure);
+        assert!(retained > leases_before, "a pending CUDA source lease must remain retained through the fence");
+        assert_eq!(pool.leased_count(), leases_before);
+        assert_eq!(count, 1, "failed event completion requires a stream fence before slab reuse");
+        let batch =
+            RecordBatch::try_from_iter(vec![("id", Arc::new(Int64Array::from(vec![4, 5, 6])) as ArrayRef)]).unwrap();
+        let frame = runtime.dataframe_from_record_batches(&[batch.clone(), batch]).unwrap();
+        assert_eq!(frame.series("id").unwrap().to_vec_strict::<i64>().unwrap(), vec![4, 5, 6, 4, 5, 6]);
+    }
+
+    #[test]
+    fn staged_import_quarantines_pinned_sources_when_teardown_fails() {
+        let scope = DeviceSafetyTestScope::install([]);
+        let (runtime, count) = fail_staged_import(true);
+        assert_eq!(count, 1);
+        assert_eq!(scope.health_snapshot(runtime.device()).quarantined_teardown_count(), 2);
+    }
 }

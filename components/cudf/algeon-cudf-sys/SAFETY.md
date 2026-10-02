@@ -40,6 +40,13 @@ pending. Keep input/output device storage, views, execution context, stream,
 memory resource, and callback state alive until that work is completed on the
 correct stream; use the documented event or stream synchronization path.
 
+Pinned host-copy sources require completion even when submission or event
+recording returns an error. The staged Arrow importer retains each slab until
+event completion, synchronizes the owning stream on early exit, and quarantines
+the source and destination allocations with their execution domain when teardown
+cannot prove completion. DeviceBuffer host
+writes require exclusive Rust access.
+
 Failure callbacks and their `callback_arg` must remain valid for the lifetime
 specified by the creating API. They run on the allocating thread and must not
 unwind across the C boundary, allocate through the same memory resource, or
