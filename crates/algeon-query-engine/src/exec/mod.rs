@@ -57,7 +57,7 @@ pub(crate) use bounded::pipeline::YieldedFrameCounterTestHarness;
 #[doc(hidden)]
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledTaskExecutor, LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched,
+    CompiledTaskExecutor, LaneDispatchSupport, run_resident_lane_borrow,
 };
 use edge_normalize::execute_edge_normalize;
 #[cfg(feature = "test-hooks")]

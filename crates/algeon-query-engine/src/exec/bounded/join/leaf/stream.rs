@@ -27,14 +27,13 @@ pub(in crate::exec::bounded) fn bounded_join_leaf_local_parquet_source_frame_str
     // Batches follow the planned chunk cap, like the push path's batching
     // decision, so a pull never reads more than one planned batch at a time.
     let batches = source_chunk_batches(execution.context(), &stream);
-    let max_per_frame_reservation_bytes =
-        batches.iter().filter_map(|batch| batch.estimated_source_read_bytes).max().unwrap_or(0);
-    let aggregate_reservation_bytes = stream.estimated_source_read_bytes().unwrap_or(0);
+    let max_frame_bytes_hint = batches.iter().filter_map(|batch| batch.estimated_source_read_bytes).max().unwrap_or(0);
+    let total_bytes_hint = stream.estimated_source_read_bytes().unwrap_or(0);
     let aggregate_num_rows = stream.estimated_source_rows().unwrap_or(0);
     let num_columns = stream.output_column_count();
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(JoinLeafSourceFrameStreamSource {

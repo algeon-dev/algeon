@@ -22,8 +22,8 @@ use crate::{
 };
 
 // Size hints the build input stream carries about itself (Parquet footer rows
-// and encoded bytes, or an upstream producer's reservation totals). They only
-// help pick a strategy and partition count; observed facts still decide.
+// and encoded bytes, or an upstream producer's byte hints). Strategy and
+// partition count also incorporate observed rows and device bytes.
 #[derive(Clone, Copy)]
 pub(super) struct JoinBuildStreamEstimate {
     pub(super) rows: Option<u64>,

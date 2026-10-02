@@ -47,13 +47,13 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_prese
 ) -> Result<ResidentFrameStreamPayload> {
     validate_root_hash_join(node)?;
     let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(execution);
-    let max_per_frame_reservation_bytes = state.materialize_admission_bytes(stream_target_bytes);
-    let aggregate_reservation_bytes = state.output_reservation_bytes;
+    let max_frame_bytes_hint = state.materialize_admission_bytes(stream_target_bytes);
+    let total_bytes_hint = state.output_reservation_bytes;
     let aggregate_num_rows = state.indices.build().len() as u64;
     let num_columns = node.spec.output_projection.len();
     Ok(ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(RootHashJoinMaterializeStreamSource::new(execution.context(), node_id, node, state)),

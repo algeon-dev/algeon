@@ -7,7 +7,7 @@ use super::compiled::execute_compiled_pipeline;
 #[doc(hidden)]
 pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledTaskExecutor, LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched,
+    CompiledTaskExecutor, LaneDispatchSupport, run_resident_lane_borrow,
 };
 use crate::{
     admission::AdmittedPlan,

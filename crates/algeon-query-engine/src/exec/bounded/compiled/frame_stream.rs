@@ -19,14 +19,14 @@ use crate::{
 };
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
-    /// Upper bound on the device bytes of one yielded frame. Eager payloads
-    /// carry their largest observed frame; producers carry the bound their
-    /// inputs imply. Join probe sizing and `from_producer` chains read it.
-    max_per_frame_reservation_bytes: u64,
+    /// Advisory device bytes for one yielded frame. Eager payloads carry
+    /// their largest observed frame; producers derive the hint from their
+    /// inputs. Join probe sizing and `from_producer` chains read it.
+    max_frame_bytes_hint: u64,
     /// Aggregate byte hint for the whole stream. Lazy transformations retain
     /// their input's hint until output frames are observed; this is not an
     /// exact final-output allocation measurement.
-    aggregate_reservation_bytes: u64,
+    total_bytes_hint: u64,
     /// Observed device bytes of the yielded frames that no consumer has taken
     /// yet. Vec-backed payloads start at the sum of their frames' observed
     /// bytes because every frame is already live; producer-backed payloads
@@ -208,17 +208,15 @@ impl ResidentFrameStreamProducer {
 
 impl ResidentFrameStreamPayload {
     pub(in crate::exec::bounded) fn new(frames: Vec<ResidentGpuFrame>) -> Self {
-        let aggregate_reservation_bytes =
-            frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.device_bytes()));
-        let max_per_frame_reservation_bytes =
-            frames.iter().fold(0u64, |max_bytes, frame| max_bytes.max(frame.device_bytes()));
+        let total_bytes_hint = frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.device_bytes()));
+        let max_frame_bytes_hint = frames.iter().fold(0u64, |max_bytes, frame| max_bytes.max(frame.device_bytes()));
         let aggregate_num_rows =
             frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.frame.num_rows() as u64));
         let num_columns = frames.first().map_or(0, |frame| frame.frame.num_columns());
         Self {
-            max_per_frame_reservation_bytes,
-            aggregate_reservation_bytes,
-            live_observed_device_bytes: Arc::new(AtomicU64::new(aggregate_reservation_bytes)),
+            max_frame_bytes_hint,
+            total_bytes_hint,
+            live_observed_device_bytes: Arc::new(AtomicU64::new(total_bytes_hint)),
             aggregate_num_rows,
             num_columns,
             frames: frames.into(),
@@ -227,15 +225,15 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn from_producer(
-        max_per_frame_reservation_bytes: u64,
-        aggregate_reservation_bytes: u64,
+        max_frame_bytes_hint: u64,
+        total_bytes_hint: u64,
         aggregate_num_rows: u64,
         num_columns: usize,
         source: Box<dyn ResidentFrameStreamSource>,
     ) -> Self {
         Self {
-            max_per_frame_reservation_bytes,
-            aggregate_reservation_bytes,
+            max_frame_bytes_hint,
+            total_bytes_hint,
             live_observed_device_bytes: Arc::new(AtomicU64::new(0)),
             aggregate_num_rows,
             num_columns,
@@ -244,12 +242,12 @@ impl ResidentFrameStreamPayload {
         }
     }
 
-    pub(in crate::exec::bounded) fn max_per_frame_reservation_bytes(&self) -> u64 {
-        self.max_per_frame_reservation_bytes
+    pub(in crate::exec::bounded) fn max_frame_bytes_hint(&self) -> u64 {
+        self.max_frame_bytes_hint
     }
 
-    pub(in crate::exec::bounded) fn aggregate_reservation_bytes(&self) -> u64 {
-        self.aggregate_reservation_bytes
+    pub(in crate::exec::bounded) fn total_bytes_hint(&self) -> u64 {
+        self.total_bytes_hint
     }
 
     pub(in crate::exec::bounded) fn live_observed_device_bytes(&self) -> u64 {
@@ -300,8 +298,8 @@ impl ResidentFrameStreamPayload {
     pub(super) fn try_alias(&self) -> Option<Self> {
         if let Some(producer) = &self.producer {
             return Some(Self::from_producer(
-                self.max_per_frame_reservation_bytes,
-                self.aggregate_reservation_bytes,
+                self.max_frame_bytes_hint,
+                self.total_bytes_hint,
                 self.aggregate_num_rows,
                 self.num_columns,
                 producer.inner.as_ref()?.alias()?,
@@ -506,13 +504,13 @@ pub(super) fn map_filter_resident_frame_stream(
     stream: ResidentFrameStreamPayload,
     filter: FilterNode,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
-    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let max_frame_bytes_hint = stream.max_frame_bytes_hint();
+    let total_bytes_hint = stream.total_bytes_hint();
     let aggregate_num_rows = stream.num_rows();
     let num_columns = stream.num_columns();
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(UnaryMappedResidentFrameStreamSource::from_filter(node_id, stream, filter)),
@@ -526,13 +524,13 @@ pub(super) fn map_dynamic_filter_resident_frame_stream(
     route: DynamicFilterRoute,
     dynamic_filter: DynamicFilter,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
-    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let max_frame_bytes_hint = stream.max_frame_bytes_hint();
+    let total_bytes_hint = stream.total_bytes_hint();
     let aggregate_num_rows = stream.num_rows();
     let num_columns = stream.num_columns();
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(UnaryMappedResidentFrameStreamSource::from_dynamic_filter(
@@ -550,13 +548,13 @@ pub(super) fn map_projection_resident_frame_stream(
     stream: ResidentFrameStreamPayload,
     projection: ProjectionNode,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = stream.max_per_frame_reservation_bytes();
-    let aggregate_reservation_bytes = stream.aggregate_reservation_bytes();
+    let max_frame_bytes_hint = stream.max_frame_bytes_hint();
+    let total_bytes_hint = stream.total_bytes_hint();
     let aggregate_num_rows = stream.num_rows();
     let num_columns = projection.output_schema().fields().len();
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(UnaryMappedResidentFrameStreamSource::from_projection(node_id, stream, projection)),

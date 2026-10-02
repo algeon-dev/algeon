@@ -499,38 +499,21 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
             .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = ExecutionMetrics::detached("metrics");
-    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
-    let gpu_inputs = GpuResidentInputMap::new();
+    let context = bounded_context(shared_runtime(runtime), &plan);
+    let result =
+        execute_query_plan(&context, &plan).expect("shared source aggregate executes through the engine boundary");
+    let batch = result.output().as_host_arrow().expect("shared source host sink materializes");
+    let metrics = result.metrics();
 
-    let (state, batch) = {
-        let mut executor = CompiledGpuTaskExecutor::new(
-            &metrics_context,
-            &plan,
-            PlanningPolicy::default(),
-            &pipeline,
-            &gpu_inputs,
-            &metrics_recorder,
-        )
-        .unwrap();
-        let state = scheduler.run(&mut executor).expect("shared source aggregate should execute");
-        let output = executor.take_host_output().expect("compiled host sink should materialize");
-        (state, output)
-    };
-    let metrics = metrics_recorder.snapshot();
-
-    assert_eq!(state.live_resource_count(), 0);
     assert_eq!(
-        int32_int64_pairs_sorted(&batch, 0, 1),
+        int32_int64_pairs_sorted(batch, 0, 1),
         vec![(Some(1), Some(15)), (Some(1), Some(15)), (Some(2), Some(20))]
     );
     assert_eq!(
         metrics.partial_aggregate_count, 2,
         "the shared aggregate branch should clone the deferred source stream and reduce both row-group chunks"
     );
-    assert_compiled_final_merge_uses_partitioned_strategy(&metrics);
+    assert_compiled_final_merge_uses_partitioned_strategy(metrics);
 }
 
 #[test]

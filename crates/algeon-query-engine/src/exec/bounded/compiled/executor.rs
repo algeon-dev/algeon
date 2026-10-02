@@ -48,7 +48,6 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
         error.code(),
         QueryErrorCode::QueryMemoryLimitExceeded
             | QueryErrorCode::CudfTemporaryFailure
-            | QueryErrorCode::MemoryReservationFailed
             | QueryErrorCode::ServiceOverloaded
     )
 }
@@ -93,11 +92,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             join_probes: BTreeMap::new(),
             host_output: None,
         })
-    }
-
-    /// Merges a successful lane's dynamic-filter set into the coordinator.
-    pub(super) fn merge_lane_dynamic_filters(&mut self, filters: DynamicFilterSet) {
-        self.dynamic_filters.merge_from(&filters);
     }
 
     #[cfg(any(feature = "cuvs", feature = "cuml"))]
