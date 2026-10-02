@@ -331,9 +331,7 @@ fn final_resident_consumer_fence_retains_capacity_until_completion() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 2));
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
     let producer_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
-    producer_owner
-        .set_completion_fence(&CudaStream::new().expect("completion stream"))
-        .expect("completion stream binds once");
+    producer_owner.record_completion(&CudaStream::new().expect("completion stream")).expect("completion event records");
     let consumer_owner = producer_owner.clone();
     grant.freeze_resident(200).expect("resident charge freezes");
     drop(producer_owner);
@@ -365,9 +363,7 @@ fn final_resident_release_waits_for_its_completion_event_not_its_pooled_stream()
     let ledger = DeviceLedger::new(profile(1_000, 800, 1));
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
     let resident_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
-    resident_owner
-        .set_completion_fence(&CudaStream::new().expect("completion stream"))
-        .expect("completion stream binds once");
+    resident_owner.record_completion(&CudaStream::new().expect("completion stream")).expect("completion event records");
     grant.freeze_resident(200).expect("resident charge freezes");
     drop(grant);
 
@@ -394,9 +390,7 @@ fn resident_completion_failure_closes_device_admission() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 1));
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
     let resident_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
-    resident_owner
-        .set_completion_fence(&CudaStream::new().expect("completion stream"))
-        .expect("completion stream binds once");
+    resident_owner.record_completion(&CudaStream::new().expect("completion stream")).expect("completion event records");
     grant.freeze_resident(200).expect("resident charge freezes");
     drop(grant);
 

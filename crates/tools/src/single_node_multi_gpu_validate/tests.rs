@@ -861,7 +861,7 @@ fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands()
         assert_eq!(device.source_work_per_attempt, 2);
         assert_eq!(device.max_active_attempts, 1);
         assert_eq!(device.installation.stream_pool_size, 3);
-        assert_eq!(device.installation.worker_count, 1);
+        assert_eq!(device.installation.worker_count, 2);
         assert_eq!(device.installation.lane_count, 1);
         assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
         assert_eq!(profile.scheduling.concurrency, 1);
@@ -2324,13 +2324,29 @@ fn profile_rejects_a_stream_pool_below_the_engine_slot_formula() {
     // counts are set to satisfy their own rule so this isolates the pool check.
     profile.backend.device_profiles[0].max_active_attempts = 4;
     profile.backend.device_profiles[0].source_work_per_attempt = 2;
-    profile.backend.device_profiles[0].installation.worker_count = 4;
+    profile.backend.device_profiles[0].installation.worker_count = 5;
     profile.backend.device_profiles[0].installation.lane_count = 4;
     profile.backend.device_profiles[0].installation.stream_pool_size = 11;
     let error = profile.validate().unwrap_err().to_string();
     assert!(error.contains("stream_pool_size must be at least 12"), "{error}");
 
     profile.backend.device_profiles[0].installation.stream_pool_size = 12;
+    profile.validate().unwrap();
+}
+
+/// One worker per device is reserved for lifecycle jobs, so a worker pool
+/// that only covers the active attempts leaves context setup and release
+/// cleanup with no worker.
+#[test]
+fn profile_rejects_a_worker_count_without_the_lifecycle_reserve() {
+    let mut profile = measured_run_profile();
+    let device = &mut profile.backend.device_profiles[0];
+    device.installation.worker_count = device.max_active_attempts;
+    let required = device.max_active_attempts + 1;
+    let error = profile.validate().unwrap_err().to_string();
+    assert!(error.contains(&format!("worker_count must be at least {required}")), "{error}");
+
+    profile.backend.device_profiles[0].installation.worker_count = required;
     profile.validate().unwrap();
 }
 
@@ -2954,7 +2970,7 @@ fn measured_device_profile(ordinal: usize, memory_limit_bytes: u64, max_active_a
         // stream slots, so size the pool from the same formula.
         installation: InstallationBounds {
             stream_pool_size: max_active_attempts * 3,
-            worker_count: max_active_attempts,
+            worker_count: max_active_attempts + 1,
             lane_count: max_active_attempts,
         },
     }

@@ -1500,6 +1500,7 @@ pub fn query_runtime::runtime::resident::GpuResultHandle::new(&query_runtime::ru
 pub fn query_runtime::runtime::resident::GpuResultHandle::num_columns(&self) -> usize
 pub fn query_runtime::runtime::resident::GpuResultHandle::num_rows(&self) -> usize
 pub fn query_runtime::runtime::resident::GpuResultHandle::placement(&self) -> cudf::runtime::placement::ExecutionPlacement
+pub fn query_runtime::runtime::resident::GpuResultHandle::read_on(&self, &query_runtime::runtime::ExecutionContext) -> query_planning::error::Result<query_runtime::runtime::resident::GpuDataFrame>
 pub fn query_runtime::runtime::resident::GpuResultHandle::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
 pub fn query_runtime::runtime::resident::GpuResultHandle::schema(&self) -> &arrow_schema::schema::SchemaRef
 pub fn query_runtime::runtime::resident::GpuResultHandle::to_host_record_batch(&self) -> query_planning::error::Result<arrow_array::record_batch::RecordBatch>
@@ -1727,6 +1728,7 @@ pub fn query_runtime::runtime::ExecutionCancellation::deadline(&self) -> core::o
 pub fn query_runtime::runtime::ExecutionCancellation::is_cancelled(&self) -> bool
 pub fn query_runtime::runtime::ExecutionCancellation::is_expired(&self) -> bool
 pub fn query_runtime::runtime::ExecutionCancellation::new() -> Self
+pub async fn query_runtime::runtime::ExecutionCancellation::terminated(&self, &'static str) -> query_planning::error::QueryError
 pub fn query_runtime::runtime::ExecutionCancellation::with_deadline(core::option::Option<std::time::Instant>) -> Self
 impl core::default::Default for query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionCancellation::default() -> Self
@@ -1836,6 +1838,7 @@ impl query_runtime::runtime::GpuBackendDeviceProfile
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::backend_reserve_bytes(&self) -> u64
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::cache_cap_bytes(&self) -> u64
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::default_query_limit_bytes(&self) -> core::option::Option<u64>
+pub fn query_runtime::runtime::GpuBackendDeviceProfile::derived_installation_bounds(&self) -> query_planning::error::Result<query_runtime::runtime::GpuBackendDeviceInstallationBounds>
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::device_capabilities(&self) -> &query_runtime::runtime::DeviceCapabilities
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::device_ordinal(&self) -> usize
 pub fn query_runtime::runtime::GpuBackendDeviceProfile::install_telemetry(&self) -> bool

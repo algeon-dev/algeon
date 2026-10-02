@@ -17,7 +17,7 @@ fn device_profile(device_ordinal: usize) -> AlgeonGpuDeviceProfile {
     AlgeonGpuDeviceProfile::new(device_ordinal)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: BACKEND_MEMORY_LIMIT_BYTES })
         .with_max_active_attempts(1)
-        .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(3, 1, 1))
+        .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(3, 2, 1))
 }
 
 #[test]

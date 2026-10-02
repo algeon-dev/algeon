@@ -299,7 +299,7 @@ impl QueryService {
             admission: Mutex::new(AdmissionState::default()),
             admission_available: Condvar::new(),
             admission_notify: Notify::new(),
-            queue_needs_revalidation: AtomicBool::new(false),
+            queue_revalidation_generation: AtomicU64::new(0),
             allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
             #[cfg(test)]
             shutdown_waiters: AtomicUsize::new(0),
@@ -325,9 +325,11 @@ impl QueryService {
         // sharing the device; the admission invariant forbids grant drops
         // while the admission mutex is held. An admission close or a
         // frozen-resident publish can happen under this service's admission
-        // mutex (health folding during placement or a queue sweep), so it
-        // only marks this queue for revalidation and wakes it. Each sibling
-        // service registers its own observer on a shared ledger.
+        // mutex (placement and the submission sweep fold native faults while
+        // holding it), so the observer only advances the queue's revalidation
+        // generation and wakes it; each queued request rechecks its device
+        // state on its next step. Each sibling service registers its own
+        // observer on a shared ledger.
         let ledgers = service
             .inner
             .resources
@@ -354,7 +356,7 @@ impl QueryService {
                 }
                 if let Some(inner) = weak.upgrade() {
                     if !released {
-                        inner.queue_needs_revalidation.store(true, Ordering::Release);
+                        inner.queue_revalidation_generation.fetch_add(1, Ordering::AcqRel);
                     }
                     inner.notify_admission_available();
                 }

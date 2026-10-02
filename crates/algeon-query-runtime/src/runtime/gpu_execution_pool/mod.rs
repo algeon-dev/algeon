@@ -25,10 +25,7 @@ use std::{
 use futures::FutureExt;
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
-use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
-    time::sleep_until,
-};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::{ExecutionCancellation, context::QueryServiceResourceEpoch};
 use crate::observability::{GpuJobLifecycleState, RuntimeJobId, RuntimeObservationHandle, RuntimeStreamLeaseScope};
@@ -82,6 +79,12 @@ pub enum GpuExecutionJobKind {
     Cleanup,
 }
 
+/// Workers each pool keeps for lifecycle jobs (context setup and release
+/// cleanup). Query execution and its auxiliary work run only on the other
+/// workers, so a placed admission's envelope and a finished attempt's cleanup
+/// never wait behind running queries.
+pub(crate) const RESERVED_LIFECYCLE_WORKERS: usize = 1;
+
 /// Resource class partitioning for bounded worker admission.
 ///
 /// For active-attempt limit `A_d` and per-attempt source-work bound `S_d`,
@@ -130,6 +133,12 @@ impl GpuExecutionJobKind {
             Self::ContextSetup | Self::QueryExecution | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
             Self::AttemptWork => GpuExecutionJobClass::Execution,
         }
+    }
+
+    /// Whether the job runs only on workers outside
+    /// [`RESERVED_LIFECYCLE_WORKERS`].
+    pub(crate) const fn runs_outside_lifecycle_reserve(self) -> bool {
+        matches!(self, Self::QueryExecution | Self::AttemptWork)
     }
 }
 
@@ -275,6 +284,7 @@ impl GpuExecutionPool {
             submissions_closed: AtomicBool::new(false),
             submission_gate: Mutex::new(()),
             concurrency: Arc::new(Semaphore::new(worker_count)),
+            execution_workers: Arc::new(Semaphore::new(worker_count - RESERVED_LIFECYCLE_WORKERS)),
             lifecycle_job_permits: Arc::new(Semaphore::new(lifecycle_job_capacity)),
             execution_job_permits: Arc::new(Semaphore::new(execution_job_capacity)),
             // Every admitted attempt can transition to exactly one release
@@ -457,9 +467,10 @@ impl GpuExecutionPool {
         self.run_observed_scoped_with_class_permit(kind, class_permit, observation, build_future).await
     }
 
-    /// Waits for a free slot of `class`, or returns `None` once `cancellation`
-    /// is requested or `deadline` passes. A free slot is taken without a
-    /// timer, so only a caller that has to wait needs a Tokio context.
+    /// Waits for a free slot of `class`, or returns the typed error of
+    /// `cancellation` once it is requested or its deadline passes. A free slot
+    /// is taken without a timer, so only a caller that has to wait needs a
+    /// Tokio context.
     ///
     /// Only work whose own count the class width already bounds may wait
     /// here, so the waiter queue stays bounded: the admission envelope of
@@ -469,22 +480,20 @@ impl GpuExecutionPool {
         kind: GpuExecutionJobKind,
         class: GpuExecutionJobClass,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
-    ) -> Result<Option<OwnedSemaphorePermit>> {
+    ) -> Result<OwnedSemaphorePermit> {
         self.check_resource_epoch(RUN_OPERATION)?;
         let semaphore = self.class_semaphore_for_class(class);
         match Arc::clone(semaphore).try_acquire_owned() {
-            Ok(permit) => return Ok(Some(permit)),
+            Ok(permit) => return Ok(permit),
             Err(TryAcquireError::Closed) => return Err(self.class_saturated_error_for_class(kind, class)),
             Err(TryAcquireError::NoPermits) => {},
         }
         tokio::select! {
             biased;
             permit = Arc::clone(self.class_semaphore_for_class(class)).acquire_owned() => {
-                permit.map(Some).map_err(|_closed| self.class_saturated_error_for_class(kind, class))
+                permit.map_err(|_closed| self.class_saturated_error_for_class(kind, class))
             },
-            () = cancellation.cancelled_or_expired() => Ok(None),
-            () = sleep_until(deadline.into()) => Ok(None),
+            error = cancellation.terminated(RUN_OPERATION) => Err(error),
         }
     }
 
@@ -531,14 +540,13 @@ impl GpuExecutionPool {
             self.inner.query_tracker.clone(),
             Arc::clone(&job),
         );
-        let concurrency = Arc::clone(&self.inner.concurrency);
+        let seats = self.inner.worker_seats();
         let resource_epoch = self.resource_epoch.clone();
         let task = self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let _class_permit = class_permit;
-            let permit = concurrency.acquire_owned().await;
-            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
-            run_counted_job_scoped(job_guard, permit, build_future).await
+            let seat = seats.occupy(kind).await;
+            run_counted_job_scoped(job_guard, seat, build_future).await
         })?;
 
         match AbortOnDropJoinHandle::new(task, Arc::clone(&job)).await {
@@ -593,14 +601,13 @@ impl GpuExecutionPool {
             self.inner.query_tracker.clone(),
             job,
         );
-        let concurrency = Arc::clone(&self.inner.concurrency);
+        let seats = self.inner.worker_seats();
         let resource_epoch = self.resource_epoch.clone();
         self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let _class_permit = class_permit;
-            let permit = concurrency.acquire_owned().await;
-            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
-            let _ = run_counted_job(job_guard, permit, future).await;
+            let seat = seats.occupy(kind).await;
+            let _ = run_counted_job(job_guard, seat, future).await;
         })?;
         Ok(())
     }
@@ -632,14 +639,13 @@ impl GpuExecutionPool {
             job,
             Box::new(completion),
         );
-        let concurrency = Arc::clone(&self.inner.concurrency);
+        let seats = self.inner.worker_seats();
         let resource_epoch = self.resource_epoch.clone();
         self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let _class_permit = class_permit;
-            let permit = concurrency.acquire_owned().await;
-            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
-            let _ = run_counted_job(job_guard, permit, future).await;
+            let seat = seats.occupy(kind).await;
+            let _ = run_counted_job(job_guard, seat, future).await;
         })?;
         Ok(())
     }
@@ -674,14 +680,13 @@ impl GpuExecutionPool {
             job,
             Box::new(completion),
         );
-        let concurrency = Arc::clone(&self.inner.concurrency);
+        let seats = self.inner.worker_seats();
         let resource_epoch = self.resource_epoch.clone();
         self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let _release_permit = release_permit;
-            let permit = concurrency.acquire_owned().await;
-            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
-            let _ = run_counted_job(job_guard, permit, future).await;
+            let seat = seats.occupy(kind).await;
+            let _ = run_counted_job(job_guard, seat, future).await;
         })?;
         Ok(())
     }

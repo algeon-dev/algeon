@@ -1,6 +1,6 @@
 //! Attempt-owned auxiliary stream slot accounting.
 
-use std::{sync::Arc, time::Instant};
+use std::{future::pending, sync::Arc, time::Instant};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use tokio::{
@@ -53,10 +53,10 @@ impl AttemptAuxiliarySlots {
     pub(crate) fn acquire_with_cancellation_deadline(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
-        self.acquire_blocking(cancellation, Some(deadline), operation)
+        self.acquire_blocking(cancellation, deadline, operation)
     }
 
     /// Takes one free slot, or reports that none is free right now.
@@ -77,7 +77,7 @@ impl AttemptAuxiliarySlots {
     pub(crate) async fn acquire_with_cancellation_deadline_async(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
         loop {
@@ -85,9 +85,15 @@ impl AttemptAuxiliarySlots {
             if let Some(permit) = self.try_acquire(operation)? {
                 return Ok(permit);
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(self.exhausted_error(operation, true));
             }
+            let deadline_elapsed = async {
+                match deadline {
+                    Some(deadline) => sleep_until(deadline.into()).await,
+                    None => pending().await,
+                }
+            };
             tokio::select! {
                 biased;
                 permit = Arc::clone(&self.permits).acquire_owned() => {
@@ -96,7 +102,7 @@ impl AttemptAuxiliarySlots {
                         .map_err(|_closed| self.closed_error(operation));
                 },
                 () = cancellation.cancelled_or_expired() => {},
-                () = sleep_until(deadline.into()) => {},
+                () = deadline_elapsed => {},
             }
         }
     }
@@ -218,7 +224,11 @@ mod attempt_auxiliary_slots_tests {
         assert_eq!(cancelled_error.code(), QueryErrorCode::Cancelled);
 
         let deadline_error = slots
-            .acquire_with_cancellation_deadline(&active, Instant::now(), "query_engine.test.attempt_auxiliary_slots")
+            .acquire_with_cancellation_deadline(
+                &active,
+                Some(Instant::now()),
+                "query_engine.test.attempt_auxiliary_slots",
+            )
             .expect_err("expired waiter must not exceed the attempt envelope");
         assert_eq!(deadline_error.code(), QueryErrorCode::ServiceOverloaded);
         assert_eq!(deadline_error.fact_value("reason"), Some("attempt_auxiliary_slot_wait_timeout"));
@@ -247,7 +257,7 @@ mod attempt_auxiliary_slots_tests {
         let first_exhausted = first_attempt
             .acquire_with_cancellation_deadline(
                 &cancellation,
-                Instant::now(),
+                Some(Instant::now()),
                 "query_engine.test.attempt_auxiliary_slots",
             )
             .expect_err("one attempt cannot borrow another attempt's auxiliary share");

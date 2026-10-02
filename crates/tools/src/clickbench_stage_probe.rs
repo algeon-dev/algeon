@@ -456,7 +456,7 @@ fn build_probe_attempt_backend(profile: &ClickbenchNativeProfileSettings) -> Too
         GpuBackendDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     Ok(AlgeonGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device]).build()?)
@@ -475,7 +475,7 @@ fn build_probe_backend(profile: &ClickbenchNativeProfileSettings) -> ToolResult<
         GpuBackendDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     Ok(ToolGpuBackend::build(service_config, device)?)

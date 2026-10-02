@@ -17,7 +17,7 @@
         "max_active_attempts": 4,
         "installation": {
           "stream_pool_size": 12,
-          "worker_count": 4,
+          "worker_count": 5,
           "lane_count": 4
         }
       },
@@ -32,7 +32,7 @@
         "max_active_attempts": 4,
         "installation": {
           "stream_pool_size": 12,
-          "worker_count": 4,
+          "worker_count": 5,
           "lane_count": 4
         }
       },
@@ -47,7 +47,7 @@
         "max_active_attempts": 4,
         "installation": {
           "stream_pool_size": 12,
-          "worker_count": 4,
+          "worker_count": 5,
           "lane_count": 4
         }
       },
@@ -62,7 +62,7 @@
         "max_active_attempts": 4,
         "installation": {
           "stream_pool_size": 12,
-          "worker_count": 4,
+          "worker_count": 5,
           "lane_count": 4
         }
       }

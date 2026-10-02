@@ -148,7 +148,7 @@ cache_cap_bytes = 0
 source_work_per_attempt = 2
 max_active_attempts = 2
 stream_pool_size = 6
-worker_count = 2
+worker_count = 3
 lane_count = 2
 install_telemetry = false
 
@@ -161,7 +161,7 @@ cache_cap_bytes = 2048
 source_work_per_attempt = 1
 max_active_attempts = 1
 stream_pool_size = 2
-worker_count = 1
+worker_count = 2
 lane_count = 1
 install_telemetry = true
 "#,

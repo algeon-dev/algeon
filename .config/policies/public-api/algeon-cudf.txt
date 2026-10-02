@@ -6172,6 +6172,11 @@ impl cudf::runtime::device_health::DeviceFault
 pub fn cudf::runtime::device_health::DeviceFault::kind(self) -> cudf::runtime::device_health::DeviceFaultKind
 pub fn cudf::runtime::device_health::DeviceFault::native_status(self) -> core::option::Option<cudf::runtime::device_health::DeviceFaultNativeStatus>
 pub fn cudf::runtime::device_health::DeviceFault::operation(self) -> &'static str
+pub struct cudf::runtime::device_health::DeviceFaultObservation
+impl core::fmt::Debug for cudf::runtime::device_health::DeviceFaultObservation
+pub fn cudf::runtime::device_health::DeviceFaultObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cudf::runtime::device_health::DeviceFaultObservation
+pub fn cudf::runtime::device_health::DeviceFaultObservation::drop(&mut self)
 pub struct cudf::runtime::device_health::DeviceHealthSnapshot
 impl cudf::runtime::device_health::DeviceHealthSnapshot
 pub fn cudf::runtime::device_health::DeviceHealthSnapshot::device(self) -> cudf::runtime::device::DeviceId
@@ -6182,6 +6187,7 @@ pub fn cudf::runtime::device_health::DeviceHealthSnapshot::rejected_operation_co
 pub fn cudf::runtime::device_health::DeviceHealthSnapshot::status(self) -> cudf::runtime::device_health::DeviceHealthStatus
 pub fn cudf::runtime::device_health::device_health_snapshot(cudf::runtime::device::DeviceId) -> cudf::runtime::device_health::DeviceHealthSnapshot
 pub fn cudf::runtime::device_health::drop_device_resource<T>(&mut *mut T, cudf::runtime::device::DeviceId, &'static str, impl core::ops::function::FnOnce(*mut T))
+pub fn cudf::runtime::device_health::observe_device_faults(cudf::runtime::device::DeviceId, impl core::ops::function::Fn(cudf::runtime::device_health::DeviceHealthSnapshot) + core::marker::Send + core::marker::Sync + 'static) -> cudf::runtime::device_health::DeviceFaultObservation
 pub fn cudf::runtime::device_health::quarantine_device_resource(cudf::runtime::device::DeviceId, &'static str, &dyn core::fmt::Display)
 pub fn cudf::runtime::device_health::report_device_fault(cudf::runtime::device::DeviceId, cudf::runtime::device_health::DeviceFaultKind, &'static str, core::option::Option<cudf::runtime::device_health::DeviceFaultNativeStatus>)
 pub mod cudf::runtime::event
@@ -6382,6 +6388,11 @@ impl cudf::runtime::device_health::DeviceFault
 pub fn cudf::runtime::device_health::DeviceFault::kind(self) -> cudf::runtime::device_health::DeviceFaultKind
 pub fn cudf::runtime::device_health::DeviceFault::native_status(self) -> core::option::Option<cudf::runtime::device_health::DeviceFaultNativeStatus>
 pub fn cudf::runtime::device_health::DeviceFault::operation(self) -> &'static str
+pub struct cudf::runtime::DeviceFaultObservation
+impl core::fmt::Debug for cudf::runtime::device_health::DeviceFaultObservation
+pub fn cudf::runtime::device_health::DeviceFaultObservation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cudf::runtime::device_health::DeviceFaultObservation
+pub fn cudf::runtime::device_health::DeviceFaultObservation::drop(&mut self)
 pub struct cudf::runtime::DeviceHealthSnapshot
 impl cudf::runtime::device_health::DeviceHealthSnapshot
 pub fn cudf::runtime::device_health::DeviceHealthSnapshot::device(self) -> cudf::runtime::device::DeviceId
@@ -6608,6 +6619,7 @@ pub fn cudf::runtime::cuda_profiler_start() -> cudf::core::error::Result<()>
 pub fn cudf::runtime::cuda_profiler_stop() -> cudf::core::error::Result<()>
 pub fn cudf::runtime::device_health_snapshot(cudf::runtime::device::DeviceId) -> cudf::runtime::device_health::DeviceHealthSnapshot
 pub fn cudf::runtime::drop_device_resource<T>(&mut *mut T, cudf::runtime::device::DeviceId, &'static str, impl core::ops::function::FnOnce(*mut T))
+pub fn cudf::runtime::observe_device_faults(cudf::runtime::device::DeviceId, impl core::ops::function::Fn(cudf::runtime::device_health::DeviceHealthSnapshot) + core::marker::Send + core::marker::Sync + 'static) -> cudf::runtime::device_health::DeviceFaultObservation
 pub fn cudf::runtime::quarantine_device_resource(cudf::runtime::device::DeviceId, &'static str, &dyn core::fmt::Display)
 pub fn cudf::runtime::report_device_fault(cudf::runtime::device::DeviceId, cudf::runtime::device_health::DeviceFaultKind, &'static str, core::option::Option<cudf::runtime::device_health::DeviceFaultNativeStatus>)
 pub macro cudf::dataframe!

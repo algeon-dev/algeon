@@ -45,8 +45,9 @@ pub use cache_allocation::{
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;
 pub use device_health::{
-    DeviceFault, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthSnapshot, DeviceHealthStatus,
-    device_health_snapshot, drop_device_resource, quarantine_device_resource, report_device_fault,
+    DeviceFault, DeviceFaultKind, DeviceFaultNativeStatus, DeviceFaultObservation, DeviceHealthSnapshot,
+    DeviceHealthStatus, device_health_snapshot, drop_device_resource, observe_device_faults,
+    quarantine_device_resource, report_device_fault,
 };
 pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;

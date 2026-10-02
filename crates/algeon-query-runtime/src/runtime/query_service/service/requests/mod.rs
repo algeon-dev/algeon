@@ -43,8 +43,8 @@ use crate::{
         query_service::service::{
             placement::required_capabilities_for_placement,
             transaction::{
-                AdmissionEnvelope, AdmissionTransactionProbe, pause_after_rollback_accounting,
-                publication_deadline_error,
+                AdmissionEnvelope, AdmissionTransactionProbe, check_publication_cancellation,
+                pause_after_rollback_accounting,
             },
         },
     },
@@ -137,7 +137,6 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) completion: QueryCompletion,
     pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
     pub(in crate::runtime::query_service) admission_wait: Duration,
-    pub(in crate::runtime::query_service) deadline: Instant,
     pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
     pub(in crate::runtime::query_service) admission_wait_fact: Option<AttemptAdmissionWaitFact>,
     pub(in crate::runtime::query_service) lifecycle_ticket: AdmissionTicket,
@@ -163,11 +162,17 @@ struct EnvelopeRequest {
     placed_query: PlacedQuery,
     lifecycle_ticket: AdmissionTicket,
     execution_cancellation: ExecutionCancellation,
-    deadline: Instant,
     observation: RuntimeObservationHandle,
 }
 
 impl EnvelopeRequest {
+    /// Rolls the placed grant back without building an envelope and returns
+    /// the error that stopped it.
+    fn abandon(self, service: &Arc<QueryServiceInner>, error: QueryError) -> QueryError {
+        AdmissionEnvelope::abandon(service, self.placed_query, self.lifecycle_ticket);
+        error
+    }
+
     fn acquire(
         self,
         service: &Arc<QueryServiceInner>,
@@ -178,7 +183,6 @@ impl EnvelopeRequest {
             self.placed_query,
             self.lifecycle_ticket,
             &self.execution_cancellation,
-            self.deadline,
             &self.observation,
             probe,
         )
@@ -194,7 +198,6 @@ struct AdmissionPublication {
     admitted_compatible_devices: Vec<usize>,
     admission_request_id: AdmissionRequestId,
     admission_wait: Duration,
-    deadline: Instant,
     execution_cancellation: ExecutionCancellation,
     admission_wait_fact: Option<AttemptAdmissionWaitFact>,
 }
@@ -291,7 +294,7 @@ impl QueryService {
         observation: &RuntimeObservationHandle,
         admission_request_id: AdmissionRequestId,
         execution_cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<PendingPreflightReservation> {
         let mut state = self.lock_admission()?;
         let sweep = self.sweep_expired_queued_requests_locked(&mut state);
@@ -332,7 +335,7 @@ impl QueryService {
             );
             return Err(error);
         }
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let error =
                 service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
             record_admission_lifecycle(
@@ -399,7 +402,7 @@ impl QueryService {
                 None,
             );
             Some(error)
-        } else if Instant::now() >= request.deadline {
+        } else if request.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let error =
                 service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
             record_admission_lifecycle(
@@ -479,20 +482,17 @@ impl QueryService {
         let Some(resources) = self.inner.resources.as_ref() else {
             return request.acquire(&self.inner, probe.as_deref());
         };
-        let pool = resources.gpu_execution_pool_for_device(request.placed_query.device_ordinal)?;
+        let pool = match resources.gpu_execution_pool_for_device(request.placed_query.device_ordinal) {
+            Ok(pool) => pool,
+            Err(error) => return Err(request.abandon(&self.inner, error)),
+        };
         let kind = GpuExecutionJobKind::ContextSetup;
-        let class_permit = pool
-            .wait_for_class_permit(
-                kind,
-                GpuExecutionJobClass::Lifecycle,
-                &request.execution_cancellation,
-                request.deadline,
-            )
-            .await?;
-        let Some(class_permit) = class_permit else {
-            // Cancelled or past the deadline: the envelope's entry boundary
-            // reports which, before any CUDA work.
-            return request.acquire(&self.inner, probe.as_deref());
+        let class_permit = match pool
+            .wait_for_class_permit(kind, GpuExecutionJobClass::Lifecycle, &request.execution_cancellation)
+            .await
+        {
+            Ok(class_permit) => class_permit,
+            Err(error) => return Err(request.abandon(&self.inner, error)),
         };
         let service = Arc::clone(&self.inner);
         let observation = request.observation.clone();
@@ -519,7 +519,6 @@ impl QueryService {
             completion,
             admission_request_id,
             admission_wait,
-            deadline,
             execution_cancellation,
             admission_wait_fact,
             lifecycle_ticket,
@@ -557,7 +556,6 @@ impl QueryService {
             placed_query,
             lifecycle_ticket,
             execution_cancellation: execution_cancellation.clone(),
-            deadline,
             observation: observation.clone(),
         };
         let publication = AdmissionPublication {
@@ -569,7 +567,6 @@ impl QueryService {
             admitted_compatible_devices,
             admission_request_id,
             admission_wait,
-            deadline,
             execution_cancellation,
             admission_wait_fact,
         };
@@ -673,13 +670,12 @@ impl QueryService {
             admitted_compatible_devices,
             admission_request_id,
             admission_wait,
-            deadline,
             execution_cancellation,
             admission_wait_fact,
         } = publication;
         let admitted_capability_evidence = submitted_plan_capability_evidence;
         envelope.register_allocator_domain_attempt(attempt_id);
-        if let Err(error) = execution_cancellation.check("query_engine.query_service.admission_transaction.publish") {
+        if let Err(error) = check_publication_cancellation(&execution_cancellation, probe.as_deref()) {
             envelope.preaccount_rollback_cleanup(&mut state);
             record_admission_lifecycle(
                 &observation,
@@ -723,24 +719,6 @@ impl QueryService {
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_error(&error);
-            return Err(error);
-        }
-        if let Some(error) = publication_deadline_error(deadline, probe.as_deref()) {
-            envelope.preaccount_rollback_cleanup(&mut state);
-            record_admission_lifecycle(
-                &observation,
-                admission_request_id,
-                AdmissionLifecycleState::TimedOut,
-                state.queued.len(),
-                None,
-                None,
-            );
-            self.inner.notify_admission_available();
-            drop(state);
-            pause_after_rollback_accounting(probe.as_deref());
-            drop(envelope);
-            self.inner.notify_admission_available();
-            completion.finish_timeout(&error);
             return Err(error);
         }
         if let Err(error) = envelope.activate_lifecycle_ticket() {

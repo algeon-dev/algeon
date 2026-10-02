@@ -1335,9 +1335,11 @@ fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()>
             )
             .into());
         }
-        // The engine requires one root slot plus `source_work_per_attempt`
-        // auxiliary slots for every concurrently active attempt. Rejecting it
-        // here keeps a misconfigured profile from reaching a backend build.
+        // Mirrors `GpuBackendDeviceProfile::derived_installation_bounds`, the
+        // runtime's rule, so a misconfigured profile fails here instead of at
+        // backend build: one root slot plus `source_work_per_attempt`
+        // auxiliary slots and one execution worker per active attempt, plus
+        // the worker the runtime reserves for lifecycle jobs.
         let required_slots = profile
             .max_active_attempts
             .checked_mul(profile.source_work_per_attempt.saturating_add(1))
@@ -1350,17 +1352,24 @@ fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()>
             )
             .into());
         }
-        // Worker and lane counts must cover every configured active slot.
-        for (field, bound) in
-            [("worker_count", profile.installation.worker_count), ("lane_count", profile.installation.lane_count)]
-        {
-            if bound < profile.max_active_attempts {
-                return Err(format!(
-                    "backend.device_profiles[{}].installation.{field} must be at least max_active_attempts {}",
-                    profile.ordinal, profile.max_active_attempts
-                )
-                .into());
-            }
+        let required_workers = profile
+            .max_active_attempts
+            .checked_add(1)
+            .ok_or("backend.device_profiles required worker count overflow")?;
+        if profile.installation.worker_count < required_workers {
+            return Err(format!(
+                "backend.device_profiles[{}].installation.worker_count must be at least {required_workers} \
+                 (max_active_attempts {} + 1, one worker is reserved for lifecycle jobs)",
+                profile.ordinal, profile.max_active_attempts
+            )
+            .into());
+        }
+        if profile.installation.lane_count < profile.max_active_attempts {
+            return Err(format!(
+                "backend.device_profiles[{}].installation.lane_count must be at least max_active_attempts {}",
+                profile.ordinal, profile.max_active_attempts
+            )
+            .into());
         }
     }
     Ok(())

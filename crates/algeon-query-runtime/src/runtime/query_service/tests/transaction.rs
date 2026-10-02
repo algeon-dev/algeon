@@ -171,8 +171,9 @@ fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
     let error = admission
         .join()
         .expect("admission thread joins")
-        .expect_err("forced publication expiry rejects the complete envelope");
-    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+        .expect_err("a cancellation at publication rejects the complete envelope");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("cancellation_requested"), Some("true"));
     drop(cleanup_blocker);
     close_receiver
         .recv_timeout(Duration::from_secs(10))
@@ -181,35 +182,39 @@ fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
     close.join().expect("close thread joins");
 }
 
+/// After placement the queue deadline no longer bounds the admission; the
+/// attempt's own deadline does, and its expiry during the envelope build
+/// rolls the complete envelope back.
 #[test]
-fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() {
+fn attempt_deadline_expiry_after_acquisition_rolls_back_complete_envelope() {
     let service = try_guaranteed_runtime_test_service()
         .expect("runtime-backed service for post-acquisition deadline rollback coverage");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
-    probe.force_deadline_after_acquisition_step(AdmissionStep::AfterRootMember);
     service.set_admission_transaction_probe(probe);
-    let queue_deadline = Instant::now() + Duration::from_secs(10);
+    let attempt_deadline = Instant::now() + Duration::from_millis(200);
     let attempt_owner =
         observed_attempt("post-acquisition-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt_owner.observation_for_test();
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service
-            .admit_query_with_request(QueryAdmissionRequest::new(binding).with_queue_deadline(queue_deadline))
+        admission_service.admit_query_with_request(
+            QueryAdmissionRequest::new(binding)
+                .with_execution_cancellation(ExecutionCancellation::with_deadline(Some(attempt_deadline))),
+        )
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
+    std::thread::sleep(attempt_deadline.saturating_duration_since(Instant::now()));
     pause.release();
-    let error = admission.join().expect("admission thread joins").expect_err("expired transaction cannot publish");
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-    assert_eq!(error.fact_value("acquisition_stage"), Some("after_root_member"));
+    let error = admission.join().expect("admission thread joins").expect_err("an expired attempt cannot publish");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
     assert!(
-        observed_admission_events(&observation).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
-        "post-acquisition deadline expiry records the timeout lifecycle"
+        observed_admission_events(&observation).iter().any(|(_, state)| *state == AdmissionLifecycleState::Cancelled),
+        "post-acquisition attempt deadline expiry records the cancellation lifecycle"
     );
 
     wait_for_transaction_cleanup(&service, "deadline rollback releases the complete provisional envelope");
@@ -221,47 +226,30 @@ fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() 
     assert_eq!(root_out, 0);
 }
 
+/// The queue deadline bounds only the wait for ledger placement: a request
+/// placed before it elapses publishes its envelope after it.
 #[test]
-fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication() {
+fn queue_deadline_ends_at_placement() {
     let service =
-        try_guaranteed_runtime_test_service().expect("runtime-backed service for pre-publication deadline coverage");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
-    let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterWorkerScope);
-    probe.force_deadline_before_publication();
+        try_guaranteed_runtime_test_service().expect("runtime-backed service for post-placement queue deadline");
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
     service.set_admission_transaction_probe(probe);
-    let queue_deadline = Instant::now() + Duration::from_secs(10);
-    let attempt_owner =
-        observed_attempt("pre-publication-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let observation = attempt_owner.observation_for_test();
-    let binding = attempt_owner.admission_binding();
+    let queue_deadline = Instant::now() + Duration::from_millis(200);
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
         admission_service
-            .admit_query_with_request(QueryAdmissionRequest::new(binding).with_queue_deadline(queue_deadline))
+            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_queue_deadline(queue_deadline))
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
-    let admission_state = service.inner.admission.lock().expect("hold admission publication mutex");
+    std::thread::sleep(queue_deadline.saturating_duration_since(Instant::now()));
     pause.release();
-    drop(admission_state);
-
-    let error = admission.join().expect("admission thread joins").expect_err("expired envelope cannot publish");
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-    assert_eq!(error.fact_value("acquisition_stage"), Some("before_publication"));
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
-    assert!(
-        observed_admission_events(&observation).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
-        "pre-publication deadline expiry records the timeout lifecycle"
-    );
-
-    wait_for_transaction_cleanup(&service, "pre-publication timeout rolls back the complete envelope");
-    let ledger = device.ledger().snapshot().unwrap();
-    let (root_out, _, _, _) = device.stream_pool().class_counters();
-    assert_eq!(ledger.active_attempts, 0);
-    assert_eq!(device.lane_permits().held_count(), 0);
-    assert_eq!(root_out, 0);
+    let handle = admission
+        .join()
+        .expect("admission thread joins")
+        .expect("a placed request publishes after its queue deadline");
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    drop(handle);
 }
 
 /// A provisional ledger grant is necessary while the physical envelope is

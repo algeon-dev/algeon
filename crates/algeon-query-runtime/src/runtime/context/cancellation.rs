@@ -58,6 +58,17 @@ impl ExecutionCancellation {
         }
     }
 
+    /// Resolves to the typed error that ends a wait: the cancellation, or the
+    /// deadline once it elapses. A waiter returns it directly rather than
+    /// reading the clock again, which a paused Tokio clock can disagree with.
+    pub async fn terminated(&self, operation: &'static str) -> QueryError {
+        self.cancelled_or_expired().await;
+        match self.check(operation) {
+            Err(error) => error,
+            Ok(()) => deadline_expired_error(operation),
+        }
+    }
+
     /// Resolves once cancellation is requested, ignoring the deadline. It
     /// needs no Tokio timer, so a blocking wait races it and bounds itself by
     /// [`Self::deadline`].
@@ -93,13 +104,7 @@ impl ExecutionCancellation {
                 .with_fact("cancellation_requested", true));
         }
         if self.is_expired() {
-            return Err(QueryError::new(
-                QueryErrorCode::Cancelled,
-                operation,
-                "native query execution deadline expired",
-            )
-            .with_fact("cancellation_requested", true)
-            .with_fact("reason", "deadline_expired"));
+            return Err(deadline_expired_error(operation));
         }
         Ok(())
     }
@@ -107,6 +112,12 @@ impl ExecutionCancellation {
     fn cancellation_requested(&self) -> bool {
         self.token.is_cancelled()
     }
+}
+
+fn deadline_expired_error(operation: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::Cancelled, operation, "native query execution deadline expired")
+        .with_fact("cancellation_requested", true)
+        .with_fact("reason", "deadline_expired")
 }
 
 impl Default for ExecutionCancellation {

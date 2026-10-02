@@ -167,7 +167,8 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                 .with_max_active_attempts(1)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                     4,
-                    policy.source_work_per_attempt,
+                    // One worker is reserved for lifecycle jobs.
+                    policy.source_work_per_attempt + 1,
                     policy.source_work_per_attempt,
                 ))
                 .with_source_work_per_attempt(policy.source_work_per_attempt),

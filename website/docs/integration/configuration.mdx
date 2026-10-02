@@ -64,13 +64,20 @@ deployment needs them.
 The two queue values can also be placed under `[admission]` as
 `max_queued_attempts` and `max_queue_wait_ms`. Environment values win.
 Admission is FIFO among capability-compatible waiters; there is no overtaking
-or protected-waiter setting.
+or protected-waiter setting. The queue wait ends when a device grant is placed;
+building the query's execution context after that is bounded by the query's own
+deadline and cancellation, not by the queue wait.
 
 After `device_ordinal`, a profile accepts `memory_limit_bytes`,
 `backend_reserve_bytes`, `default_query_limit_bytes`, `max_active_attempts`,
 `source_work_per_attempt`, `cache_cap_bytes`, and the optional telemetry flag
 (`install_telemetry`). Configure `stream_pool_size`, `worker_count`, and
-`lane_count` together or omit all three. An explicit `memory_limit_bytes`
+`lane_count` together or omit all three. `worker_count` is the number of GPU
+execution workers on the device. One worker is reserved for context setup and
+release cleanup, so a placed query builds its execution context and a finished
+query returns its resources while every other worker runs queries; query
+execution uses the remaining workers. The default is `max_active_attempts + 1`,
+and an explicit `worker_count` must be at least that. An explicit `memory_limit_bytes`
 requires an explicit `backend_reserve_bytes`: automatic capacity already bakes
 in driver headroom, but an explicit limit does not, so the reserve must be
 declared (`0` is a valid, deliberate choice).

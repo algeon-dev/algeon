@@ -12,7 +12,7 @@ use crate::observability::RuntimeObservationHandle;
 fn execution_spawn_is_rejected_when_its_class_is_saturated() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(
         cudf::DeviceId::DEFAULT.ordinal(),
-        2,
+        3,
         1,
         1,
         GpuExecutionQueryTracker::new(),
@@ -42,7 +42,7 @@ fn execution_spawn_is_rejected_when_its_class_is_saturated() {
 fn class_capacities_are_reported_and_release_on_completion() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(
         cudf::DeviceId::DEFAULT.ordinal(),
-        4,
+        5,
         2,
         6,
         GpuExecutionQueryTracker::new(),
@@ -81,7 +81,7 @@ fn class_capacities_are_reported_and_release_on_completion() {
 async fn a_second_island_execution_job_charges_the_class_its_context_owns() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(
         cudf::DeviceId::DEFAULT.ordinal(),
-        4,
+        5,
         1,
         1,
         GpuExecutionQueryTracker::new(),

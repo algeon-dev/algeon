@@ -18,6 +18,7 @@ use super::{
         CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
         QueryExecutionConfig, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
+        gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
     },
@@ -312,8 +313,12 @@ impl StandaloneScopes {
                     .unwrap_or_else(|| default_service_stream_pool_size_for_device(runtime.device())),
             )?,
         };
-        let gpu_execution_pool =
-            GpuExecutionPool::shared_for_device(runtime.device().ordinal(), service_stream_pool.pool_size())?;
+        // One execution worker per service stream, beside the reserved
+        // lifecycle workers.
+        let gpu_execution_pool = GpuExecutionPool::shared_for_device(
+            runtime.device().ordinal(),
+            service_stream_pool.pool_size() + RESERVED_LIFECYCLE_WORKERS,
+        )?;
         Ok(Self {
             device: DeviceRuntime {
                 gpu_execution_pool,

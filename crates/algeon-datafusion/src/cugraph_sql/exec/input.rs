@@ -11,7 +11,10 @@ use arrow::array::new_empty_array;
 use cudf::DataFrame;
 use futures::{StreamExt, stream::iter};
 use query_engine::{
-    admission::AdmittedPlan, error::QueryErrorCode, native_error::cudf_query_error, plan::QueryPlan,
+    admission::AdmittedPlan,
+    error::{QueryError, QueryErrorCode},
+    native_error::cudf_query_error,
+    plan::QueryPlan,
     runtime::ExecutionCancellation,
 };
 
@@ -292,7 +295,9 @@ async fn stage_cugraph_source(
                 let mut batches = Vec::new();
                 while let Some(batch) = tokio::select! {
                     batch = stream.try_next() => batch?,
-                    () = cancellation.cancelled_or_expired() => None,
+                    error = cancellation.terminated(HOST_INPUT_STAGING) => {
+                        return Err(host_staging_cancelled(error));
+                    },
                 } {
                     check_host_staging_cancellation(cancellation)?;
                     reserve_host_staging_batch(
@@ -315,14 +320,14 @@ async fn stage_cugraph_source(
     Ok(StagedCugraphSource::Host { schema, batches: partitions.into_iter().flatten().collect() })
 }
 
+const HOST_INPUT_STAGING: &str = "algeon_datafusion.cugraph_sql.host_input_staging";
+
 pub(super) fn check_host_staging_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
-    cancellation.check("algeon_datafusion.cugraph_sql.host_input_staging").map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "algeon_datafusion.cugraph_sql.host_input_staging",
-            "cuGraph host-input staging was cancelled",
-            error,
-        ))
-    })
+    cancellation.check(HOST_INPUT_STAGING).map_err(host_staging_cancelled)
+}
+
+fn host_staging_cancelled(error: QueryError) -> DataFusionError {
+    DataFusionError::from(Error::from_native(HOST_INPUT_STAGING, "cuGraph host-input staging was cancelled", error))
 }
 
 fn reserve_host_staging_batch(

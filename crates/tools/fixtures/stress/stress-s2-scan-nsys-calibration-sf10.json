@@ -22,7 +22,7 @@
         "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 4,
-        "installation": { "stream_pool_size": 12, "worker_count": 4, "lane_count": 4 }
+        "installation": { "stream_pool_size": 12, "worker_count": 5, "lane_count": 4 }
       },
       {
         "ordinal": 1,
@@ -33,7 +33,7 @@
         "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 4,
-        "installation": { "stream_pool_size": 12, "worker_count": 4, "lane_count": 4 }
+        "installation": { "stream_pool_size": 12, "worker_count": 5, "lane_count": 4 }
       },
       {
         "ordinal": 2,
@@ -44,7 +44,7 @@
         "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 4,
-        "installation": { "stream_pool_size": 12, "worker_count": 4, "lane_count": 4 }
+        "installation": { "stream_pool_size": 12, "worker_count": 5, "lane_count": 4 }
       },
       {
         "ordinal": 3,
@@ -55,7 +55,7 @@
         "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 4,
-        "installation": { "stream_pool_size": 12, "worker_count": 4, "lane_count": 4 }
+        "installation": { "stream_pool_size": 12, "worker_count": 5, "lane_count": 4 }
       }
     ],
     "queue": {

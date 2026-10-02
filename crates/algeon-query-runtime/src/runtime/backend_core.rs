@@ -33,6 +33,7 @@ use super::{
     },
     backend_metrics::{BackendAttemptDurations, BackendMetricsSnapshot, BackendMetricsStore},
     gpu::{AlgeonGpuInventory, GpuInventory, LiveBackendLease, claim_live_backend, normalize_device_ordinals},
+    gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
     observation_completion::ObservationCompletionExecutor,
 };
 use crate::{
@@ -389,6 +390,27 @@ impl GpuBackendDeviceProfile {
         self.installation_bounds
     }
 
+    /// The installation bounds a profile without explicit ones receives:
+    /// `A_d * (1 + S_d)` stream slots, `A_d` execution lanes, and one worker
+    /// per active attempt plus the worker reserved for context setup and
+    /// release cleanup. Explicit bounds must cover the stream slots and
+    /// workers of this derivation.
+    pub fn derived_installation_bounds(&self) -> Result<GpuBackendDeviceInstallationBounds> {
+        let auxiliary = self.max_active_attempts.checked_mul(self.source_work_per_attempt).ok_or_else(|| {
+            invalid_device_config(self.device_ordinal, "source_work_per_attempt", "overflowed")
+                .with_fact("reason", "aux_source_work_overflow")
+        })?;
+        let stream_pool_size = self.max_active_attempts.checked_add(auxiliary).ok_or_else(|| {
+            invalid_device_config(self.device_ordinal, "stream_pool_size", "overflowed")
+                .with_fact("reason", "required_slot_overflow")
+        })?;
+        let worker_count = self.max_active_attempts.checked_add(RESERVED_LIFECYCLE_WORKERS).ok_or_else(|| {
+            invalid_device_config(self.device_ordinal, "worker_count", "overflowed")
+                .with_fact("reason", "required_worker_overflow")
+        })?;
+        Ok(GpuBackendDeviceInstallationBounds::new(stream_pool_size, worker_count, self.max_active_attempts))
+    }
+
     pub fn install_telemetry(&self) -> bool {
         self.install_telemetry
     }
@@ -568,23 +590,15 @@ impl GpuBackendCoreDraft {
 
     /// Resolves derived installation bounds before validation.
     ///
-    /// Devices without explicit installation bounds inherit the frozen
-    /// `A_d * (1 + S_d)` stream/job-slot formula with `A_d` root lanes;
-    /// explicit bounds are validated against that formula instead.
+    /// Devices without explicit installation bounds take
+    /// [`GpuBackendDeviceProfile::derived_installation_bounds`]; explicit
+    /// bounds are validated against it instead.
     #[doc(hidden)]
     pub fn normalize_installation_bounds(&mut self) -> Result<()> {
         for device in &mut self.devices {
-            let source_work = device.profile.source_work_per_attempt;
-            let aux = device.profile.max_active_attempts.checked_mul(source_work).ok_or_else(|| {
-                invalid_device_config(device.profile.device_ordinal, "source_work_per_attempt", "overflowed")
-                    .with_fact("reason", "aux_source_work_overflow")
-            })?;
-            let required = device.profile.max_active_attempts.checked_add(aux).ok_or_else(|| {
-                invalid_device_config(device.profile.device_ordinal, "stream_pool_size", "overflowed")
-                    .with_fact("reason", "required_slot_overflow")
-            })?;
+            let derived = device.profile.derived_installation_bounds()?;
             if device.installation_bounds_set {
-                if device.stream_pool_size < required {
+                if device.stream_pool_size < derived.stream_pool_size {
                     return Err(invalid_device_config(
                         device.profile.device_ordinal,
                         "stream_pool_size",
@@ -592,19 +606,14 @@ impl GpuBackendCoreDraft {
                     )
                     .with_fact("reason", "stream_pool_below_required_formula")
                     .with_fact("stream_pool_size", device.stream_pool_size)
-                    .with_fact("required_slot_capacity", required)
+                    .with_fact("required_slot_capacity", derived.stream_pool_size)
                     .with_fact("max_active_attempts", device.profile.max_active_attempts)
-                    .with_fact("source_work_per_attempt", source_work));
+                    .with_fact("source_work_per_attempt", device.profile.source_work_per_attempt));
                 }
             } else {
-                device.stream_pool_size = required;
-                device.lane_count = device.profile.max_active_attempts;
-                // One root worker scope exists for every concurrently
-                // admitted attempt. Auxiliary work remains bounded by its
-                // class permits and stream slots; leaving the constructor's
-                // single-worker default here would make a public `A_d > 1`
-                // profile fail validation after automatic derivation.
-                device.worker_count = device.profile.max_active_attempts;
+                device.stream_pool_size = derived.stream_pool_size;
+                device.lane_count = derived.lane_count;
+                device.worker_count = derived.worker_count;
             }
         }
         Ok(())
@@ -654,11 +663,21 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         )
         .with_fact("reason", "zero"));
     }
-    for (field, value) in [
-        ("stream_pool_size", device.stream_pool_size),
-        ("worker_count", device.worker_count),
-        ("lane_count", device.lane_count),
-    ] {
+    // Every active attempt's query execution runs outside the reserved
+    // lifecycle workers.
+    let required_workers = device.profile.max_active_attempts.saturating_add(RESERVED_LIFECYCLE_WORKERS);
+    if device.worker_count < required_workers {
+        return Err(invalid_device_config(
+            device.profile.device_ordinal,
+            "worker_count",
+            "must cover every configured active query slot plus the reserved lifecycle worker",
+        )
+        .with_fact("reason", "worker_count_below_active_limit_and_lifecycle_reserve")
+        .with_fact("installation_bound", device.worker_count)
+        .with_fact("max_active_attempts", device.profile.max_active_attempts)
+        .with_fact("reserved_lifecycle_workers", RESERVED_LIFECYCLE_WORKERS));
+    }
+    for (field, value) in [("stream_pool_size", device.stream_pool_size), ("lane_count", device.lane_count)] {
         if value < device.profile.max_active_attempts {
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
@@ -2033,7 +2052,7 @@ mod tests {
         draft.normalize_installation_bounds().expect("automatic bounds derive");
         let device = draft.devices().first().expect("one device profile");
         assert_eq!(device.lane_count(), 2);
-        assert_eq!(device.worker_count(), 2);
+        assert_eq!(device.worker_count(), 3);
         assert!(device.stream_pool_size() >= 2);
         draft.validate().expect("derived multi-attempt installation profile validates");
     }
@@ -2155,7 +2174,7 @@ mod tests {
                 GpuBackendDeviceProfile::new(0)
                     .with_default_query_limit_bytes(256 * 1024 * 1024)
                     .with_max_active_attempts(2)
-                    .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),
+                    .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 3, 2)),
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
@@ -2262,7 +2281,7 @@ mod tests {
         let ordinal = usize::MAX - 2;
         let owner_lease = claim_live_backend(&[ordinal]).unwrap();
         let journal = Arc::new(ConstructionResourceJournal::default());
-        let pool = GpuExecutionPool::new(ordinal, 1).unwrap();
+        let pool = GpuExecutionPool::new(ordinal, 2).unwrap();
         journal.record_execution_pool(pool.clone()).unwrap();
         let gate = Arc::new(BlockingGate::default());
         let worker_gate = Arc::clone(&gate);
@@ -2313,7 +2332,7 @@ mod tests {
         let ordinal = usize::MAX - 3;
         let owner_lease = claim_live_backend(&[ordinal]).expect("test claims the live owner");
         let journal = Arc::new(ConstructionResourceJournal::default());
-        let pool = GpuExecutionPool::new(ordinal, 1).expect("test execution pool");
+        let pool = GpuExecutionPool::new(ordinal, 2).expect("test execution pool");
         journal.record_execution_pool(pool.clone()).expect("journal records the execution pool");
         let gate = Arc::new(BlockingGate::default());
         let worker_gate = Arc::clone(&gate);

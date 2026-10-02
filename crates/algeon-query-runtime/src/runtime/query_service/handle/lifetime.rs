@@ -47,10 +47,14 @@ enum RootContextSetupState {
     Unclaimed,
     InFlight,
     Ready,
+    /// Release was requested; no context starts. Being a value rather than a
+    /// bare wakeup, a waiter that read the state just before the release still
+    /// sees it on its next read.
+    Released,
 }
 
 /// The root-context setup state. Each state change wakes the waiting
-/// receivers, and so does a release request, which leaves the state as it is.
+/// receivers.
 #[derive(Debug)]
 struct RootContextSetupCoordinator {
     state: watch::Sender<RootContextSetupState>,
@@ -398,20 +402,25 @@ impl QueryHandleLifetime {
         if !self.is_active() {
             return Err(self.released_error());
         }
-        let mut claim = ContextSetupClaim::Auxiliary;
+        // `None` once release was requested: no context starts after it.
+        let mut claim = Some(ContextSetupClaim::Auxiliary);
         self.root_context_setup.state.send_if_modified(|state| match *state {
             RootContextSetupState::Unclaimed => {
                 *state = RootContextSetupState::InFlight;
-                claim = ContextSetupClaim::Root;
+                claim = Some(ContextSetupClaim::Root);
                 true
             },
             RootContextSetupState::InFlight => {
-                claim = ContextSetupClaim::WaitForRoot;
+                claim = Some(ContextSetupClaim::WaitForRoot);
                 false
             },
             RootContextSetupState::Ready => false,
+            RootContextSetupState::Released => {
+                claim = None;
+                false
+            },
         });
-        Ok(claim)
+        claim.ok_or_else(|| self.released_error())
     }
 
     fn wait_for_root_context_setup(&self, cancellation: &ExecutionCancellation, operation: &'static str) -> Result<()> {
@@ -421,8 +430,10 @@ impl QueryHandleLifetime {
             if !self.is_active() {
                 return Err(self.released_error());
             }
-            if *setup.borrow_and_update() != RootContextSetupState::InFlight {
-                return Ok(());
+            match *setup.borrow_and_update() {
+                RootContextSetupState::InFlight => {},
+                RootContextSetupState::Released => return Err(self.released_error()),
+                RootContextSetupState::Unclaimed | RootContextSetupState::Ready => return Ok(()),
             }
             let _ = block_until(
                 async {
@@ -448,8 +459,10 @@ impl QueryHandleLifetime {
             if !self.is_active() {
                 return Err(self.released_error());
             }
-            if *setup.borrow_and_update() != RootContextSetupState::InFlight {
-                return Ok(());
+            match *setup.borrow_and_update() {
+                RootContextSetupState::InFlight => {},
+                RootContextSetupState::Released => return Err(self.released_error()),
+                RootContextSetupState::Unclaimed | RootContextSetupState::Ready => return Ok(()),
             }
             tokio::select! {
                 biased;
@@ -496,9 +509,13 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn complete_root_context_setup(&self) {
-        self.root_context_setup.state.send_modify(|state| {
-            debug_assert_eq!(*state, RootContextSetupState::InFlight);
-            *state = RootContextSetupState::Ready;
+        self.root_context_setup.state.send_if_modified(|state| {
+            debug_assert!(matches!(*state, RootContextSetupState::InFlight | RootContextSetupState::Released));
+            let in_flight = *state == RootContextSetupState::InFlight;
+            if in_flight {
+                *state = RootContextSetupState::Ready;
+            }
+            in_flight
         });
     }
 
@@ -512,8 +529,8 @@ impl QueryHandleLifetime {
         });
     }
 
-    fn wake_root_context_setup_waiters(&self) {
-        self.root_context_setup.state.send_modify(|_state| {});
+    fn release_root_context_setup(&self) {
+        self.root_context_setup.state.send_replace(RootContextSetupState::Released);
     }
 
     pub(super) fn request_release(&self) {
@@ -527,7 +544,7 @@ impl QueryHandleLifetime {
             }
         }
         self.query_epoch.invalidate();
-        self.wake_root_context_setup_waiters();
+        self.release_root_context_setup();
         self.release_if_ready();
     }
 

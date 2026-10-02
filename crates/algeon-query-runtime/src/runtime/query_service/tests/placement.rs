@@ -123,6 +123,40 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
+/// A native fault closes the device's ledger when it is reported, so a waiter
+/// whose only device faulted ends with the device error without waiting for
+/// other admission activity or its queue deadline.
+#[test]
+fn a_native_fault_ends_a_waiter_without_other_admission_activity() {
+    // The service registers its fault observer in the registry of the thread
+    // that builds it, so the isolated registry is installed first.
+    let scope = DeviceSafetyTestScope::install([]);
+    let service = runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5) },
+        vec![runtime_test_device_profile(1)],
+    )
+    .unwrap();
+    let device_ordinal = service.device_ledger_reports().unwrap()[0].device_ordinal;
+    let device = injected_device_id(device_ordinal as i32).expect("isolated device health owner");
+    let active = service.admit_query().expect("the active query occupies the only slot");
+    let queued_service = service.clone();
+    let waiter = std::thread::spawn(move || queued_service.admit_query().map(|handle| handle.end_test_attempt()));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
+        assert!(Instant::now() < deadline, "the second admission queues behind the active query");
+        std::thread::yield_now();
+    }
+
+    report_device_fault(device, DeviceFaultKind::FatalDeviceOperation, "injected_queued_waiter_fault", None);
+
+    let error = waiter.join().expect("waiter thread does not panic").expect_err("the faulted device rejects the waiter");
+    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
+    assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
+    assert_eq!(scope.health_snapshot(device).fault_count(), 1);
+    active.end_test_attempt();
+}
+
 #[test]
 fn placement_missing_resolution_cleans_up_before_waking_a_close_waiter() {
     let service = test_service(1, 8);

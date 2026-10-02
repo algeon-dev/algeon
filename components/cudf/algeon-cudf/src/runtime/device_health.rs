@@ -12,7 +12,7 @@ use std::{
     io::Write,
     ptr,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, PoisonError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -137,12 +137,16 @@ impl DeviceHealthSnapshot {
     }
 }
 
+type DeviceFaultObserver = Arc<dyn Fn(DeviceHealthSnapshot) + Send + Sync>;
+
 pub(crate) struct DeviceHealthState {
     unhealthy: AtomicBool,
     first_fault: OnceLock<DeviceFault>,
     fault_count: AtomicU64,
     rejected_operation_count: AtomicU64,
     quarantined_teardown_count: AtomicU64,
+    fault_observers: Mutex<Vec<(u64, DeviceFaultObserver)>>,
+    next_fault_observer: AtomicU64,
 }
 
 impl DeviceHealthState {
@@ -153,7 +157,14 @@ impl DeviceHealthState {
             fault_count: AtomicU64::new(0),
             rejected_operation_count: AtomicU64::new(0),
             quarantined_teardown_count: AtomicU64::new(0),
+            fault_observers: Mutex::new(Vec::new()),
+            next_fault_observer: AtomicU64::new(0),
         }
+    }
+
+    fn fault_observers(&self) -> Vec<DeviceFaultObserver> {
+        let observers = self.fault_observers.lock().unwrap_or_else(PoisonError::into_inner);
+        observers.iter().map(|(_, observer)| Arc::clone(observer)).collect()
     }
 
     pub(crate) fn snapshot(&self, device: DeviceId) -> DeviceHealthSnapshot {
@@ -223,6 +234,45 @@ pub fn device_health_snapshot(device: DeviceId) -> DeviceHealthSnapshot {
     with_registry(|registry| registry.state(device).snapshot(device))
 }
 
+/// A registration of [`observe_device_faults`]; dropping it removes the
+/// observer.
+#[must_use = "dropping the registration stops the observation"]
+pub struct DeviceFaultObservation {
+    state: Weak<DeviceHealthState>,
+    id: u64,
+}
+
+impl fmt::Debug for DeviceFaultObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("DeviceFaultObservation").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+impl Drop for DeviceFaultObservation {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            state.fault_observers.lock().unwrap_or_else(PoisonError::into_inner).retain(|(id, _)| *id != self.id);
+        }
+    }
+}
+
+/// Runs `observer` with the device's health each time a fault is reported
+/// for `device`, until the returned registration drops. The observer runs on
+/// the reporting thread after the fault is recorded, outside every health
+/// lock. A fault reported before registration is not replayed; read
+/// [`device_health_snapshot`] after registering to cover it.
+pub fn observe_device_faults(
+    device: DeviceId,
+    observer: impl Fn(DeviceHealthSnapshot) + Send + Sync + 'static,
+) -> DeviceFaultObservation {
+    with_registry(|registry| {
+        let state = registry.state(device);
+        let id = state.next_fault_observer.fetch_add(1, Ordering::Relaxed);
+        state.fault_observers.lock().unwrap_or_else(PoisonError::into_inner).push((id, Arc::new(observer)));
+        DeviceFaultObservation { state: Arc::downgrade(&state), id }
+    })
+}
+
 pub(crate) fn ensure_healthy(device: DeviceId, operation: &'static str) -> Result<()> {
     with_registry(|registry| {
         let state = registry.state(device);
@@ -277,7 +327,7 @@ pub fn report_device_fault(
     operation: &'static str,
     native_status: Option<DeviceFaultNativeStatus>,
 ) {
-    with_registry(|registry| {
+    let (snapshot, observers) = with_registry(|registry| {
         let state = registry.state(device);
         let fault = DeviceFault { kind, operation, native_status };
         let _ = state.first_fault.set(fault);
@@ -289,7 +339,11 @@ pub fn report_device_fault(
                 device.ordinal_raw()
             ));
         }
+        (state.snapshot(device), state.fault_observers())
     });
+    for observer in observers {
+        observer(snapshot);
+    }
 }
 
 pub(crate) fn check_device_status_in(

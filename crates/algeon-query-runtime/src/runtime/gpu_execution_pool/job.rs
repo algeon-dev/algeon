@@ -17,14 +17,11 @@ use std::{
 
 use futures::FutureExt;
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::{
-    sync::OwnedSemaphorePermit,
-    task::{JoinError, JoinHandle},
-};
+use tokio::task::{JoinError, JoinHandle};
 
 use super::{
     BUILD_OPERATION, CURRENT_POOL_ID, CURRENT_WORKER_INDEX, GpuExecutionJobKind, GpuExecutionQueryTracker, PoolDrain,
-    RUN_OPERATION,
+    RESERVED_LIFECYCLE_WORKERS, RUN_OPERATION, inner::WorkerSeat,
 };
 use crate::observability::{
     GpuJobLifecycleState, JobDefinitionRow, RuntimeGpuJobObservation, RuntimeJobId, RuntimeObservationHandle,
@@ -312,7 +309,7 @@ impl Drop for JobTerminalGuard {
 
 pub(super) async fn run_counted_job<F, T>(
     mut guard: JobCounterGuard,
-    _permit: OwnedSemaphorePermit,
+    _seat: WorkerSeat,
     future: F,
 ) -> std::result::Result<T, ()>
 where
@@ -333,7 +330,7 @@ where
 
 pub(super) async fn run_counted_job_scoped<B, F, T>(
     mut guard: JobCounterGuard,
-    _permit: OwnedSemaphorePermit,
+    _seat: WorkerSeat,
     build_future: B,
 ) -> std::result::Result<T, ()>
 where
@@ -394,15 +391,16 @@ impl<T> Drop for AbortOnDropJoinHandle<T> {
 }
 
 pub(super) fn validate_worker_count(device_ordinal: usize, worker_count: usize) -> Result<()> {
-    if worker_count == 0 {
+    if worker_count <= RESERVED_LIFECYCLE_WORKERS {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             BUILD_OPERATION,
-            "GPU execution pool worker count must be greater than zero",
+            "GPU execution pool worker count must exceed its reserved lifecycle workers",
         )
         .with_fact("device_ordinal", device_ordinal)
         .with_fact("worker_count", worker_count)
-        .with_fact("reason", "zero"));
+        .with_fact("reserved_lifecycle_workers", RESERVED_LIFECYCLE_WORKERS)
+        .with_fact("reason", "below_lifecycle_reserve"));
     }
     Ok(())
 }

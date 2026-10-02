@@ -43,7 +43,7 @@ pub(crate) struct QueryAdmissionWaiter {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
-    pub(super) deadline: Instant,
+    pub(super) deadline: Option<Instant>,
     pub(super) execution_cancellation: ExecutionCancellation,
     pub(super) terminal: QueuedAdmissionTerminal,
     pub(super) queued: bool,
@@ -429,16 +429,15 @@ pub(super) struct AdmissionRequest {
     /// Exact request cap, or `None` until the selected ledger resolves its
     /// configured default inside the admission transaction.
     pub(super) requested_query_cap_bytes: Option<u64>,
-    pub(super) deadline: Instant,
+    pub(super) deadline: Option<Instant>,
     /// The attempt-wide token also used by transactional envelope acquisition.
     pub(super) execution_cancellation: ExecutionCancellation,
     /// Terminal result recorded by queue maintenance before it drops this
     /// request's completion payload outside the admission mutex.
     pub(super) terminal: QueuedAdmissionTerminal,
-    /// Whether a queue sweep has checked this request against device health
-    /// and resident capacity since it entered the queue. Later checks follow
-    /// the ledger transitions that can change the answer.
-    pub(super) device_state_validated: bool,
+    /// The revalidation generation this request's device state was last
+    /// checked at; `None` until its first check.
+    pub(super) validated_generation: Option<u64>,
 }
 
 /// One immutable capability/executability requirement resolved for one
@@ -449,6 +448,13 @@ pub(super) type DeviceAdmissionEntries = BTreeMap<usize, AttemptRequirement>;
 impl AdmissionRequest {
     pub(super) fn requirement_for_device(&self, device_ordinal: usize) -> Result<&AttemptRequirement> {
         self.device_entries.get(&device_ordinal).ok_or_else(|| missing_device_admission_entry_error(device_ordinal))
+    }
+
+    /// Whether this waiter still belongs to the queue at `now`: neither
+    /// cancelled nor past its deadline. A non-member waits only for its own
+    /// waiter or a sweep to remove it.
+    pub(super) fn is_queue_member(&self, now: Instant) -> bool {
+        !self.execution_cancellation.is_cancelled() && self.deadline.is_none_or(|deadline| deadline > now)
     }
 
     /// Captures FIFO queue identity when the waiter is selected.
@@ -915,27 +921,45 @@ impl QueryAdmissionWaiter {
                     .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
             },
         };
-        let sweep = self.service.sweep_expired_queued_requests_locked(&mut state);
-        if !sweep.is_empty() {
-            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
-            drop(state);
-            sweep.finish();
-            state = match self.service.inner.admission.lock() {
-                Ok(state) => state,
-                Err(error) => {
-                    self.queued = false;
-                    return Err(self
-                        .service
-                        .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
-                },
-            };
-        }
-        // This invocation may have swept its own cancellation, expiry, or
-        // health-rejection from the queue. The terminal result is recorded
-        // before the sweep drops its completion payload, so consume it before
-        // falling through to placement and returning a misleading `Ok(None)`.
+        // A step ends only this request. Other waiters' cancellation and
+        // expiry are removed by their own steps or by submission and snapshot
+        // sweeps; until then they are not queue members and claim no device.
+        // A sweep that ran since the check above may have recorded this
+        // request's terminal result before dropping its completion payload.
         if let Some(error) = self.terminal.take() {
             self.queued = false;
+            return Err(error);
+        }
+        match self.service.reconcile_native_admission_health() {
+            Ok(transitioned_device_ordinals) => {
+                for device_ordinal in transitioned_device_ordinals {
+                    slot_notifications.record_device_health_transition(device_ordinal);
+                }
+            },
+            Err(error) => {
+                eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
+            },
+        }
+        let device_state_rejection =
+            match state.queued.iter_mut().find(|request| request.admission_request_id == self.admission_request_id) {
+                Some(request) => self.service.revalidate_queued_request_device_state(request),
+                None => None,
+            };
+        if let Some(error) = device_state_rejection {
+            let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+            self.queued = false;
+            if removed.is_some() {
+                record_admission_lifecycle(
+                    &self.observation,
+                    self.admission_request_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+            }
+            drop(state);
+            finish_removed_request_error(removed, &error);
             return Err(error);
         }
         if let Some(error) = self.service.admission_terminal_rejection(&state) {
@@ -1015,7 +1039,7 @@ impl QueryAdmissionWaiter {
                 },
             };
             let Some(placed_query) = placed_query else {
-                if Instant::now() >= self.deadline {
+                if self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     // Read the timed-out waiter's cap before abandoning it: the
                     // removal shifts every later entry, so `position` no longer
                     // names this request afterwards.
@@ -1035,7 +1059,7 @@ impl QueryAdmissionWaiter {
                     let error = self.service.memory_grant_wait_timeout_error(
                         device_ordinal,
                         requested_query_cap_bytes,
-                        state.queued.len(),
+                        self.service.queue_member_count_locked(&state),
                     );
                     drop(state);
                     finish_removed_request_error(removed, &error);
@@ -1079,14 +1103,13 @@ impl QueryAdmissionWaiter {
                 completion: admitted.completion,
                 admission_request_id: self.admission_request_id,
                 admission_wait: self.requested_at.elapsed(),
-                deadline: self.deadline,
                 execution_cancellation: admitted.execution_cancellation,
                 admission_wait_fact: Some(admission_wait_fact),
                 lifecycle_ticket,
             }));
         }
 
-        if Instant::now() >= self.deadline {
+        if self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
             self.queued = false;
             if removed.is_some() {
@@ -1101,7 +1124,7 @@ impl QueryAdmissionWaiter {
             }
             let error = service_overloaded_error(
                 "queue_wait_elapsed",
-                state.queued.len(),
+                self.service.queue_member_count_locked(&state),
                 self.service.inner.queue_bounds.max_waiters,
             );
             drop(state);
@@ -1112,9 +1135,10 @@ impl QueryAdmissionWaiter {
         Ok(None)
     }
 
-    /// Remaining time before this queued admission reaches the service timeout.
-    pub(crate) fn remaining_wait(&self) -> Duration {
-        self.deadline.saturating_duration_since(Instant::now())
+    /// Remaining time before this queued admission reaches its queue
+    /// deadline, or `None` when the wait has no deadline.
+    pub(crate) fn remaining_wait(&self) -> Option<Duration> {
+        self.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
     /// Completes this queued admission on the calling thread.
@@ -1133,8 +1157,10 @@ impl QueryAdmissionWaiter {
             if let Some(handle) = self.try_admit()? {
                 return Ok(handle);
             }
-            let wake_deadline =
-                self.execution_cancellation.deadline().map_or(self.deadline, |deadline| deadline.min(self.deadline));
+            let wake_deadline = match (self.execution_cancellation.deadline(), self.deadline) {
+                (Some(attempt), Some(queue)) => Some(attempt.min(queue)),
+                (attempt, queue) => attempt.or(queue),
+            };
             let _ = block_until(
                 async {
                     tokio::select! {
@@ -1143,7 +1169,7 @@ impl QueryAdmissionWaiter {
                         () = self.execution_cancellation.cancel_requested() => {},
                     }
                 },
-                Some(wake_deadline),
+                wake_deadline,
             );
         }
     }

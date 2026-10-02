@@ -1266,8 +1266,8 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5) },
         vec![
-            runtime_test_device_profile_with_limits(0, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
-            runtime_test_device_profile_with_limits(1, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
+            runtime_test_device_profile_with_limits(0, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 2, 1),
+            runtime_test_device_profile_with_limits(1, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 2, 1),
         ],
     )
     .expect("two-device runtime-backed service for alternate retry advice");

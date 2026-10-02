@@ -21,6 +21,7 @@ use crate::{
     runtime::{
         DeviceCapabilities,
         gpu::{DeviceLedger, GrantIdentity},
+        gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
         query_service::service::TestPauseHandle,
     },
 };
@@ -162,7 +163,7 @@ impl AdmissionTestController {
 
     fn expire_waiter(&self, waiter: &mut AdmissionTestWaiter) {
         let expired = Instant::now();
-        waiter.waiter.deadline = expired;
+        waiter.waiter.deadline = Some(expired);
         let admission_request_id = waiter.waiter.admission_request_id;
         self.service
             .inner
@@ -173,7 +174,7 @@ impl AdmissionTestController {
             .iter_mut()
             .find(|request| request.admission_request_id == admission_request_id)
             .expect("queued request")
-            .deadline = expired;
+            .deadline = Some(expired);
     }
 }
 
@@ -465,7 +466,7 @@ fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBack
         default_query_limit_bytes,
         max_active_attempts,
         stream_pool_size,
-        max_active_attempts,
+        max_active_attempts + RESERVED_LIFECYCLE_WORKERS,
         max_active_attempts,
     )
 }

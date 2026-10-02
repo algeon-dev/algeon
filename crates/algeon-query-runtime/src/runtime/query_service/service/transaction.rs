@@ -20,10 +20,7 @@
 
 #[cfg(test)]
 use std::sync::mpsc;
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::sync::{Arc, Mutex};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
@@ -62,6 +59,7 @@ pub(crate) enum AdmissionStep {
 }
 
 impl AdmissionStep {
+    #[cfg(test)]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::BeforeLanePermit => "before_lane_permit",
@@ -103,19 +101,12 @@ pub(crate) struct AdmissionTransactionProbe {
     #[cfg(test)]
     pause_at: Mutex<Option<(AdmissionStep, Arc<AdmissionTransactionPause>)>>,
     #[cfg(test)]
-    force_deadline_at: Mutex<Option<ForcedAdmissionDeadline>>,
+    cancel_before_publication: Mutex<bool>,
     #[cfg(test)]
     rollback_pause: Mutex<Option<Arc<AdmissionTransactionPause>>>,
     /// Name of the thread that ran the transaction's first probed step.
     #[cfg(test)]
     transaction_thread: Mutex<Option<String>>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForcedAdmissionDeadline {
-    Acquisition(AdmissionStep),
-    BeforePublication,
 }
 
 #[cfg(test)]
@@ -136,7 +127,7 @@ impl AdmissionTransactionProbe {
         Self {
             fail_at: Mutex::new(None),
             pause_at: Mutex::new(None),
-            force_deadline_at: Mutex::new(None),
+            cancel_before_publication: Mutex::new(false),
             rollback_pause: Mutex::new(None),
             transaction_thread: Mutex::new(None),
         }
@@ -147,7 +138,7 @@ impl AdmissionTransactionProbe {
         Self {
             fail_at: Mutex::new(Some(step)),
             pause_at: Mutex::new(None),
-            force_deadline_at: Mutex::new(None),
+            cancel_before_publication: Mutex::new(false),
             rollback_pause: Mutex::new(None),
             transaction_thread: Mutex::new(None),
         }
@@ -167,29 +158,12 @@ impl AdmissionTransactionProbe {
             Self {
                 fail_at: Mutex::new(None),
                 pause_at: Mutex::new(Some((step, pause))),
-                force_deadline_at: Mutex::new(None),
+                cancel_before_publication: Mutex::new(false),
                 rollback_pause: Mutex::new(None),
                 transaction_thread: Mutex::new(None),
             },
             super::TestPauseHandle::new("admission transaction", entered_receiver, release_sender),
         )
-    }
-
-    /// Forces the boundary immediately after `step` to behave as if its
-    /// deadline elapsed.  This keeps deadline coverage deterministic without
-    /// turning a scheduler delay into a test precondition.
-    #[cfg(test)]
-    pub(crate) fn force_deadline_after_acquisition_step(&self, step: AdmissionStep) {
-        *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(ForcedAdmissionDeadline::Acquisition(step));
-    }
-
-    /// Forces only the publication recheck to expire.  Acquisition still
-    /// completes, allowing tests to prove the post-mutex publication gate.
-    #[cfg(test)]
-    pub(crate) fn force_deadline_before_publication(&self) {
-        *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(ForcedAdmissionDeadline::BeforePublication);
     }
 
     /// Pauses after an unpublished envelope has atomically transferred its
@@ -205,7 +179,7 @@ impl AdmissionTransactionProbe {
             Self {
                 fail_at: Mutex::new(None),
                 pause_at: Mutex::new(None),
-                force_deadline_at: Mutex::new(Some(ForcedAdmissionDeadline::BeforePublication)),
+                cancel_before_publication: Mutex::new(true),
                 rollback_pause: Mutex::new(Some(pause)),
                 transaction_thread: Mutex::new(None),
             },
@@ -220,30 +194,13 @@ impl AdmissionTransactionProbe {
     }
 
     #[cfg(test)]
-    fn forces_deadline_at_acquisition_stage(&self, stage: &'static str) -> bool {
-        matches!(
-            *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            Some(ForcedAdmissionDeadline::Acquisition(step)) if step.as_str() == stage
-        )
+    fn forces_cancellation_before_publication(&self) -> bool {
+        *self.cancel_before_publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[cfg(not(test))]
     #[inline(always)]
-    fn forces_deadline_at_acquisition_stage(&self, _stage: &'static str) -> bool {
-        false
-    }
-
-    #[cfg(test)]
-    fn forces_deadline_before_publication(&self) -> bool {
-        matches!(
-            *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            Some(ForcedAdmissionDeadline::BeforePublication)
-        )
-    }
-
-    #[cfg(not(test))]
-    #[inline(always)]
-    fn forces_deadline_before_publication(&self) -> bool {
+    fn forces_cancellation_before_publication(&self) -> bool {
         false
     }
 
@@ -632,42 +589,25 @@ impl Drop for EnvelopeBuilder {
     }
 }
 
-fn check_admission_boundary(
-    cancellation: &ExecutionCancellation,
-    deadline: Instant,
-    acquisition_stage: &'static str,
-    probe: Option<&AdmissionTransactionProbe>,
-) -> Result<()> {
-    const OPERATION: &str = "query_engine.query_service.admission_transaction";
-    cancellation.check(OPERATION)?;
-    let deadline_elapsed = Instant::now() >= deadline
-        || probe.is_some_and(|probe| probe.forces_deadline_at_acquisition_stage(acquisition_stage));
-    if !deadline_elapsed {
-        return Ok(());
-    }
-    Err(QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        OPERATION,
-        "query service admission deadline elapsed while acquiring the resource envelope",
-    )
-    .with_fact("reason", "queue_wait_elapsed")
-    .with_fact("acquisition_stage", acquisition_stage))
+/// The queue deadline ended at placement; from there the envelope is bounded
+/// by the attempt's cancellation and its deadline.
+fn check_admission_boundary(cancellation: &ExecutionCancellation) -> Result<()> {
+    cancellation.check("query_engine.query_service.admission_transaction")
 }
 
-pub(super) fn publication_deadline_error(
-    deadline: Instant,
+/// The attempt's cancellation, checked again once publication holds the
+/// admission mutex.
+pub(super) fn check_publication_cancellation(
+    cancellation: &ExecutionCancellation,
     probe: Option<&AdmissionTransactionProbe>,
-) -> Option<QueryError> {
-    (Instant::now() >= deadline || probe.is_some_and(AdmissionTransactionProbe::forces_deadline_before_publication))
-        .then(|| {
-            QueryError::new(
-                QueryErrorCode::ServiceOverloaded,
-                "query_engine.query_service.admission_transaction.publish",
-                "query service admission deadline elapsed before publication",
-            )
-            .with_fact("reason", "queue_wait_elapsed")
-            .with_fact("acquisition_stage", "before_publication")
-        })
+) -> Result<()> {
+    const OPERATION: &str = "query_engine.query_service.admission_transaction.publish";
+    if probe.is_some_and(AdmissionTransactionProbe::forces_cancellation_before_publication) {
+        let forced = ExecutionCancellation::new();
+        forced.cancel();
+        return forced.check(OPERATION);
+    }
+    cancellation.check(OPERATION)
 }
 
 /// Optional rendezvous for the interval after rollback ownership is counted
@@ -682,15 +622,29 @@ pub(super) fn pause_after_rollback_accounting(probe: Option<&AdmissionTransactio
 }
 
 impl AdmissionEnvelope {
+    /// Rolls a placed grant back before any envelope component exists, on
+    /// the same path as a failed build.
+    pub(crate) fn abandon(service: &Arc<QueryServiceInner>, placed: PlacedQuery, lifecycle_ticket: AdmissionTicket) {
+        let _rollback = EnvelopeBuilder {
+            service: Arc::clone(service),
+            lifecycle_ticket: Some(lifecycle_ticket),
+            root_member: None,
+            domain: None,
+            root_stream: None,
+            lane_permit: None,
+            memory_grant: Some(placed.memory_grant),
+        };
+    }
+
     /// Builds the envelope for a placed query while the admission mutex is
     /// released. The root stream acquisition is the only blocking step and
-    /// observes the attempt-wide cancellation and queue deadline.
+    /// observes the attempt-wide cancellation and deadline; the queue
+    /// deadline ended at placement.
     pub(crate) fn acquire(
         service: &Arc<QueryServiceInner>,
         placed: PlacedQuery,
         lifecycle_ticket: AdmissionTicket,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
         observation: &RuntimeObservationHandle,
         probe: Option<&AdmissionTransactionProbe>,
     ) -> Result<Self> {
@@ -705,10 +659,10 @@ impl AdmissionEnvelope {
             lane_permit: None,
             memory_grant: Some(memory_grant),
         };
-        check_admission_boundary(cancellation, deadline, "transaction_entry", probe)?;
+        check_admission_boundary(cancellation)?;
         let Some(resources) = service.resources.as_ref() else {
             // Admission-only service: the ledger grant is the entire envelope.
-            check_admission_boundary(cancellation, deadline, "transaction_complete", probe)?;
+            check_admission_boundary(cancellation)?;
             return Ok(Self {
                 service: Arc::clone(&builder.service),
                 device_ordinal,
@@ -727,17 +681,16 @@ impl AdmissionEnvelope {
 
         // (1) Attempt lane: non-blocking by construction (active <= A_d).
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeLanePermit))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::BeforeLanePermit.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
         builder.lane_permit = Some(device.lane_permits().acquire()?);
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterLanePermit))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::AfterLanePermit.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
 
         // (2) Root stream (Root permit class).
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeRootStream))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::BeforeRootStream.as_str(), probe)?;
-        let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline_and_class(
+        check_admission_boundary(cancellation)?;
+        let stream_lease = device.stream_pool().acquire_observed_with_cancellation_and_class(
             cancellation,
-            deadline,
             "query_engine.query_service.admission_transaction.stream_acquire",
             observation.clone(),
             RuntimeStreamLeaseScope::default(),
@@ -755,11 +708,11 @@ impl AdmissionEnvelope {
         }
         builder.root_stream = Some(stream_lease);
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterRootStream))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::AfterRootStream.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
 
         // (3) Allocation domain: grant == ceiling, domain_id == grant_id.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeAllocationDomain))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::BeforeAllocationDomain.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
         let runtime = builder.root_stream.as_ref().expect("root stream present").shared_runtime()?;
         let domain = AttemptAllocationDomain::create(runtime.as_ref(), grant_ref)?;
         if domain.device_ordinal() != device_ordinal {
@@ -774,18 +727,18 @@ impl AdmissionEnvelope {
         }
         builder.domain = Some(domain);
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterAllocationDomain))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::AfterAllocationDomain.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
 
         // (4) Root stream member of the attempt domain.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeRootMember))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::BeforeRootMember.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
         builder.root_member = Some(builder.domain.as_ref().expect("domain present").create_member(runtime.stream())?);
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterRootMember))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::AfterRootMember.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
 
         // (5) Device worker scope: identity evidence, non-blocking.
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::BeforeWorkerScope))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::BeforeWorkerScope.as_str(), probe)?;
+        check_admission_boundary(cancellation)?;
         let pool = resources.gpu_execution_pool_for_device(device_ordinal)?;
         let worker_scope = DeviceWorkerScope::new(
             device_ordinal,
@@ -793,8 +746,8 @@ impl AdmissionEnvelope {
             builder.lane_permit.as_ref().expect("lane present").index(),
         );
         probe.map_or(Ok(()), |probe| probe.check(AdmissionStep::AfterWorkerScope))?;
-        check_admission_boundary(cancellation, deadline, AdmissionStep::AfterWorkerScope.as_str(), probe)?;
-        check_admission_boundary(cancellation, deadline, "transaction_complete", probe)?;
+        check_admission_boundary(cancellation)?;
+        check_admission_boundary(cancellation)?;
         Ok(Self {
             service: Arc::clone(&builder.service),
             device_ordinal,
