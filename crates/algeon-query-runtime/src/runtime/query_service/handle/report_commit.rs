@@ -133,6 +133,9 @@ impl QueryHandleReportCommit {
         if let Some(gate) = self.release_commit_gate {
             gate.entered.fetch_add(1, Ordering::AcqRel);
             gate.gate.wait();
+            if gate.drop_completion {
+                drop(external_completion.take());
+            }
         }
         // The B-to-R transition is recorded here and applied by the release
         // path after the attempt lane and root stream are gone. Publishing

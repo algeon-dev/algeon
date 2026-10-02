@@ -784,12 +784,15 @@ fn cache_fill_events_share_the_query_record_limit_and_count_their_loss() {
 
     handle.record_lakehouse_cache_fill(&cache_fill_event("kept-path", None));
     handle.record_lakehouse_cache_fill(&cache_fill_event("dropped-path", None));
+    let checkpoint = handle.freeze_plan_metrics(&plan).unwrap();
     let mut metrics = QueryMetrics::default();
-    metrics.apply_owner_checkpoint(&handle.freeze_plan_metrics(&plan).unwrap());
+    metrics.apply_owner_checkpoint(&checkpoint);
     let sealed = session.seal(RuntimeTerminalOutcome::Succeeded).unwrap();
 
     assert_eq!(metrics.lakehouse_cache_fill_events.len(), 1);
     assert_eq!(metrics.lakehouse_cache_fill_events[0].cache_path_hash, "kept-path");
+    assert_eq!(checkpoint.completeness.detail_rows_dropped, 1, "the dropped event counts against its plan");
+    assert!(checkpoint.completeness.truncated);
     assert!(sealed.footer().truncated);
     assert!(
         sealed
@@ -799,6 +802,35 @@ fn cache_fill_events_share_the_query_record_limit_and_count_their_loss() {
             .any(|loss| loss.class == RuntimeObservationRecordClass::LakehouseCacheFillDetail && loss.count == 1),
         "{:?}",
         sealed.footer().dropped_by_class,
+    );
+}
+
+#[test]
+fn cache_fill_events_no_plan_carries_are_lost_at_the_seal() {
+    let session = metrics_session("cache-fill-unassigned", RuntimeObservationConfig::native_execution());
+    let handle = session.handle();
+    let plan = PlanExecutionId::new("plan");
+
+    handle.record_lakehouse_cache_fill(&cache_fill_event("carried-path", None));
+    let carried = handle.freeze_plan_metrics(&plan).unwrap();
+    handle.record_lakehouse_cache_fill(&cache_fill_event("late-path", None));
+    let sealed = session.seal(RuntimeTerminalOutcome::Succeeded).unwrap();
+    let after_seal = handle.freeze_plan_metrics(&PlanExecutionId::new("after-seal")).unwrap();
+
+    assert_eq!(carried.metrics.lakehouse_cache_fill_events.len(), 1);
+    assert!(
+        after_seal.metrics.lakehouse_cache_fill_events.is_empty(),
+        "a freeze after the seal returns the sealed value"
+    );
+    assert!(sealed.footer().truncated);
+    assert!(
+        sealed
+            .footer()
+            .dropped_by_reason
+            .iter()
+            .any(|loss| loss.reason == RuntimeObservationLossReason::Unassigned && loss.count == 1),
+        "{:?}",
+        sealed.footer().dropped_by_reason,
     );
 }
 

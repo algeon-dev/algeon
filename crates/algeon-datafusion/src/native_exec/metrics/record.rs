@@ -28,7 +28,10 @@ use super::{
     SERVER_CAPTURE_LOSS_METRIC_NAME, capture::NativeExecutionMetricsCapture, contract::metric_name,
     registry::NativeMetricRegistry,
 };
-use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
+use crate::{
+    native_exec::{admission::QueryAdmissionFacts, config::AlgeonNativeExecutionContext},
+    native_report::NativeDataFusionExecutionMetrics,
+};
 
 mod mapping;
 
@@ -564,14 +567,16 @@ impl AlgeonNativeMetrics {
 
     /// Finalizes a native outcome whose logical host sink the adapter's
     /// bounded GPU-to-host cursor runs later. A failed plan records its
-    /// metrics now; a successful one hands them to the cursor.
+    /// metrics now; a successful one hands them, with `context_lease`, to the
+    /// cursor. Either way the metrics freeze before the lease is released.
     pub(crate) fn finalize_query_outcome_for_deferred_host(
         &self,
         outcome: QueryExecutionOutcome,
+        context_lease: AlgeonNativeExecutionContext,
     ) -> std::result::Result<(QueryOutput, DeferredHostMetrics), QueryError> {
         let (result, plan, _observation) = outcome.into_parts();
         match result {
-            Ok(output) => Ok((output, DeferredHostMetrics::new(self.clone(), plan))),
+            Ok(output) => Ok((output, DeferredHostMetrics::new(self.clone(), plan, context_lease))),
             Err(error) => {
                 self.record_query_metrics(&plan.freeze());
                 Err(error)
@@ -1357,12 +1362,16 @@ pub(crate) struct DeferredHostMetrics {
     metrics: AlgeonNativeMetrics,
     plan: PlanMetrics,
     compiled_sink_pending: bool,
+    // The admitted context of the cursor's steps. A field drops after
+    // `Drop::drop` freezes the metrics, so the attempt cannot start its
+    // release before they are recorded.
+    _context_lease: AlgeonNativeExecutionContext,
 }
 
 impl DeferredHostMetrics {
-    fn new(metrics: AlgeonNativeMetrics, plan: PlanMetrics) -> Self {
+    fn new(metrics: AlgeonNativeMetrics, plan: PlanMetrics, context_lease: AlgeonNativeExecutionContext) -> Self {
         let compiled_sink_pending = plan.snapshot().compiled_pipeline_attempts > 0;
-        Self { metrics, plan, compiled_sink_pending }
+        Self { metrics, plan, compiled_sink_pending, _context_lease: context_lease }
     }
 
     pub(crate) const fn baseline(&self) -> &BaselineMetrics {

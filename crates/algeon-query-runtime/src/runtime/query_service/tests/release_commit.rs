@@ -214,6 +214,53 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("close completes after release");
 }
 
+/// A completion payload dropped after the attempt is finalized and before its
+/// seal seals through its recovery path with the attempt's terminal outcome:
+/// the footer and the report agree, and the completion resolves.
+#[test]
+fn completion_dropped_before_its_seal_seals_with_the_attempt_outcome() {
+    let service = QueryService::new_for_admission_tests(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
+        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+    )
+    .expect("admission-only service");
+    let backend_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        Arc::new(AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
+        .expect("admission");
+    handle.lifetime.arm_release_commit_completion_drop();
+
+    // Before the recovery seal used the attempt's outcome, it sealed as
+    // `Dropped` under a `Succeeded` report and never published, so the
+    // release runs off the test thread.
+    let release = std::thread::spawn(move || {
+        attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal commit");
+        drop(handle);
+        attempt_owner
+    });
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("the recovery seal publishes the report");
+    assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
+    let attempt_owner = release.join().expect("release thread completes");
+    let sealed = attempt_owner.sealed_snapshot_for_test().expect("the recovery seal publishes the snapshot");
+    assert_eq!(sealed.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+}
+
 /// Cleanup-complete without report-ready cannot admit a replacement, and the
 /// published report precedes any visible capacity reuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

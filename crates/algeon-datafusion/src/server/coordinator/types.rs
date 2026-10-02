@@ -46,9 +46,10 @@ pub(crate) struct QueryCoordinatorConfig {
 }
 
 impl QueryCoordinatorConfig {
-    /// Registered queries the coordinator holds at once, live or finalizing.
-    /// Server config requires admission to hold fewer attempts, so admission,
-    /// not registration, refuses an overloaded server.
+    /// Hard cap on live statements of every kind the coordinator registers at
+    /// once: planning, ticketed but unread, executing (CPU-only, metadata, or
+    /// admitted), and finalizing. Server config keeps admission bounds below
+    /// it, but statements without an admission slot share the cap.
     pub(crate) const MAX_LIVE_QUERIES: usize = 1024;
 
     /// `max_active_logical_capture_bytes` is the budget the server resolved

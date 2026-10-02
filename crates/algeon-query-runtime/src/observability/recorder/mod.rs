@@ -36,8 +36,10 @@ pub use owner::RuntimeObservationOwner;
 #[cfg(test)]
 use owner::RuntimeObservationOwnerLifecycleState;
 pub(crate) use owner::in_runtime_observation_delivery;
+#[cfg(any(test, feature = "test-hooks"))]
+pub(crate) use session::AttemptReportProvider;
 pub use session::RuntimeObservationSession;
-pub(crate) use session::{AttemptReportProvider, AttemptReportSealProvider, QueryCleanupSealDelivery};
+pub(crate) use session::{AttemptReportSealProvider, QueryCleanupSealDelivery};
 use session::{DeferredRuntimeObservationSeal, RuntimeObservationSealObserver, RuntimeObservationSessionInner};
 pub use state::BudgetWindowPeaks;
 pub(crate) use state::{BudgetWindow, CleanupFailureTally};

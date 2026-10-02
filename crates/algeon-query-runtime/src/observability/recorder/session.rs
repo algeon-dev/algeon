@@ -32,12 +32,11 @@ pub struct RuntimeObservationSession {
     pub(super) handle: RuntimeObservationHandle,
 }
 
-/// Construction-time provider of the fixed execution-attempt summary embedded at seal.
-///
-/// This compatibility hook is retained for recorder-only owners. An attempt
-/// passes the crate-private seal provider below to each seal of its session,
-/// so the embedded value and completion delivery share the same immutable
-/// allocation.
+/// Construction-time provider of a fixed attempt summary embedded at seal, for
+/// tests that seal a recorder-only owner. An attempt passes the crate-private
+/// seal provider below to each seal of its session, so the embedded value and
+/// completion delivery share the same immutable allocation.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
 
 /// Attempt-owned report construction after the recorder has computed its

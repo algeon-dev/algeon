@@ -822,7 +822,7 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                             &context,
                             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&input_map),
                         );
-                        let (output, deferred_metrics) = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
+                        let (output, deferred_metrics) = metrics.finalize_query_outcome_for_deferred_host(outcome, context_lease).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "algeon_datafusion.native_composed.execute",
                                 "algeon native composed query execution failed",
@@ -857,7 +857,6 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                             cursor_executor,
                             cursor_observation,
                             deferred_metrics,
-                            context_lease,
                         ))
                     },
                 )

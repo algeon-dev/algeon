@@ -974,6 +974,9 @@ pub enum RuntimeObservationLossReason {
     ByteLimit,
     Oversized,
     SourceLocationKeyUnavailable,
+    /// No plan execution was left unfrozen to carry the record when the
+    /// session sealed.
+    Unassigned,
 }
 
 /// Count of dropped records in one class.
