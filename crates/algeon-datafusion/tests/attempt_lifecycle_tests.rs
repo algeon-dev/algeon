@@ -9,7 +9,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::DataFusionErrorExt,
-    native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, plan_with_native_diagnostics},
 };
@@ -17,7 +17,7 @@ use datafusion::{
     common::{Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::SessionStateBuilder,
     physical_expr::PhysicalExpr,
-    physical_plan::{SendableRecordBatchStream, execute_stream},
+    physical_plan::{ExecutionPlan, SendableRecordBatchStream, collect, displayable, execute_stream},
     prelude::SessionContext,
 };
 use futures::{StreamExt, stream::once};
@@ -887,6 +887,102 @@ async fn plans_that_read_no_column_data_begin_no_attempt_unless_native_is_requir
     let batches = ctx.sql("SELECT 1").await.unwrap().collect().await.unwrap();
     assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
     assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1, "a required native literal runs");
+}
+
+/// Every native fragment of `plan`.
+fn native_fragments(plan: &dyn ExecutionPlan) -> usize {
+    usize::from(plan.downcast_ref::<AlgeonNativeExec>().is_some())
+        + plan.children().into_iter().map(|child| native_fragments(child.as_ref())).sum::<usize>()
+}
+
+/// Each union branch keeps its `approx_distinct` on DataFusion over a native
+/// fragment of the filtered scan.
+const TWO_FRAGMENT_SQL: &str = "SELECT approx_distinct(v) AS d FROM native_rows WHERE v > 15 \
+                                UNION ALL SELECT approx_distinct(v) AS d FROM native_rows WHERE v < 35";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_fragments_under_datafusion_operators_share_the_attempts_one_grant() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let plan = ctx.sql(TWO_FRAGMENT_SQL).await.unwrap().create_physical_plan().await.unwrap();
+    assert_eq!(native_fragments(plan.as_ref()), 2, "{}", displayable(plan.as_ref()).indent(false));
+    let begun = backend.attempt_counters_snapshot().attempts_begun;
+
+    let batches = collect(plan, ctx.task_ctx()).await.unwrap();
+
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 2);
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1);
+    let report = sole_abandoned_report(&backend).await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded), "{:?}", report.outcome);
+    assert_eq!(report.disposition, AttemptDisposition::PartialNative);
+    assert!(report.admission.is_some(), "both fragments run under the attempt's one admission");
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+}
+
+/// A DataFusion operator that fails above a native fragment fails the
+/// attempt, which still releases its grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failure_of_a_datafusion_operator_over_a_native_fragment_fails_the_attempt() {
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    // The aggregate runs as a native fragment. Its keys "a" and "b" do not
+    // parse as timestamps, so the DataFusion projection above it fails.
+    let mut stream =
+        attempt.sql(&ctx, "SELECT to_timestamp(k) AS t, SUM(v) AS s FROM native_rows GROUP BY k").await.unwrap();
+    let mut failed = false;
+    while let Some(batch) = stream.next().await {
+        failed |= batch.is_err();
+    }
+    assert!(failed, "the DataFusion operator's error ends the stream");
+
+    let report = attempt.completion().await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Failed { .. }), "{:?}", report.outcome);
+    assert_eq!(report.disposition, AttemptDisposition::PartialNative);
+    assert!(report.admission.is_some(), "the native fragment ran under the attempt's grant");
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+}
+
+/// Cancelling while DataFusion operators read native fragments ends the
+/// attempt as cancelled and releases its grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_of_datafusion_operators_over_native_fragments_releases_the_grant() {
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = attempt.sql(&ctx, TWO_FRAGMENT_SQL).await.unwrap();
+    stream.next().await.expect("the first union branch emits a row").unwrap();
+    attempt.cancellation().cancel();
+    let cancellation = stream.next().await.expect("cancellation produces one terminal stream item");
+    assert!(cancellation.is_err(), "the drain surfaces the cancellation");
+    assert!(stream.next().await.is_none());
+
+    let report = attempt.completion().await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled), "{:?}", report.outcome);
+    assert_eq!(report.disposition, AttemptDisposition::PartialNative);
+    assert!(report.admission.is_some(), "a fragment ran before the cancellation");
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+}
+
+/// A limit on a DataFusion filter stops reading the native fragment below it
+/// once it has its row; the attempt succeeds and releases its grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn limit_over_a_native_fragment_stops_early_and_succeeds() {
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = attempt.sql(&ctx, "SELECT k FROM native_rows WHERE k ILIKE 'A' LIMIT 1").await.unwrap();
+    let mut rows = 0;
+    while let Some(batch) = stream.next().await {
+        rows += batch.unwrap().num_rows();
+    }
+    assert_eq!(rows, 1);
+
+    let report = attempt.completion().await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded), "{:?}", report.outcome);
+    assert_eq!(report.disposition, AttemptDisposition::PartialNative);
+    assert!(report.admission.is_some());
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

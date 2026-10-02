@@ -2255,6 +2255,7 @@ impl query_planning::plan::NativePlanCostDecision
 pub fn query_planning::plan::NativePlanCostDecision::facts(&self) -> &query_planning::plan::NativePlanCostFacts
 pub fn query_planning::plan::NativePlanCostDecision::is_not_selected_by_cost(&self) -> bool
 pub enum query_planning::plan::NativePlanCostReason
+pub query_planning::plan::NativePlanCostReason::HostLiteralPassthrough
 pub query_planning::plan::NativePlanCostReason::NoColumnData
 pub query_planning::plan::NativePlanCostReason::SmallSelectiveFullSort
 pub query_planning::plan::NativePlanCostReason::SmallSelectiveResidualJoin

@@ -121,10 +121,10 @@ how much relational work joins the GPU:
 | `functions_only` | Ordinary SQL runs on DataFusion CPU around explicit GPU UDTFs. |
 | `native_required` | A completed plan that still contains DataFusion CPU operators is rejected. |
 
-Selection normally replaces a
-[whole candidate](./design/native-lowering.mdx#selection-fallback-and-mixed-execution)
-(with one certified
-[mixed exception](./reference/glossary.md#planning-and-lowering)). Explicit
+Selection first tries to replace the
+[whole query](./design/native-lowering.mdx#selection-fallback-and-mixed-execution);
+when it does not lower, supported subtrees below the operators that stay on
+DataFusion run as [native fragments](./reference/glossary.md#planning-and-lowering). Explicit
 GPU UDTFs have no CPU fallback in any mode, and once GPU execution
 starts, a failure returns as a structured error and is never replayed on
 CPU. In `functions_only`, inputs crossing from CPU operators to a GPU

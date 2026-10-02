@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{PlanNode, QueryPlan, SourceNode};
+use super::{PlanNode, QueryPlan, ResultSink, SourceNode};
 use crate::source::LocalParquetSource;
 
 /// Stable reason for not selecting a native-capable plan by cost.
@@ -27,6 +27,11 @@ pub enum NativePlanCostReason {
     /// runs: native execution would hold a grant to produce rows no column
     /// data distinguishes.
     NoColumnData,
+    /// Every node is a literal source of host rows and the result returns to
+    /// the host, such as a scan of an in-memory table under a DataFusion
+    /// operator: native execution would copy the rows to the device and back
+    /// without computing on them, and hold a grant to do so.
+    HostLiteralPassthrough,
 }
 
 impl NativePlanCostReason {
@@ -37,6 +42,7 @@ impl NativePlanCostReason {
             Self::SmallSelectiveResidualJoin => "native_small_selective_residual_join_not_selected_by_cost",
             Self::SmallSelectiveFullSort => "native_small_selective_full_sort_not_selected_by_cost",
             Self::NoColumnData => "native_no_column_data_not_selected_by_cost",
+            Self::HostLiteralPassthrough => "native_host_literal_passthrough_not_selected_by_cost",
         }
     }
 }
@@ -274,6 +280,12 @@ pub fn native_plan_cost_decision(
     if frontend_plan_allowed && reads_no_column_data(plan) {
         return NativePlanCostDecision::NotSelectedByCost { reason: NativePlanCostReason::NoColumnData, facts };
     }
+    if frontend_plan_allowed && passes_host_literals_through(plan) {
+        return NativePlanCostDecision::NotSelectedByCost {
+            reason: NativePlanCostReason::HostLiteralPassthrough,
+            facts,
+        };
+    }
     if !options.enabled {
         return NativePlanCostDecision::ContinueNative { facts };
     }
@@ -328,6 +340,15 @@ fn reads_no_column_data(plan: &QueryPlan) -> bool {
         PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
         _ => true,
     })
+}
+
+/// Whether the plan returns to the host the literal rows it holds: every node
+/// is a literal source and the result is not GPU-resident.
+fn passes_host_literals_through(plan: &QueryPlan) -> bool {
+    !matches!(plan.sink(), ResultSink::GpuResident { .. })
+        && plan.nodes().iter().all(|node| {
+            matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(_)))
+        })
 }
 
 fn accumulate_local_parquet_source_facts(facts: &mut NativePlanCostFacts, source: &LocalParquetSource) {

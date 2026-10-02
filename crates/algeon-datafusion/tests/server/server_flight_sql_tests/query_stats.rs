@@ -233,8 +233,10 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
         ),
     )
     .await;
+    // DataFusion computes `src % dst` in the scan's projection, which has no
+    // native expression, so no subtree of the plan runs natively.
     let flight_info = client
-        .execute("SELECT src FROM stats_fallback_edges WHERE src % dst >= 0 ORDER BY src".to_string(), None)
+        .execute("SELECT src % dst AS remainder FROM stats_fallback_edges ORDER BY remainder".to_string(), None)
         .await
         .unwrap();
     let query_id = query_id_from_statement_flight_info(&flight_info);

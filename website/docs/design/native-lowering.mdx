@@ -61,9 +61,9 @@ Rules added to the session builder after `with_algeon_native` run after
 
 The entry points are `crates/algeon-datafusion/src/session.rs` for rule ordering and
 `AlgeonNativePhysicalOptimizerRule::optimize` in `crates/algeon-datafusion/src/planner/native.rs` for the
-rewrite. The rule is idempotent: an admission wrapper, `AlgeonNativeExec`, or a
-[certified mixed plan](#selection-fallback-and-mixed-execution) is not lowered
-again.
+rewrite. The rule is idempotent: an admission wrapper, a native root, or a plan
+holding a [native fragment](#selection-fallback-and-mixed-execution) under
+DataFusion operators is not lowered again.
 
 ## Lowering pipeline
 
@@ -143,16 +143,28 @@ returns the latest planning pass of an attempt, and
 to one physical plan. The bundle pairs the report with native optimizer,
 source, and capability evidence of that one call.
 
-When enabled, relational selection is whole-candidate by default. Explicit GPU
+When enabled, relational selection first tries the whole query. Explicit GPU
 UDTFs can separately compose with DataFusion CPU operators, including in
-`FunctionsOnly` mode. The narrow relational rewrite exception lives in
-`crates/algeon-datafusion/src/planner/native/mixed.rs`: when whole-plan lowering misses on
-an unsupported expression, Algeon may certify a final CPU `ILIKE` filter over a
-single local-Parquet source and replace only that source with a native
-host-output leaf. The certificate checks the exact shape, source, schema, and
-physical properties, then rebuilds the CPU filter from the new child. Do not
-generalize this into a subtree extractor; a new mixed boundary needs its own
-complete property and ownership proof.
+`FunctionsOnly` mode. When the whole query does not lower, the cost model did
+not decline it, and DataFusion CPU execution is allowed,
+`crates/algeon-datafusion/src/planner/native/fragment.rs` places native
+fragments below the operators that stay on DataFusion. Each child of such an
+operator is lowered as a host-output fragment; if it does not lower, the search
+continues below it, and a child the cost model declines stays on DataFusion
+whole. A fragment replaces its child only when the rebuilt parent keeps the
+contracts it held over that child: the same schema, a bounded child (a fragment
+emits once its input is exhausted), and DataFusion's sanity check of the
+parent's ordering, distribution, pipeline and executable invariants, which
+include the partition layout of co-partitioned join inputs. A fragment the
+parent cannot keep is reported as `NotSupported` with
+`native_fragment_parent_contract_unsupported`, and the search tries the
+subtrees below it. When a DataFusion filter stays above a Parquet scan through
+row-preserving exchanges only, the fragment reads the scan without the
+predicate copy DataFusion made for pruning, since the filter still evaluates
+it. Fragments are not placed below metadata table functions' CPU boundary or
+into GPU UDTF and graph inputs. The report lists the root's outcome followed by
+each fragment candidate, and the final root admission aggregates the evidence
+of every kept fragment, so all fragments of an attempt share its one grant.
 
 ## Native execution boundary
 

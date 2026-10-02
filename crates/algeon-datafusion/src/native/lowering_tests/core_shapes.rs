@@ -524,19 +524,22 @@ fn declared_output_ordering_limit_above_aggregate_is_rejected_instead_of_sorted_
     let (report, native_plan) = optimize_with_native_rule(plan);
 
     assert!(native_plan.is_none());
-    assert!(
-        matches!(
-            report.outcomes(),
-            [CandidateOutcome::NotSupported {
-                capability_reason: CapabilityReason::NativeOrderedOutputUnsupported,
-                ..
-            }]
-        ),
-        "outcomes={:?}",
-        report.outcomes()
-    );
+    assert_ordered_root_rejected_over_sorted_aggregate_fragment(&report);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// The root candidate misses its ordering contract, and the aggregate below
+/// the DataFusion root runs as a native fragment that sorts its output.
+fn assert_ordered_root_rejected_over_sorted_aggregate_fragment(report: &PlanningReport) {
+    let [
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeOrderedOutputUnsupported, .. },
+        CandidateOutcome::Selected { candidate },
+    ] = report.outcomes()
+    else {
+        panic!("outcomes={:?}", report.outcomes());
+    };
+    assert!(candidate.shape.to_string().starts_with("SortExec(AggregateExec("), "{}", candidate.shape);
 }
 
 #[test]
@@ -567,17 +570,7 @@ fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_rep
     let (report, native_plan) = optimize_with_native_rule(plan);
 
     assert!(native_plan.is_none());
-    assert!(
-        matches!(
-            report.outcomes(),
-            [CandidateOutcome::NotSupported {
-                capability_reason: CapabilityReason::NativeOrderedOutputUnsupported,
-                ..
-            }]
-        ),
-        "outcomes={:?}",
-        report.outcomes()
-    );
+    assert_ordered_root_rejected_over_sorted_aggregate_fragment(&report);
 
     fs::remove_dir_all(dir).unwrap();
 }

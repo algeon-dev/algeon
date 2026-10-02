@@ -133,6 +133,7 @@ pub algeon_datafusion::capability::CapabilityReason::NativeBoundedJoinUnsupporte
 pub algeon_datafusion::capability::CapabilityReason::NativeCompiledPipelineUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeDistributedAggregateUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeExactStatisticalInputPartitioned
+pub algeon_datafusion::capability::CapabilityReason::NativeFragmentParentContractUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeLocalLimitPartitionUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeOrderedOutputUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativePartitionPreservingSortUnsupported

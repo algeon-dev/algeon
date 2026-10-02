@@ -35,6 +35,10 @@ pub enum CapabilityReason {
     /// DataFusion produced a local limit over several partitions; it keeps
     /// rows per partition, which one native output partition cannot express.
     NativeLocalLimitPartitionUnsupported,
+    /// A native fragment would break a contract a DataFusion operator above
+    /// it relies on: the input schema, boundedness, ordering, distribution, or
+    /// the partition layout of inputs the operator co-partitions.
+    NativeFragmentParentContractUnsupported,
     /// The exact statistical aggregate mode needs DataFusion to read the
     /// aggregate input as one partition; an exchange that merges partitions
     /// interleaves rows in arrival order, so DataFusion's floating-point result
@@ -80,7 +84,7 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -88,6 +92,7 @@ impl CapabilityReason {
         Self::NativeDistributedAggregateUnsupported,
         Self::NativePartitionPreservingSortUnsupported,
         Self::NativeLocalLimitPartitionUnsupported,
+        Self::NativeFragmentParentContractUnsupported,
         Self::NativeExactStatisticalInputPartitioned,
         Self::NativeBoundedJoinUnsupported,
         Self::NativeCompiledPipelineUnsupported,
@@ -164,6 +169,9 @@ impl CapabilityReason {
             },
             Self::NativeLocalLimitPartitionUnsupported => {
                 plan_shape("native_local_limit_partition_unsupported", "operator_limit")
+            },
+            Self::NativeFragmentParentContractUnsupported => {
+                plan_shape("native_fragment_parent_contract_unsupported", "operator_fragment_boundary")
             },
             Self::NativeExactStatisticalInputPartitioned => {
                 plan_shape("native_exact_statistical_input_partitioned", "aggregate_partitioned_input")

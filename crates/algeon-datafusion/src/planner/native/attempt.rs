@@ -4,7 +4,7 @@ use std::{
 };
 
 use datafusion::{
-    common::Result as DataFusionResult,
+    common::{Result as DataFusionResult, config::OptimizerOptions},
     physical_expr::EquivalenceProperties,
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
@@ -27,6 +27,7 @@ use super::{
     capability_envelope::{
         accepted_plan_contract_diagnostics, native_admission_decision, rejected_plan_contract_diagnostics,
     },
+    fragment::FragmentSearch,
 };
 use crate::{
     capability::CapabilityReason,
@@ -92,7 +93,6 @@ pub(super) fn optimize_count_only_native_plan(
         lower_count_only_physical_plan_to_native(lowering_input, &native_execution_config.source_read_strategy())?;
     replace_lowered_root_or_keep_plan_for_sink(
         plan,
-        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
@@ -107,6 +107,7 @@ pub(super) fn optimize_final_native_plan(
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
     root_sink: &NativeReplacementSink,
+    optimizer_options: &OptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let mut relation_inputs = LoweredRelationInputs::default();
@@ -117,10 +118,17 @@ pub(super) fn optimize_final_native_plan(
         cost_selection,
         &mut relation_inputs,
     )?;
-    let mut attempt =
-        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, cost_selection, root_sink)?;
-    // The root attempt selects at most one whole-plan candidate, so relation
-    // input outcomes are appended only after it has consumed its own report.
+    let mut attempt = optimize_final_native_root(
+        plan,
+        native_execution_config,
+        native_optimizer_options,
+        cost_selection,
+        root_sink,
+        optimizer_options,
+    )?;
+    // Each lowering selects at most one candidate, so relation input outcomes
+    // are appended only after the root and fragment lowerings consumed their
+    // own reports.
     attempt.report.append(relation_inputs.report);
     attempt.source_diagnostics.extend(relation_inputs.source_diagnostics);
     Ok(attempt)
@@ -174,7 +182,6 @@ fn lower_gpu_resident_producer_relation_inputs(
                 lower_physical_plan_to_native(Arc::clone(&rewritten), &native_execution_config.source_read_strategy())?;
             let mut attempt = replace_lowered_root_or_keep_plan_for_sink(
                 Arc::clone(&rewritten),
-                None,
                 lowering,
                 native_execution_config,
                 native_optimizer_options,
@@ -203,39 +210,25 @@ fn optimize_final_native_root(
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
     root_sink: &NativeReplacementSink,
+    optimizer_options: &OptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
-    let source_reads = native_execution_config.source_read_strategy();
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &source_reads)?;
-    if whole_plan_has_unsupported_expression_miss(&lowering)
-        && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
-    {
-        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()), &source_reads)?;
-        if native_leaf_lowering.plan.as_ref().is_some_and(|native_leaf| boundary.accepts_native_leaf(native_leaf)) {
-            let mut native_leaf = replace_lowered_root_or_keep_plan(
-                Arc::clone(boundary.source()),
-                Some(boundary.native_equivalence_properties()),
-                native_leaf_lowering,
-                native_execution_config,
-                native_optimizer_options,
-                cost_selection,
-            )?;
-            if native_leaf.rewritten
-                && let Some(plan) = boundary.rebuild(Arc::clone(&native_leaf.plan))
-            {
-                native_leaf.plan = plan;
-                return Ok(native_leaf);
-            }
-        }
-    }
-    replace_lowered_root_or_keep_plan_for_sink(
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &native_execution_config.source_read_strategy())?;
+    let attempt = replace_lowered_root_or_keep_plan_for_sink(
         plan,
-        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
         cost_selection,
         root_sink.clone(),
-    )
+    )?;
+    // Fragments are placed below query roots, whose admission this rule
+    // binds; the outer run binds a cuGraph input subplan's admission. A plan
+    // that must not run DataFusion operators gains nothing from them.
+    if !matches!(root_sink, NativeReplacementSink::HostArrow) || !cost_selection.datafusion_cpu_allowed {
+        return Ok(attempt);
+    }
+    FragmentSearch { native_execution_config, native_optimizer_options, cost_selection, optimizer_options }
+        .below_root(attempt)
 }
 
 /// Result boundary of a lowered native replacement.
@@ -248,28 +241,8 @@ pub(super) enum NativeReplacementSink {
     GpuResidentProducer { input_name: String },
 }
 
-fn replace_lowered_root_or_keep_plan(
+pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
     plan: Arc<dyn ExecutionPlan>,
-    output_equivalence_properties: Option<EquivalenceProperties>,
-    lowering: NativeLoweringResult,
-    native_execution_config: &AlgeonNativeExecutionConfig,
-    native_optimizer_options: &NativeOptimizerOptions,
-    cost_selection: NativeCostSelection,
-) -> DataFusionResult<NativeOptimizationAttempt> {
-    replace_lowered_root_or_keep_plan_for_sink(
-        plan,
-        output_equivalence_properties,
-        lowering,
-        native_execution_config,
-        native_optimizer_options,
-        cost_selection,
-        NativeReplacementSink::HostArrow,
-    )
-}
-
-fn replace_lowered_root_or_keep_plan_for_sink(
-    plan: Arc<dyn ExecutionPlan>,
-    output_equivalence_properties: Option<EquivalenceProperties>,
     lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
@@ -341,6 +314,13 @@ fn replace_lowered_root_or_keep_plan_for_sink(
     if appended_declared_output_sort {
         lowering.report.wrap_selected_candidates_with_outer_operator("SortExec");
     }
+    // The candidate is decided once, on the sink form execution runs; the cost
+    // decision, the boundary check and both contract-diagnostics branches read
+    // this decision.
+    let native_plan = match &sink {
+        NativeReplacementSink::HostArrow => native_plan.clone_with_deferred_host_materialization_sink(),
+        NativeReplacementSink::GpuResidentProducer { .. } => native_plan.clone_with_gpu_resident_sink(),
+    };
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
     if let NativePlanCostDecision::NotSelectedByCost { reason, facts } =
         native_plan_cost_decision(&native_plan, &cost_selection.options, cost_selection.datafusion_cpu_allowed)
@@ -384,12 +364,6 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         });
     }
 
-    // The candidate is decided once, on the sink form execution runs; the
-    // boundary check and both contract-diagnostics branches read this decision.
-    let native_plan = match &sink {
-        NativeReplacementSink::HostArrow => native_plan.clone_with_deferred_host_materialization_sink(),
-        NativeReplacementSink::GpuResidentProducer { .. } => native_plan.clone_with_gpu_resident_sink(),
-    };
     let admission = match native_admission_decision(&native_plan, native_execution_config)? {
         AdmissionDecision::Admitted(admission) => admission,
         AdmissionDecision::Rejected(rejection) => {
@@ -429,7 +403,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         admission,
         native_execution_config,
         &datafusion_shape,
-        output_equivalence_properties.unwrap_or_else(|| plan.properties().equivalence_properties().clone()),
+        plan.properties().equivalence_properties().clone(),
         shared_producers,
         sink,
     )?;
@@ -480,14 +454,6 @@ fn rejection_capability_reason(plan: &QueryPlan, rejection: &AdmissionRejection)
     } else {
         CapabilityReason::NativeCompiledPipelineUnsupported
     }
-}
-
-fn whole_plan_has_unsupported_expression_miss(lowering: &NativeLoweringResult) -> bool {
-    lowering.plan.is_none()
-        && matches!(
-            lowering.report.outcomes(),
-            [CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }]
-        )
 }
 
 fn native_optimizer_options_for_execution(

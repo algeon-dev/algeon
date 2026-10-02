@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arrow::array::Int64Array;
 use query_engine::plan::{
     NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, QueryPlan, native_plan_cost_decision,
 };
@@ -124,6 +125,44 @@ fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
     assert_eq!(facts.join_count, 1);
     assert_eq!(facts.grouped_aggregate_count, 1);
     assert_eq!(facts.min_topk_fetch, None);
+}
+
+#[test]
+fn host_literal_passthrough_to_the_host_is_not_selected_by_cost_unless_native_is_required() {
+    let schema = key_value_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1, 2])), Arc::new(Int64Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let literal_plan = |limit: Option<LimitSpec>| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        let root = match limit {
+            Some(limit) => builder.add_limit(source, limit).unwrap(),
+            None => source,
+        };
+        builder.finish_with_host_sink(root).unwrap()
+    };
+    let passthrough = literal_plan(None);
+
+    let decision = native_plan_cost_decision(&passthrough, &NativePlanCostOptions::default(), true);
+    assert!(
+        matches!(
+            decision,
+            NativePlanCostDecision::NotSelectedByCost { reason: NativePlanCostReason::HostLiteralPassthrough, .. }
+        ),
+        "{decision:?}"
+    );
+    assert!(
+        !native_plan_cost_decision(&passthrough, &NativePlanCostOptions::default(), false).is_not_selected_by_cost()
+    );
+    // A GPU-resident result stays on the device for its consumer.
+    let resident = passthrough.clone_with_gpu_resident_sink();
+    assert!(!native_plan_cost_decision(&resident, &NativePlanCostOptions::default(), true).is_not_selected_by_cost());
+    let limited = literal_plan(Some(LimitSpec::fetch(1)));
+    assert!(!native_plan_cost_decision(&limited, &NativePlanCostOptions::default(), true).is_not_selected_by_cost());
 }
 
 #[test]

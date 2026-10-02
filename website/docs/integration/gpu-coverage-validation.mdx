@@ -89,9 +89,11 @@ executable plan exists, projected as `gpu_path=rejected` with null
 fragment/boundary cells. It carries the phase, stable `reason_code`, and safe
 detail in `coverage_json`. Terminal source-resolution failures, an unsupported
 required GPU island, and a failed final-plan requirement are planning errors.
-By contrast, an ordinary relational capability miss is not an error: the same
-query remains executable on the DataFusion baseline and normally has final
-disposition `datafusion`.
+By contrast, an ordinary relational capability miss is not an error: the
+unsupported operator stays on DataFusion, and when DataFusion CPU execution is
+allowed each supported subtree below it runs as a native fragment if its
+DataFusion parent keeps its input contracts. The final disposition is `mixed`
+when a fragment is kept and `datafusion` otherwise.
 
 ## Candidate outcomes are diagnostics, not the final plan
 
@@ -102,8 +104,8 @@ values:
 | Outcome | Meaning | Evidence |
 | --- | --- | --- |
 | `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind`, and `category` are absent. |
-| `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
-| `not_selected_by_cost` | The candidate is native-capable, but a preference rule retained the DataFusion plan: the plan reads no column data, because every source is a literal with no columns or no rows and no GPU algorithm runs (reason `native_no_column_data_not_selected_by_cost`, applied whenever DataFusion CPU execution is allowed), or an enabled cost threshold matched. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
+| `not_supported` | The exact relational candidate is outside the native capability contract, or it is a fragment its DataFusion parent could not keep (reason `native_fragment_parent_contract_unsupported`: the fragment would change the input schema, boundedness, ordering, distribution, or co-partitioning the parent relies on). | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
+| `not_selected_by_cost` | The candidate is native-capable, but a preference rule retained the DataFusion plan. Two rules apply whenever DataFusion CPU execution is allowed: the plan reads no column data, because every source is a literal with no columns or no rows and no GPU algorithm runs (reason `native_no_column_data_not_selected_by_cost`), or every node is a literal source, so native execution would only copy host rows to the device and back (reason `native_host_literal_passthrough_not_selected_by_cost`). Otherwise an enabled cost threshold matched. A subtree whose candidate the cost model declines stays on DataFusion whole. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
 Every candidate carries its stable `candidate_family`; every non-selected
 candidate also carries `remedy_code`, `remedy_kind`, and human-readable
@@ -111,8 +113,8 @@ candidate also carries `remedy_code`, `remedy_kind`, and human-readable
 are independent from `final_disposition`. A report can contain candidate
 diagnostics while the final plan is native because another selected candidate
 covers the executable path. Conversely, a `not_supported` or
-`not_selected_by_cost` outcome normally produces an executable DataFusion plan,
-not a rejected result. Candidate outcomes explain selection; final-plan domains
+`not_selected_by_cost` outcome keeps that candidate's operators on DataFusion in
+an executable plan, not a rejected result. Candidate outcomes explain selection; final-plan domains
 describe the completed executable plan.
 
 ## Validation uses the caller's real planning contract

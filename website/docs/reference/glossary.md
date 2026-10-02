@@ -24,10 +24,10 @@ defined here.
   normalization recognizes as potentially executable natively. Every candidate
   receives a structured outcome in the
   [`PlanningReport`](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
-- `Whole relational candidate`: relational selection replaces a complete
-  candidate or none of it; Algeon does not extract arbitrary fragments. The one
-  narrow exception is the
-  [certified mixed boundary](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
+- `Whole relational candidate`: relational selection first tries to replace
+  the complete query. When it does not lower, supported subtrees below the
+  operators that stay on DataFusion can run as
+  [native fragments](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
 - `Lowering`: translating a recognized candidate into the engine's
   `QueryPlan` IR after DataFusion physical planning has already fixed operator
   decisions. See [Native Lowering & Final Plans](../design/native-lowering.mdx).
@@ -43,9 +43,11 @@ defined here.
   specialized UDTF call (`cugraph_*`, `cuvs_*`, `cuml_*`), as opposed to GPU work selected
   from a relational candidate. Counted together with native fragments in
   [coverage results](../integration/gpu-coverage-validation.mdx#final-disposition-and-gpu-path).
-- `Certified mixed boundary`: the single supported exception to
-  whole-candidate replacement: a final CPU `ILIKE` filter over one
-  local-Parquet source, certified by an exact shape-and-ownership proof. See
+- `Native fragment`: a supported subtree that runs natively under a
+  DataFusion operator the whole query could not lower. It replaces its
+  DataFusion child only when the parent keeps its input schema, boundedness,
+  ordering, distribution, and co-partitioning, and it shares the attempt's one
+  grant with every other fragment. See
   [Selection, fallback, and mixed execution](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
 - `Final-plan requirement / disposition`: a requirement (such as
   `NoDataFusionCpu`) is checked against the exact completed plan; the
