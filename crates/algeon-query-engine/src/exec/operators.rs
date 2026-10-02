@@ -350,7 +350,24 @@ fn execute_partition_window_aggregate(
         .collect::<Result<Vec<_>>>()?;
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
-    let output = frame
+    // The join that broadcasts each partition's aggregate back to its rows
+    // emits them in hash-table order, so a row index restores input order.
+    let row_index_name = unique_temp_column_name(&frame, "__algeon_native_window_aggregate_row_index");
+    let row_index_series = frame.row_positions().map_err(|error| {
+        cudf_query_error(
+            "query_engine.window.aggregate.row_index",
+            "failed to create partition aggregate window row index",
+            error,
+        )
+    })?;
+    let indexed = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
+        cudf_query_error(
+            "query_engine.window.aggregate.row_index",
+            "failed to append partition aggregate window row index",
+            error,
+        )
+    })?;
+    let merged = indexed
         .with_execution(&overrides)
         .merge(
             &aggregate_frame,
@@ -363,7 +380,17 @@ fn execute_partition_window_aggregate(
                 error,
             )
         })?;
-    Ok(output)
+    merged
+        .with_execution(&overrides)
+        .sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
+        .and_then(|frame| frame.without_columns([row_index_name.as_str()]))
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.window.aggregate.restore_order",
+                "failed to restore partition aggregate window input order",
+                error,
+            )
+        })
 }
 
 fn window_aggregate_schema(

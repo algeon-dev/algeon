@@ -20,7 +20,10 @@ use algeon_datafusion::{
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
-    array::{Array, Decimal128Array, Float32Array, Float64Array, Int32Array, ListArray, StringArray, StringViewArray},
+    array::{
+        Array, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, StringArray,
+        StringViewArray,
+    },
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
@@ -1393,6 +1396,93 @@ fn rank_over_computed_window_keys_runs_natively_and_matches_datafusion() {
     let expected = rows(block_on(block_on(cpu.sql(query)).unwrap().collect()).unwrap());
     assert_eq!(actual, expected);
 
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Writes rows whose partition keys interleave, with enough rows and
+/// partitions that a hash join's output order differs from its input, and
+/// returns a NativeRequired context and a DataFusion CPU context over them.
+fn partition_window_contexts(prefix: &str) -> (std::path::PathBuf, SessionContext, SessionContext) {
+    const ROWS: i32 = 20_000;
+    let dir = unique_temp_dir(prefix);
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Int32, false),
+            Field::new("o", DataType::Int32, false),
+            Field::new("x", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from_iter_values((0..ROWS).map(|row| (row * 7919) % 211))),
+                Arc::new(Int32Array::from_iter_values((0..ROWS).map(|row| (row * 31) % 97))),
+                Arc::new(Int64Array::from_iter_values((0..ROWS).map(|row| i64::from(row % 1000)))),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&required, &cpu] {
+        block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    }
+    (dir, required, cpu)
+}
+
+fn native_and_datafusion_rows(required: &SessionContext, cpu: &SessionContext, query: &str) -> (String, String) {
+    let plan = block_on(block_on(required.sql(query)).unwrap().create_physical_plan())
+        .expect("NativeRequired plans the window natively");
+    let rows = |batches: Vec<RecordBatch>| pretty_format_batches(&batches).unwrap().to_string();
+    let actual = rows(block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
+    let expected = rows(block_on(block_on(cpu.sql(query)).unwrap().collect()).unwrap());
+    (actual, expected)
+}
+
+/// A partition aggregate and `ROW_NUMBER()` in one window node: the row
+/// number runs after the aggregate, over partitions that must still be
+/// contiguous, so each partition is numbered 1 to n.
+#[test]
+fn row_number_beside_a_partition_aggregate_numbers_each_partition_from_one() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-row-number");
+    let query = "SELECT p, s, rn FROM (SELECT p, SUM(x) OVER (PARTITION BY p) AS s, \
+                 ROW_NUMBER() OVER (PARTITION BY p) AS rn FROM input) ORDER BY p, rn";
+    let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+    assert_eq!(actual, expected);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// DataFusion drops the final sort because the window keeps its input's
+/// order, so the window's own output order is the query's result order.
+#[test]
+fn partition_aggregate_window_output_keeps_the_order_the_query_relies_on() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-order");
+    let query = "SELECT p, SUM(x) OVER (PARTITION BY p) AS s FROM input ORDER BY p";
+    let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+    assert_eq!(actual, expected);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Two windows on one sort: DataFusion stacks the partition aggregate window
+/// above the rank window and drops the final sort, so the result order is the
+/// order the aggregate window keeps from the rank window's sorted output.
+#[test]
+fn windows_sharing_a_sort_keep_the_order_the_query_relies_on() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-shared-sort");
+    let query = "SELECT p, o, SUM(x) OVER (PARTITION BY p) AS s, RANK() OVER (PARTITION BY p ORDER BY o) AS r \
+                 FROM input ORDER BY p, o, r";
+    let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+    assert_eq!(actual, expected);
     fs::remove_dir_all(dir).unwrap();
 }
 
