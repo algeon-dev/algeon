@@ -8,7 +8,7 @@
 use arrow::datatypes::DataType as ArrowDataType;
 
 use crate::{
-    backend::AnalysisContext,
+    backend::BackendCapabilities,
     error::{QueryError, QueryErrorCode, Result},
     source::{
         LocalParquetFile, LocalParquetSource, parquet_file_path_fact, parquet_file_stable_id_fact,
@@ -48,14 +48,14 @@ pub use policy::{
 /// support decides whether a column has an exact fixed-width bound at all.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceReadSizing<'a> {
-    ctx: AnalysisContext<'a>,
+    backend: &'a dyn BackendCapabilities,
     minimum_read_budget_bytes: u64,
 }
 
 impl<'a> SourceReadSizing<'a> {
     /// Binds chunk sizing to one backend's reader floor and type support.
-    pub const fn new(ctx: AnalysisContext<'a>, minimum_read_budget_bytes: u64) -> Self {
-        Self { ctx, minimum_read_budget_bytes }
+    pub const fn new(backend: &'a dyn BackendCapabilities, minimum_read_budget_bytes: u64) -> Self {
+        Self { backend, minimum_read_budget_bytes }
     }
 
     /// The backend reader's minimum source-read budget in bytes.
@@ -65,7 +65,7 @@ impl<'a> SourceReadSizing<'a> {
 
     /// Whether the backend can represent this Arrow type.
     pub(crate) fn supports_type(&self, data_type: &ArrowDataType) -> bool {
-        self.ctx.backend().supports_type(data_type)
+        self.backend.supports_type(data_type)
     }
 }
 

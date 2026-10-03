@@ -20,20 +20,6 @@ fn invalid(message: &'static str, reason: &'static str, node_id: NodeId) -> Quer
         .with_fact("node_id", node_id)
 }
 
-pub(crate) fn validate_ml_algorithm_node_contract(
-    ml: &MlAlgorithmNode,
-    plan: &QueryPlan,
-    node_id: NodeId,
-) -> Result<()> {
-    let columns = plan
-        .nodes()
-        .iter()
-        .take(node_id.index())
-        .map(|node| node.output_schema().fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>())
-        .collect::<Vec<_>>();
-    validate_ml_algorithm_node(ml, plan, &columns, node_id)
-}
-
 pub(crate) fn validate_ml_algorithm_node(
     ml: &MlAlgorithmNode,
     plan: &QueryPlan,

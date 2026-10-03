@@ -32,8 +32,7 @@ use query_engine::{
         SharedResidentExtractionReason, SharedResidentPlan, SharedSubplanMaterializationDiagnostics,
         SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions,
         apply_dimension_derived_pruning_with_stats, discover_dimension_derived_pruning_requests, local_parquet_source,
-        optimize_dimension_derived_row_group_pruning, optimize_query_plan, optimize_shared_resident_extraction,
-        seed_dimension_derived_reader_predicates,
+        optimize_query_plan, seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,

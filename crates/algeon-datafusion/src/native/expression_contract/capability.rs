@@ -34,8 +34,7 @@ use query_engine::{
         is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{AggregateFunction as NativeAggregateFunction, UnaryMathOp},
-    policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
+    rapids_backend::rapids_backend,
     validation::{is_integral_type, is_string_type, target_integral_max},
 };
 
@@ -253,7 +252,7 @@ pub(in crate::native) fn is_narrow_decimal_carry(data_type: &DataType) -> bool {
 }
 
 pub(in crate::native) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
-    is_supported_arrow_cast(source_type, target_type, rapids_analysis_context(PlanningPolicy::default()))
+    is_supported_arrow_cast(source_type, target_type, rapids_backend())
 }
 
 pub(in crate::native) fn cast_capability(
@@ -309,7 +308,7 @@ pub(in crate::native) fn is_supported_to_timestamp_seconds_cast(
                 | DataType::UInt16
                 | DataType::UInt32
         )
-        && is_supported_arrow_cast(source_type, target_type, rapids_analysis_context(PlanningPolicy::default()))
+        && is_supported_arrow_cast(source_type, target_type, rapids_backend())
 }
 
 pub(in crate::native) fn is_numeric_or_decimal_type(data_type: &DataType) -> bool {

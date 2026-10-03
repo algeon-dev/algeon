@@ -57,10 +57,17 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
         vec![DynamicFilterKind::Range],
         DynamicFilterConsumerLowering::ReaderPredicate,
     )]);
-    let routed_split = optimize_shared_resident_extraction(routed).unwrap();
-    assert!(routed_split.producers.is_empty());
+    let routed_split = optimize_query_plan(
+        routed,
+        &NativeOptimizerOptions::disabled(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+    assert!(routed_split.shared_resident_producers.is_empty());
     let routed_candidate = routed_split
         .diagnostics
+        .shared_resident_extraction
         .candidates
         .iter()
         .find(|candidate| candidate.node_id == filtered)

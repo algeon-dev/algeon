@@ -309,28 +309,26 @@ pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Re
     if spec.output_projection.is_empty() {
         return Err(rejection(Reason::UnsupportedJoinNodeCapability));
     }
+    // Semi, anti, and mark joins output only left columns; node validation
+    // rejects any other projection, so the forms below need not check it.
     let build_right = spec.build_side == JoinSide::Right;
-    let left_only_output = spec.output_projection.iter().all(|column| column.side == JoinSide::Left);
     let form = match (spec.keys.is_empty(), &spec.residual_predicate) {
         (false, None) => match spec.join_type {
             JoinType::Inner | JoinType::Full => Some(JoinForm::KeyedEqui),
             JoinType::Left => build_right.then_some(JoinForm::KeyedEqui),
             JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => {
-                (build_right && left_only_output).then_some(JoinForm::KeyedFilteredSemiAnti)
+                build_right.then_some(JoinForm::KeyedFilteredSemiAnti)
             },
             JoinType::Cross => None,
         },
         (false, Some(residual)) => {
             // Null-aware anti semantics are implemented only by the filtered
             // semi/anti executor, which takes no residual.
-            let left_match = matches!(spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
-                && !build_right
-                && left_only_output;
+            let left_match = matches!(spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. }) && !build_right;
             let mixed = !spec.join_type.is_null_aware()
                 && match spec.join_type {
-                    JoinType::Inner | JoinType::Full => true,
+                    JoinType::Inner | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti { .. } => true,
                     JoinType::Left => build_right,
-                    JoinType::LeftSemi | JoinType::LeftAnti { .. } => left_match || (build_right && left_only_output),
                     JoinType::Cross | JoinType::LeftMark { .. } => false,
                 };
             match (mixed, expr_requires_post_join_filter(residual)) {
@@ -598,42 +596,15 @@ pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strateg
 }
 
 fn expr_requires_post_join_filter(expr: &Expr) -> bool {
-    match expr {
-        Expr::Case { .. } => true,
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::StringContains { expr, .. }
-        | Expr::StartsWith { expr, .. }
-        | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::UnaryMath { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Alias { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Like { expr, .. } => expr_requires_post_join_filter(expr),
-        Expr::Concat(exprs) => exprs.iter().any(expr_requires_post_join_filter),
-        Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. } => true,
-        Expr::Binary { left, right, .. } => {
-            expr_requires_post_join_filter(left) || expr_requires_post_join_filter(right)
-        },
-        Expr::InList { expr, list, .. } => {
-            expr_requires_post_join_filter(expr) || list.iter().any(expr_requires_post_join_filter)
-        },
-        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
-        Expr::Column(_) | Expr::Literal(_) => false,
-    }
+    expr.any(|expr| {
+        matches!(
+            expr,
+            Expr::Case { .. }
+                | Expr::IsDistinctFrom { .. }
+                | Expr::IsNotDistinctFrom { .. }
+                | Expr::Binary { op: BinaryOp::Divide, output_type: Some(DataType::Decimal128(_, _)), .. }
+        )
+    })
 }
 
 fn probe_input_for_join(join: &JoinNode) -> NodeId {

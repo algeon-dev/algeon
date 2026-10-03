@@ -2,20 +2,19 @@
 //!
 //! Classifies whether each native [`Expr`] form is supported and, when not,
 //! produces a stable `(reason, expression_family)` rejection for reports.
-use std::collections::BTreeMap;
 
 use super::{
     AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue, NodeId, QueryError, model::CapabilityDecision,
     rejection::Reason,
 };
 use crate::{
-    error::Result,
+    error::{QueryErrorCode, Result},
     expr::{ColumnQualifier, DatePart, UnaryMathOp},
 };
 
 // Stable report facts for an expression capability miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ExpressionCapabilityRejection {
+pub(crate) struct ExpressionCapabilityRejection {
     reason: &'static str,
     expression_family: &'static str,
 }
@@ -37,33 +36,25 @@ pub(super) fn expression_rejection_decision(
     )
 }
 
-pub(super) fn validation_result_decision(
-    result: Result<()>,
-    reason: Reason,
-    facts: impl IntoIterator<Item = (&'static str, String)>,
-) -> CapabilityDecision {
-    match result {
-        Ok(()) => CapabilityDecision::Satisfied,
-        Err(error) => validation_error_decision(reason, error, facts),
-    }
+/// The error a node rule reports when the backend cannot evaluate `expr`'s
+/// form.
+pub(crate) fn require_expression_capability(
+    result: std::result::Result<(), ExpressionCapabilityRejection>,
+    expr: &Expr,
+) -> Result<()> {
+    result.map_err(|rejection| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "query_engine.plan.check_node",
+            "native backend does not evaluate this expression form",
+        )
+        .with_fact("reason", rejection.reason)
+        .with_fact("expression_family", rejection.expression_family)
+        .with_fact("expression", expr.to_string())
+    })
 }
 
-pub(super) fn validation_error_decision(
-    reason: Reason,
-    error: QueryError,
-    facts: impl IntoIterator<Item = (&'static str, String)>,
-) -> CapabilityDecision {
-    let mut facts = facts.into_iter().collect::<BTreeMap<_, _>>();
-    facts.insert("error_code", error.code().as_str().to_string());
-    facts.insert("error_operation", error.operation().to_string());
-    facts.insert("error_message", error.message().to_string());
-    if let Some(error_reason) = error.fact_value("reason") {
-        facts.insert("error_reason", error_reason.to_string());
-    }
-    CapabilityDecision::Rejected { reason, facts }
-}
-
-pub(super) fn validate_aggregate_expr_capability(
+pub(crate) fn validate_aggregate_expr_capability(
     aggregate_expr: &AggregateExpr,
     is_scalar_aggregate: bool,
 ) -> std::result::Result<(), ExpressionCapabilityRejection> {
@@ -113,7 +104,7 @@ pub(super) fn validate_named_column_expr_capability(
     }
 }
 
-pub(super) fn validate_column_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
+pub(crate) fn validate_column_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
         Expr::Alias { expr, .. } => validate_column_expr_capability(expr),
@@ -124,7 +115,7 @@ pub(super) fn validate_column_expr_capability(expr: &Expr) -> std::result::Resul
     }
 }
 
-pub(super) fn validate_general_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
+pub(crate) fn validate_general_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
         Expr::Literal(value) => validate_literal_capability(value, "literal"),
@@ -368,44 +359,31 @@ pub(super) fn validate_post_join_residual_expr_capability(
 }
 
 fn validate_extract_field_capability(field: DatePart) -> std::result::Result<(), ExpressionCapabilityRejection> {
-    match field {
-        DatePart::Year | DatePart::Month | DatePart::Day | DatePart::Minute => Ok(()),
-        DatePart::Hour | DatePart::Second | DatePart::Millisecond | DatePart::Microsecond | DatePart::Nanosecond => {
-            Err(ExpressionCapabilityRejection { reason: "extract_field_not_supported", expression_family: "extract" })
-        },
+    if DatePart::EXTRACT_FIELDS.contains(&field) {
+        Ok(())
+    } else {
+        Err(ExpressionCapabilityRejection { reason: "extract_field_not_supported", expression_family: "extract" })
     }
 }
 
 fn validate_post_join_extract_field_capability(
     field: DatePart,
 ) -> std::result::Result<(), ExpressionCapabilityRejection> {
-    match field {
-        DatePart::Year | DatePart::Month | DatePart::Day => Ok(()),
-        DatePart::Minute
-        | DatePart::Hour
-        | DatePart::Second
-        | DatePart::Millisecond
-        | DatePart::Microsecond
-        | DatePart::Nanosecond => Err(ExpressionCapabilityRejection {
+    if DatePart::POST_JOIN_EXTRACT_FIELDS.contains(&field) {
+        Ok(())
+    } else {
+        Err(ExpressionCapabilityRejection {
             reason: "post_join_extract_field_not_supported",
             expression_family: "extract",
-        }),
+        })
     }
 }
 
 fn validate_date_trunc_field_capability(field: DatePart) -> std::result::Result<(), ExpressionCapabilityRejection> {
-    match field {
-        DatePart::Day
-        | DatePart::Hour
-        | DatePart::Minute
-        | DatePart::Second
-        | DatePart::Millisecond
-        | DatePart::Microsecond
-        | DatePart::Nanosecond => Ok(()),
-        DatePart::Year | DatePart::Month => Err(ExpressionCapabilityRejection {
-            reason: "date_trunc_field_not_supported",
-            expression_family: "date_trunc",
-        }),
+    if DatePart::DATE_TRUNC_FIELDS.contains(&field) {
+        Ok(())
+    } else {
+        Err(ExpressionCapabilityRejection { reason: "date_trunc_field_not_supported", expression_family: "date_trunc" })
     }
 }
 

@@ -326,6 +326,19 @@ impl Expr {
         children.into_iter()
     }
 
+    /// Whether `predicate` holds for this expression or any expression below
+    /// it, visited depth first.
+    pub fn any(&self, mut predicate: impl FnMut(&Expr) -> bool) -> bool {
+        let mut pending = vec![self];
+        while let Some(expr) = pending.pop() {
+            if predicate(expr) {
+                return true;
+            }
+            pending.extend(expr.children());
+        }
+        false
+    }
+
     /// Every column this expression references, in depth-first order.
     pub fn columns(&self) -> impl Iterator<Item = &ColumnRef> {
         let mut pending = vec![self];
@@ -523,45 +536,7 @@ impl Expr {
     /// Used by capability labeling and runtime preflight paths that size
     /// replace-with-backrefs via the owning cudf output-size contract.
     pub fn contains_regexp_replace(&self) -> bool {
-        match self {
-            Self::RegexpReplace { .. } => true,
-            Self::Not(expr)
-            | Self::IsNull(expr)
-            | Self::IsNotNull(expr)
-            | Self::Cast { expr, .. }
-            | Self::TryCast { expr, .. }
-            | Self::Like { expr, .. }
-            | Self::Substring { expr, .. }
-            | Self::Lower(expr)
-            | Self::Upper(expr)
-            | Self::Trim { expr, .. }
-            | Self::LTrim { expr, .. }
-            | Self::RTrim { expr, .. }
-            | Self::StringContains { expr, .. }
-            | Self::StartsWith { expr, .. }
-            | Self::EndsWith { expr, .. }
-            | Self::StringLength { expr, .. }
-            | Self::Abs(expr)
-            | Self::UnaryMath { expr, .. }
-            | Self::Round { expr, .. }
-            | Self::InList { expr, .. }
-            | Self::Extract { expr, .. }
-            | Self::DateTrunc { expr, .. }
-            | Self::Alias { expr, .. } => expr.contains_regexp_replace(),
-            Self::Binary { left, right, .. }
-            | Self::IsDistinctFrom { left, right }
-            | Self::IsNotDistinctFrom { left, right } => {
-                left.contains_regexp_replace() || right.contains_regexp_replace()
-            },
-            Self::Concat(exprs) => exprs.iter().any(Self::contains_regexp_replace),
-            Self::Case { branches, else_expr } => {
-                branches
-                    .iter()
-                    .any(|branch| branch.when.contains_regexp_replace() || branch.then.contains_regexp_replace())
-                    || else_expr.contains_regexp_replace()
-            },
-            Self::Column(_) | Self::Literal(_) => false,
-        }
+        self.any(|expr| matches!(expr, Self::RegexpReplace { .. }))
     }
 }
 
@@ -674,7 +649,7 @@ impl CaseWhen {
     }
 }
 
-/// Date or timestamp field supported by `EXTRACT`.
+/// Date or timestamp field named by `EXTRACT` or `DATE_TRUNC`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatePart {
     Year,
@@ -686,6 +661,35 @@ pub enum DatePart {
     Millisecond,
     Microsecond,
     Nanosecond,
+}
+
+impl DatePart {
+    /// Fields native `EXTRACT` returns. `MINUTE` applies only to a timestamp
+    /// cast from integer seconds.
+    pub const EXTRACT_FIELDS: [Self; 4] = [Self::Year, Self::Month, Self::Day, Self::Minute];
+    /// Fields `EXTRACT` returns inside a post-join residual filter.
+    pub const POST_JOIN_EXTRACT_FIELDS: [Self; 3] = [Self::Year, Self::Month, Self::Day];
+    /// Fields native `DATE_TRUNC` floors a timestamp to: the fixed-duration
+    /// ones. Calendar months and years are not.
+    pub const DATE_TRUNC_FIELDS: [Self; 7] =
+        [Self::Day, Self::Hour, Self::Minute, Self::Second, Self::Millisecond, Self::Microsecond, Self::Nanosecond];
+
+    /// The field a SQL field name names, ignoring case.
+    pub fn from_sql_name(name: &str) -> Option<Self> {
+        [
+            Self::Year,
+            Self::Month,
+            Self::Day,
+            Self::Hour,
+            Self::Minute,
+            Self::Second,
+            Self::Millisecond,
+            Self::Microsecond,
+            Self::Nanosecond,
+        ]
+        .into_iter()
+        .find(|field| field.to_string().eq_ignore_ascii_case(name))
+    }
 }
 
 impl fmt::Display for DatePart {

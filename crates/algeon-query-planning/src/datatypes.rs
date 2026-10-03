@@ -4,9 +4,8 @@
 //! plan may carry, which casts it may insert or preserve, and how a type reads
 //! in a diagnostic. Whether an execution backend can represent a type is a
 //! separate question, asked through
-//! [`crate::backend::BackendCapabilities::supports_type`]; which is why the
-//! cast policy takes an [`crate::backend::AnalysisContext`] for the one branch
-//! that needs it.
+//! [`crate::backend::BackendCapabilities::supports_type`], which is why the
+//! cast policy takes the backend for the one branch that needs it.
 
 use std::collections::HashMap;
 
@@ -16,7 +15,7 @@ use arrow::datatypes::{
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
-use crate::backend::AnalysisContext;
+use crate::backend::BackendCapabilities;
 
 /// Returns whether this Arrow type is a timestamp carrying timezone metadata.
 pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
@@ -227,11 +226,11 @@ pub fn arrow_decimal_scale_to_cudf_scale(scale: i8) -> i32 {
 pub fn is_supported_arrow_cast(
     source_type: &ArrowDataType,
     target_type: &ArrowDataType,
-    ctx: AnalysisContext<'_>,
+    backend: &dyn BackendCapabilities,
 ) -> bool {
     !is_narrow_decimal_carry_type(source_type)
         && !is_narrow_decimal_carry_type(target_type)
-        && (is_supported_arrow_implicit_cast(source_type, target_type, ctx)
+        && (is_supported_arrow_implicit_cast(source_type, target_type, backend)
             || is_supported_decimal_to_float64_cast(source_type, target_type)
             || is_supported_numeric_to_decimal_cast(source_type, target_type)
             || is_supported_decimal_to_integral_cast(source_type, target_type)
@@ -243,9 +242,9 @@ pub fn is_supported_arrow_cast(
 pub fn is_supported_arrow_implicit_cast(
     source_type: &ArrowDataType,
     target_type: &ArrowDataType,
-    ctx: AnalysisContext<'_>,
+    backend: &dyn BackendCapabilities,
 ) -> bool {
-    (source_type == target_type && ctx.backend().supports_type(source_type))
+    (source_type == target_type && backend.supports_type(source_type))
         || is_supported_numeric_widening_cast(source_type, target_type)
         || is_supported_decimal_to_decimal_cast(source_type, target_type)
         || is_supported_string_cast(source_type, target_type)

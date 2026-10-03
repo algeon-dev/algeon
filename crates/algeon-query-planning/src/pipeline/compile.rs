@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, Reason,
-        Rejection, RejectionOwner, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
+        CapabilityAnalysis, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, Reason, Rejection, RejectionOwner,
+        ResultSinkKind, VectorInputRole, input_role,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     error::{QueryError, QueryErrorCode, Result},
@@ -19,7 +19,7 @@ use crate::{
         PipelineEdgeKind, PipelineTask, PipelineTaskId, ResidentLifetime, ResidentResource, ResidentResourceId,
         SinkBoundary, SinkBoundaryKind, SortStrategy,
     },
-    plan::{JoinSide, MlRelationRole, NodeId, PlanNode, QueryPlan, ResultSink},
+    plan::{MlRelationRole, NodeId, PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
 };
 
@@ -89,15 +89,18 @@ fn contract_rejection_error(rejection: &Rejection) -> QueryError {
         QueryError::new(
             QueryErrorCode::UnsupportedPipelineContract,
             OPERATION,
-            "compiled pipeline contract refuses an edge",
+            "compiled pipeline refuses a rejected part of the plan",
         )
-        .with_fact("capability_reason", rejection.reason),
+        .with_fact("capability_reason", rejection.reason)
+        .with_fact("rejection_owner", rejection.owner),
         |error, (key, value)| error.with_fact(key, value.as_str()),
     )
 }
 
 fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<GraphCompilation> {
-    reject_local_capability_rejections(analysis)?;
+    if let Some(rejection) = analysis.first_rejection() {
+        return Ok(GraphCompilation::Rejected(rejection));
+    }
 
     let node_order = reachable_postorder(plan);
     let node_set = node_order.iter().copied().collect::<BTreeSet<_>>();
@@ -124,44 +127,6 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
     let sink = build_sink_boundary(plan, &task_ids, sink_task)?;
 
     Ok(GraphCompilation::Graph(CompiledPipeline::new(tasks, edges, barriers, resources, sink)))
-}
-
-fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<()> {
-    if let Some(node) =
-        analysis.nodes.iter().find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
-        && let CapabilityDecision::Rejected { reason, .. } = &node.executable
-    {
-        return Err(capability_rejection_error("node", *reason).with_fact("node_id", node.node_id));
-    }
-
-    if let Some(edge) = analysis.edges.iter().find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
-        && let CapabilityDecision::Rejected { reason, .. } = &edge.decision
-    {
-        return Err(capability_rejection_error("edge", *reason)
-            .with_fact("producer", edge.producer)
-            .with_fact("consumer", edge_consumer_label(edge.consumer)));
-    }
-
-    if let Some(invariant) =
-        analysis.invariants.iter().find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
-        && let CapabilityDecision::Rejected { reason, .. } = &invariant.decision
-    {
-        return Err(capability_rejection_error("invariant", *reason)
-            .with_fact("invariant_id", invariant.invariant_id.index())
-            .with_fact("invariant_kind", invariant_kind_label(&invariant.kind)));
-    }
-
-    Ok(())
-}
-
-fn capability_rejection_error(scope: &'static str, reason: Reason) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::UnsupportedPipelineContract,
-        OPERATION,
-        "pipeline compiler cannot compile a rejected capability analysis",
-    )
-    .with_fact("capability_scope", scope)
-    .with_fact("capability_reason", reason)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -289,30 +254,6 @@ fn validate_analysis_covers_plan(
             .with_fact("consumer", edge_consumer_label(sink_consumer)));
     }
     Ok(())
-}
-
-fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
-    match kind {
-        PlanNode::Aggregate(_) => InputRole::AggregateInput,
-        PlanNode::Window(_) => InputRole::WindowInput,
-        PlanNode::Sort(_) => InputRole::SortInput,
-        PlanNode::Limit(_) => InputRole::LimitInput,
-        PlanNode::Union(_) => InputRole::UnionInput { input_index },
-        PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
-        PlanNode::VectorAlgorithm(vector) => {
-            InputRole::VectorAlgorithmInput { role: VectorInputRole::for_vector_input(vector, input_index) }
-        },
-        PlanNode::MlAlgorithm(ml) => InputRole::MlAlgorithmInput { role: ml.spec.params.relation_role(input_index) },
-        PlanNode::Join(join) => {
-            let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
-            if side == join.spec.build_side {
-                InputRole::JoinBuildInput { side }
-            } else {
-                InputRole::JoinProbeInput { side }
-            }
-        },
-        _ => InputRole::UnaryInput,
-    }
 }
 
 fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> Result<BTreeMap<NodeId, NodeTasks>> {
@@ -892,20 +833,6 @@ fn input_role_label(role: InputRole) -> &'static str {
         InputRole::JoinBuildInput { .. } => "join_build_input",
         InputRole::JoinProbeInput { .. } => "join_probe_input",
         InputRole::SinkInput => "sink_input",
-    }
-}
-
-fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
-    match kind {
-        SubgraphInvariantKind::BuildBeforeProbe { .. } => "build_before_probe",
-        SubgraphInvariantKind::TopologicalBuildProbeSchedule => "topological_build_probe_schedule",
-        SubgraphInvariantKind::SharedResidentSubplan => "shared_resident_subplan",
-        SubgraphInvariantKind::AggregateDerivesFromSharedProducer => "aggregate_derives_from_shared_producer",
-        SubgraphInvariantKind::FinalBarrierOrder => "final_barrier_order",
-        SubgraphInvariantKind::ProjectionTransparentResidency => "projection_transparent_residency",
-        SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
-        SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
-        SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }
 }
 

@@ -716,23 +716,16 @@ fn validate_post_join_residual_expr(
                 right_available,
                 ctx,
             )?;
-            match field {
-                DatePart::Year | DatePart::Month | DatePart::Day => {
-                    require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
-                    Ok(ArrowDataType::Int32)
-                },
-                DatePart::Minute
-                | DatePart::Hour
-                | DatePart::Second
-                | DatePart::Millisecond
-                | DatePart::Microsecond
-                | DatePart::Nanosecond => Err(QueryError::new(
+            if !DatePart::POST_JOIN_EXTRACT_FIELDS.contains(field) {
+                return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "query_engine.join.validate_residual",
                     "post-join residual EXTRACT does not support this field",
                 )
-                .with_fact("field", field.to_string())),
+                .with_fact("field", field.to_string()));
             }
+            require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
+            Ok(ArrowDataType::Int32)
         },
         Expr::Abs(expr) => {
             let data_type = validate_post_join_residual_expr(
@@ -1128,7 +1121,7 @@ fn is_supported_join_residual_ast_cast(
 ) -> bool {
     matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
         && (is_numeric_type(source_type) || is_decimal_type(source_type))
-        && is_supported_arrow_cast(source_type, target_type, ctx)
+        && is_supported_arrow_cast(source_type, target_type, ctx.backend())
 }
 
 fn post_join_residual_unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {

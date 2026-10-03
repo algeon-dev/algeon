@@ -25,12 +25,15 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
         families.entry(signature.family_key.clone()).or_default().push(signature);
     }
 
-    let mut rewrite_families = Vec::new();
-    for mut family in families.into_values() {
-        if family.len() < 2 {
-            continue;
-        }
+    // The family key hashes source locations, so families are reported in
+    // plan order (by their first aggregate) rather than by key.
+    let mut families = families.into_values().filter(|family| family.len() >= 2).collect::<Vec<_>>();
+    for family in &mut families {
         family.sort_by_key(|signature| signature.aggregate_node_id);
+    }
+    families.sort_by_key(|family| family[0].aggregate_node_id);
+    let mut rewrite_families = Vec::new();
+    for family in families {
         let representative = &family[0];
         let repeated_selected_source_bytes = sum_optional_u64(family.iter().map(|signature| signature.source_bytes));
         let duplicate_selected_source_bytes = repeated_selected_source_bytes.map(|total| {

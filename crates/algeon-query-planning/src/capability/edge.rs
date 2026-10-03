@@ -214,7 +214,7 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
     }
 }
 
-pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
+pub(crate) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     match kind {
         PlanNode::Aggregate(_) => InputRole::AggregateInput,
         PlanNode::Window(_) => InputRole::WindowInput,

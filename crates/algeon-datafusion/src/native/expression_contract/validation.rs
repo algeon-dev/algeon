@@ -14,6 +14,7 @@ use datafusion::{
 };
 use query_engine::{
     datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
+    expr::DatePart as NativeDatePart,
     validation::{is_integral_type, is_string_type, substring_stop_position},
 };
 
@@ -311,16 +312,15 @@ fn validate_extract_function(
     let [field, expr] = function.args() else {
         return Err(scalar_function_arguments());
     };
-    match literal_string(field).map_err(|_| unsupported_field())?.to_ascii_lowercase().as_str() {
-        "year" | "month" | "day" => {},
-        "minute" => {
-            validate_physical_expr(expr, input_schema)?;
-            return validate_timestamp_second_expr(expr, input_schema);
-        },
-        _ => return Err(unsupported_field()),
-    }
+    let field = NativeDatePart::from_sql_name(&literal_string(field).map_err(|_| unsupported_field())?)
+        .filter(|field| NativeDatePart::EXTRACT_FIELDS.contains(field))
+        .ok_or_else(unsupported_field)?;
     validate_physical_expr(expr, input_schema)?;
-    validate_date_or_timestamp_expr(expr, input_schema)
+    if field == NativeDatePart::Minute {
+        validate_timestamp_second_expr(expr, input_schema)
+    } else {
+        validate_date_or_timestamp_expr(expr, input_schema)
+    }
 }
 
 fn validate_date_trunc_function(
@@ -330,7 +330,11 @@ fn validate_date_trunc_function(
     let [field, expr] = function.args() else {
         return Err(scalar_function_arguments());
     };
-    validate_date_trunc_field(&literal_string_argument(field)?.to_ascii_lowercase())?;
+    // DataFusion's date_trunc has no nanosecond granularity and fails such a
+    // call at execution, so lowering it would answer a query DataFusion rejects.
+    NativeDatePart::from_sql_name(&literal_string_argument(field)?)
+        .filter(|field| *field != NativeDatePart::Nanosecond && NativeDatePart::DATE_TRUNC_FIELDS.contains(field))
+        .ok_or_else(scalar_function_arguments)?;
     validate_physical_expr(expr, input_schema)?;
     let input_type = physical_expr_data_type(expr, input_schema)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
@@ -341,13 +345,6 @@ fn validate_date_trunc_function(
         Ok(())
     } else {
         Err(unsupported_type())
-    }
-}
-
-fn validate_date_trunc_field(field: &str) -> Result<(), ExpressionRejection> {
-    match field {
-        "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(()),
-        _ => Err(scalar_function_arguments()),
     }
 }
 
