@@ -67,7 +67,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         &right.frame,
         &overrides,
         &residual_candidate.projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(candidate) => candidate,
@@ -119,7 +119,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
                     "failed to filter compiled one-shot residual join candidates",
                     error,
                 )
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
                 .with_fact("key_count", node.spec.keys.len())
                 .with_fact("build_side", node.spec.build_side),
                 &token,

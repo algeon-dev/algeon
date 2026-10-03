@@ -169,7 +169,6 @@ pub query_planning::capability::Reason::CompiledPipelineEdgeIdentityInvalid
 pub query_planning::capability::Reason::CompiledPipelineFusedTopkLimitBindingInvalid
 pub query_planning::capability::Reason::CompiledPipelineGraphNotConstructible
 pub query_planning::capability::Reason::CompiledPipelineJoinBuildBeforeProbeMissing
-pub query_planning::capability::Reason::CompiledPipelineJoinExecutionStrategyUnavailable
 pub query_planning::capability::Reason::CompiledPipelineJoinTaskGroupIncomplete
 pub query_planning::capability::Reason::CompiledPipelineJoinTaskGroupPlanNodeMismatch
 pub query_planning::capability::Reason::CompiledPipelineRequiresJoinTaskGroup
@@ -1643,12 +1642,6 @@ pub query_planning::pipeline::AcceptedInputForm::AnyProducedForm
 pub query_planning::pipeline::AcceptedInputForm::Frame
 pub query_planning::pipeline::AcceptedInputForm::FrameOrStream
 pub query_planning::pipeline::AcceptedInputForm::FrameStreamOrSourceStream
-pub enum query_planning::pipeline::AggregateExecutionStage
-pub query_planning::pipeline::AggregateExecutionStage::FinalMerge
-pub query_planning::pipeline::AggregateExecutionStage::Partial
-pub query_planning::pipeline::AggregateExecutionStage::Single
-impl query_planning::capability::AggregateExecutionStage
-pub const fn query_planning::capability::AggregateExecutionStage::as_str(self) -> &'static str
 pub enum query_planning::pipeline::OrderingScope
 pub query_planning::pipeline::OrderingScope::Global
 pub query_planning::pipeline::OrderingScope::PerChunk
@@ -1728,6 +1721,43 @@ pub query_planning::pipeline::SortStrategy::FullSort
 pub query_planning::pipeline::SortStrategy::FusedTopK
 pub query_planning::pipeline::SortStrategy::FusedTopK::limit_node: query_planning::plan::NodeId
 pub query_planning::pipeline::SortStrategy::FusedTopK::limit_task: query_planning::pipeline::PipelineTaskId
+pub enum query_planning::pipeline::SourceOutput
+pub query_planning::pipeline::SourceOutput::AggregateInputStream
+pub query_planning::pipeline::SourceOutput::AggregateInputStream::adjacent_stages: bool
+pub query_planning::pipeline::SourceOutput::AggregateInputStream::chunk_hints: query_planning::pipeline::AggregateInputHints
+pub query_planning::pipeline::SourceOutput::Frame
+pub query_planning::pipeline::SourceOutput::JoinLeafFrame
+pub query_planning::pipeline::SourceOutput::JoinLeafFrame::adjacent_stages: bool
+pub query_planning::pipeline::SourceOutput::JoinLeafStream
+pub query_planning::pipeline::SourceOutput::JoinLeafStream::adjacent_stages: bool
+pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream
+pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream::adjacent_stages: bool
+pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream::chunk_hints: query_planning::pipeline::AggregateInputHints
+pub enum query_planning::pipeline::TaskPhysical
+pub query_planning::pipeline::TaskPhysical::Aggregate(query_planning::pipeline::AggregatePlan)
+pub query_planning::pipeline::TaskPhysical::EdgeNormalize
+pub query_planning::pipeline::TaskPhysical::FinalSort(query_planning::pipeline::SortStrategy)
+pub query_planning::pipeline::TaskPhysical::GpuResidentSource
+pub query_planning::pipeline::TaskPhysical::GraphAlgorithm
+pub query_planning::pipeline::TaskPhysical::JoinBuild(query_planning::pipeline::JoinPlan)
+pub query_planning::pipeline::TaskPhysical::JoinMaterialize
+pub query_planning::pipeline::TaskPhysical::JoinProbe(query_planning::pipeline::JoinPlan)
+pub query_planning::pipeline::TaskPhysical::Limit
+pub query_planning::pipeline::TaskPhysical::LiteralBatchSource
+pub query_planning::pipeline::TaskPhysical::MlAlgorithm
+pub query_planning::pipeline::TaskPhysical::SinkMaterialize
+pub query_planning::pipeline::TaskPhysical::SourceRead(query_planning::pipeline::SourceReadPlan)
+pub query_planning::pipeline::TaskPhysical::Unary
+pub query_planning::pipeline::TaskPhysical::Union
+pub query_planning::pipeline::TaskPhysical::VectorAlgorithm
+pub query_planning::pipeline::TaskPhysical::Window
+impl query_planning::pipeline::TaskPhysical
+pub const fn query_planning::pipeline::TaskPhysical::kind(&self) -> query_planning::pipeline::PipelineTaskKind
+pub struct query_planning::pipeline::AggregateInputHints
+pub query_planning::pipeline::AggregateInputHints::adjacent_stages: bool
+pub query_planning::pipeline::AggregateInputHints::grouped_string_key: bool
+pub struct query_planning::pipeline::AggregatePlan
+pub query_planning::pipeline::AggregatePlan::topk: core::option::Option<query_planning::pipeline::TopKFusion>
 pub struct query_planning::pipeline::CompiledPipeline
 impl query_planning::pipeline::CompiledPipeline
 pub fn query_planning::pipeline::CompiledPipeline::barriers(&self) -> &[query_planning::pipeline::PipelineBarrier]
@@ -1741,6 +1771,13 @@ impl query_planning::pipeline::CompiledPipeline
 pub fn query_planning::pipeline::CompiledPipeline::shadow_memory_estimate(&self, &query_planning::plan::QueryPlan, query_planning::pipeline::ShadowMemoryModels) -> query_planning::error::Result<query_planning::pipeline::ShadowPipelineEstimate>
 impl core::fmt::Display for query_planning::pipeline::CompiledPipeline
 pub fn query_planning::pipeline::CompiledPipeline::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::pipeline::JoinPlan
+impl query_planning::pipeline::JoinPlan
+pub fn query_planning::pipeline::JoinPlan::allowed(&self) -> &[JoinStrategy]
+pub const fn query_planning::pipeline::JoinPlan::form(&self) -> JoinForm
+pub fn query_planning::pipeline::JoinPlan::new(JoinForm, JoinStrategy, alloc::vec::Vec<JoinStrategy>) -> query_planning::error::Result<Self>
+pub const fn query_planning::pipeline::JoinPlan::planned(&self) -> JoinStrategy
+pub fn query_planning::pipeline::JoinPlan::refine(&self, &query_planning::plan::JoinNode, KeyedHashJoinStrategyInputFacts, &query_planning::capability::KeyedHashJoinStrategyOptions) -> query_planning::error::Result<JoinStrategyChoice>
 pub struct query_planning::pipeline::PipelineBarrier
 impl query_planning::pipeline::PipelineBarrier
 pub fn query_planning::pipeline::PipelineBarrier::downstream_tasks(&self) -> &[query_planning::pipeline::PipelineTaskId]
@@ -1772,17 +1809,17 @@ pub fn query_planning::pipeline::PipelineEdgeId::fmt(&self, &mut core::fmt::Form
 pub struct query_planning::pipeline::PipelineTask
 impl query_planning::pipeline::PipelineTask
 pub fn query_planning::pipeline::PipelineTask::accepted_input_form(&self) -> query_planning::pipeline::AcceptedInputForm
-pub fn query_planning::pipeline::PipelineTask::aggregate_stage(&self) -> core::option::Option<query_planning::capability::AggregateExecutionStage>
 pub fn query_planning::pipeline::PipelineTask::id(&self) -> query_planning::pipeline::PipelineTaskId
 pub fn query_planning::pipeline::PipelineTask::input_resources(&self) -> &[query_planning::pipeline::ResidentResourceId]
+pub fn query_planning::pipeline::PipelineTask::join_plan(&self) -> core::option::Option<&query_planning::pipeline::JoinPlan>
 pub fn query_planning::pipeline::PipelineTask::kind(&self) -> query_planning::pipeline::PipelineTaskKind
-pub fn query_planning::pipeline::PipelineTask::new(query_planning::pipeline::PipelineTaskId, query_planning::pipeline::PipelineTaskKind) -> Self
+pub fn query_planning::pipeline::PipelineTask::new(query_planning::pipeline::PipelineTaskId, query_planning::pipeline::TaskPhysical) -> Self
 pub fn query_planning::pipeline::PipelineTask::output_resources(&self) -> &[query_planning::pipeline::ResidentResourceId]
+pub fn query_planning::pipeline::PipelineTask::physical(&self) -> &query_planning::pipeline::TaskPhysical
 pub fn query_planning::pipeline::PipelineTask::plan_node(&self) -> core::option::Option<query_planning::plan::NodeId>
 pub fn query_planning::pipeline::PipelineTask::sort_strategy(&self) -> core::option::Option<query_planning::pipeline::SortStrategy>
 pub fn query_planning::pipeline::PipelineTask::with_input_resources(self, alloc::vec::Vec<query_planning::pipeline::ResidentResourceId>) -> Self
 pub fn query_planning::pipeline::PipelineTask::with_output_resources(self, alloc::vec::Vec<query_planning::pipeline::ResidentResourceId>) -> Self
-pub fn query_planning::pipeline::PipelineTask::with_sort_strategy(self, query_planning::pipeline::SortStrategy) -> Self
 pub struct query_planning::pipeline::PipelineTaskId(_)
 impl query_planning::pipeline::PipelineTaskId
 pub const fn query_planning::pipeline::PipelineTaskId::index(self) -> usize
@@ -1834,6 +1871,16 @@ impl query_planning::pipeline::SinkBoundary
 pub fn query_planning::pipeline::SinkBoundary::input(&self) -> query_planning::pipeline::PipelineTaskId
 pub fn query_planning::pipeline::SinkBoundary::kind(&self) -> query_planning::pipeline::SinkBoundaryKind
 pub fn query_planning::pipeline::SinkBoundary::new(query_planning::pipeline::SinkBoundaryKind, query_planning::pipeline::PipelineTaskId) -> Self
+pub struct query_planning::pipeline::SourceReadPlan
+pub query_planning::pipeline::SourceReadPlan::dynamic_filter_routes: bool
+pub query_planning::pipeline::SourceReadPlan::output: query_planning::pipeline::SourceOutput
+pub query_planning::pipeline::SourceReadPlan::prefetch_eligible: bool
+impl query_planning::pipeline::SourceReadPlan
+pub const query_planning::pipeline::SourceReadPlan::FRAME: Self
+pub struct query_planning::pipeline::TopKFusion
+pub query_planning::pipeline::TopKFusion::limit_node: query_planning::plan::NodeId
+pub query_planning::pipeline::TopKFusion::post_aggregate_projections: alloc::vec::Vec<query_planning::plan::NodeId>
+pub query_planning::pipeline::TopKFusion::sort_node: query_planning::plan::NodeId
 pub fn query_planning::pipeline::compile_pipeline(&query_planning::plan::QueryPlan, &query_planning::capability::CapabilityAnalysis) -> query_planning::error::Result<query_planning::pipeline::CompiledPipeline>
 pub mod query_planning::plan
 pub mod query_planning::plan::row_bounds
@@ -2120,8 +2167,14 @@ pub query_planning::plan::JoinType::Full
 pub query_planning::plan::JoinType::Inner
 pub query_planning::plan::JoinType::Left
 pub query_planning::plan::JoinType::LeftAnti
+pub query_planning::plan::JoinType::LeftAnti::null_aware: bool
 pub query_planning::plan::JoinType::LeftMark
+pub query_planning::plan::JoinType::LeftMark::mark_column: alloc::string::String
 pub query_planning::plan::JoinType::LeftSemi
+impl query_planning::plan::JoinType
+pub const query_planning::plan::JoinType::LEFT_ANTI: Self
+pub fn query_planning::plan::JoinType::is_null_aware(&self) -> bool
+pub fn query_planning::plan::JoinType::mark_column(&self) -> core::option::Option<&str>
 impl core::fmt::Display for query_planning::plan::JoinType
 pub fn query_planning::plan::JoinType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::MlAlgorithm
@@ -2710,8 +2763,6 @@ pub query_planning::plan::JoinSpec::build_side: query_planning::plan::JoinSide
 pub query_planning::plan::JoinSpec::datafusion_order_preserved_side: query_planning::plan::JoinSide
 pub query_planning::plan::JoinSpec::join_type: query_planning::plan::JoinType
 pub query_planning::plan::JoinSpec::keys: alloc::vec::Vec<query_planning::plan::JoinKey>
-pub query_planning::plan::JoinSpec::mark_column_name: core::option::Option<alloc::string::String>
-pub query_planning::plan::JoinSpec::null_aware: bool
 pub query_planning::plan::JoinSpec::null_equality: query_planning::plan::JoinNullEquality
 pub query_planning::plan::JoinSpec::output_projection: alloc::vec::Vec<query_planning::plan::JoinOutputColumn>
 pub query_planning::plan::JoinSpec::residual_predicate: core::option::Option<query_planning::expr::Expr>
@@ -2721,8 +2772,6 @@ pub fn query_planning::plan::JoinSpec::with_at_most_one_match_per_bounded_row(se
 pub fn query_planning::plan::JoinSpec::with_build_artifact_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::plan::JoinSpec::with_build_side(self, query_planning::plan::JoinSide) -> Self
 pub fn query_planning::plan::JoinSpec::with_datafusion_order_preserved_side(self, query_planning::plan::JoinSide) -> Self
-pub fn query_planning::plan::JoinSpec::with_mark_column_name(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_planning::plan::JoinSpec::with_null_aware(self, bool) -> Self
 pub fn query_planning::plan::JoinSpec::with_null_equality(self, query_planning::plan::JoinNullEquality) -> Self
 pub fn query_planning::plan::JoinSpec::with_output_projection(self, alloc::vec::Vec<query_planning::plan::JoinOutputColumn>) -> Self
 pub fn query_planning::plan::JoinSpec::with_residual_predicate(self, query_planning::expr::Expr) -> Self

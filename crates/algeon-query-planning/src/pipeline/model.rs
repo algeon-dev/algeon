@@ -4,9 +4,8 @@
 //! match their position in the corresponding vector. Builders do not validate
 //! cross-references; call [`CompiledPipeline::validate`] before execution.
 
-pub use crate::capability::AggregateExecutionStage;
+use super::physical::{JoinPlan, TaskPhysical};
 use crate::{
-    capability::CompiledJoinExecutionStrategy,
     error::Result,
     expr::SortExpr,
     plan::{NodeId, WindowSpec},
@@ -154,40 +153,34 @@ impl ResidentResourceId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineTask {
     id: PipelineTaskId,
-    kind: PipelineTaskKind,
+    physical: TaskPhysical,
     plan_node: Option<NodeId>,
     input_resources: Vec<ResidentResourceId>,
     output_resources: Vec<ResidentResourceId>,
     accepted_input_form: AcceptedInputForm,
-    sort_strategy: Option<SortStrategy>,
-    plan_join_strategy: Option<CompiledJoinExecutionStrategy>,
-    aggregate_stage: Option<AggregateExecutionStage>,
 }
 
 impl PipelineTask {
     /// Create a task that is not tied to one native plan node.
     ///
-    /// The execution contract defaults to the narrowest form a task can
-    /// require: one complete resident frame, no fused sort, no join strategy.
-    /// [`compile_pipeline`](crate::pipeline::compile_pipeline) replaces it with
-    /// the contract it resolved for the task.
-    pub fn new(id: PipelineTaskId, kind: PipelineTaskKind) -> Self {
+    /// The accepted input form defaults to the narrowest one: one complete
+    /// resident frame. [`compile_pipeline`](crate::pipeline::compile_pipeline)
+    /// replaces it, and the physical spec, with the contract it resolved for
+    /// the task.
+    pub fn new(id: PipelineTaskId, physical: TaskPhysical) -> Self {
         Self {
             id,
-            kind,
+            physical,
             plan_node: None,
             input_resources: Vec::new(),
             output_resources: Vec::new(),
             accepted_input_form: AcceptedInputForm::Frame,
-            sort_strategy: None,
-            plan_join_strategy: None,
-            aggregate_stage: None,
         }
     }
 
     /// Create a task associated with a native plan node.
-    pub(crate) fn for_plan_node(id: PipelineTaskId, kind: PipelineTaskKind, plan_node: NodeId) -> Self {
-        Self { plan_node: Some(plan_node), ..Self::new(id, kind) }
+    pub(crate) fn for_plan_node(id: PipelineTaskId, physical: TaskPhysical, plan_node: NodeId) -> Self {
+        Self { plan_node: Some(plan_node), ..Self::new(id, physical) }
     }
 
     /// Attach resident resources consumed by this task.
@@ -208,21 +201,9 @@ impl PipelineTask {
         self
     }
 
-    /// Record the final-sort execution strategy selected for this task.
-    pub fn with_sort_strategy(mut self, sort_strategy: SortStrategy) -> Self {
-        self.sort_strategy = Some(sort_strategy);
-        self
-    }
-
-    /// Record the plan-derived join strategy selected for this join task.
-    pub(crate) fn with_plan_join_strategy(mut self, plan_join_strategy: CompiledJoinExecutionStrategy) -> Self {
-        self.plan_join_strategy = Some(plan_join_strategy);
-        self
-    }
-
-    /// Record the aggregate execution stage this task runs.
-    pub(crate) fn with_aggregate_stage(mut self, aggregate_stage: AggregateExecutionStage) -> Self {
-        self.aggregate_stage = Some(aggregate_stage);
+    /// Record the physical spec resolved for this task.
+    pub(crate) fn with_physical(mut self, physical: TaskPhysical) -> Self {
+        self.physical = physical;
         self
     }
 
@@ -233,7 +214,12 @@ impl PipelineTask {
 
     /// Symbolic work kind.
     pub fn kind(&self) -> PipelineTaskKind {
-        self.kind
+        self.physical.kind()
+    }
+
+    /// What the task executes, with its physical spec.
+    pub fn physical(&self) -> &TaskPhysical {
+        &self.physical
     }
 
     /// Native plan node that produced this task, when applicable.
@@ -256,26 +242,20 @@ impl PipelineTask {
         self.accepted_input_form
     }
 
-    /// Final-sort execution strategy, set on [`PipelineTaskKind::FinalSort`].
+    /// Final-sort execution strategy of a [`PipelineTaskKind::FinalSort`] task.
     pub fn sort_strategy(&self) -> Option<SortStrategy> {
-        self.sort_strategy
+        match self.physical {
+            TaskPhysical::FinalSort(strategy) => Some(strategy),
+            _ => None,
+        }
     }
 
-    /// Plan-derived join strategy, set on join build and probe tasks.
-    ///
-    /// This is the strategy the plan alone determines. The executor may still
-    /// refine it from observed build facts before running the kernel.
-    pub(crate) fn plan_join_strategy(&self) -> Option<CompiledJoinExecutionStrategy> {
-        self.plan_join_strategy
-    }
-
-    /// Aggregate execution stage, set on [`PipelineTaskKind::Aggregate`].
-    ///
-    /// Compiled aggregate tasks always run [`AggregateExecutionStage::Single`]:
-    /// partial state never crosses a compiled edge, it is merged inside the
-    /// task.
-    pub fn aggregate_stage(&self) -> Option<AggregateExecutionStage> {
-        self.aggregate_stage
+    /// Join plan of a join build or probe task.
+    pub fn join_plan(&self) -> Option<&JoinPlan> {
+        match &self.physical {
+            TaskPhysical::JoinBuild(plan) | TaskPhysical::JoinProbe(plan) => Some(plan),
+            _ => None,
+        }
     }
 }
 

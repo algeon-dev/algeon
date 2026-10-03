@@ -7,21 +7,19 @@ use std::collections::BTreeMap;
 use arrow::datatypes::{DataType as ArrowDataType, Schema as ArrowSchema};
 
 use super::{
-    AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinExecutionCapability, JoinNode,
-    JoinSide, KeyedHashJoinStrategyDecision, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, SourceNode,
+    AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinForm, JoinNode, LimitNode, NodeId,
+    PlanNode, QueryNode, QueryPlan, SourceNode,
     aggregate::aggregate_state_contract,
+    classify_join,
     expr::{
         expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
         validate_general_expr_capability, validate_join_residual_expr_capability,
         validate_named_column_expr_capability, validate_post_join_residual_expr_capability, validation_result_decision,
     },
-    join_node_execution_capability, join_residual_requires_post_join_filter,
-    keyed_hash_join_strategy_decision_for_plan,
     model::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
         SourceFormatCapability,
     },
-    one_shot_equi_join_supported,
     rejection::{Reason, UnsupportedPart},
     validate_local_parquet_source,
 };
@@ -106,7 +104,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
         },
         PlanNode::Limit(_) => NodeOperator::Limit,
         PlanNode::Join(join) => NodeOperator::Join {
-            join_type: join.spec.join_type,
+            join_type: join.spec.join_type.clone(),
             key_count: join.spec.keys.len(),
             residual: if join.spec.residual_predicate.is_some() {
                 ResidualRequirement::Required
@@ -551,17 +549,14 @@ fn join_node_executable_decision(
             [("node_id", node_id.to_string()), ("reason", "missing_join_node".to_string())],
         );
     };
-    let Some(capability) = join_node_execution_capability(join) else {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedJoinNodeCapability,
-            [
-                ("node_id", node_id.to_string()),
-                ("join_type", join.spec.join_type.to_string()),
-                ("key_count", join.spec.keys.len().to_string()),
-                ("has_residual", join.spec.residual_predicate.is_some().to_string()),
-                ("build_side", join.spec.build_side.to_string()),
-            ],
-        );
+    // A residual that only a post-join filter evaluates rejects a non-inner
+    // join after the output types and the residual expression are checked;
+    // every other structural miss rejects first.
+    let form = match classify_join(node_id, join) {
+        Err(rejection) if rejection.reason != Reason::PostJoinResidualFilterRequiresOneShotEquiJoin => {
+            return CapabilityDecision::Rejected { reason: rejection.reason, facts: rejection.facts };
+        },
+        form => form,
     };
     for (field_index, field) in output_schema.fields().iter().enumerate() {
         if !ctx.backend().supports_type(field.data_type()) {
@@ -578,7 +573,7 @@ fn join_node_executable_decision(
     }
     if let Some(predicate) = &join.spec.residual_predicate {
         let residual_capability = validate_join_residual_expr_capability(predicate).or_else(|rejection| {
-            if one_shot_equi_join_supported(join) && join_residual_requires_post_join_filter(join) {
+            if matches!(form, Ok(JoinForm::KeyedEquiPostFilter)) {
                 validate_post_join_residual_expr_capability(predicate)
             } else {
                 Err(rejection)
@@ -593,31 +588,10 @@ fn join_node_executable_decision(
             );
         }
     }
-    if matches!(capability, JoinExecutionCapability::KeyedFilteredSemiAnti)
-        && join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
-    {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedJoinNodeCapability,
-            [
-                ("node_id", node_id.to_string()),
-                ("join_type", join.spec.join_type.to_string()),
-                ("reason", "semi_anti_projects_non_left_column".to_string()),
-            ],
-        );
+    match form {
+        Ok(_) => CapabilityDecision::Satisfied,
+        Err(rejection) => CapabilityDecision::Rejected { reason: rejection.reason, facts: rejection.facts },
     }
-    if let Some(decision) =
-        keyed_hash_join_strategy_decision_for_plan(plan, node_id, join, &ctx.policy().keyed_hash_join)
-    {
-        match decision {
-            KeyedHashJoinStrategyDecision::Rejected { reason, facts } => {
-                let mut facts = facts;
-                facts.insert("node_id", node_id.to_string());
-                return CapabilityDecision::Rejected { reason, facts };
-            },
-            KeyedHashJoinStrategyDecision::Selected { .. } => {},
-        }
-    }
-    CapabilityDecision::Satisfied
 }
 
 fn graph_algorithm_node_executable_decision(

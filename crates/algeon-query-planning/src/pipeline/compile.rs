@@ -3,20 +3,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    contract::resolve_task_and_resource_contracts,
+    contract::{plan_joins, resolve_task_and_resource_contracts},
+    physical::{AggregatePlan, JoinPlan, SourceReadPlan, TaskPhysical},
     validate::{ScheduleRejection, validate_schedule},
 };
 use crate::{
     capability::{
-        AggregateExecutionStage, CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind,
-        InputRole, Reason, Rejection, RejectionOwner, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
+        CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, Reason,
+        Rejection, RejectionOwner, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     error::{QueryError, QueryErrorCode, Result},
     pipeline::model::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
-        ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, ResidentLifetime, ResidentResource, ResidentResourceId,
+        SinkBoundary, SinkBoundaryKind, SortStrategy,
     },
     plan::{JoinSide, MlRelationRole, NodeId, PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
@@ -104,18 +105,21 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
     validate_analysis_covers_plan(plan, analysis, &node_order, &dependencies)?;
     let task_ids = assign_task_ids(plan, &node_order)?;
     let resource_ids = assign_resource_ids(&node_order);
-    let mut tasks = build_tasks(plan, &node_order, &dependencies, &task_ids, &resource_ids)?;
+    let join_plans = match plan_joins(plan, &node_order, &analysis.policy.keyed_hash_join) {
+        Ok(join_plans) => join_plans,
+        Err(rejection) => return Ok(GraphCompilation::Rejected(rejection)),
+    };
+    let mut tasks = build_tasks(plan, &node_order, &dependencies, &task_ids, &resource_ids, &join_plans)?;
     let mut edges = build_plan_edges(plan, analysis, &dependencies, &task_ids, &resource_ids)?;
     append_join_internal_edges(plan, &node_order, &task_ids, &mut edges)?;
     append_dynamic_filter_control_edges(plan, &task_ids, &mut edges)?;
 
     let sink_task = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
     let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_task)?;
-    let (tasks, resources) =
-        match resolve_task_and_resource_contracts(plan, &analysis.policy.keyed_hash_join, tasks, resources, &edges) {
-            Ok(resolved) => resolved,
-            Err(rejection) => return Ok(GraphCompilation::Rejected(rejection)),
-        };
+    let (tasks, resources) = match resolve_task_and_resource_contracts(plan, tasks, resources, &edges) {
+        Ok(resolved) => resolved,
+        Err(rejection) => return Ok(GraphCompilation::Rejected(rejection)),
+    };
     let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_task)?;
     let sink = build_sink_boundary(plan, &task_ids, sink_task)?;
 
@@ -344,6 +348,7 @@ fn build_tasks(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
+    join_plans: &BTreeMap<NodeId, JoinPlan>,
 ) -> Result<Vec<PipelineTask>> {
     let mut tasks = Vec::new();
     for node_id in node_order {
@@ -353,18 +358,18 @@ fn build_tasks(
         let output = resource_for(resource_ids, *node_id)?;
         match &node.kind {
             PlanNode::Source(source) => {
-                let kind = match source.as_ref() {
-                    SourceNode::LocalParquet(_) => PipelineTaskKind::SourceRead,
-                    SourceNode::GpuResident(_) => PipelineTaskKind::GpuResidentSource,
-                    SourceNode::LiteralBatch(_) => PipelineTaskKind::LiteralBatchSource,
+                let physical = match source.as_ref() {
+                    SourceNode::LocalParquet(_) => TaskPhysical::SourceRead(SourceReadPlan::FRAME),
+                    SourceNode::GpuResident(_) => TaskPhysical::GpuResidentSource,
+                    SourceNode::LiteralBatch(_) => TaskPhysical::LiteralBatchSource,
                 };
                 let task = single_task(task_ids, *node_id)?;
-                tasks.push(PipelineTask::for_plan_node(task, kind, *node_id).with_output_resources(vec![output]));
+                tasks.push(PipelineTask::for_plan_node(task, physical, *node_id).with_output_resources(vec![output]));
             },
             PlanNode::Filter(_) | PlanNode::Projection(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::Unary, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::Unary, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -372,16 +377,15 @@ fn build_tasks(
             PlanNode::Aggregate(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::Aggregate, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::Aggregate(AggregatePlan::default()), *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_aggregate_stage(AggregateExecutionStage::Single),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Window(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::Window, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::Window, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -389,7 +393,7 @@ fn build_tasks(
             PlanNode::Sort(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::FinalSort, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::FinalSort(SortStrategy::FullSort), *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -397,7 +401,7 @@ fn build_tasks(
             PlanNode::Limit(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::Limit, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::Limit, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -405,7 +409,7 @@ fn build_tasks(
             PlanNode::Union(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::Union, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::Union, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -413,20 +417,20 @@ fn build_tasks(
             PlanNode::GraphAlgorithm(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::GraphAlgorithm, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::GraphAlgorithm, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
             },
             PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let kind = if matches!(node.kind, PlanNode::MlAlgorithm(_)) {
-                    PipelineTaskKind::MlAlgorithm
+                let physical = if matches!(node.kind, PlanNode::MlAlgorithm(_)) {
+                    TaskPhysical::MlAlgorithm
                 } else {
-                    PipelineTaskKind::VectorAlgorithm
+                    TaskPhysical::VectorAlgorithm
                 };
                 tasks.push(
-                    PipelineTask::for_plan_node(task, kind, *node_id)
+                    PipelineTask::for_plan_node(task, physical, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -434,7 +438,7 @@ fn build_tasks(
             PlanNode::EdgeNormalize(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::EdgeNormalize, *node_id)
+                    PipelineTask::for_plan_node(task, TaskPhysical::EdgeNormalize, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -443,18 +447,29 @@ fn build_tasks(
                 let NodeTasks::Join { build, probe, materialize } = tasks_for(task_ids, *node_id)? else {
                     return Err(invalid("join node was not assigned join pipeline tasks").with_fact("node_id", node_id));
                 };
+                let join_plan = join_plans
+                    .get(node_id)
+                    .ok_or_else(|| invalid("join node has no join plan").with_fact("node_id", node_id))?;
                 tasks.push(
-                    PipelineTask::for_plan_node(build, PipelineTaskKind::JoinBuild, *node_id).with_input_resources(
-                        join_input_resources(*node_id, InputRoleSelector::Build, dependencies, resource_ids)?,
-                    ),
+                    PipelineTask::for_plan_node(build, TaskPhysical::JoinBuild(join_plan.clone()), *node_id)
+                        .with_input_resources(join_input_resources(
+                            *node_id,
+                            InputRoleSelector::Build,
+                            dependencies,
+                            resource_ids,
+                        )?),
                 );
                 tasks.push(
-                    PipelineTask::for_plan_node(probe, PipelineTaskKind::JoinProbe, *node_id).with_input_resources(
-                        join_input_resources(*node_id, InputRoleSelector::Probe, dependencies, resource_ids)?,
-                    ),
+                    PipelineTask::for_plan_node(probe, TaskPhysical::JoinProbe(join_plan.clone()), *node_id)
+                        .with_input_resources(join_input_resources(
+                            *node_id,
+                            InputRoleSelector::Probe,
+                            dependencies,
+                            resource_ids,
+                        )?),
                 );
                 tasks.push(
-                    PipelineTask::for_plan_node(materialize, PipelineTaskKind::JoinMaterialize, *node_id)
+                    PipelineTask::for_plan_node(materialize, TaskPhysical::JoinMaterialize, *node_id)
                         .with_output_resources(vec![output]),
                 );
             },
@@ -632,9 +647,7 @@ fn append_sink_task(
     };
     let sink_task = PipelineTaskId::new(tasks.len());
     let input_resource = resource_for(resource_ids, *input)?;
-    tasks.push(
-        PipelineTask::new(sink_task, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![input_resource]),
-    );
+    tasks.push(PipelineTask::new(sink_task, TaskPhysical::SinkMaterialize).with_input_resources(vec![input_resource]));
     let edge_id = PipelineEdgeId::new(edges.len());
     edges.push(
         PipelineEdge::new(edge_id, tasks_for(task_ids, *input)?.output_task(), sink_task, PipelineEdgeKind::SinkInput)

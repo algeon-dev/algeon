@@ -33,7 +33,7 @@ pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
         "compiled one-shot equi join execution supports keyed inner joins with optional residual predicates and keyed left/full joins without residual predicates",
         "compiled_join_strategy_unsupported",
     )
-    .with_fact("join_type", node.spec.join_type)
+    .with_fact("join_type", &node.spec.join_type)
     .with_fact("build_side", node.spec.build_side)
     .with_fact("key_count", node.spec.keys.len())
     .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
@@ -354,7 +354,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         &right.frame,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,

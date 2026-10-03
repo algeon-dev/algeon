@@ -566,7 +566,7 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
             partsupp,
             complaints,
             JoinSpec::new(
-                JoinType::LeftAnti,
+                JoinType::LEFT_ANTI,
                 vec![JoinKey::new(
                     ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
                     ColumnRef::input(1, "s_suppkey", "s_suppkey"),

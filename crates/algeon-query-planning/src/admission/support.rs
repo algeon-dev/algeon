@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityDecision, CompiledJoinExecutionStrategy, EdgeConsumer,
-        KeyedHashJoinStrategyDecision, Reason, Rejection, RejectionOwner, SubgraphInvariantKind,
+        CapabilityAnalysis, CapabilityDecision, EdgeConsumer, Reason, Rejection, RejectionOwner, SubgraphInvariantKind,
+        classify_join,
     },
     error::Result,
     pipeline::{
@@ -96,23 +96,8 @@ pub fn compiled_bounded_query_plan_support(
                 [("plan_node_id", join_node.to_string())],
             ));
         };
-        match CompiledJoinExecutionStrategy::from_plan_join_node(
-            plan,
-            join_node,
-            join,
-            &analysis.policy.keyed_hash_join,
-        ) {
-            Ok(Some(_)) => {},
-            Ok(None) | Err(KeyedHashJoinStrategyDecision::Selected { .. }) => {
-                return Ok(node_rejection(
-                    join_node,
-                    Reason::CompiledPipelineJoinExecutionStrategyUnavailable,
-                    [("plan_node_id", join_node.to_string())],
-                ));
-            },
-            Err(KeyedHashJoinStrategyDecision::Rejected { reason, facts }) => {
-                return Ok(node_rejection(join_node, reason, facts));
-            },
+        if let Err(rejection) = classify_join(join_node, join) {
+            return Ok(CompiledBoundedPipelineSupport::Unsupported(rejection));
         }
     }
     Ok(CompiledBoundedPipelineSupport::Supported)

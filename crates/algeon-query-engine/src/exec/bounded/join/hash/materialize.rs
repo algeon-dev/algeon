@@ -131,7 +131,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         &right_indices,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
@@ -279,7 +279,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
                 "failed to slice reusable hash join left gather map",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type));
+            .with_fact("join_type", &node.spec.join_type));
         },
     };
     let right_slice = match right_indices.indices().slice(offset, len) {
@@ -290,7 +290,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
                 "failed to slice reusable hash join right gather map",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type));
+            .with_fact("join_type", &node.spec.join_type));
         },
     };
     let expected_output_rows = len as u64;
@@ -330,7 +330,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
         &right_slice,
         overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,

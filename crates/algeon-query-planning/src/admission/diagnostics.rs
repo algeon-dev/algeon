@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
-    capability::{Rejection, keyed_hash_join_strategy_decision_for_plan},
+    capability::{Rejection, choose_join_strategy, classify_join, keyed_hash_join_strategy_input_facts_for_plan},
     plan::{PlanNode, QueryPlan},
 };
 
@@ -58,53 +58,43 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
     let mut probe_side_bytes = Vec::new();
     let mut probe_reuse_count = Vec::new();
     let mut reusable_prebuild_supported = Vec::new();
-    let mut partition_counts = Vec::new();
-    let mut partition_target_bytes = Vec::new();
 
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        let Some(decision) =
-            keyed_hash_join_strategy_decision_for_plan(plan, node.id, join, &ctx.policy().keyed_hash_join)
-        else {
+        let Ok(form) = classify_join(node.id, join) else {
+            continue;
+        };
+        let input = keyed_hash_join_strategy_input_facts_for_plan(plan, node.id, join);
+        let choice = choose_join_strategy(form, join, input, &ctx.policy().keyed_hash_join);
+        let Some(evidence) = choice.evidence() else {
             continue;
         };
         let node_label = node.id.to_string();
-        let decision_facts = decision.facts();
-        if let Some(value) = decision_facts.get("join_strategy") {
-            join_strategy.push(format!("{node_label}:{value}"));
+        let label = |value: String| format!("{node_label}:{value}");
+        join_strategy.push(label(choice.strategy().as_str().to_string()));
+        if let Some(reason) = evidence.reusable_rejected_reason() {
+            reusable_rejections.push(label(reason.to_string()));
         }
-        if let Some(value) = decision_facts.get("reusable_hash_join_rejected_reason") {
-            reusable_rejections.push(format!("{node_label}:{value}"));
+        if let Some(reason) = evidence.partitioned_rejected_reason() {
+            partitioned_rejections.push(label(reason.to_string()));
         }
-        if let Some(value) = decision_facts.get("partitioned_hash_join_rejected_reason") {
-            partitioned_rejections.push(format!("{node_label}:{value}"));
+        let input = evidence.input();
+        if let Some(rows) = input.estimated_build_rows {
+            estimated_build_rows.push(label(rows.to_string()));
         }
-        if let Some(value) = decision_facts.get("estimated_build_rows") {
-            estimated_build_rows.push(format!("{node_label}:{value}"));
+        if let Some(rows) = input.observed_build_rows {
+            observed_build_rows.push(label(rows.to_string()));
         }
-        if let Some(value) = decision_facts.get("observed_build_rows") {
-            observed_build_rows.push(format!("{node_label}:{value}"));
+        if let Some(bytes) = input.build_side_bytes {
+            build_side_bytes.push(label(bytes.to_string()));
         }
-        if let Some(value) = decision_facts.get("build_side_bytes") {
-            build_side_bytes.push(format!("{node_label}:{value}"));
+        if let Some(bytes) = input.probe_side_bytes {
+            probe_side_bytes.push(label(bytes.to_string()));
         }
-        if let Some(value) = decision_facts.get("probe_side_bytes") {
-            probe_side_bytes.push(format!("{node_label}:{value}"));
-        }
-        if let Some(value) = decision_facts.get("probe_reuse_count") {
-            probe_reuse_count.push(format!("{node_label}:{value}"));
-        }
-        if let Some(value) = decision_facts.get("reusable_prebuild_supported") {
-            reusable_prebuild_supported.push(format!("{node_label}:{value}"));
-        }
-        if let Some(value) = decision_facts.get("partition_count") {
-            partition_counts.push(format!("{node_label}:{value}"));
-        }
-        if let Some(value) = decision_facts.get("partition_target_bytes") {
-            partition_target_bytes.push(format!("{node_label}:{value}"));
-        }
+        probe_reuse_count.push(label(input.probe_reuse_count.to_string()));
+        reusable_prebuild_supported.push(label(input.reusable_prebuild_supported.to_string()));
     }
 
     insert_csv_fact(facts, "join_strategy", join_strategy);
@@ -116,8 +106,6 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
     insert_csv_fact(facts, "probe_side_bytes", probe_side_bytes);
     insert_csv_fact(facts, "probe_reuse_count", probe_reuse_count);
     insert_csv_fact(facts, "reusable_prebuild_supported", reusable_prebuild_supported);
-    insert_csv_fact(facts, "partition_count", partition_counts);
-    insert_csv_fact(facts, "partition_target_bytes", partition_target_bytes);
 }
 
 fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str, values: Vec<String>) {

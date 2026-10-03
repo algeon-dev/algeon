@@ -1,11 +1,10 @@
 use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
-    BoundedJoinSideFrame, BoundedPartitionRowPolicy, CompiledJoinExecutionStrategy, DataFrame, GpuDataFrame, JoinNode,
-    JoinSide, KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinSide, QueryError, QueryErrorCode,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns, cudf_query_error,
-    execution_overrides, hash_partition_join_side, join_keys_for_side,
-    materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
-    partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    BoundedJoinSideFrame, BoundedPartitionRowPolicy, DataFrame, GpuDataFrame, JoinNode, JoinSide, JoinStrategy,
+    KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinSide, QueryError, QueryErrorCode, ResidentFrameStreamPayload,
+    ResidentGpuFrame, Result, compiled_join_input_columns, cudf_query_error, execution_overrides,
+    hash_partition_join_side, join_keys_for_side, materialize_bounded_join_leaf_local_parquet_source_stream,
+    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
     prepare_bounded_join_side_input_from_resident_frame, release_bounded_join_side_frame,
     stream_bounded_join_leaf_local_parquet_source,
 };
@@ -78,7 +77,7 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
 ) -> Result<BoundedJoinBuildStreamOutcome> {
     let side = node.spec.build_side;
     let columns = if keyed_hash_inputs {
-        Some(compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, side)?)
+        Some(compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, side)?)
     } else {
         None
     };
@@ -357,7 +356,7 @@ impl PartitionedJoinBuildAccumulator {
                     error,
                 )
                 .with_fact("node_id", node_id)
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
                 .with_fact("build_side", self.side)
                 .with_fact("partition", partition)
                 .with_fact("partition_count", partition_count)
@@ -419,7 +418,7 @@ impl PartitionedJoinBuildAccumulator {
                             error,
                         )
                         .with_fact("node_id", node_id)
-                        .with_fact("join_type", node.spec.join_type)
+                        .with_fact("join_type", &node.spec.join_type)
                         .with_fact("build_side", side)
                         .with_fact("partition", partition)
                         .with_fact("partition_count", partition_count)

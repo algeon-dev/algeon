@@ -454,33 +454,40 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
 }
 
 #[test]
-fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
+fn list_string_null_predicates_are_rejected_in_native_join_residuals() {
     let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false), Field::new("tags", list_type, true)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let left_tags_null = || Expr::is_null(Expr::input_column(0, "tags", "tags"));
 
-    let error = native_validation_error_for_plan(|builder| {
-        let left =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&input_schema))));
-        let right =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&input_schema))));
-        let spec = JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
-        )
-        .with_residual_predicate(Expr::binary(
-            Expr::is_null(Expr::input_column(0, "tags", "tags")),
-            BinaryOp::Or,
-            Expr::is_not_null(Expr::input_column(1, "tags", "tags")),
-        ))
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]);
-        builder.add_join(left, right, spec, output_schema).unwrap()
-    });
+    // The mixed join evaluates null checks while matching; IS DISTINCT FROM
+    // moves the whole residual to a filter after the equi-join.
+    for (other_disjunct, context) in [
+        (Expr::is_not_null(Expr::input_column(1, "tags", "tags")), "join residual IS NULL input"),
+        (
+            Expr::is_distinct_from(Expr::input_column(0, "key", "key"), Expr::input_column(1, "key", "key")),
+            "post-join residual IS NULL input",
+        ),
+    ] {
+        let error = native_validation_error_for_plan(|builder| {
+            let left =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&input_schema))));
+            let right =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&input_schema))));
+            let spec = JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+            )
+            .with_residual_predicate(Expr::binary(left_tags_null(), BinaryOp::Or, other_disjunct.clone()))
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]);
+            builder.add_join(left, right, spec, Arc::clone(&output_schema)).unwrap()
+        });
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(error.fact_value("context"), Some("post-join residual IS NULL input"));
-    assert_eq!(error.fact_value("expected"), Some("expected scalar operator value"));
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{context}");
+        assert_eq!(error.fact_value("context"), Some(context));
+        assert_eq!(error.fact_value("expected"), Some("expected scalar operator value"), "{context}");
+    }
 }
 
 #[test]

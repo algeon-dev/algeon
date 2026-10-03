@@ -3,16 +3,16 @@ use std::time::Instant;
 use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 
 use crate::{
-    admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
+    admission::JoinStrategyChoice,
     capability::{
-        KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
+        JoinForm, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
         keyed_hash_join_strategy_input_facts_for_plan,
-        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
+        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::{attach_budget_token_failure_facts, bounded::BoundedExecutionAttempt, execution_budget_token_for_boundary},
     native_error::cudf_query_error,
-    pipeline::{PipelineTask, ResidentResourceId},
+    pipeline::{JoinPlan, PipelineTask, ResidentResourceId},
     plan::{JoinNode, JoinSide, LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
     runtime::resident::GpuDataFrame,
 };
@@ -62,65 +62,50 @@ pub(super) fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: N
     Ok(join)
 }
 
-pub(super) fn join_strategy_from_facts(
+pub(super) fn task_join_plan(task: &PipelineTask, node_id: NodeId) -> Result<&JoinPlan> {
+    task.join_plan().ok_or_else(|| {
+        invalid("compiled join task carries no join plan")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str())
+    })
+}
+
+/// Chooses the join strategy for observed facts within the task's compiled
+/// join plan.
+pub(super) fn refine_join_strategy(
     options: &KeyedHashJoinStrategyOptions,
     node: &JoinNode,
     task: &PipelineTask,
     node_id: NodeId,
     strategy_facts: KeyedHashJoinStrategyInputFacts,
-) -> Result<CompiledJoinStrategySelection> {
-    CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(node, strategy_facts, options)
-        .map_err(|decision| {
-            let (reason, facts) = match decision {
-                KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
-                KeyedHashJoinStrategyDecision::Selected { .. } => {
-                    unreachable!("selected strategy decisions do not map to strategy-selection errors")
-                },
-            };
-            let mut error = invalid("compiled join task rejected its keyed hash join execution strategy")
-                .with_fact("reason", reason)
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("plan_node_id", node_id)
-                .with_fact("pipeline_task_kind", task.kind().as_str());
-            for (key, value) in facts {
-                error = error.with_fact(key, value);
-            }
-            error
-        })?
-        .ok_or_else(|| {
-            invalid("compiled join task references an unsupported join execution strategy")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("plan_node_id", node_id)
-                .with_fact("pipeline_task_kind", task.kind().as_str())
-                .with_fact("join_type", node.spec.join_type)
-                .with_fact("build_side", node.spec.build_side)
-                .with_fact("key_count", node.spec.keys.len())
-                .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
-                .with_fact("output_projection_len", node.spec.output_projection.len())
-        })
+) -> Result<JoinStrategyChoice> {
+    task_join_plan(task, node_id)?.refine(node, strategy_facts, options).map_err(|error| {
+        error
+            .with_fact_if_absent("compiled_task_id", task.id())
+            .with_fact_if_absent("plan_node_id", node_id)
+            .with_fact_if_absent("pipeline_task_kind", task.kind().as_str())
+    })
 }
 
 pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
     plan: &QueryPlan,
     options: &KeyedHashJoinStrategyOptions,
+    form: JoinForm,
     node: &JoinNode,
     node_id: NodeId,
     observed_build_rows: u64,
     build_side_bytes: u64,
 ) -> bool {
     let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
-    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options(
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+        form,
         node,
         KeyedHashJoinStrategyInputFacts {
-            estimated_build_rows: plan_facts.estimated_build_rows,
             observed_build_rows: Some(observed_build_rows),
             build_side_bytes: Some(build_side_bytes),
-            probe_side_bytes: plan_facts.probe_side_bytes,
-            estimated_output_rows: plan_facts.estimated_output_rows,
-            estimated_output_bytes: plan_facts.estimated_output_bytes,
             build_key_unique: None,
-            probe_reuse_count: plan_facts.probe_reuse_count,
-            reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
+            ..plan_facts
         },
         options,
     )

@@ -11,7 +11,7 @@ pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) ->
     };
     let extra_sink = PipelineTaskId::new(tasks.len());
     tasks.push(
-        PipelineTask::new(extra_sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![*sink_resource]),
+        PipelineTask::new(extra_sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![*sink_resource]),
     );
     edges.push(
         PipelineEdge::new(PipelineEdgeId::new(edges.len()), sink_edge.from(), extra_sink, PipelineEdgeKind::SinkInput)
@@ -56,7 +56,7 @@ pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> Com
     let extra_task = PipelineTaskId::new(tasks.len());
     let extra_resource = ResidentResourceId::new(pipeline.resources().len());
     tasks.push(
-        PipelineTask::new(extra_task, PipelineTaskKind::Unary)
+        PipelineTask::new(extra_task, TaskPhysical::Unary)
             .with_input_resources(vec![*fanout_resource])
             .with_output_resources(vec![extra_resource]),
     );
@@ -100,8 +100,8 @@ pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
-            PipelineTask::new(unary, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![frame]),
+            PipelineTask::new(unary, TaskPhysical::Unary).with_input_resources(vec![frame]),
         ],
         vec![
             PipelineEdge::new(PipelineEdgeId::new(0), source, unary, PipelineEdgeKind::ResidentFrame)
@@ -129,10 +129,10 @@ pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(first_source, PipelineTaskKind::SourceRead).with_output_resources(vec![first_frame]),
-            PipelineTask::new(second_source, PipelineTaskKind::SourceRead).with_output_resources(vec![second_frame]),
-            PipelineTask::new(first_consumer, PipelineTaskKind::Unary).with_input_resources(vec![first_frame]),
-            PipelineTask::new(second_consumer, PipelineTaskKind::Unary).with_input_resources(vec![second_frame]),
+            PipelineTask::new(first_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![first_frame]),
+            PipelineTask::new(second_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![second_frame]),
+            PipelineTask::new(first_consumer, TaskPhysical::Unary).with_input_resources(vec![first_frame]),
+            PipelineTask::new(second_consumer, TaskPhysical::Unary).with_input_resources(vec![second_frame]),
         ],
         vec![
             PipelineEdge::new(PipelineEdgeId::new(0), first_source, first_consumer, PipelineEdgeKind::ResidentFrame)
@@ -179,11 +179,11 @@ pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![source_frame]),
-            PipelineTask::new(probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![source_frame]),
-            PipelineTask::new(build, PipelineTaskKind::JoinBuild).with_input_resources(vec![source_frame]),
-            PipelineTask::new(materialize, PipelineTaskKind::JoinMaterialize).with_output_resources(vec![join_output]),
-            PipelineTask::new(sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![join_output]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![source_frame]),
+            PipelineTask::new(probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![source_frame]),
+            PipelineTask::new(build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![source_frame]),
+            PipelineTask::new(materialize, TaskPhysical::JoinMaterialize).with_output_resources(vec![join_output]),
+            PipelineTask::new(sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![join_output]),
         ],
         vec![
             PipelineEdge::new(PipelineEdgeId::new(0), source, probe, PipelineEdgeKind::JoinProbeInput)
@@ -245,21 +245,21 @@ pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() 
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(first_build_source, PipelineTaskKind::SourceRead)
+            PipelineTask::new(first_build_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![first_build_frame]),
-            PipelineTask::new(first_build, PipelineTaskKind::JoinBuild).with_input_resources(vec![first_build_frame]),
-            PipelineTask::new(first_probe_source, PipelineTaskKind::SourceRead)
+            PipelineTask::new(first_build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![first_build_frame]),
+            PipelineTask::new(first_probe_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![first_probe_frame]),
-            PipelineTask::new(second_build_source, PipelineTaskKind::SourceRead)
+            PipelineTask::new(second_build_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![second_build_frame]),
-            PipelineTask::new(first_probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![first_probe_frame]),
-            PipelineTask::new(second_build, PipelineTaskKind::JoinBuild).with_input_resources(vec![second_build_frame]),
-            PipelineTask::new(first_materialize, PipelineTaskKind::JoinMaterialize)
+            PipelineTask::new(first_probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![first_probe_frame]),
+            PipelineTask::new(second_build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![second_build_frame]),
+            PipelineTask::new(first_materialize, TaskPhysical::JoinMaterialize)
                 .with_output_resources(vec![first_join_output]),
-            PipelineTask::new(second_probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![first_join_output]),
-            PipelineTask::new(second_materialize, PipelineTaskKind::JoinMaterialize)
+            PipelineTask::new(second_probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![first_join_output]),
+            PipelineTask::new(second_materialize, TaskPhysical::JoinMaterialize)
                 .with_output_resources(vec![second_join_output]),
-            PipelineTask::new(sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![second_join_output]),
+            PipelineTask::new(sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![second_join_output]),
         ],
         vec![
             PipelineEdge::new(
@@ -366,9 +366,9 @@ pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
-            PipelineTask::new(first_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
-            PipelineTask::new(second_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![frame]),
+            PipelineTask::new(first_consumer, TaskPhysical::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(second_consumer, TaskPhysical::Unary).with_input_resources(vec![frame]),
         ],
         vec![
             PipelineEdge::new(PipelineEdgeId::new(0), source, first_consumer, PipelineEdgeKind::SharedResidentProducer)
@@ -396,4 +396,11 @@ pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
         )],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, second_consumer),
     )
+}
+
+/// A keyed equi-join plan for scheduler fixtures whose join tasks reference no
+/// plan node.
+fn fixture_join_plan() -> JoinPlan {
+    JoinPlan::new(JoinForm::KeyedEqui, JoinStrategy::OneShotEqui, JoinForm::KeyedEqui.strategies().to_vec())
+        .expect("a keyed equi-join may run every keyed equi strategy")
 }

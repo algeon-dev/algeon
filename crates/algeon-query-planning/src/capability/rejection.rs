@@ -104,7 +104,6 @@ pub enum Reason {
     CompiledPipelineStageTaskPositionUnsupported,
     CompiledPipelineSharedProducerLineageUnproven,
     CompiledPipelineJoinTaskGroupPlanNodeMismatch,
-    CompiledPipelineJoinExecutionStrategyUnavailable,
     CompiledTaskKindOutsideContract,
     CompiledPipelineGraphNotConstructible,
     ConsumerRequiresExclusiveInput,
@@ -213,9 +212,6 @@ impl Reason {
             Self::CompiledPipelineSharedProducerLineageUnproven => "compiled_pipeline_shared_producer_lineage_unproven",
             Self::CompiledPipelineJoinTaskGroupPlanNodeMismatch => {
                 "compiled_pipeline_join_task_group_plan_node_mismatch"
-            },
-            Self::CompiledPipelineJoinExecutionStrategyUnavailable => {
-                "compiled_pipeline_join_execution_strategy_unavailable"
             },
             Self::CompiledTaskKindOutsideContract => "compiled_task_kind_outside_contract",
             Self::CompiledPipelineGraphNotConstructible => "compiled_pipeline_graph_not_constructible",
@@ -346,9 +342,6 @@ impl Reason {
             Self::CompiledPipelineJoinTaskGroupPlanNodeMismatch => {
                 CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
             },
-            Self::CompiledPipelineJoinExecutionStrategyUnavailable => {
-                CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
-            },
             Self::CompiledTaskKindOutsideContract => CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
             Self::CompiledPipelineGraphNotConstructible => {
                 CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
@@ -415,7 +408,6 @@ impl Reason {
             | Self::CompiledPipelineStageTaskPositionUnsupported
             | Self::CompiledPipelineSharedProducerLineageUnproven
             | Self::CompiledPipelineJoinTaskGroupPlanNodeMismatch
-            | Self::CompiledPipelineJoinExecutionStrategyUnavailable
             | Self::CompiledTaskKindOutsideContract
             | Self::CompiledPipelineGraphNotConstructible
             | Self::ConsumerRequiresExclusiveInput

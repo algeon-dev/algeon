@@ -49,12 +49,12 @@ pub(super) fn execute_compiled_mixed_join_materialize(
             .with_execution(&overrides)
             .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::LeftAnti => left
+        JoinType::LeftAnti { .. } => left
             .frame
             .with_execution(&overrides)
             .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross | JoinType::LeftMark => unreachable!("validated above"),
+        JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated above"),
     }
     .map_err(|error| join_index_error(error, node))?;
     let expected_output_rows = size_data.output_size() as u64;
@@ -98,7 +98,7 @@ pub(super) fn execute_compiled_mixed_join_probe_from_stream(
             "streamed compiled mixed keyed residual join probe supports inner joins only",
             "compiled_join_strategy_unsupported",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("build_side", node.spec.build_side));
     }
 

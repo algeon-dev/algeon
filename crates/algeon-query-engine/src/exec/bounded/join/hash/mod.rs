@@ -6,10 +6,7 @@ use super::{
     },
     *,
 };
-use crate::{
-    capability::keyed_hash_join_capable,
-    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
-};
+use crate::exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
 
 mod build;
 mod materialize;

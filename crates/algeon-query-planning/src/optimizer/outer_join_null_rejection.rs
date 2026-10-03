@@ -295,9 +295,8 @@ fn left_join_marker_null_filter_to_anti_rewrite(
     }
     let output_schema = left_anti_output_schema(join_output_schema, &output_projection)?;
     let mut anti = join.clone();
-    anti.spec.join_type = JoinType::LeftAnti;
+    anti.spec.join_type = JoinType::LEFT_ANTI;
     anti.spec.output_projection = output_projection;
-    anti.spec.mark_column_name = None;
     Some(LeftAntiMarkerRewrite { join: anti, output_schema, marker_name, remaining_predicate })
 }
 

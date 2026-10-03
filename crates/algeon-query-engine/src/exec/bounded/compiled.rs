@@ -49,8 +49,8 @@ use crate::{
         RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId, RuntimeTopologyRecord, SinkDefinitionRow,
         TaskDefinitionRow,
     },
-    pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
-    plan::{JoinType, PlanNode, QueryPlan, ResultSink},
+    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
+    plan::{QueryPlan, ResultSink},
     policy::PlanningPolicy,
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
@@ -67,10 +67,8 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     if let Some(scope) = observation_scope {
         record_compiled_pipeline_topology(scope, pipeline, context.runtime()?.device().ordinal());
     }
-    let scheduler = CompiledPipelineScheduler::new_with_prioritized_join_builds(
-        pipeline,
-        prioritized_join_build_tasks(plan, pipeline),
-    )?;
+    let scheduler =
+        CompiledPipelineScheduler::new_with_prioritized_join_builds(pipeline, prioritized_join_build_tasks(pipeline))?;
     metrics.record_compiled_pipeline_attempt();
     let lane_support = lane_dispatch_support(context, plan, policy, pipeline, gpu_inputs, metrics);
     let (completed_task_count, output, host_sink) = if let Some(support) = lane_support.as_ref() {
@@ -210,25 +208,13 @@ fn record_compiled_pipeline_topology(
     }
 }
 
-fn prioritized_join_build_tasks(plan: &QueryPlan, pipeline: &CompiledPipeline) -> BTreeSet<PipelineTaskId> {
+fn prioritized_join_build_tasks(pipeline: &CompiledPipeline) -> BTreeSet<PipelineTaskId> {
     pipeline
         .tasks()
         .iter()
         .filter(|task| task.kind() == PipelineTaskKind::JoinBuild)
-        .filter_map(|task| {
-            let node_id = task.plan_node()?;
-            let node = plan.node(node_id)?;
-            let PlanNode::Join(join) = &node.kind else {
-                return None;
-            };
-            if join.spec.residual_predicate.is_none()
-                && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
-            {
-                Some(task.id())
-            } else {
-                None
-            }
-        })
+        .filter(|task| task.join_plan().is_some_and(|plan| plan.form().builds_first()))
+        .map(PipelineTask::id)
         .collect()
 }
 
@@ -244,7 +230,8 @@ mod topology_tests {
         },
         pipeline::{
             CompiledPipeline, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
-            PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+            ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SourceReadPlan,
+            TaskPhysical,
         },
     };
 
@@ -254,8 +241,9 @@ mod topology_tests {
         let resource = ResidentResourceId::new(0);
         CompiledPipeline::from_parts_unvalidated(
             vec![
-                PipelineTask::new(producer, PipelineTaskKind::SourceRead).with_output_resources(vec![resource]),
-                PipelineTask::new(consumer, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![resource]),
+                PipelineTask::new(producer, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                    .with_output_resources(vec![resource]),
+                PipelineTask::new(consumer, TaskPhysical::SinkMaterialize).with_input_resources(vec![resource]),
             ],
             vec![
                 PipelineEdge::new(PipelineEdgeId::new(0), producer, consumer, PipelineEdgeKind::SinkInput)

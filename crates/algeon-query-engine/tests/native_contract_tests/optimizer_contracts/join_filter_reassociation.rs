@@ -2,7 +2,7 @@ use arrow::array::{Date32Array, Float64Array};
 
 #[test]
 fn join_filter_reassociation_preserves_output_advisory_for_residual_build_selection() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         for (parent_rows, right_bytes, right_rows, expected_side) in [
             (Some(2_000), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Left),
             (Some(2_000), 32 * 1024, 1_000, JoinSide::Right),
@@ -26,7 +26,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
                 left,
                 right,
                 JoinSpec::new(
-                    join_type,
+                    join_type.clone(),
                     vec![JoinKey::new(
                         ColumnRef::input(0, "customer", "customer"),
                         ColumnRef::input(1, "probe_key", "probe_key"),

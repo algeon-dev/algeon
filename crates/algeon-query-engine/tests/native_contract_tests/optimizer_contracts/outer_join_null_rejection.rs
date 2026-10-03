@@ -141,7 +141,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
             .nodes()
             .iter()
             .filter_map(|node| match &node.kind {
-                PlanNode::Join(join) => Some(join.spec.join_type),
+                PlanNode::Join(join) => Some(join.spec.join_type.clone()),
                 _ => None,
             })
             .all(|join_type| join_type != JoinType::Left),
@@ -165,7 +165,7 @@ fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
             .nodes()
             .iter()
             .filter_map(|node| match &node.kind {
-                PlanNode::Join(join) => Some(join.spec.join_type),
+                PlanNode::Join(join) => Some(join.spec.join_type.clone()),
                 _ => None,
             })
             .all(|join_type| join_type != JoinType::Left),
@@ -189,7 +189,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
     let PlanNode::Join(join) = &result.plan.node(projection.input).expect("anti join").kind else {
         panic!("projection should consume rewritten anti join");
     };
-    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+    assert_eq!(join.spec.join_type, JoinType::LEFT_ANTI);
     assert_eq!(join.spec.build_side, JoinSide::Right);
     assert!(join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left));
     assert_eq!(join.spec.output_projection.len(), 2);
@@ -208,7 +208,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_null
     let PlanNode::Join(join) = &result.plan.node(projection.input).expect("anti join").kind else {
         panic!("projection should consume rewritten anti join");
     };
-    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+    assert_eq!(join.spec.join_type, JoinType::LEFT_ANTI);
 }
 
 #[test]

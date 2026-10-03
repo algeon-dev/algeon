@@ -92,7 +92,7 @@ pub fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
             union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_bytes(plan, *input)?))
         },
         PlanNode::Join(join)
-            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
                 && !join.spec.output_projection.is_empty()
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
                 && left_output_columns_are_unique(join) =>

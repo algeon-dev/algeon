@@ -1,25 +1,17 @@
 use std::time::Instant;
 
 use crate::{
-    capability::keyed_residual_left_match_join_capable,
     exec::bounded::join::compiled::{
         BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
-        BoundedExecutionAttempt, CompiledJoinExecutionStrategy, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
-        ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns,
-        dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
-        lower_join_residual_predicate, materialize_left_only_join_output_projection, observe_device_memory_bytes,
+        BoundedExecutionAttempt, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId, ResidentFrameStreamPayload,
+        ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options, execution_overrides,
+        join_index_error, join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+        materialize_left_only_join_output_projection, observe_device_memory_bytes,
         prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
         residual_input_columns,
     },
     metrics::{JoinOperatorMetrics, OperatorMetrics},
 };
-
-pub(in crate::exec::bounded::join::compiled) fn mixed_left_match_probe_supported(
-    node: &JoinNode,
-    strategy: CompiledJoinExecutionStrategy,
-) -> bool {
-    strategy == CompiledJoinExecutionStrategy::MixedKeyedResidual && keyed_residual_left_match_join_capable(node)
-}
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -62,7 +54,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         let timer = Instant::now();
         // Unmatched left rows become anti output only after every right batch has completed.
         let finalized = state
-            .seal_in(node.spec.join_type == JoinType::LeftAnti, &overrides)
+            .seal_in(matches!(node.spec.join_type, JoinType::LeftAnti { .. }), &overrides)
             .map_err(|error| join_index_error(error, node))?;
         operator_time += timer.elapsed();
         state_bytes = state_bytes
@@ -113,7 +105,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         &indices,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
     )?;
     execution.metrics().add_operator_time(operator_time + timer.elapsed());
     let output = GpuDataFrame::new(output);

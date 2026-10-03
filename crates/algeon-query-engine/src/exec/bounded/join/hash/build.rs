@@ -81,7 +81,7 @@ pub(in crate::exec::bounded::join) fn build_bounded_hash_join(
                 "failed to build bounded native reusable hash join",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
             .with_fact("key_count", node.spec.keys.len())
             .with_fact("build_side", build_side));
         },
@@ -90,7 +90,7 @@ pub(in crate::exec::bounded::join) fn build_bounded_hash_join(
         Ok(hash_join) => hash_join,
         Err(error) => {
             return Err(error
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
                 .with_fact("key_count", node.spec.keys.len())
                 .with_fact("build_side", build_side));
         },

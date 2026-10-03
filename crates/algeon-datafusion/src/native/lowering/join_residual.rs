@@ -589,10 +589,9 @@ mod tests {
         },
         physical_plan::joins::utils::{ColumnIndex, JoinFilter},
     };
-    use query_engine::plan::JoinType as NativeJoinType;
 
     use super::*;
-    use crate::native::expression_contract::validate_join_residual;
+    use crate::native::{expression_contract::validate_join_residual, lowering::join::CanonicalJoinKind};
 
     fn scalar_function(
         name: &str,
@@ -634,7 +633,7 @@ mod tests {
         );
         let validated = validate_join_residual(&filter, left_schema, right_schema)
             .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
-        let lowered = lower_join_filter(&validated, CanonicalJoin::new(NativeJoinType::Inner, false), None)
+        let lowered = lower_join_filter(&validated, CanonicalJoin::new(CanonicalJoinKind::Inner, false), None)
             .unwrap_or_else(|error| panic!("{label} must lower: {error:?}"));
         assert!(!lowered.left_required.is_empty(), "{label} must retain a left input dependency");
         assert!(!lowered.right_required.is_empty(), "{label} must retain a right input dependency");

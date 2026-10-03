@@ -2,7 +2,10 @@
 // streams in chunk by chunk and is hash-partitioned as it arrives, so neither
 // a whole-leaf concat nor an upstream join-output concat is ever resident.
 
-use query_engine::capability::KeyedHashJoinStrategyOptions;
+use query_engine::{
+    capability::{JoinStrategy, KeyedHashJoinStrategyOptions},
+    pipeline::{PipelineTaskKind, compile_pipeline},
+};
 
 const PARTITIONED_BUILD_PAYLOAD_BYTES: usize = 8192;
 
@@ -191,12 +194,13 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
 
 #[test]
 fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a_misestimated_build() {
-    let context = backend_context_with_grant_and_planning_policy(30 * 1024 * 1024, PlanningPolicy {
+    let policy = PlanningPolicy {
         keyed_hash_join: KeyedHashJoinStrategyOptions::default()
             .with_small_reusable_hash_build_row_threshold(100)
             .with_large_keyed_hash_build_row_threshold(300),
         ..PlanningPolicy::default()
-    });
+    };
+    let context = backend_context_with_grant_and_planning_policy(30 * 1024 * 1024, policy);
     let runtime = context.runtime().unwrap();
     let dir = unique_temp_dir("query-engine-bounded-partitioned-build-misestimated");
     let build_path = dir.join("build.parquet");
@@ -232,10 +236,24 @@ fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a
     ).unwrap();
     let plan = builder.finish_with_host_sink(join).unwrap();
 
+    // The footer estimate plans a reusable table; the observed rows refine the
+    // join to a partitioned build, one of the strategies its compiled plan allows.
+    let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(policy)))
+        .expect("the misestimated join compiles");
+    let join_plan = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::JoinBuild)
+        .and_then(|task| task.join_plan())
+        .expect("the join build task carries its join plan");
+    assert_eq!(join_plan.planned(), JoinStrategy::ReusableHashEqui);
+    assert!(join_plan.allowed().contains(&JoinStrategy::PartitionedHashEqui));
+
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();
     let metrics = &metrics;
     let decision = partitioned_build_decision(metrics, "n2");
+    assert_eq!(decision.facts.get("join_strategy").map(String::as_str), Some("partitioned_hash_equi"));
     assert_eq!(decision.facts.get("build_chunks_before_commitment").map(String::as_str), Some("2"));
     assert_eq!(decision.facts.get("observed_build_rows").map(String::as_str), Some("512"));
     assert_eq!(decision.facts.get("estimated_build_rows").map(String::as_str), Some("80"));

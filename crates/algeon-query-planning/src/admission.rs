@@ -32,6 +32,6 @@ pub use support::{
 };
 
 #[doc(hidden)]
-pub use crate::capability::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
+pub use crate::capability::{JoinStrategy, JoinStrategyChoice};
 #[doc(hidden)]
 pub use crate::plan::DeferredGraphExecutionScopeIdentity;

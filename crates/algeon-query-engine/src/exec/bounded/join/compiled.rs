@@ -11,8 +11,8 @@ use super::{
     cudf_query_error, *,
 };
 use crate::{
-    admission::CompiledJoinExecutionStrategy,
-    capability::{KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, keyed_filtered_semi_anti_join_capable},
+    admission::JoinStrategy,
+    capability::{JoinForm, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
     exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch},
     expr::{ColumnQualifier, ColumnRef},
     metrics::{JoinOperatorMetrics, OperatorMetrics},
@@ -109,14 +109,23 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
 }
 
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
-    strategy: CompiledJoinExecutionStrategy,
+    strategy: JoinStrategy,
     strategy_options: KeyedHashJoinStrategyOptions,
     side: JoinSide,
     input: BoundedJoinSideFrame,
+    /// A semi or anti join building its left side runs the mixed residual
+    /// join whose probe keeps per-left-row match state.
+    left_match: bool,
+}
+
+impl BoundedCompiledPreparedJoinBuildState {
+    fn mixed_left_match(&self) -> bool {
+        self.left_match && self.strategy == JoinStrategy::MixedKeyedResidual
+    }
 }
 
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
-    strategy: CompiledJoinExecutionStrategy,
+    strategy: JoinStrategy,
     strategy_options: KeyedHashJoinStrategyOptions,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
@@ -404,26 +413,27 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
-    strategy: CompiledJoinExecutionStrategy,
+    form: JoinForm,
+    strategy: JoinStrategy,
     strategy_options: KeyedHashJoinStrategyOptions,
     input: ResidentGpuFrame,
 ) -> Result<BoundedCompiledJoinBuildState> {
     match strategy {
-        CompiledJoinExecutionStrategy::HashEqui => {
+        JoinStrategy::ReusableHashEqui => {
             execute_bounded_root_hash_join_build_from_resident_frame(execution, node, input)
                 .map(BoundedCompiledJoinBuildState::Hash)
         },
-        CompiledJoinExecutionStrategy::FilteredSemiAnti => {
+        JoinStrategy::FilteredSemiAnti => {
             execute_compiled_filtered_join_build_from_resident_frame(execution, node_id, node, input)
                 .map(BoundedCompiledJoinBuildState::Filtered)
         },
-        CompiledJoinExecutionStrategy::OneShotEqui
-        | CompiledJoinExecutionStrategy::PartitionedHashEqui
-        | CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual
-        | CompiledJoinExecutionStrategy::KeylessConditional { .. }
-        | CompiledJoinExecutionStrategy::KeylessOuterCross
-        | CompiledJoinExecutionStrategy::ProjectedCross
-        | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
+        JoinStrategy::OneShotEqui
+        | JoinStrategy::PartitionedHashEqui
+        | JoinStrategy::PartitionedMixedKeyedResidual
+        | JoinStrategy::KeylessConditional { .. }
+        | JoinStrategy::KeylessOuterCross
+        | JoinStrategy::ProjectedCross
+        | JoinStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
             let columns = compiled_join_input_columns(node, strategy, side)?;
             let input = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
@@ -432,6 +442,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
                 strategy_options,
                 side,
                 input,
+                left_match: form == JoinForm::KeyedResidual { left_match: true },
             }))
         },
     }
@@ -454,7 +465,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            if mixed_left_match_probe_supported(node, build.strategy) {
+            if build.mixed_left_match() {
                 return execute_compiled_mixed_left_join_probe_from_frame_stream(
                     execution,
                     node,
@@ -507,13 +518,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     let lazy_probe_supported = match &build {
         BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            mixed_left_match_probe_supported(node, build.strategy)
+            build.mixed_left_match()
                 || (lazy_output
                     && stateless_streaming_probe_supported(node)
-                    && matches!(
-                        build.strategy,
-                        CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
-                    )
+                    && matches!(build.strategy, JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui)
                     && node.spec.residual_predicate.is_none())
         },
         BoundedCompiledJoinBuildState::Partitioned(_) => true,
@@ -563,13 +571,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             }
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
-                && stateless_streaming_probe_supported(node) =>
+            if build.strategy == JoinStrategy::OneShotEqui && stateless_streaming_probe_supported(node) =>
         {
             execute_compiled_one_shot_equi_join_probe_from_stream(execution, node_id, node, build, stream)
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
+            if build.strategy == JoinStrategy::PartitionedHashEqui
                 && node.spec.residual_predicate.is_none()
                 && stateless_streaming_probe_supported(node) =>
         {
@@ -588,8 +595,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             )
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if build.strategy == CompiledJoinExecutionStrategy::MixedKeyedResidual
-                && node.spec.join_type == JoinType::Inner =>
+            if build.strategy == JoinStrategy::MixedKeyedResidual && node.spec.join_type == JoinType::Inner =>
         {
             execute_compiled_mixed_join_probe_from_stream(execution, node_id, node, build, stream)
         },
@@ -609,7 +615,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     outer: Option<&AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
-        BoundedCompiledJoinBuildState::Prepared(build) if mixed_left_match_probe_supported(node, build.strategy) => {
+        BoundedCompiledJoinBuildState::Prepared(build) if build.mixed_left_match() => {
             execute_compiled_mixed_left_join_probe_from_frame_stream(execution, node, build, inputs)
         },
         BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
@@ -677,13 +683,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             }
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
-                && stateless_streaming_probe_supported(node) =>
+            if build.strategy == JoinStrategy::OneShotEqui && stateless_streaming_probe_supported(node) =>
         {
             execute_compiled_one_shot_equi_join_probe_from_frame_stream(execution, node, build, inputs)
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
+            if build.strategy == JoinStrategy::PartitionedHashEqui
                 && node.spec.residual_predicate.is_none()
                 && stateless_streaming_probe_supported(node) =>
         {
@@ -876,9 +881,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, probe),
             ))
         },
-        BoundedCompiledJoinProbeState::Prepared(probe)
-            if probe.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui =>
-        {
+        BoundedCompiledJoinProbeState::Prepared(probe) if probe.strategy == JoinStrategy::PartitionedHashEqui => {
             execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream(
                 execution,
                 node_id,
@@ -889,7 +892,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             )
         },
         BoundedCompiledJoinProbeState::Prepared(probe)
-            if probe.strategy == CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual =>
+            if probe.strategy == JoinStrategy::PartitionedMixedKeyedResidual =>
         {
             execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream(
                 execution,
@@ -1021,13 +1024,9 @@ fn concatenate_streamed_hash_join_outputs(
     Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
 }
 
-fn compiled_join_input_columns(
-    node: &JoinNode,
-    strategy: CompiledJoinExecutionStrategy,
-    side: JoinSide,
-) -> Result<Vec<String>> {
+fn compiled_join_input_columns(node: &JoinNode, strategy: JoinStrategy, side: JoinSide) -> Result<Vec<String>> {
     match strategy {
-        CompiledJoinExecutionStrategy::KeylessConditional { .. } => {
+        JoinStrategy::KeylessConditional { .. } => {
             let residual_columns = residual_input_columns(node)?;
             Ok(projected_input_columns(
                 &[],
@@ -1036,13 +1035,9 @@ fn compiled_join_input_columns(
                 side,
             ))
         },
-        CompiledJoinExecutionStrategy::ProjectedCross => {
-            Ok(projected_output_columns(&node.spec.output_projection, side))
-        },
-        CompiledJoinExecutionStrategy::KeylessOuterCross => {
-            Ok(projected_output_columns(&node.spec.output_projection, side))
-        },
-        CompiledJoinExecutionStrategy::MixedKeyedResidual => {
+        JoinStrategy::ProjectedCross => Ok(projected_output_columns(&node.spec.output_projection, side)),
+        JoinStrategy::KeylessOuterCross => Ok(projected_output_columns(&node.spec.output_projection, side)),
+        JoinStrategy::MixedKeyedResidual => {
             let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
@@ -1054,7 +1049,7 @@ fn compiled_join_input_columns(
                 side,
             ))
         },
-        CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui => {
+        JoinStrategy::OneShotEqui | JoinStrategy::PartitionedHashEqui => {
             let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
@@ -1066,7 +1061,7 @@ fn compiled_join_input_columns(
                 side,
             ))
         },
-        CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual => {
+        JoinStrategy::PartitionedMixedKeyedResidual => {
             let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
@@ -1078,12 +1073,10 @@ fn compiled_join_input_columns(
                 side,
             ))
         },
-        CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            Err(bounded_invariant_violation(
-                "compiled prepared join input columns require a prepared join strategy",
-                "compiled_join_strategy_state_mismatch",
-            ))
-        },
+        JoinStrategy::ReusableHashEqui | JoinStrategy::FilteredSemiAnti => Err(bounded_invariant_violation(
+            "compiled prepared join input columns require a prepared join strategy",
+            "compiled_join_strategy_state_mismatch",
+        )),
     }
 }
 
@@ -1132,7 +1125,7 @@ impl CompiledMixedSizeData<'_> {
                 "failed to observe compiled bounded mixed join size-data memory",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
         })
     }
 
@@ -1211,7 +1204,7 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
                 "failed to observe compiled bounded equality join gather-map memory",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
             .with_fact("build_side", build_side));
         },
     };
@@ -1237,7 +1230,7 @@ fn compiled_hash_join_probe_size(
         JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
         JoinType::Left => hash_join.left_probe_size_in(probe, probe_keys, overrides),
         JoinType::Full => hash_join.full_probe_size_in(probe, probe_keys, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }
@@ -1256,7 +1249,7 @@ fn compiled_hash_join_probe_with_output_size(
         JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
         JoinType::Left => hash_join.left_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
         JoinType::Full => hash_join.full_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }
@@ -1278,7 +1271,7 @@ impl CompiledJoinIndices {
                         "failed to observe compiled bounded join left gather-map memory",
                         error,
                     )
-                    .with_fact("join_type", node.spec.join_type)
+                    .with_fact("join_type", &node.spec.join_type)
                 })?;
                 let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                     cudf_query_error(
@@ -1286,7 +1279,7 @@ impl CompiledJoinIndices {
                         "failed to observe compiled bounded join right gather-map memory",
                         error,
                     )
-                    .with_fact("join_type", node.spec.join_type)
+                    .with_fact("join_type", &node.spec.join_type)
                 })?;
                 Ok(left_bytes.saturating_add(right_bytes))
             },
@@ -1297,7 +1290,7 @@ impl CompiledJoinIndices {
                         "failed to observe compiled bounded join gather-map memory",
                         error,
                     )
-                    .with_fact("join_type", node.spec.join_type)
+                    .with_fact("join_type", &node.spec.join_type)
                 })
             },
         }
@@ -1451,7 +1444,7 @@ fn materialize_compiled_indices_output(
         &right.frame,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,

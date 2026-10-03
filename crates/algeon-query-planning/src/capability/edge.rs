@@ -7,10 +7,10 @@
 use std::collections::BTreeSet;
 
 use super::{
-    JoinExecutionCapability, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
+    JoinForm, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
     aggregate::{AggregateStateContract, aggregate_state_contract},
+    classify_join,
     graph::{consumer_nodes, join_side_index, opposite_join_side},
-    join_node_execution_capability,
     model::{
         CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ResultSinkKind, VectorInputRole,
     },
@@ -28,7 +28,9 @@ pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &
             let contract_kinds = edge_contract_kinds(plan, *producer, consumer, kind, input_role);
             let decision = edge_decision(plan, *producer, consumer);
             let decision = match (&decision, kind) {
-                (CapabilityDecision::Satisfied, PlanNode::Join(join)) if join.spec.join_type == JoinType::LeftAnti => {
+                (CapabilityDecision::Satisfied, PlanNode::Join(join))
+                    if matches!(join.spec.join_type, JoinType::LeftAnti { .. }) =>
+                {
                     left_anti_dedup_edge_decision(plan, *producer, input_role, join)
                 },
                 _ => decision,
@@ -114,11 +116,8 @@ fn anti_probe_input_is_dedup_proven(plan: &QueryPlan, node_id: NodeId, visiting:
             aggregate_state_contract(&aggregate.spec) == Some(AggregateStateContract::DedupGroupOnly)
         },
         Some(PlanNode::Join(join))
-            if join.spec.join_type == JoinType::LeftAnti
-                && matches!(
-                    join_node_execution_capability(join),
-                    Some(JoinExecutionCapability::KeyedFilteredSemiAnti)
-                ) =>
+            if matches!(join.spec.join_type, JoinType::LeftAnti { .. })
+                && matches!(classify_join(node_id, join), Ok(JoinForm::KeyedFilteredSemiAnti)) =>
         {
             let build_input = join.inputs[join_side_index(join.spec.build_side)];
             let probe_input = join.inputs[join_side_index(opposite_join_side(join.spec.build_side))];

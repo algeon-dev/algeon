@@ -84,7 +84,7 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_size
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }
@@ -112,7 +112,7 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_with
         JoinType::Full => {
             build.hash_join.hash_join().full_probe_with_output_size_in(&probe.frame, probe_keys, output_size, overrides)
         },
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
     }

@@ -273,7 +273,7 @@ fn native_query_executes_left_semi_and_anti_joins_with_equi_key_and_residual_pre
         &right_path,
         &left_schema,
         &right_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
     );
 
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {

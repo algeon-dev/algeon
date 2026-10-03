@@ -26,7 +26,7 @@ use query_engine::{
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     attempt::{AttemptOwner, BeginAttemptRequest},
-    capability::Rejection,
+    capability::{JoinForm, JoinStrategy, Rejection},
     dynamic_filter::DynamicFilterProducer,
     error::{QueryErrorCode, Result},
     exec::{
@@ -43,9 +43,10 @@ use query_engine::{
     observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeObservationHandle},
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
-        CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentDataForm, ResidentLifetime,
-        ResidentResource, ResidentResourceId, ResourceSharing, SinkBoundary, SinkBoundaryKind, compile_pipeline,
+        AggregateInputHints, CompiledPipeline, JoinPlan, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind,
+        PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
+        ResidentDataForm, ResidentLifetime, ResidentResource, ResidentResourceId, ResourceSharing, SinkBoundary,
+        SinkBoundaryKind, SourceOutput, SourceReadPlan, TaskPhysical, compile_pipeline,
     },
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,

@@ -126,7 +126,7 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
     assert!(joins.iter().all(|join| join.spec.join_type != NativeJoinType::Cross));
     let anti_join = joins
         .iter()
-        .find(|join| join.spec.join_type == NativeJoinType::LeftAnti)
+        .find(|join| join.spec.join_type == NativeJoinType::LEFT_ANTI)
         .expect("q22 NOT EXISTS orders branch should lower to a left-anti hash join");
     assert_eq!(anti_join.spec.build_side, NativeJoinSide::Right);
     assert_eq!(anti_join.spec.keys.len(), 1);

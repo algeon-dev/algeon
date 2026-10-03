@@ -110,9 +110,9 @@ fn bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_pr
 
     const CAP: u64 = 16 * 1024 * 1024;
     for null_equality in [JoinNullEquality::NullsDoNotMatch, JoinNullEquality::NullsMatch] {
-        for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
             for (left, right) in [(&left_path, &right_path), (&left_path, &empty_path), (&empty_path, &right_path)] {
-                let plan = left_match_plan(left, right, join_type, null_equality);
+                let plan = left_match_plan(left, right, join_type.clone(), null_equality);
                 let context = backend_context_with_grant(CAP);
                 let admitted = context.admit_plan(&plan).unwrap();
                 let admitted_plan = admit_query_plan(
@@ -185,7 +185,7 @@ fn bounded_native_mixed_left_build_releases_state_after_late_probe_cap_failure()
         vec![Some(payload.clone()), Some(payload), Some("a".repeat(20 * 1024 * 1024))],
         1,
     );
-    let plan = left_match_plan(&left_path, &right_path, JoinType::LeftAnti, JoinNullEquality::NullsDoNotMatch);
+    let plan = left_match_plan(&left_path, &right_path, JoinType::LEFT_ANTI, JoinNullEquality::NullsDoNotMatch);
     let context = backend_context_with_grant(8 * 1024 * 1024);
     let admitted = context.admit_plan(&plan).unwrap();
     let admitted_plan =

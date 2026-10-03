@@ -14,6 +14,7 @@ use crate::{
         RuntimeOperatorStageKind, RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, TaskDefinitionRow,
         stage_context_from_execution,
     },
+    pipeline::AggregateInputHints,
 };
 
 mod final_merge;
@@ -45,23 +46,12 @@ pub(in crate::exec::bounded) use stream::{
 
 use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 
-/// Downstream-expression hints that force smaller local-parquet source chunks.
-///
-/// These caps are shared by specialized bounded aggregate planning and compiled
-/// aggregate-input stream planning so string-key grouped shapes do not re-admit
-/// whole-file throughput chunks on either path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::exec::bounded) struct SourceAdjacentAggregateChunkCapHints {
-    pub(in crate::exec::bounded) has_source_adjacent_stages: bool,
-    pub(in crate::exec::bounded) grouped_string_key: bool,
-}
-
 pub(in crate::exec::bounded) fn apply_source_adjacent_aggregate_chunk_caps(
     mut policy: SourceChunkPlanningPolicy,
-    hints: SourceAdjacentAggregateChunkCapHints,
+    hints: AggregateInputHints,
 ) -> SourceChunkPlanningPolicy {
     let batching_policy = BoundedSourceBatchingPolicy::default();
-    if hints.has_source_adjacent_stages {
+    if hints.adjacent_stages {
         let target_chunk_bytes = batching_policy.source_adjacent_aggregate_target_chunk_bytes();
         policy.max_source_chunk_bytes =
             Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
@@ -425,7 +415,7 @@ mod tests {
     fn string_key_cap_keeps_384_mib_without_forcing_single_row_group() {
         let policy = apply_source_adjacent_aggregate_chunk_caps(
             throughput_like_policy(),
-            SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages: true, grouped_string_key: true },
+            AggregateInputHints { adjacent_stages: true, grouped_string_key: true },
         );
 
         assert_eq!(

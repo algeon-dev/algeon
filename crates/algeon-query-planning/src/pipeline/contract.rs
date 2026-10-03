@@ -6,19 +6,47 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use arrow::datatypes::DataType;
+
 use crate::{
     capability::{
-        CompiledJoinExecutionStrategy, EdgeConsumer, KeyedHashJoinStrategyOptions, Reason, Rejection, RejectionOwner,
-        keyed_hash_join_capable, keyed_residual_left_match_join_capable,
+        EdgeConsumer, JoinForm, KeyedHashJoinStrategyOptions, Reason, Rejection, RejectionOwner, choose_join_strategy,
+        classify_join, join_probe_streams_chunks, keyed_hash_join_strategy_input_facts_for_plan,
     },
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     expr::{Expr, SortExpr},
-    pipeline::model::{
-        AcceptedInputForm, PipelineEdge, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
-        ResidentDataForm, ResidentResource, ResidentResourceId, ResourceOrdering, ResourceSharing, SortStrategy,
+    pipeline::{
+        model::{
+            AcceptedInputForm, PipelineEdge, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
+            ResidentDataForm, ResidentResource, ResidentResourceId, ResourceOrdering, ResourceSharing, SortStrategy,
+        },
+        physical::{
+            AggregateInputHints, AggregatePlan, JoinPlan, SourceOutput, SourceReadPlan, TaskPhysical, TopKFusion,
+        },
     },
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryPlan},
+    plan::{AggregateNode, JoinNode, NodeId, PlanNode, ProjectionNode, QueryPlan},
     source::SourceNode,
 };
+
+/// Decides each join's operator form and initial strategy once, from the
+/// plan alone. A join no executor runs refuses the graph.
+pub(super) fn plan_joins(
+    plan: &QueryPlan,
+    node_order: &[NodeId],
+    keyed_hash_join: &KeyedHashJoinStrategyOptions,
+) -> Result<BTreeMap<NodeId, JoinPlan>, Rejection> {
+    let mut plans = BTreeMap::new();
+    for node_id in node_order {
+        let Some(PlanNode::Join(join)) = plan.node(*node_id).map(|node| &node.kind) else {
+            continue;
+        };
+        let form = classify_join(*node_id, join)?;
+        let input = keyed_hash_join_strategy_input_facts_for_plan(plan, *node_id, join);
+        let planned = choose_join_strategy(form, join, input, keyed_hash_join).strategy();
+        plans.insert(*node_id, JoinPlan::for_form(form, planned));
+    }
+    Ok(plans)
+}
 
 /// Fills in the execution contract of every task and resident resource.
 ///
@@ -27,20 +55,21 @@ use crate::{
 /// its producer writes.
 pub(super) fn resolve_task_and_resource_contracts(
     plan: &QueryPlan,
-    keyed_hash_join: &KeyedHashJoinStrategyOptions,
     tasks: Vec<PipelineTask>,
     resources: Vec<ResidentResource>,
     edges: &[PipelineEdge],
 ) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), Rejection> {
-    let graph = ContractGraph { plan, keyed_hash_join, tasks, resources, edges };
+    let graph = ContractGraph { plan, tasks, resources, edges };
     let graph = graph.with_task_contracts();
     let graph = graph.with_resource_contracts();
+    let graph = graph.with_join_strategies_narrowed_to_probe_input();
+    let graph = graph.with_source_read_plans();
+    let graph = graph.with_aggregate_plans();
     graph.into_parts()
 }
 
 struct ContractGraph<'a> {
     plan: &'a QueryPlan,
-    keyed_hash_join: &'a KeyedHashJoinStrategyOptions,
     tasks: Vec<PipelineTask>,
     resources: Vec<ResidentResource>,
     edges: &'a [PipelineEdge],
@@ -54,12 +83,7 @@ impl ContractGraph<'_> {
                     self.tasks[index].clone().with_accepted_input_form(AcceptedInputForm::FrameStreamOrSourceStream)
                 },
                 PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => {
-                    let mut task =
-                        self.tasks[index].clone().with_accepted_input_form(AcceptedInputForm::AnyProducedForm);
-                    if let Some(strategy) = self.plan_join_strategy(index) {
-                        task = task.with_plan_join_strategy(strategy);
-                    }
-                    task
+                    self.tasks[index].clone().with_accepted_input_form(AcceptedInputForm::AnyProducedForm)
                 },
                 PipelineTaskKind::FinalSort => {
                     let strategy = self.sort_strategy(index);
@@ -67,7 +91,10 @@ impl ContractGraph<'_> {
                         SortStrategy::FusedTopK { .. } => AcceptedInputForm::FrameOrStream,
                         SortStrategy::FullSort => AcceptedInputForm::Frame,
                     };
-                    self.tasks[index].clone().with_accepted_input_form(accepted).with_sort_strategy(strategy)
+                    self.tasks[index]
+                        .clone()
+                        .with_accepted_input_form(accepted)
+                        .with_physical(TaskPhysical::FinalSort(strategy))
                 },
                 PipelineTaskKind::SourceRead
                 | PipelineTaskKind::GpuResidentSource
@@ -150,6 +177,290 @@ impl ContractGraph<'_> {
             [input] => self.resource(*input).and_then(ResidentResource::ordering),
             _ => None,
         }
+    }
+
+    /// A probe input kept as a frame stream was planned from the planned
+    /// strategy's probe pulling it chunk by chunk. A refinement may pick only
+    /// strategies whose probe does the same, so the memory shape admission
+    /// assumed holds.
+    fn with_join_strategies_narrowed_to_probe_input(mut self) -> Self {
+        let streamed_probe_joins = self
+            .tasks
+            .iter()
+            .filter(|task| task.kind() == PipelineTaskKind::JoinProbe)
+            .filter(|probe| match probe.input_resources() {
+                [input] => {
+                    self.resource(*input).is_some_and(|input| input.data_form() == ResidentDataForm::FrameStream)
+                },
+                _ => false,
+            })
+            .filter_map(PipelineTask::plan_node)
+            .collect::<BTreeSet<_>>();
+        for index in 0..self.tasks.len() {
+            let Some(node_id) = self.tasks[index].plan_node().filter(|node| streamed_probe_joins.contains(node)) else {
+                continue;
+            };
+            let Some(PlanNode::Join(join)) = self.plan.node(node_id).map(|node| &node.kind) else {
+                continue;
+            };
+            let physical = match self.tasks[index].physical() {
+                TaskPhysical::JoinBuild(plan) => TaskPhysical::JoinBuild(
+                    plan.narrowed(|strategy| join_probe_streams_chunks(join, plan.form(), strategy)),
+                ),
+                TaskPhysical::JoinProbe(plan) => TaskPhysical::JoinProbe(
+                    plan.narrowed(|strategy| join_probe_streams_chunks(join, plan.form(), strategy)),
+                ),
+                _ => continue,
+            };
+            self.tasks[index] = self.tasks[index].clone().with_physical(physical);
+        }
+        self
+    }
+
+    fn with_source_read_plans(mut self) -> Self {
+        for index in 0..self.tasks.len() {
+            if self.tasks[index].kind() != PipelineTaskKind::SourceRead {
+                continue;
+            }
+            let plan = self.source_read_plan(&self.tasks[index]);
+            self.tasks[index] = self.tasks[index].clone().with_physical(TaskPhysical::SourceRead(plan));
+        }
+        self
+    }
+
+    /// How a local Parquet source task reads its source, from its output
+    /// resource contract and the consumers it reaches.
+    ///
+    /// A source that feeds a join, or that applies dynamic-filter routes for
+    /// its only consumer, reads as a join leaf. A deferred output stays a
+    /// stream shaped for the join inputs and aggregates it feeds; any other
+    /// source reads into one frame.
+    fn source_read_plan(&self, task: &PipelineTask) -> SourceReadPlan {
+        let (Some(node_id), Some(output)) =
+            (task.plan_node(), self.single_output(task).and_then(|output| self.resource(output)))
+        else {
+            return SourceReadPlan::FRAME;
+        };
+        let multiple_consumers = output.sharing() != ResourceSharing::SingleConsume;
+        // A resource consumers share immutably never stays a source stream,
+        // so a source-stream output is one its consumers may take as is.
+        let deferred = output.data_form() == ResidentDataForm::SourceStream;
+        let feeds_direct_join = self.task_feeds_direct_join_input(task.id());
+        let join_adjacent = self.task_feeds_join_input_through_unary_chain(task.id());
+        let aggregate_path = self.aggregate_input_path(task.id());
+        let feeds_aggregate = aggregate_path.is_some();
+        let aggregate_adjacent = aggregate_path == Some(true);
+        let feeds_join = feeds_direct_join || join_adjacent;
+        let routes = self.source_has_dynamic_filter_routes(node_id);
+        let (output, prefetch_eligible) = if !deferred && (feeds_join || (routes && !multiple_consumers)) {
+            (SourceOutput::JoinLeafFrame { adjacent_stages: join_adjacent }, false)
+        } else if !deferred || (!feeds_join && !feeds_aggregate && !routes) {
+            (SourceOutput::Frame, false)
+        } else {
+            let adjacent_stages = join_adjacent || aggregate_adjacent;
+            let chunk_hints = AggregateInputHints {
+                adjacent_stages,
+                grouped_string_key: adjacent_stages
+                    && self
+                        .reachable_aggregate(task.id())
+                        .is_some_and(|aggregate| self.aggregate_groups_by_string_column(aggregate)),
+            };
+            let output = if feeds_aggregate && feeds_join {
+                SourceOutput::SharedJoinAggregateStream { adjacent_stages, chunk_hints }
+            } else if feeds_aggregate {
+                SourceOutput::AggregateInputStream { adjacent_stages: aggregate_adjacent, chunk_hints }
+            } else {
+                SourceOutput::JoinLeafStream { adjacent_stages: join_adjacent }
+            };
+            (output, feeds_direct_join && !multiple_consumers && !routes)
+        };
+        SourceReadPlan { output, dynamic_filter_routes: routes, prefetch_eligible }
+    }
+
+    fn with_aggregate_plans(mut self) -> Self {
+        for index in 0..self.tasks.len() {
+            if self.tasks[index].kind() != PipelineTaskKind::Aggregate {
+                continue;
+            }
+            let topk = self.aggregate_topk_fusion(&self.tasks[index]);
+            self.tasks[index] =
+                self.tasks[index].clone().with_physical(TaskPhysical::Aggregate(AggregatePlan { topk }));
+        }
+        self
+    }
+
+    /// Propagates a final sort's fused top-k through an exclusively consumed
+    /// projection chain to the aggregate below it. An aggregate that produces
+    /// a dynamic filter keeps its complete output for that filter.
+    fn aggregate_topk_fusion(&self, task: &PipelineTask) -> Option<TopKFusion> {
+        let node_id = task.plan_node()?;
+        if self.plan.dynamic_filter_routes().iter().any(|route| {
+            matches!(
+                route.producer,
+                DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } if aggregate_node_id == node_id
+            )
+        }) {
+            return None;
+        }
+        let mut current = task;
+        let mut post_aggregate_projections = Vec::new();
+        loop {
+            let resource = self.resource(self.single_output(current)?)?;
+            let [consumer] = resource.consumers() else {
+                return None;
+            };
+            current = self.task(*consumer)?;
+            let current_node = current.plan_node()?;
+            match &self.plan.node(current_node)?.kind {
+                PlanNode::Projection(_) => post_aggregate_projections.push(current_node),
+                PlanNode::Sort(_) => {
+                    let SortStrategy::FusedTopK { limit_node, .. } = current.sort_strategy()? else {
+                        return None;
+                    };
+                    let PlanNode::Limit(_) = &self.plan.node(limit_node)?.kind else {
+                        return None;
+                    };
+                    return Some(TopKFusion { post_aggregate_projections, sort_node: current_node, limit_node });
+                },
+                _ => return None,
+            }
+        }
+    }
+
+    fn task_feeds_direct_join_input(&self, task: PipelineTaskId) -> bool {
+        self.edges.iter().any(|edge| {
+            edge.from() == task
+                && matches!(edge.kind(), PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput)
+        })
+    }
+
+    /// Whether the task's output reaches a join input through at least one
+    /// unary stage. A chain whose last resource several join inputs share
+    /// still feeds those joins.
+    fn task_feeds_join_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
+        [PipelineEdgeKind::JoinBuildInput, PipelineEdgeKind::JoinProbeInput]
+            .into_iter()
+            .any(|target| self.join_input_through_unary_chain(task, target))
+    }
+
+    fn join_input_through_unary_chain(&self, task: PipelineTaskId, target: PipelineEdgeKind) -> bool {
+        let mut current = task;
+        let mut saw_unary = false;
+        loop {
+            let Some(resource) =
+                self.task(current).and_then(|task| self.single_output(task)).and_then(|output| self.resource(output))
+            else {
+                return false;
+            };
+            let edge_kind = |consumer: PipelineTaskId| {
+                self.edges.iter().find(|edge| edge.from() == current && edge.to() == consumer)
+            };
+            if resource.consumers().len() > 1 {
+                return saw_unary
+                    && resource.consumers().iter().all(|consumer| {
+                        edge_kind(*consumer).is_some_and(|edge| {
+                            matches!(edge.kind(), PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput)
+                        })
+                    })
+                    && resource
+                        .consumers()
+                        .iter()
+                        .any(|consumer| edge_kind(*consumer).is_some_and(|edge| edge.kind() == target));
+            }
+            let [consumer] = resource.consumers() else {
+                return false;
+            };
+            let Some(edge) = edge_kind(*consumer) else {
+                return false;
+            };
+            match edge.kind() {
+                kind if kind == target => return saw_unary,
+                PipelineEdgeKind::ResidentFrame
+                    if self.task(*consumer).is_some_and(|consumer| consumer.kind() == PipelineTaskKind::Unary) =>
+                {
+                    saw_unary = true;
+                    current = *consumer;
+                },
+                _ => return false,
+            }
+        }
+    }
+
+    /// `Some(false)` when an aggregate consumes the task's output directly,
+    /// `Some(true)` when one does only through unary stages, and `None` when
+    /// no aggregate does.
+    fn aggregate_input_path(&self, task: PipelineTaskId) -> Option<bool> {
+        let mut pending = vec![(task, false)];
+        let mut visited = BTreeSet::new();
+        while let Some((current, saw_unary)) = pending.pop() {
+            if !visited.insert((current, saw_unary)) {
+                continue;
+            }
+            for edge in self.edges.iter().filter(|edge| {
+                edge.from() == current
+                    && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer)
+            }) {
+                match self.task(edge.to()).map(PipelineTask::kind) {
+                    Some(PipelineTaskKind::Aggregate) => return Some(saw_unary),
+                    Some(PipelineTaskKind::Unary) => pending.push((edge.to(), true)),
+                    _ => {},
+                }
+            }
+        }
+        None
+    }
+
+    /// The first aggregate the task's output reaches through unary stages.
+    fn reachable_aggregate(&self, task: PipelineTaskId) -> Option<&AggregateNode> {
+        let mut pending = vec![task];
+        let mut visited = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            for edge in self.edges.iter().filter(|edge| {
+                edge.from() == current
+                    && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer)
+            }) {
+                let Some(consumer) = self.task(edge.to()) else {
+                    continue;
+                };
+                match consumer.kind() {
+                    PipelineTaskKind::Aggregate => {
+                        return match &self.plan.node(consumer.plan_node()?)?.kind {
+                            PlanNode::Aggregate(aggregate) => Some(aggregate),
+                            _ => None,
+                        };
+                    },
+                    PipelineTaskKind::Unary => pending.push(edge.to()),
+                    _ => {},
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether a plain grouped aggregate keys on a string column of its input.
+    fn aggregate_groups_by_string_column(&self, aggregate: &AggregateNode) -> bool {
+        let Some(input) = self.plan.node(aggregate.input) else {
+            return false;
+        };
+        !aggregate.spec.group_exprs.is_empty()
+            && aggregate.spec.grouping_sets.is_none()
+            && aggregate.spec.group_exprs.iter().filter_map(passthrough_column_name).any(|column| {
+                input.output_schema().field_with_name(column).is_ok_and(|field| {
+                    matches!(field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+                })
+            })
+    }
+
+    fn source_has_dynamic_filter_routes(&self, source_node_id: NodeId) -> bool {
+        self.plan.dynamic_filter_routes().iter().any(|route| {
+            matches!(
+                &route.consumer,
+                DynamicFilterConsumer::LocalParquetSource { source_node_id: consumer } if *consumer == source_node_id
+            )
+        })
     }
 
     fn into_parts(self) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), Rejection> {
@@ -305,7 +616,9 @@ impl ContractGraph<'_> {
                         .single_output(consumer)
                         .and_then(|output| self.resource(output))
                         .is_some_and(|output| self.consumers_accept_frame_stream(output)),
-                    PipelineTaskKind::JoinBuild => self.join_node(consumer).is_some_and(keyed_hash_join_capable),
+                    PipelineTaskKind::JoinBuild => {
+                        consumer.join_plan().is_some_and(|plan| plan.form() == JoinForm::KeyedEqui)
+                    },
                     PipelineTaskKind::JoinProbe => self.join_probe_accepts_frame_stream(consumer),
                     _ => consumer.accepted_input_form() >= AcceptedInputForm::FrameOrStream,
                 })
@@ -313,23 +626,10 @@ impl ContractGraph<'_> {
     }
 
     fn join_probe_accepts_frame_stream(&self, probe: &PipelineTask) -> bool {
-        let Some(join) = self.join_node(probe) else {
+        let (Some(join), Some(plan)) = (self.join_node(probe), probe.join_plan()) else {
             return false;
         };
-        if join.spec.residual_predicate.is_some() {
-            let strategy = probe.plan_join_strategy();
-            if keyed_residual_left_match_join_capable(join)
-                && strategy == Some(CompiledJoinExecutionStrategy::MixedKeyedResidual)
-            {
-                return true;
-            }
-            return strategy == Some(CompiledJoinExecutionStrategy::OneShotEqui);
-        }
-        match join.spec.join_type {
-            JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => true,
-            JoinType::Left => join.spec.build_side == JoinSide::Right,
-            JoinType::Full | JoinType::Cross => false,
-        }
+        join_probe_streams_chunks(join, plan.form(), plan.planned())
     }
 
     /// Whether every consumer re-streams the resource from the producer with
@@ -460,15 +760,6 @@ impl ContractGraph<'_> {
             self.plan.node(sort_input).map(|node| &node.kind),
             Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::GpuResident(_))
         )
-    }
-
-    fn plan_join_strategy(&self, index: usize) -> Option<CompiledJoinExecutionStrategy> {
-        let task = &self.tasks[index];
-        let node_id = task.plan_node()?;
-        let join = self.join_node(task)?;
-        CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join, self.keyed_hash_join)
-            .ok()
-            .flatten()
     }
 
     /// A unary stage re-stages whatever its input carries, so its output can

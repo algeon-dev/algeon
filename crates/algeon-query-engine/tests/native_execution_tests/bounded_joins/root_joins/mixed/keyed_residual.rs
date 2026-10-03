@@ -384,7 +384,7 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
         &right_path,
         &left_schema,
         &right_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
     );
 
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {

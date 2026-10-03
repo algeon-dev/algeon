@@ -155,7 +155,7 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
         .add_join(
             lineitem,
             anti_orders,
-            JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
+            JoinSpec::new(JoinType::LEFT_ANTI, vec![join_order_id_key()])
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
                     JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),

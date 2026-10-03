@@ -24,12 +24,12 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
         ),
         (
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
         ),
     ] {
         for build_side in [JoinSide::Right, JoinSide::Left] {
-            let plan = mixed_residual_multi_join_plan(join_type, build_side, projection.clone());
+            let plan = mixed_residual_multi_join_plan(join_type.clone(), build_side, projection.clone());
 
             assert!(
                 unsupported_facts(
@@ -91,7 +91,8 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
     // The retired closed-multi-join envelope no longer vetoes the Full tail:
     // `Full` is a supported join-kernel shape, so the composed pipeline admits
     // the whole multi-join once it compiles.
-    let plan = valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(JoinType::LeftAnti, JoinType::Full);
+    let plan =
+        valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(JoinType::LEFT_ANTI, JoinType::Full);
 
     assert!(
         unsupported_facts(
@@ -107,9 +108,9 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
 fn bounded_multi_join_refuses_mixed_residual_semi_anti_projecting_right_columns_as_malformed() {
     // A semi or anti join outputs only left rows, so a right-side output
     // column has no value: the IR is malformed, not an unsupported shape.
-    for (join_type, build_side) in [(JoinType::LeftSemi, JoinSide::Left), (JoinType::LeftAnti, JoinSide::Right)] {
+    for (join_type, build_side) in [(JoinType::LeftSemi, JoinSide::Left), (JoinType::LEFT_ANTI, JoinSide::Right)] {
         let plan = mixed_residual_multi_join_plan(
-            join_type,
+            join_type.clone(),
             build_side,
             vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
         );

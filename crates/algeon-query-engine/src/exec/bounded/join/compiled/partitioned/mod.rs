@@ -2,9 +2,9 @@ use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
-    BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy,
-    CompiledMixedSizeData, DataFrame, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, Instant,
-    JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
+    BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledMixedSizeData, DataFrame,
+    ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode,
+    JoinSide, JoinStrategy, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
     QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts, StreamedPartitionedJoinSummary,
     VecDeque, bounded_invariant_violation, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
@@ -67,7 +67,7 @@ pub(super) fn validate_partitioned_hash_equi_join(node: &JoinNode) -> Result<()>
         "compiled partitioned hash equi join execution supports keyed inner, left, and full equi joins without residual predicates",
         "compiled_join_strategy_unsupported",
     )
-    .with_fact("join_type", node.spec.join_type)
+    .with_fact("join_type", &node.spec.join_type)
     .with_fact("build_side", node.spec.build_side)
     .with_fact("key_count", node.spec.keys.len())
     .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
@@ -81,10 +81,10 @@ pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) ->
         && !node.spec.output_projection.is_empty()
         && matches!(
             node.spec.join_type,
-            JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti
+            JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti { .. }
         )
         && (node.spec.join_type != JoinType::Left || node.spec.build_side == JoinSide::Right)
-        && (!matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && (!matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
             || (node.spec.build_side == JoinSide::Right
                 && node.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)))
     {
@@ -94,7 +94,7 @@ pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) ->
         "compiled partitioned mixed keyed residual join execution supports keyed residual inner/left/full and left-only semi/anti joins",
         "compiled_join_strategy_unsupported",
     )
-    .with_fact("join_type", node.spec.join_type)
+    .with_fact("join_type", &node.spec.join_type)
     .with_fact("build_side", node.spec.build_side)
     .with_fact("key_count", node.spec.keys.len())
     .with_fact("residual_predicate", node.spec.residual_predicate.is_some())

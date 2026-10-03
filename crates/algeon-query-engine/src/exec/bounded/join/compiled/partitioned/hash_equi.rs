@@ -2,8 +2,8 @@ use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
-    CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn,
-    JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
+    CompiledEqualityJoinPreflightIndices, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
+    JoinStrategy, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
     PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource,
     ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, bounded_invariant_violation,
@@ -153,7 +153,7 @@ fn materialize_partitioned_hash_equi_join_partition(
         &right.frame,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
@@ -193,7 +193,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("build_side", node.spec.build_side));
     }
     let build_side = build.side;
@@ -234,8 +234,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         ]),
     );
 
-    let probe_columns =
-        compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side)?;
+    let probe_columns = compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, probe_side)?;
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(execution, stream, |input, execution| {
         let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, &probe_columns, probe_side)?;
         let probe_rows = probe.rows;
@@ -313,7 +312,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("build_side", node.spec.build_side));
     }
     let build_side = build.side;
@@ -343,15 +342,14 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         ]),
     );
 
-    let probe_columns =
-        match compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side) {
-            Ok(columns) => columns,
-            Err(error) => {
-                inputs.release_all(execution);
-                release_partitioned_join_side(build_partitioned);
-                return Err(error);
-            },
-        };
+    let probe_columns = match compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, probe_side) {
+        Ok(columns) => columns,
+        Err(error) => {
+            inputs.release_all(execution);
+            release_partitioned_join_side(build_partitioned);
+            return Err(error);
+        },
+    };
     Ok(BoundedCompiledJoinProbeState::PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState {
         build_side,
         build_rows,
@@ -388,20 +386,19 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("build_side", node.spec.build_side));
     }
     let build_side = build.side;
     let probe_side = probe_side(build_side);
-    let probe_columns =
-        match compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side) {
-            Ok(columns) => columns,
-            Err(error) => {
-                inputs.release_all(execution);
-                release_partitioned_join_side(build.partitioned);
-                return Err(error);
-            },
-        };
+    let probe_columns = match compiled_join_input_columns(node, JoinStrategy::PartitionedHashEqui, probe_side) {
+        Ok(columns) => columns,
+        Err(error) => {
+            inputs.release_all(execution);
+            release_partitioned_join_side(build.partitioned);
+            return Err(error);
+        },
+    };
     let build_partitioned_bytes = build.partitioned.device_bytes();
     execution.metrics().record_join_strategy_decision(
         node_id,

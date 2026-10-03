@@ -6,10 +6,13 @@ use datafusion::{
 };
 use query_engine::{
     expr::ColumnRef as NativeColumnRef,
-    plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide, JoinType as NativeJoinType},
+    plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide},
 };
 
-use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
+use super::{
+    FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+    join::{CanonicalJoin, CanonicalJoinKind},
+};
 use crate::{
     capability::CapabilityReason,
     native::{
@@ -132,7 +135,7 @@ fn hidden_row_count_input<'a>(
     right: &'a LoweredNativeInput,
     canonical: CanonicalJoin,
 ) -> Option<(DataFusionJoinSide, &'a LoweredNativeInput, &'a FieldBinding)> {
-    if matches!(canonical.native_join_type(), NativeJoinType::LeftSemi | NativeJoinType::LeftAnti) {
+    if matches!(canonical.kind(), CanonicalJoinKind::LeftSemi | CanonicalJoinKind::LeftAnti) {
         return first_binding_for_side(left, right, canonical.datafusion_side_for_native_left());
     }
     first_binding_for_side(left, right, DataFusionJoinSide::Left)

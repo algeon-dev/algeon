@@ -408,7 +408,7 @@ fn keyless_outer_cross_join_plan(
         .add_join(
             left,
             right,
-            JoinSpec::new(join_type, vec![])
+            JoinSpec::new(join_type.clone(), vec![])
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                     JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),

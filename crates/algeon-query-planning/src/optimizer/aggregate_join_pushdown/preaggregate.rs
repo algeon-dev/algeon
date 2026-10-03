@@ -302,7 +302,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn new_join_output_schema(
     preagg_schema: &SchemaRef,
     preagg_measure_states: &[PreAggregateMeasureState],
     preagg_side: JoinSide,
-    join_type: JoinType,
+    join_type: &JoinType,
 ) -> Result<SchemaRef, AggregateJoinPushdownRejectedReason> {
     let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
     let mut fields = Vec::with_capacity(aggregate.spec.group_exprs.len() + state_count);

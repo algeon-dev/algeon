@@ -36,7 +36,7 @@ fn planning_policy_keyed_hash_join_thresholds_drive_admission_facts() {
 #[test]
 fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     for join_type in [JoinType::Left, JoinType::Full] {
-        let plan = large_keyed_join_strategy_plan(join_type);
+        let plan = large_keyed_join_strategy_plan(join_type.clone());
         let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
         assert!(!analysis.has_rejections(), "{join_type} large partitioned join should be admitted");
@@ -243,72 +243,55 @@ fn keyed_inner_residual_or_selects_mixed_join_strategy() {
 
 #[test]
 fn left_build_keyed_residual_semi_anti_stays_on_stateful_mixed_strategy() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         let plan = keyed_residual_semi_anti_join_strategy_plan(
-            join_type,
+            join_type.clone(),
             JoinSide::Left,
             16 * 1024 * 1024,
             100_000,
             9 * 1024 * 1024 * 1024,
             100_000_000,
         );
-        let node_id = plan.root_id();
-        let PlanNode::Join(join) = &plan.root_node().kind else {
-            panic!("strategy fixture root should remain the join");
-        };
+        let join_plan = compiled_join_plan(&plan);
 
-        assert!(keyed_residual_left_match_join_capable(join), "{join_type}");
-        assert!(keyed_residual_mixed_join_capable(join), "{join_type}");
-        assert!(
-            !partitioned_keyed_residual_join_supported(join),
+        assert_eq!(join_plan.form(), JoinForm::KeyedResidual { left_match: true }, "{join_type}");
+        assert_eq!(
+            join_plan.allowed(),
+            [JoinStrategy::MixedKeyedResidual],
             "left-build {join_type} must stay out of partitioned mixed execution"
         );
-        assert_eq!(
-            join_node_execution_capability(join),
-            Some(JoinExecutionCapability::KeyedResidualMixed),
-            "{join_type} should expose the stateful mixed capability"
-        );
-        assert!(matches!(
-            CompiledJoinExecutionStrategy::from_plan_join_node(
-                &plan,
-                node_id,
-                join,
-                &KeyedHashJoinStrategyOptions::default()
-            ),
-            Ok(Some(CompiledJoinExecutionStrategy::MixedKeyedResidual))
-        ));
+        assert_eq!(join_plan.planned(), JoinStrategy::MixedKeyedResidual, "{join_type}");
     }
 }
 
 #[test]
 fn right_build_keyed_residual_semi_anti_remains_partitioned_mixed_when_large() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         let plan = keyed_residual_semi_anti_join_strategy_plan(
-            join_type,
+            join_type.clone(),
             JoinSide::Right,
             16 * 1024 * 1024,
             100_000,
             9 * 1024 * 1024 * 1024,
             100_000_000,
         );
-        let node_id = plan.root_id();
-        let PlanNode::Join(join) = &plan.root_node().kind else {
-            panic!("strategy fixture root should remain the join");
-        };
+        let join_plan = compiled_join_plan(&plan);
 
-        assert!(!keyed_residual_left_match_join_capable(join), "{join_type}");
-        assert!(keyed_residual_mixed_join_capable(join), "{join_type}");
-        assert!(partitioned_keyed_residual_join_supported(join), "{join_type}");
-        assert!(matches!(
-            CompiledJoinExecutionStrategy::from_plan_join_node(
-                &plan,
-                node_id,
-                join,
-                &KeyedHashJoinStrategyOptions::default()
-            ),
-            Ok(Some(CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual))
-        ));
+        assert_eq!(join_plan.form(), JoinForm::KeyedResidual { left_match: false }, "{join_type}");
+        assert_eq!(join_plan.planned(), JoinStrategy::PartitionedMixedKeyedResidual, "{join_type}");
     }
+}
+
+fn compiled_join_plan(plan: &QueryPlan) -> JoinPlan {
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
+    let pipeline = compile_pipeline(plan, &analysis).expect("strategy fixture should compile");
+    pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::JoinBuild)
+        .and_then(PipelineTask::join_plan)
+        .cloned()
+        .expect("the join build task carries the join plan")
 }
 
 fn keyed_residual_semi_anti_join_strategy_plan(

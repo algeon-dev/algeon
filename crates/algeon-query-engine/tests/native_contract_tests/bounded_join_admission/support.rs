@@ -1,12 +1,10 @@
 use query_engine::{
     admission::{
-        CompiledBoundedPipelineSupport, CompiledJoinExecutionStrategy, compiled_bounded_pipeline_support,
+        CompiledBoundedPipelineSupport, JoinStrategy, compiled_bounded_pipeline_support,
         compiled_bounded_query_plan_support,
     },
     capability::{
-        CapabilityDecision, EdgeConsumer, JoinExecutionCapability, Reason, join_node_execution_capability,
-        keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable,
-        partitioned_keyed_residual_join_supported,
+        CapabilityDecision, EdgeConsumer, JoinForm, Reason,
     },
     dimension_pruning::local_dimension_pruning_resolver,
     error::QueryErrorCode,
@@ -14,8 +12,8 @@ use query_engine::{
     expr::Expr,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
-        AcceptedInputForm, AggregateExecutionStage, CompiledPipeline, OrderingScope, PipelineTaskKind,
-        ResidentDataForm, ResourceSharing, SortStrategy, compile_pipeline,
+        AcceptedInputForm, CompiledPipeline, JoinPlan, OrderingScope, PipelineTask, PipelineTaskKind, ResidentDataForm,
+        ResourceSharing, SortStrategy, SourceOutput, SourceReadPlan, TaskPhysical, compile_pipeline,
     },
     plan::{EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphEdgeColumnBindings},
     policy::PlanningPolicy,
@@ -43,42 +41,45 @@ fn bounded_preflight_rejection_reports_caller_visible_sink() {
 #[test]
 fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     // `applied_limit` is set by exactly one producer and dropped by exactly
-    // one limit pass-through: two tasks claiming `FusedTopK` for the same
+    // one limit pass-through: two sorts claiming `FusedTopK` for the same
     // limit would apply fetch/skip twice.
     let mut builder = QueryPlanBuilder::new();
     let join = compositional_inner_join_base(&mut builder);
-    let sort = builder.add_sort(
+    let inner_sort = builder.add_sort(
         join,
         SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
-    let plan = builder.finish_with_host_sink(limit).unwrap();
+    let inner_limit = builder.add_limit(inner_sort, LimitSpec::fetch(10)).unwrap();
+    let outer_sort = builder.add_sort(
+        inner_limit,
+        SortSpec::new(vec![SortExpr::new(Expr::column("left_id"), true, false)])).unwrap();
+    let outer_limit = builder.add_limit(outer_sort, LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(outer_limit).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
-        .expect("join sort limit should compile");
+        .expect("stacked sort limits should compile");
     pipeline.validate().expect("compiler output satisfies the fused top-k binding");
 
-    let sort_task = pipeline
-        .tasks()
-        .iter()
-        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
-        .expect("one final sort task");
-    let fused = sort_task.sort_strategy().expect("sort feeding a single limit fuses");
-    let (limit_task_id, limit_node_id) = match fused {
-        SortStrategy::FusedTopK { limit_task, limit_node } => {
-            (limit_task, limit_node)
-        },
-        SortStrategy::FullSort => {
-            panic!("sort feeding a single limit must fuse, got {fused:?}")
-        },
+    let sort_task = |node| {
+        pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::FinalSort && task.plan_node() == Some(node))
+            .expect("each sort compiles to a final sort task")
     };
-    // Duplicate the claim onto the limit task itself: kind, plan node, and
-    // sort-output consumption still hold for both claimants, so only the
-    // uniqueness clause can reject the rebuilt pipeline.
+    let (inner_sort_task, outer_sort_task) = (sort_task(inner_sort), sort_task(outer_sort));
+    let inner_claim = inner_sort_task.sort_strategy().expect("sort feeding a single limit fuses");
+    let SortStrategy::FusedTopK { limit_task, limit_node } = inner_claim else {
+        panic!("sort feeding a single limit must fuse, got {inner_claim:?}")
+    };
+    // Point the outer sort's claim at the inner limit. The structure is
+    // unchanged, so only the uniqueness clause can reject the rebuilt pipeline.
     let mut tasks = pipeline.tasks().to_vec();
-    let limit_index =
-        tasks.iter().position(|task| task.id() == limit_task_id).expect("fused limit task exists");
-    tasks[limit_index] = tasks[limit_index].clone().with_sort_strategy(fused);
+    let outer_index =
+        tasks.iter().position(|task| task.id() == outer_sort_task.id()).expect("outer sort task exists");
+    tasks[outer_index] = PipelineTask::new(outer_sort_task.id(), TaskPhysical::FinalSort(inner_claim))
+        .with_input_resources(outer_sort_task.input_resources().to_vec())
+        .with_output_resources(outer_sort_task.output_resources().to_vec());
     let rebuilt = CompiledPipeline::from_parts_unvalidated(
         tasks,
         pipeline.edges().to_vec(),
@@ -88,10 +89,10 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     );
     let error = rebuilt.validate().expect_err("two producers must not claim one fused limit");
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("first_sort_task"), Some(sort_task.id().to_string()).as_deref());
-    assert_eq!(error.fact_value("second_sort_task"), Some(limit_task_id.to_string()).as_deref());
-    assert_eq!(error.fact_value("limit_task"), Some(limit_task_id.to_string()).as_deref());
-    assert_eq!(error.fact_value("limit_node"), Some(limit_node_id.to_string()).as_deref());
+    assert_eq!(error.fact_value("first_sort_task"), Some(inner_sort_task.id().to_string()).as_deref());
+    assert_eq!(error.fact_value("second_sort_task"), Some(outer_sort_task.id().to_string()).as_deref());
+    assert_eq!(error.fact_value("limit_task"), Some(limit_task.to_string()).as_deref());
+    assert_eq!(error.fact_value("limit_node"), Some(limit_node.to_string()).as_deref());
 }
 
 #[test]
@@ -272,47 +273,6 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
 }
 
 #[test]
-fn bounded_aggregate_task_records_single_stage() {
-    // Compiled aggregate tasks always run single-shot: partial state never
-    // crosses a compiled edge, it is merged inside the task.
-    let mut builder = QueryPlanBuilder::new();
-    let join = compositional_inner_join_base(&mut builder);
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("left_id")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("left_value"), "count")],
-        ),
-        Arc::new(Schema::new(vec![
-            Field::new("left_id", DataType::Int32, false),
-            Field::new("count", DataType::Int64, false),
-        ])),
-    ).unwrap();
-    let plan = builder.finish_with_host_sink(aggregate).unwrap();
-
-    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
-    let pipeline = compile_pipeline(&plan, &analysis)
-        .expect("grouped aggregate should compile");
-    let aggregate_task = pipeline
-        .tasks()
-        .iter()
-        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
-        .expect("one aggregate task");
-    assert_eq!(
-        aggregate_task.aggregate_stage(),
-        Some(AggregateExecutionStage::Single)
-    );
-    assert!(
-        pipeline.tasks().iter().all(|task| !matches!(
-            task.aggregate_stage(),
-            Some(AggregateExecutionStage::Partial)
-                | Some(AggregateExecutionStage::FinalMerge)
-        )),
-        "no compiled edge carries partial state"
-    );
-}
-
-#[test]
 fn bounded_aggregate_state_and_max_rows_are_node_facts() {
     use query_engine::capability::AggregateStateContract;
 
@@ -384,7 +344,7 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
         left,
         grouped,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
@@ -436,7 +396,7 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
         left,
         dedup,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
@@ -521,40 +481,4 @@ fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'s
             "{label}: {key}={value:?} must not carry retired family/path vocabulary"
         );
     }
-}
-
-#[test]
-fn bounded_compiled_aggregate_task_runs_single_stage_without_partial_edges() {
-    // Compiled aggregate tasks run single-shot: partial/final state never
-    // crosses a compiled edge (it is merged inside the task), so the task
-    // records `Single` and no edge carries a partial-state label.
-    let mut builder = QueryPlanBuilder::new();
-    let join = compositional_inner_join_base(&mut builder);
-    let aggregate_schema = Arc::new(Schema::new(vec![
-        Field::new("left_id", DataType::Int32, false),
-        Field::new("line_count", DataType::Int64, false),
-    ]));
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("left_id")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("right_value"), "line_count")],
-        ),
-        aggregate_schema,
-    ).unwrap();
-    let plan = builder.finish_with_host_sink(aggregate).unwrap();
-
-    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
-    let pipeline =
-        compile_pipeline(&plan, &analysis).expect("join grouped aggregate compiles");
-    let aggregate_task = pipeline
-        .tasks()
-        .iter()
-        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
-        .expect("one aggregate task");
-    assert_eq!(aggregate_task.aggregate_stage(), Some(AggregateExecutionStage::Single));
-    assert!(
-        pipeline.edges().iter().all(|edge| !format!("{:?}", edge.kind()).contains("Partial")),
-        "no compiled edge may carry partial aggregate state"
-    );
 }

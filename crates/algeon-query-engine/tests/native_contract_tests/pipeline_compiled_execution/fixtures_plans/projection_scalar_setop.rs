@@ -72,7 +72,7 @@ pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
         left,
         right,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
         )
         .with_output_projection(vec![
@@ -487,7 +487,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
         Arc::clone(&join_schema),
     ).unwrap();
     let join_type =
-        if variant == ProjectionScalarSetopPlanVariant::UnsupportedJoin { JoinType::LeftAnti } else { JoinType::Left };
+        if variant == ProjectionScalarSetopPlanVariant::UnsupportedJoin { JoinType::LEFT_ANTI } else { JoinType::Left };
     let root_join = builder.add_join(
         driver,
         scalar_join,
@@ -691,7 +691,7 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
         left_dedup,
         right_dedup,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
@@ -757,7 +757,7 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
         dedup_a,
         dedup_b,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
         .with_null_equality(JoinNullEquality::NullsMatch)
@@ -769,7 +769,7 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
         anti_ab,
         dedup_c,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
         .with_null_equality(JoinNullEquality::NullsMatch)
