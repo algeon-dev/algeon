@@ -1387,7 +1387,7 @@ mod tests {
 
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("attempt report publishes");
         let summary = report.primary_failure.as_ref().expect("borrowed primary failure is retained");
-        assert_eq!(summary.code(), AttemptFailureCode::MemoryReservationFailed);
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::MemoryReservationFailed));
         assert_eq!(summary.operation(), AttemptFailureOperation::Admission);
         assert_eq!(
             summary.facts().iter().map(|fact| (fact.key(), fact.value())).collect::<Vec<_>>(),

@@ -221,7 +221,7 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
     let error = ticket
         .begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan)
         .expect_err("a dependent occurrence cannot begin first");
-    assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("host_occurrence_predecessor_incomplete"));
+    assert_eq!(error.fact_value("reason"), Some("host_occurrence_predecessor_incomplete"));
 
     drop(ticket.begin_host_occurrence(&task_context, "gpu-first", "gpu-first", &first_plan).unwrap().unwrap());
     assert!(
@@ -234,10 +234,7 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
     let duplicate = ticket
         .begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan)
         .expect_err("one final-plan occurrence cannot execute twice");
-    assert_eq!(
-        duplicate.find_algeon_error().unwrap().fact_value("reason"),
-        Some("host_occurrence_duplicate_execution")
-    );
+    assert_eq!(duplicate.fact_value("reason"), Some("host_occurrence_duplicate_execution"));
 
     let next_task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ticket));
@@ -553,7 +550,7 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
         .await
         .expect_err("an aggregated unsupported capability must reject before admission");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
     assert_eq!(error.fact_value("required_capabilities"), Some("unavailable"));
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));

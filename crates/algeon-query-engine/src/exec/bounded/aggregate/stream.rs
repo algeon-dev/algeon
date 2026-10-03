@@ -5,14 +5,14 @@ use super::{
     CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_union,
-    execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
-    execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
-    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
+    attach_budget_token_failure_facts, bounded_invariant_violation, cudf_query_error, execute_aggregate_with_budget,
+    execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_compiled_bounded_aggregate_from_frame,
+    execute_compiled_bounded_final_aggregate_merge, execute_partial_aggregate_with_budget,
+    execution_budget_token_for_boundary, execution_overrides,
     final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
     observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes, run_budgeted,
     should_execute_incremental_partitioned_final_aggregate_merge, stream_bounded_join_leaf_local_parquet_source_chunks,
-    unsupported_bounded_shape,
 };
 use crate::exec::{
     bounded::{
@@ -905,7 +905,7 @@ fn split_compiled_aggregate_stream_frame(
     let rows = input.frame.num_rows();
     let split_at = rows / 2;
     if split_at == 0 || split_at == rows {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "compiled aggregate stream frame cannot be split further",
             "compiled_aggregate_stream_frame_retry_unsplittable",
         )

@@ -68,7 +68,7 @@ impl QueryService {
             self.inner.before_pending_preflight_resolution();
             if self.inner.pending_preflight_failure.swap(false, Ordering::AcqRel) {
                 return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::UnsupportedOperator,
                     "query_engine.query_service.admission",
                     "injected device-specific admission preflight failure",
                 )

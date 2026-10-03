@@ -4,7 +4,7 @@ use query_engine::{
         compiled_bounded_query_plan_support,
     },
     capability::{
-        CapabilityDecision, EdgeConsumer, JoinExecutionCapability, join_node_execution_capability,
+        CapabilityDecision, EdgeConsumer, JoinExecutionCapability, Reason, join_node_execution_capability,
         keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable,
         partitioned_keyed_residual_join_supported,
     },
@@ -419,7 +419,7 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
     let CapabilityDecision::Rejected { reason, facts } = &build_edge.decision else {
         panic!("grouped-measure anti build should reject the build edge");
     };
-    assert_eq!(*reason, "left_anti_build_requires_dedup_aggregate");
+    assert_eq!(*reason, Reason::LeftAntiBuildRequiresDedupAggregate);
     assert_eq!(facts.get("producer_aggregate_state").map(String::as_str), Some("plain"));
 }
 
@@ -483,7 +483,7 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
     let CapabilityDecision::Rejected { reason, facts } = &probe_edge.decision else {
         panic!("non-dedup anti probe should reject the probe edge");
     };
-    assert_eq!(*reason, "left_anti_probe_requires_dedup_proven_input");
+    assert_eq!(*reason, Reason::LeftAntiProbeRequiresDedupProvenInput);
     assert_eq!(facts.get("producer_aggregate_state").map(String::as_str), Some("none"));
 }
 

@@ -12,7 +12,9 @@ fn native_query_rejects_unqualified_residual_column_before_source_read() {
         Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::input_column(1, "id", "right_id")),
     );
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    // An unqualified residual column names no join input: a malformed plan,
+    // while the one-sided predicate below is a legal backend gap.
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "query_engine.join.validate_residual");
     assert_eq!(error.fact_value("column"), Some("id"));
     assert_eq!(error.fact_value("qualifier"), Some("none"));

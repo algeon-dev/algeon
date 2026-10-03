@@ -9,7 +9,7 @@ use datafusion::{
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
 };
 
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 #[derive(Debug, Clone)]
 struct ActiveGpuFunctionOccurrence {
@@ -58,21 +58,19 @@ impl GpuFunctionHostOccurrenceExec {
 pub(crate) fn gpu_function_occurrence_from_task_context(
     task_context: &TaskContext,
     producer_identity: &str,
-) -> DataFusionResult<Option<String>> {
+) -> Result<Option<String>> {
     let Some(active) = task_context.session_config().get_extension::<ActiveGpuFunctionOccurrence>() else {
         return Ok(None);
     };
     if active.producer_identity.as_ref() != producer_identity {
-        return Err(DataFusionError::from(
-            Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native_exec.gpu_function_occurrence",
-                "a GPU function executed under another producer's occurrence lineage",
-            )
-            .with_log_safe_fact("reason", "gpu_function_occurrence_producer_mismatch")
-            .with_log_safe_fact("expected_producer_identity", producer_identity)
-            .with_log_safe_fact("actual_producer_identity", active.producer_identity.as_ref()),
-        ));
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "algeon_datafusion.native_exec.gpu_function_occurrence",
+            "a GPU function executed under another producer's occurrence lineage",
+        )
+        .with_log_safe_fact("reason", "gpu_function_occurrence_producer_mismatch")
+        .with_log_safe_fact("expected_producer_identity", producer_identity)
+        .with_log_safe_fact("actual_producer_identity", active.producer_identity.as_ref()));
     }
     Ok(Some(active.occurrence_id.to_string()))
 }

@@ -201,8 +201,7 @@ fn report_rows_for_plan(
         .report
         .outcomes()
         .iter()
-        .enumerate()
-        .map(|(outcome_index, outcome)| match outcome {
+        .map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
@@ -216,7 +215,7 @@ fn report_rows_for_plan(
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: false,
             },
-            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeFallbackPressureRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
@@ -228,7 +227,7 @@ fn report_rows_for_plan(
                     source_diagnostics_plan.as_ref(),
                     candidate,
                     *capability_reason,
-                    result.report.expression_rejection(outcome_index),
+                    detail.expression.as_ref(),
                 ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
@@ -323,8 +322,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         .report
         .outcomes()
         .iter()
-        .enumerate()
-        .map(|(outcome_index, outcome)| match outcome {
+        .map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
@@ -357,7 +355,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                 rejected_before_execution: false,
             },
-            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionPlanningRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
@@ -369,7 +367,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     planned_plan.as_ref(),
                     candidate,
                     *capability_reason,
-                    native_diagnostics.report.expression_rejection(outcome_index),
+                    detail.expression.as_ref(),
                 ),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
@@ -436,8 +434,7 @@ fn datafusion_execution_rows_for_item(
         .report
         .outcomes()
         .iter()
-        .enumerate()
-        .map(|(outcome_index, outcome)| match outcome {
+        .map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
@@ -470,7 +467,7 @@ fn datafusion_execution_rows_for_item(
                 output_bytes: runtime_summary.output_bytes,
                 metrics: runtime_summary.metrics.clone(),
             },
-            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionExecutionRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
@@ -482,7 +479,7 @@ fn datafusion_execution_rows_for_item(
                     planned_plan.as_ref(),
                     candidate,
                     *capability_reason,
-                    native_diagnostics.report.expression_rejection(outcome_index),
+                    detail.expression.as_ref(),
                 ),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,

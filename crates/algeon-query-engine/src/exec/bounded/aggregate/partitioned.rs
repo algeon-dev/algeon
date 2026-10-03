@@ -131,13 +131,13 @@ fn slice_compiled_aggregate_partition(
     partition: usize,
 ) -> Result<ResidentGpuFrame> {
     let start = *offsets.get(partition).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "partitioned aggregate input is missing a partition start offset",
             "partition_offset_missing",
         )
     })?;
     let end = *offsets.get(partition + 1).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "partitioned aggregate input is missing a partition end offset",
             "partition_offset_missing",
         )

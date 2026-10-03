@@ -3,7 +3,7 @@
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     catalog::Session,
-    common::{DataFusionError, Result, TableReference},
+    common::{DataFusionError, TableReference},
     datasource::provider_as_source,
     execution::SessionState,
     logical_expr::{FetchType, LogicalPlan, LogicalPlanBuilder, SkipType},
@@ -12,14 +12,14 @@ use query_engine::plan::{GpuOptionDefinition, GpuOptionKind};
 use serde_json::{Map, Value, json};
 
 use super::{NamedArgumentDefinition, NamedArgumentKind};
-use crate::error::{DataFusionErrorExt, ErrorCode};
+use crate::error::{DataFusionErrorExt, Error, ErrorCode, Result};
 
 pub(crate) fn infer_dense_relation_binding(
     input: &LogicalPlan,
     role: &'static str,
     family: &'static str,
-    field_not_found: impl FnOnce() -> DataFusionError,
-    invalid_call: impl Fn(&'static str, String) -> DataFusionError,
+    field_not_found: impl FnOnce() -> Error,
+    invalid_call: impl Fn(&'static str, String) -> Error,
 ) -> Result<Value> {
     let schema = input.schema();
     schema.field_with_unqualified_name("id").map_err(|_| field_not_found())?;
@@ -163,23 +163,36 @@ pub(crate) fn validation_request_schema<'a>(
     })
 }
 
-/// Projects the typed rejection and its argument or relation locator into validation details.
+/// Projects a DataFusion error into validation details; an error without an
+/// adapter cause reports `fallback_code` with the DataFusion message.
 pub(crate) fn validation_error(
     error: &DataFusionError,
     details: &mut Value,
     fallback_code: &'static str,
 ) -> (String, String) {
-    let Some(error) = error.find_algeon_error() else {
+    let Some(adapter) = error.find_algeon_error() else {
         details["path"] = Value::String("options".to_string());
         return (fallback_code.to_string(), error.to_string());
     };
+    adapter_validation_error(adapter, details, fallback_code)
+}
+
+/// Projects the typed rejection and its argument or relation locator into validation details.
+pub(crate) fn adapter_validation_error(
+    error: &Error,
+    details: &mut Value,
+    fallback_code: &'static str,
+) -> (String, String) {
     let code = match error.code() {
         ErrorCode::FieldNotFound => "column_not_found",
         ErrorCode::UnsupportedType => "unsupported_type",
         _ => error.facts().get("reason").unwrap_or(fallback_code),
     };
     let facts = error.facts();
-    let path = match (facts.get("argument"), facts.get("relation_role"), facts.get("field")) {
+    // The validation result goes to the caller, so it carries the caller's
+    // field detail along with the facts.
+    let detail = |key| facts.get(key).or_else(|| error.client_detail().and_then(|detail| detail.value(key)));
+    let path = match (facts.get("argument"), facts.get("relation_role"), detail("field")) {
         (Some(argument), _, _) => format!("options.{argument}"),
         (None, Some(role), Some(field)) => format!("relations.{role}.fields.{field}"),
         (None, Some(role), None) => format!("relations.{role}"),
@@ -187,7 +200,7 @@ pub(crate) fn validation_error(
     };
     details["path"] = Value::String(path);
     for key in ["argument", "relation_role", "field", "actual_type", "expected_type"] {
-        if let Some(value) = facts.get(key) {
+        if let Some(value) = detail(key) {
             details[key] = Value::String(value.to_string());
         }
     }

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use datafusion::common::{DataFusionError, Result};
 use query_engine::plan::{
     MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver,
     MlForestModelSnapshot, MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams,
@@ -11,7 +10,7 @@ use query_engine::plan::{
 
 use crate::{
     cuml_sql::{CumlOperation, CumlValidatedOptions, DenseVectorBinding, error::invalid_call},
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     native_exec::{child_inputs::NativeChildBinding, relation_function::add_projected_relation_source},
 };
 
@@ -53,14 +52,12 @@ pub(super) fn lower_cuml_query_plan(
         relations.push(relation);
     }
     let canonical: serde_json::Value = serde_json::from_str(options.canonical_json()).map_err(|error| {
-        DataFusionError::from(
-            Error::new(
-                ErrorCode::Internal,
-                "algeon_datafusion.cuml_sql.lower",
-                "validated cuML options were not valid canonical JSON",
-            )
-            .with_source(error),
+        Error::new(
+            ErrorCode::Internal,
+            "algeon_datafusion.cuml_sql.lower",
+            "validated cuML options were not valid canonical JSON",
         )
+        .with_source(error)
     })?;
     let decomposition = || {
         let solver = match canonical["solver"].as_str().expect("validated cuML solver") {
@@ -171,11 +168,7 @@ pub(super) fn lower_cuml_query_plan(
     let root = builder
         .try_add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, Arc::clone(&output_schema)))
         .map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.cuml_sql.lower",
-                "failed to lower cuML SQL into native ML IR",
-                error,
-            ))
+            Error::from_native("algeon_datafusion.cuml_sql.lower", "failed to lower cuML SQL into native ML IR", error)
         })?;
     Ok(builder.finish_with_host_sink_schema(root, output_schema))
 }

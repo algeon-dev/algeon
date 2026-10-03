@@ -307,7 +307,7 @@ fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_comple
     );
     assert!(matches!(
         &wait_for_sealed_observation(&observation).footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Internal
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::Internal)
     ));
 }
 
@@ -433,7 +433,7 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
     let sealed = observation.sealed_snapshot().expect("sweep finalizes the queued completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::ServiceOverloaded
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
     ));
     assert_eq!(
         observed_admission_events(&observation),
@@ -487,10 +487,10 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
     let report = attempt.completion.completion().wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
     assert!(matches!(
         &report.outcome,
-        RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::ServiceOverloaded
+        RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
     ));
     let primary = report.primary_failure.as_ref().expect("queue sweep retains the borrowed primary failure");
-    assert_eq!(primary.code(), AttemptFailureCode::ServiceOverloaded);
+    assert_eq!(primary.code(), AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded));
     assert_eq!(primary.operation(), AttemptFailureOperation::Admission);
     assert_eq!(primary.facts().len(), 1, "the stable report retains one closed admission reason");
     assert_eq!(primary.facts()[0].key(), AttemptFailureFactKey::Reason);
@@ -540,7 +540,7 @@ fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error
     let sealed = observation.sealed_snapshot().expect("sweep finalizes the health-rejected completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::ServiceOverloaded
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
     ));
     assert_eq!(
         observed_admission_events(&observation),

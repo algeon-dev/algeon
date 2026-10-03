@@ -8,7 +8,7 @@ use arrow::{
 use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
     common::{
-        DataFusionError, Result, stats::Precision, tree_node::TreeNodeRecursion,
+        DataFusionError, Result as DataFusionResult, stats::Precision, tree_node::TreeNodeRecursion,
         utils::memory::get_record_batch_memory_size,
     },
     datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
@@ -75,7 +75,7 @@ use super::{
     GpuIslandHostBoundaryConfig, PredicateSourceColumnRole, plan, result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::{
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
         AlgeonNativeMetrics, GpuResidentProducer, NativeExecutionMetricsCapture,
@@ -110,7 +110,7 @@ fn counted_cudf_runtime(
     operation: &'static str,
     message: &'static str,
 ) -> Result<cudf::Runtime> {
-    context.runtime().map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
+    context.runtime().map_err(|error| Error::from_native(operation, message, error))
 }
 
 mod admission;
@@ -172,7 +172,7 @@ impl<'a> GraphExecutionMetrics<'a> {
         result
     }
 
-    pub(super) fn finish<T>(&mut self, result: Result<T>) -> Result<T> {
+    pub(super) fn finish<T>(&mut self, result: DataFusionResult<T>) -> DataFusionResult<T> {
         self.publish();
         result
     }
@@ -210,5 +210,5 @@ pub(super) fn finalize_graph_query_outcome(
 ) -> Result<QueryOutput> {
     metrics
         .merge_outcome(outcome)
-        .map_err(|error| DataFusionError::from(Error::from_native_with_blocking_diagnostics(operation, message, error)))
+        .map_err(|error| Error::from_native_with_blocking_diagnostics(operation, message, error))
 }

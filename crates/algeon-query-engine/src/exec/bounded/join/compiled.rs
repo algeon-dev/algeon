@@ -1176,7 +1176,7 @@ fn compiled_join_input_columns(
             ))
         },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            Err(unsupported_bounded_shape(
+            Err(bounded_invariant_violation(
                 "compiled prepared join input columns require a prepared join strategy",
                 "compiled_join_strategy_state_mismatch",
             ))
@@ -1193,7 +1193,7 @@ fn orient_prepared_inputs(
     match (build_side, probe_side) {
         (JoinSide::Left, JoinSide::Right) => Ok((build, probe)),
         (JoinSide::Right, JoinSide::Left) => Ok((probe, build)),
-        _ => Err(unsupported_bounded_shape(
+        _ => Err(bounded_invariant_violation(
             "compiled prepared join inputs must contain exactly one left and one right side",
             "compiled_join_input_orientation_invalid",
         )),

@@ -34,10 +34,7 @@ use std::{
 use arrow::record_batch::RecordBatch;
 #[cfg(feature = "cugraph")]
 use datafusion::execution::memory_pool::MemoryReservation;
-use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
-    physical_plan::ExecutionPlan,
-};
+use datafusion::physical_plan::ExecutionPlan;
 use query_engine::admission::AttemptCapabilityEvidence;
 #[cfg(feature = "cugraph")]
 use query_engine::{
@@ -52,8 +49,11 @@ use tokio::sync::{Notify, watch};
 
 use super::native_node::native_node;
 #[cfg(feature = "cugraph")]
-use crate::error::{Error, ErrorCode, Result};
-use crate::native_exec::SealedAttemptMetricsTarget;
+use crate::error::ErrorCode;
+use crate::{
+    error::{Error, Result},
+    native_exec::SealedAttemptMetricsTarget,
+};
 
 #[cfg(feature = "cugraph")]
 const OPERATION: &str = "algeon_datafusion.graph_execution.bfs_singleflight";
@@ -72,7 +72,7 @@ const MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS: usize = 256;
 pub(crate) trait GraphExecutionPlan: Send + Sync {
     /// Issues capability evidence for the exact native graph fragment this
     /// execution node submits after staging its GPU-resident inputs.
-    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence>;
+    fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence>;
 
     /// Returns the one fixed-cardinality post-seal metric target for this
     /// graph execution root. The adapter discovers it through this neutral
@@ -81,7 +81,7 @@ pub(crate) trait GraphExecutionPlan: Send + Sync {
 
     /// Returns a typed rejection when this graph root intentionally owns its
     /// result at the host boundary and cannot participate as a GPU producer.
-    fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+    fn gpu_resident_output_rejection(&self) -> Option<Error> {
         None
     }
 }

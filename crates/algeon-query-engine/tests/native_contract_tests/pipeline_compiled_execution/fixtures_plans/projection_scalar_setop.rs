@@ -846,11 +846,11 @@ fn composed_pipeline_rejects_non_dedup_left_anti_build_input() {
         .unwrap()
         .expect("distinct-aggregate anti build should project a rejection");
     assert!(
-        matches!(projection.owner, CapabilityRejectionOwner::Edge { .. }),
+        matches!(projection.owner, RejectionOwner::Edge { .. }),
         "distinct-aggregate build should reject on the edge, got {:?}",
         projection.owner
     );
-    assert_eq!(projection.reason, "left_anti_build_requires_dedup_aggregate");
+    assert_eq!(projection.reason, Reason::LeftAntiBuildRequiresDedupAggregate);
     assert!(projection.facts.contains_key("producer_aggregate_state"));
 }
 
@@ -878,10 +878,10 @@ fn composed_pipeline_rejects_non_dedup_left_anti_probe_input() {
         .unwrap()
         .expect("non-dedup left-anti probe input should project a rejection");
     assert!(
-        matches!(projection.owner, CapabilityRejectionOwner::Edge { .. }),
+        matches!(projection.owner, RejectionOwner::Edge { .. }),
         "non-dedup probe input should reject on the edge, got {:?}",
         projection.owner
     );
-    assert_eq!(projection.reason, "left_anti_probe_requires_dedup_proven_input");
+    assert_eq!(projection.reason, Reason::LeftAntiProbeRequiresDedupProvenInput);
     assert!(projection.facts.contains_key("producer_aggregate_state"));
 }

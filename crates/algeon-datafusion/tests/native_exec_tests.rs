@@ -9,7 +9,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     capability::CapabilityReason,
-    error::{DataFusionErrorExt, ErrorCode},
+    error::{ClientDetail, DataFusionErrorExt, ErrorCode},
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
@@ -21,7 +21,7 @@ use algeon_datafusion::{
 };
 use arrow::{
     array::{
-        Array, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, StringArray,
+        Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, ListArray, StringArray,
         StringViewArray,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
@@ -53,7 +53,7 @@ use futures::executor::block_on;
 use parquet::arrow::ArrowWriter;
 use proptest::prelude::*;
 use query_engine::{
-    mode::CapabilityEnvelopeStatus,
+    mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
     plan::{NativePlanCostOptions, NativePlanCostReason},
 };
 use tokio::runtime::Builder;
@@ -833,9 +833,14 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(error.message(), "GPU execution does not support a projected column with an unsupported Arrow type");
     assert_eq!(error.fact_value("reason"), Some("unsupported_type"));
-    assert_eq!(error.fact_value("unsupported_column"), Some("first_unsupported"));
-    assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Decimal128(10, 2))"));
-    assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
+    assert_eq!(
+        error.client_detail(),
+        Some(&ClientDetail::UnsupportedColumn {
+            name: "first_unsupported".to_string(),
+            data_type: "List(Decimal128(10, 2))".to_string(),
+            role: "projected",
+        })
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1550,5 +1555,78 @@ fn dense_rank_and_percent_rank_windows_stay_in_datafusion() {
         assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied, "{function}()");
     }
 
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// An Int16-keyed STDDEV under host-exact statistical execution: a legal
+/// aggregate that admission refuses (the exact host kernel has no Int16
+/// group key), returning the session, its physical plan, and the final
+/// native rule configured with `policy`.
+fn admission_refused_stddev_plan(
+    dir: &std::path::Path,
+    policy: DataFusionCpuExecutionPolicy,
+) -> (SessionContext, Arc<dyn ExecutionPlan>, Arc<dyn PhysicalOptimizerRule + Send + Sync>) {
+    let path = dir.join("input.parquet");
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int16, false), Field::new("x", DataType::Float64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int16Array::from(vec![1, 2, 1, 2])), Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 5.0]))],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(1));
+    block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    let plan = block_on(
+        block_on(ctx.sql("SELECT k, STDDEV(x) AS s FROM input GROUP BY k ORDER BY k")).unwrap().create_physical_plan(),
+    )
+    .unwrap();
+    let config =
+        AlgeonNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(policy)
+            .with_native_execution_config(bounded_config().with_statistical_aggregate_execution_mode(
+                StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+            ));
+    let final_native = installed_physical_optimizer_rules(config)
+        .into_iter()
+        .find(|rule| rule.name() == "algeon_datafusion_native")
+        .expect("native optimizer rules should contain the final native rule");
+    (ctx, plan, final_native)
+}
+
+#[test]
+fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-fallback");
+    let (ctx, plan, final_native) = admission_refused_stddev_plan(&dir, DataFusionCpuExecutionPolicy::Allow);
+
+    let optimized = final_native
+        .optimize(plan, &ConfigOptions::default())
+        .expect("a legal plan admission refuses stays on DataFusion");
+
+    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
+    let batches = block_on(collect(optimized, ctx.task_ctx())).unwrap();
+    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    assert_eq!(rows, 2, "{batches:?}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The NativeRequired error names the refusal from the production admission
+/// decision, not only the coarse capability reason.
+#[test]
+fn native_required_rejection_names_the_admission_refusal() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-refusal");
+    let (_ctx, plan, final_native) = admission_refused_stddev_plan(&dir, DataFusionCpuExecutionPolicy::Reject);
+
+    let error = final_native
+        .optimize(plan, &ConfigOptions::default())
+        .expect_err("NativeRequired cannot keep the refused aggregate on DataFusion");
+    let error = error.find_algeon_error().expect("the final-plan rejection keeps its typed error");
+
+    assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    let facts = error.facts().iter().collect::<Vec<_>>();
+    assert!(error.fact_value("capability_rejection_reason").is_some(), "{facts:?}");
+    assert!(error.fact_value("capability_rejection_boundary").is_some(), "{facts:?}");
     fs::remove_dir_all(dir).unwrap();
 }

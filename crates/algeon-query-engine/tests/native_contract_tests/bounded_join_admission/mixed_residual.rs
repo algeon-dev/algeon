@@ -82,7 +82,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
         Some("native_plan_validation_unsupported")
     );
     let blocker_facts = facts.get("bounded_join_rejection_facts").expect("rejection facts");
-    assert!(blocker_facts.contains("validation_code=unsupported_plan_shape"), "{blocker_facts}");
+    assert!(blocker_facts.contains("validation_code=unsupported_operator"), "{blocker_facts}");
     assert!(blocker_facts.contains("validation_operation=query_engine.join.validate"), "{blocker_facts}");
 }
 

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
     admission::admit,
-    capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, VectorInputRole},
+    capability::{
+        CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, Reason, UnsupportedPart, VectorInputRole,
+    },
     dimension_pruning::local_dimension_pruning_resolver,
     exec::preflight_query_plan,
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
@@ -453,7 +455,7 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
     let CapabilityDecision::Rejected { reason, facts } = capability.executable else {
         panic!("invalid vector dtype should be rejected locally");
     };
-    assert_eq!(reason, "unsupported_vector_algorithm_node_capability");
+    assert_eq!(reason, Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::DataType));
     assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_feature_type"));
     assert_eq!(facts.get("validation_code").map(String::as_str), Some("unsupported_type"));
 }
@@ -527,9 +529,9 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
         )
         .expect("bounded admission should classify vector plan");
         let admission = decision.admission().unwrap_or_else(|| {
-            panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection_projection())
+            panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection())
         });
-        assert!(decision.rejection_projection().is_none());
+        assert!(decision.rejection().is_none());
         let pipeline = admission.pipeline();
         let vector_tasks =
             pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::VectorAlgorithm).collect::<Vec<_>>();

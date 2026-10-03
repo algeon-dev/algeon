@@ -144,13 +144,13 @@ pub(super) fn slice_partitioned_final_merge_partition(
     offsets: &[usize],
 ) -> Result<CommittedPartial> {
     let start = *offsets.get(partition).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "partitioned final merge is missing a partition start offset",
             "partition_offset_missing",
         )
     })?;
     let end = *offsets.get(partition + 1).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "partitioned final merge is missing a partition end offset",
             "partition_offset_missing",
         )

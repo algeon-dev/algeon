@@ -30,6 +30,7 @@ mod join_strategy;
 mod lineage;
 mod model;
 mod node;
+mod rejection;
 
 pub use aggregate::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateStateContract, AggregateStrategyCandidateRejection,
@@ -52,10 +53,11 @@ pub(crate) use join::{
 #[doc(hidden)]
 pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub use model::{
-    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
-    CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
-    InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ResidentResource, ResidualRequirement,
-    ResultSinkKind, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
+    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityScope,
+    EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator,
+    OrderingRequirement, ResidentResource, ResidualRequirement, ResultSinkKind, SourceFormatCapability,
+    SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
 };
 #[doc(hidden)]
 pub use node::is_cudf_median_input_type;
+pub use rejection::{Reason, Rejection, RejectionOwner, UnsupportedPart};

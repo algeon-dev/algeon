@@ -15,22 +15,19 @@
 //! `not_selected_by_cost` projection labels shared by
 //! [`crate::gpu_coverage`] and [`crate::native_report`].
 
+use query_engine::{
+    capability::Rejection,
+    plan::NativePlanCostFacts,
+    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
+};
 pub use query_engine::{
     metrics::{PlanNodeId, QueryId, TraceId},
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageSummary, TriageVerdict},
 };
-use query_engine::{
-    plan::NativePlanCostFacts,
-    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
-};
 use serde_json::{Value, json};
 
-use crate::{
-    capability::CapabilityReason,
-    error::{Error, ErrorCode, Result},
-    native::ExpressionRejection,
-};
+use crate::{capability::CapabilityReason, native::ExpressionRejection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnsupportedColumnDetail {
@@ -45,14 +42,23 @@ impl UnsupportedColumnDetail {
     }
 }
 
-/// Crate-private evidence retained beside a `NotSupported` outcome.
+/// Evidence a `NotSupported` outcome carries about its cause.
 ///
-/// The public [`CapabilityReason`] stays payload-free; these facts name the
-/// unsupported column or the expression-contract rejection that caused it.
+/// The public [`CapabilityReason`] stays payload-free; this detail names the
+/// unsupported column, the expression-contract rejection, or the admission
+/// rejection (with the validator's code, operation, and facts) that caused it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct NotSupportedDetail {
+pub struct NotSupportedDetail {
     pub(crate) column: Option<UnsupportedColumnDetail>,
     pub(crate) expression: Option<ExpressionRejection>,
+    pub(crate) admission: Option<Rejection>,
+}
+
+impl NotSupportedDetail {
+    /// The admission rejection this candidate missed, when admission decided it.
+    pub fn admission_rejection(&self) -> Option<&Rejection> {
+        self.admission.as_ref()
+    }
 }
 
 /// Physical-plan candidate considered for native GPU execution.
@@ -108,32 +114,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn not_supported_details_transfer_only_between_reports_with_equal_outcome_counts() {
-        let detail = NotSupportedDetail {
-            column: Some(UnsupportedColumnDetail::new("countDetail", "List(Int64)", "projected")),
-            expression: None,
-        };
-        let mut source = PlanningReport::new();
-        source.push_not_supported_with_detail(
-            GpuCandidate::new("ParquetExec", 1),
-            CapabilityReason::UnsupportedType,
-            detail.clone(),
-        );
-
-        let mut same_count = PlanningReport::new();
-        same_count.push_not_supported(GpuCandidate::new("ParquetExec", 1), CapabilityReason::UnsupportedType);
-        let same_count = same_count.with_not_supported_details_from(&source).expect("equal counts share details");
-        assert_eq!(same_count.unsupported_column(0), detail.column.as_ref());
-
-        let mut longer = same_count;
-        longer.push_selected(GpuCandidate::new("SortExec", 1));
-        let error = longer.with_not_supported_details_from(&source).unwrap_err();
-        assert_eq!(error.code(), ErrorCode::Internal);
-        assert_eq!(error.fact_value("target_outcomes"), Some("2"));
-        assert_eq!(error.fact_value("source_outcomes"), Some("1"));
-    }
-
-    #[test]
     fn candidate_outcome_kind_labels_are_stable() {
         assert_eq!(CandidateOutcomeKind::Selected.as_str(), "selected");
         assert_eq!(CandidateOutcomeKind::NotSupported.as_str(), "not_supported");
@@ -179,6 +159,8 @@ pub enum CandidateOutcome {
         candidate: GpuCandidate,
         /// Stable capability reason code.
         capability_reason: CapabilityReason,
+        /// Evidence naming the cause.
+        detail: NotSupportedDetail,
     },
     /// Candidate is native-capable but was not selected by the cost model.
     NotSelectedByCost {
@@ -273,7 +255,6 @@ pub struct PlanningReport {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     outcomes: Vec<CandidateOutcome>,
-    not_supported_details: Vec<NotSupportedDetail>,
 }
 
 /// Headline capability miss caused by table layout metadata rather than unsupported
@@ -292,8 +273,7 @@ impl PlanningReport {
     }
 
     pub fn from_outcomes(outcomes: impl IntoIterator<Item = CandidateOutcome>) -> Self {
-        let outcomes = outcomes.into_iter().collect::<Vec<_>>();
-        Self { not_supported_details: vec![NotSupportedDetail::default(); outcomes.len()], outcomes, ..Self::default() }
+        Self { outcomes: outcomes.into_iter().collect(), ..Self::default() }
     }
 
     /// Returns the query-wide diagnostic correlation id, when assigned.
@@ -362,16 +342,13 @@ impl PlanningReport {
         }
     }
 
-    /// Appends another report's outcomes, with their not-supported details,
-    /// after this report's outcomes.
+    /// Appends another report's outcomes after this report's outcomes.
     pub(crate) fn append(&mut self, other: PlanningReport) {
         self.outcomes.extend(other.outcomes);
-        self.not_supported_details.extend(other.not_supported_details);
     }
 
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
-        self.not_supported_details.push(NotSupportedDetail::default());
     }
 
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
@@ -384,8 +361,7 @@ impl PlanningReport {
         capability_reason: CapabilityReason,
         detail: NotSupportedDetail,
     ) {
-        self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason });
-        self.not_supported_details.push(detail);
+        self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason, detail });
     }
 
     pub fn push_not_selected_by_cost(
@@ -395,38 +371,11 @@ impl PlanningReport {
         evidence: NativeCandidateCostEvidence,
     ) {
         self.outcomes.push(CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence });
-        self.not_supported_details.push(NotSupportedDetail::default());
     }
 
     /// Returns outcomes in discovery order.
     pub fn outcomes(&self) -> &[CandidateOutcome] {
         &self.outcomes
-    }
-
-    pub(crate) fn unsupported_column(&self, outcome_index: usize) -> Option<&UnsupportedColumnDetail> {
-        self.not_supported_details.get(outcome_index).and_then(|detail| detail.column.as_ref())
-    }
-
-    pub(crate) fn expression_rejection(&self, outcome_index: usize) -> Option<&ExpressionRejection> {
-        self.not_supported_details.get(outcome_index).and_then(|detail| detail.expression.as_ref())
-    }
-
-    /// Adopts `other`'s not-supported details for the same outcomes.
-    ///
-    /// Details are stored beside outcomes by position, so reports with
-    /// different outcome counts cannot share them.
-    pub(crate) fn with_not_supported_details_from(mut self, other: &PlanningReport) -> Result<Self> {
-        if self.outcomes.len() != other.outcomes.len() {
-            return Err(Error::new(
-                ErrorCode::Internal,
-                "algeon_datafusion.report.with_not_supported_details",
-                "planning reports with different outcome counts cannot share not-supported details",
-            )
-            .with_log_safe_fact("target_outcomes", self.outcomes.len())
-            .with_log_safe_fact("source_outcomes", other.outcomes.len()));
-        }
-        self.not_supported_details.clone_from(&other.not_supported_details);
-        Ok(self)
     }
 
     pub fn selected_count(&self) -> usize {
@@ -457,10 +406,10 @@ impl PlanningReport {
     /// Returns the first data-layout-fixable capability miss in discovery order.
     pub fn data_layout_fixable_not_supported(&self) -> Option<DataLayoutFixableNotSupported<'_>> {
         self.outcomes.iter().enumerate().find_map(|(outcome_index, outcome)| {
-            let CandidateOutcome::NotSupported { candidate, capability_reason } = outcome else {
+            let CandidateOutcome::NotSupported { candidate, capability_reason, .. } = outcome else {
                 return None;
             };
-            capability_reason.data_layout_fixable_property().map(|property| DataLayoutFixableNotSupported {
+            capability_reason.facts().layout_property.map(|property| DataLayoutFixableNotSupported {
                 outcome_index,
                 candidate,
                 capability_reason: *capability_reason,
@@ -508,7 +457,7 @@ impl PlanningReport {
             .enumerate()
             .filter_map(|(index, outcome)| match outcome {
                 CandidateOutcome::Selected { .. } => None,
-                CandidateOutcome::NotSupported { candidate, capability_reason } => {
+                CandidateOutcome::NotSupported { candidate, capability_reason, .. } => {
                     let mut evidence = TriageEvidenceRef::new("planning_report.outcomes").with_row_index(index);
                     if let Some(query_id) = self.query_id.clone() {
                         evidence = evidence.with_query_id(query_id);
@@ -519,7 +468,7 @@ impl PlanningReport {
                     Some(
                         TriageSignal::new(
                             TriageSeverity::Warning,
-                            capability_reason.triage_code(),
+                            capability_reason.facts().triage,
                             format!(
                                 "native candidate {} is not supported: {}",
                                 candidate.shape,
@@ -574,7 +523,7 @@ impl CandidateOutcome {
                 "cost_reason_code": null,
                 "cost_evidence": null,
             }),
-            Self::NotSupported { candidate, capability_reason } => json!({
+            Self::NotSupported { candidate, capability_reason, .. } => json!({
                 "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": capability_reason.code(),

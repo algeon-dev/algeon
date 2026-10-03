@@ -276,7 +276,6 @@ pub enum QueryGpuRemedyKind {
     UserAction,
     ConfigAction,
     EngineGap,
-    CudfRsGap,
     CpuPreferred,
 }
 
@@ -286,7 +285,6 @@ impl QueryGpuRemedyKind {
             Self::UserAction => "user_action",
             Self::ConfigAction => "config_action",
             Self::EngineGap => "engine_gap",
-            Self::CudfRsGap => "cudf_rs_gap",
             Self::CpuPreferred => "cpu_preferred",
         }
     }

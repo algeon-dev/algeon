@@ -300,7 +300,7 @@ fn parse_footer_tail(
     })?;
     if footer_tail.is_encrypted_footer() {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             operation,
             "encrypted Parquet footers are not supported by native footer metadata loading",
         )

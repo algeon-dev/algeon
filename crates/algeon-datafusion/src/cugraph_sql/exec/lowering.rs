@@ -16,22 +16,21 @@ use super::{
     CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN,
     CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN, CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN, CaseWhen, CugraphAlgorithm,
     CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphGpuFrame,
-    CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, CugraphResultPlanOptions, CugraphVertexSelector,
-    DataFusionError, DataType, Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame, GpuResidentInputMap,
-    GpuResidentSource, GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBfsEndpointPolicy, GraphBfsLeader, GraphBfsParams, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
-    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEigenvectorCentralityParams,
-    GraphExecutionMetrics, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params,
-    GraphForceAtlas2VertexAttributesInput, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType,
-    GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
-    GraphOutDegreesAllParams, GraphPageRankParams, GraphPersonalizedPageRankParams, GraphSccParams,
-    GraphSpectralClusteringParams, GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, GraphWccParams,
-    LimitSpec, LiteralValue, NativeExpr, NativeGraphBetweennessSeeds, NativeGraphBfsPredicateInputs,
-    NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput, NativeGraphPredicateInput,
-    ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec,
-    SourceNode, add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan,
-    finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan,
+    CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, CugraphResultPlanOptions, CugraphVertexSelector, DataType,
+    Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
+    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
+    GraphBfsEndpointPolicy, GraphBfsLeader, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
+    GraphEdgeColumnBindings, GraphEigenvectorCentralityParams, GraphExecutionMetrics,
+    GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params, GraphForceAtlas2VertexAttributesInput,
+    GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
+    GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphPersonalizedPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphSsspSource,
+    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, NativeExpr, NativeGraphBetweennessSeeds,
+    NativeGraphBfsPredicateInputs, NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput,
+    NativeGraphPredicateInput, ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result,
+    SchemaRef, SortExpr, SortSpec, SourceNode, add_logical_mapping_plan, decode_logical_graph_result,
+    execute_query_plan, finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan,
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
@@ -59,22 +58,20 @@ pub(super) fn preflight_cugraph_query_plan(definition: &CugraphPlanDefinition) -
     let plan = cugraph_schema_query_plan(&definition)?;
     preflight_query_plan(&plan).map_err(|error| {
         if error.kind() == QueryErrorKind::Unsupported {
-            return DataFusionError::from(
-                Error::new(
-                    ErrorCode::RequiredGpuOperationUnsupported,
-                    "algeon_datafusion.cugraph_sql.preflight",
-                    "required cuGraph GPU operation is unsupported by the native engine",
-                )
-                .with_fact("native_code", error.code())
-                .with_fact("native_operation", error.operation())
-                .with_source(error),
-            );
+            return Error::new(
+                ErrorCode::RequiredGpuOperationUnsupported,
+                "algeon_datafusion.cugraph_sql.preflight",
+                "required cuGraph GPU operation is unsupported by the native engine",
+            )
+            .with_fact("native_code", error.code())
+            .with_fact("native_operation", error.operation())
+            .with_source(error);
         }
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.preflight",
             "native cuGraph query-plan preflight failed",
             error,
-        ))
+        )
     })
 }
 
@@ -115,8 +112,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
             "algeon_datafusion.cugraph_sql.execute_gpu",
             "native cuGraph SQL query did not produce GPU-resident output",
         )
-        .with_fact("result_sink", "host_arrow")
-        .into());
+        .with_fact("result_sink", "host_arrow"));
     };
     Ok(handle)
 }
@@ -143,11 +139,11 @@ pub(super) fn cugraph_query_plan(
     predicate_frames: Vec<CugraphGpuFrame>,
 ) -> Result<CugraphQueryPlan> {
     let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&definition.edge_schema)).map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.gpu_input",
             "failed to bind cuGraph edge source as a GPU-resident native input",
             error,
-        ))
+        )
     })?;
     let mut inputs = GpuResidentInputMap::new();
     inputs.insert(CUGRAPH_EDGE_INPUT_NAME.to_string(), handle);
@@ -157,11 +153,11 @@ pub(super) fn cugraph_query_plan(
     // admitted here, once; a refusal is a typed error, never a CPU rerun.
     let admitted = admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
         .map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.execute_gpu",
             "native cuGraph SQL GPU-resident query execution failed",
             error,
-        ))
+        )
     })?;
     Ok(CugraphQueryPlan { admitted, inputs })
 }
@@ -185,8 +181,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
             "cuGraph predicate schemas and row-cardinality evidence must have matching lengths",
         )
         .with_fact("predicate_schema_count", predicate_schemas.len())
-        .with_fact("predicate_row_upper_bound_count", predicate_row_upper_bounds.len())
-        .into());
+        .with_fact("predicate_row_upper_bound_count", predicate_row_upper_bounds.len()));
     }
     let mut builder = QueryPlanBuilder::new();
     let edge_source = GpuResidentSource::new(CUGRAPH_EDGE_INPUT_NAME, Arc::clone(&edge_schema));
@@ -231,7 +226,13 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     };
     let bfs_path_output_rows =
         bfs_path_output_row_bound(&execution_spec, edge_vertex_upper_bound, edge_row_upper_bound)?;
-    let native_vertex_type = graph_edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN)?.data_type();
+    let native_vertex_type = graph_edge_schema
+        .field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN)
+        .map_err(|error| {
+            plan(format!("cuGraph graph input is missing canonical source column '{CUGRAPH_EDGE_SOURCE_COLUMN}'"))
+                .with_source(error)
+        })?
+        .data_type();
     let graph_spec = native_graph_spec(
         &execution_spec,
         edge_normalize_inserted,
@@ -241,11 +242,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     );
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
     let mut root = builder.try_add_graph_algorithm(graph_input, graph_spec).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "algeon_datafusion.cugraph_sql.plan",
-            "failed to build native cuGraph query plan",
-            error,
-        ))
+        Error::from_native("algeon_datafusion.cugraph_sql.plan", "failed to build native cuGraph query plan", error)
     })?;
     if let Some(outputs) = bfs_normalized_output_projection(&execution_spec, &graph_edge_schema)? {
         root = builder.add_projection(root, outputs);
@@ -312,11 +309,11 @@ pub(super) fn bind_predicate_gpu_inputs(
     for (index, CugraphGpuFrame { schema, frame }) in predicate_frames.into_iter().enumerate() {
         let input_name = cugraph_side_input_name(index);
         let handle = GpuResultHandle::new(context, frame, Arc::clone(&schema)).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.cugraph_sql.gpu_input",
                 "failed to bind cuGraph side-input source as a GPU-resident native input",
                 error,
-            ))
+            )
         })?;
         inputs.insert(input_name.clone(), handle);
     }
@@ -418,7 +415,12 @@ pub(super) fn bfs_normalized_output_projection(
     }
 
     let unreachable_sentinel = bfs_unreachable_distance_sentinel(spec, edge_schema)?;
-    let predecessor_type = spec.output_schema.field_with_name("predecessor")?.data_type().clone();
+    let predecessor_type = spec
+        .output_schema
+        .field_with_name("predecessor")
+        .map_err(|error| plan("cuGraph BFS output schema is missing the 'predecessor' column").with_source(error))?
+        .data_type()
+        .clone();
     let predecessor_absent = match &predecessor_type {
         DataType::Int32 => LiteralValue::Int32(-1),
         DataType::Int64 => LiteralValue::Int64(-1),

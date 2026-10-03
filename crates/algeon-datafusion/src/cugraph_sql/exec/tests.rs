@@ -180,7 +180,7 @@ impl ExecutionPlan for CountingGpuResidentProducer {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(&self.inner, &StatisticsArgs::new().with_partition(partition))
     }
 
@@ -212,7 +212,7 @@ impl GpuResidentProducer for CountingGpuResidentProducer {
         &self.input_name
     }
 
-    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         Ok(self.capability_evidence.clone())
     }
 
@@ -237,7 +237,7 @@ impl GpuResidentProducer for CountingGpuResidentProducer {
 }
 
 impl GraphExecutionPlan for CountingGpuResidentProducer {
-    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         Ok(self.capability_evidence.clone())
     }
 
@@ -274,7 +274,7 @@ impl ExecutionPlan for CountingExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 
@@ -282,7 +282,10 @@ impl ExecutionPlan for CountingExec {
         vec![&self.input]
     }
 
-    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if children.len() != 1 {
             return Err(DataFusionError::Plan(format!("CountingExec expected one child, received {}", children.len())));
         }
@@ -292,7 +295,7 @@ impl ExecutionPlan for CountingExec {
         }))
     }
 
-    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         self.execute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.input.execute(partition, task_context)
     }
@@ -1088,10 +1091,9 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
     );
     let rejection = GraphExecutionPlan::gpu_resident_output_rejection(&exec)
         .expect("mapping validation errors must be surfaced at the GPU boundary");
-    let algeon = rejection.find_algeon_error().expect("mapping validation error must remain structured");
-    assert_eq!(algeon.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(algeon.operation(), "algeon_datafusion.cugraph_sql.plan");
-    assert!(algeon.message().contains("dst"), "the missing mapping column must remain actionable");
+    assert_eq!(rejection.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(rejection.operation(), "algeon_datafusion.cugraph_sql.plan");
+    assert!(rejection.message().contains("dst"), "the missing mapping column must remain actionable");
 }
 
 #[tokio::test]
@@ -1367,10 +1369,9 @@ async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
     let error = prepared_clone
         .take_prepared_staged_inputs()
         .expect_err("the shared staged-input slot must be consumed exactly once");
-    let algeon = error.find_algeon_error().expect("consumed staged-input failure remains structured");
 
-    assert_eq!(algeon.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(algeon.fact_value("staged_input_state"), Some("already_consumed"));
+    assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(error.fact_value("staged_input_state"), Some("already_consumed"));
     drop(prepared_clone);
     drop(prepared);
     assert!(runtime.memory_pool.reserved() > 0, "only the transferred owner retains the reservation");
@@ -2342,21 +2343,19 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
 
     let error = validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
         .expect_err("standalone bounded cuGraph must not execute a native edge child without admission");
-    let algeon = error.find_algeon_error().expect("missing backend rejection remains structured");
-    assert_eq!(algeon.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(algeon.fact_value("reason"), Some("gpu_backend_required"));
-    assert_eq!(algeon.fact_value("remediation"), Some("install_algeon_gpu_backend"));
-    assert_eq!(algeon.fact_value("source_kind"), Some("edge"));
+    assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(error.fact_value("reason"), Some("gpu_backend_required"));
+    assert_eq!(error.fact_value("remediation"), Some("install_algeon_gpu_backend"));
+    assert_eq!(error.fact_value("source_kind"), Some("edge"));
 
     let repartitioned = Arc::new(RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1)).unwrap())
         as Arc<dyn ExecutionPlan>;
     let error = validate_standalone_bounded_cugraph_sources(&config, repartitioned.as_ref(), &[])
         .expect_err("fallback collect over native children should be rejected");
-    let algeon = error.find_algeon_error().expect("nested missing backend rejection remains structured");
-    assert_eq!(algeon.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(algeon.fact_value("reason"), Some("gpu_backend_required"));
-    assert_eq!(algeon.fact_value("remediation"), Some("install_algeon_gpu_backend"));
-    assert_eq!(algeon.fact_value("source_kind"), Some("edge"));
+    assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(error.fact_value("reason"), Some("gpu_backend_required"));
+    assert_eq!(error.fact_value("remediation"), Some("install_algeon_gpu_backend"));
+    assert_eq!(error.fact_value("source_kind"), Some("edge"));
 }
 
 #[test]

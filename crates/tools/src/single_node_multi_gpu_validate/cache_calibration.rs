@@ -1215,7 +1215,7 @@ mod tests {
             outcome: "failed".to_string(),
             failure: Some(AttemptFailureClass {
                 origin: "Native".to_string(),
-                code: "CudfResourceExhausted".to_string(),
+                code: "QueryMemoryLimitExceeded".to_string(),
                 status: "Temporary".to_string(),
                 operation: "Execution".to_string(),
             }),

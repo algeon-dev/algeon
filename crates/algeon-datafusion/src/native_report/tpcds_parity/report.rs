@@ -707,19 +707,14 @@ fn planning_outcome_diagnostics(
     if accepted {
         return (Some(CandidateOutcomeKind::Selected), None, None);
     }
-    for (outcome_index, outcome) in diagnostics.report.outcomes().iter().enumerate() {
+    for outcome in diagnostics.report.outcomes() {
         match outcome {
             CandidateOutcome::Selected { .. } => {},
-            CandidateOutcome::NotSupported { candidate, capability_reason } => {
+            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => {
                 return (
                     Some(CandidateOutcomeKind::NotSupported),
                     Some(capability_reason.code().to_string()),
-                    unsupported_category(
-                        plan,
-                        candidate,
-                        *capability_reason,
-                        diagnostics.report.expression_rejection(outcome_index),
-                    ),
+                    unsupported_category(plan, candidate, *capability_reason, detail.expression.as_ref()),
                 );
             },
             CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {

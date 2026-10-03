@@ -352,7 +352,7 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
                 CandidateOutcome::Selected { candidate } => {
                     eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
                 },
-                CandidateOutcome::NotSupported { candidate, capability_reason } => {
+                CandidateOutcome::NotSupported { candidate, capability_reason, .. } => {
                     eprintln!(
                         "[planning] {} NOT_SUPPORTED shape={} reason={}",
                         request.spec.label,

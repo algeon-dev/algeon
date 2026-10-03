@@ -466,7 +466,7 @@ pub(super) fn residual_validation_error_with_schema(
 /// A join plan admission rejects is the admission's compiled-pipeline error,
 /// the same one every rejected plan reports, raised before any source read.
 pub(super) fn assert_compiled_pipeline_rejection_contract(error: &QueryError) {
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPipelineContract);
     assert_eq!(error.operation(), "query_engine.bounded.compiled_pipeline_required");
     assert!(error.fact_value("compiled_pipeline_rejection_reason").is_some());
     assert_eq!(error.fact_value("caller_visible_sink"), Some("host_arrow"));

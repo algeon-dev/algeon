@@ -99,7 +99,7 @@ impl ActivatedDeferredResidentPhase {
         for activated in &self.inputs {
             let input = inputs.get(&activated.input_name).ok_or_else(|| {
                 QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::InternalInvariantViolation,
                     "query_engine.runtime.context",
                     "the activated deferred resident input is missing",
                 )
@@ -121,7 +121,7 @@ impl ActivatedDeferredResidentInput {
     ) -> Result<()> {
         let row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
             QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "the materialized graph input row count does not fit the admission contract",
             )
@@ -137,7 +137,7 @@ impl ActivatedDeferredResidentInput {
             || (physical_bytes > 0 && !retained_by_grant)
         {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "the GPU-resident graph input differs from the frame that activated its admitted phase",
             )

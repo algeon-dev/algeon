@@ -143,7 +143,12 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
                         match relation_role(argument.name) {
                             Ok(role) => role,
                             Err(error) => {
-                                return invalid_graph_call(algorithm, request, error.to_string(), relation_details);
+                                return invalid_graph_call(
+                                    algorithm,
+                                    request,
+                                    DataFusionError::from(error).to_string(),
+                                    relation_details,
+                                );
                             },
                         }
                     });

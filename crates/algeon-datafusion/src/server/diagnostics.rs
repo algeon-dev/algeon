@@ -7,48 +7,13 @@
 //!   selection counts plus the first unsupported-capability class.
 //! - [`log_native_planning_report_for_tables`] also emits a warn line for
 //!   data-layout-fixable capability misses, with the referenced table list and reason.
-//! - [`FlightSqlNativeNotSupportedClass`] buckets common [`CapabilityReason`] codes so log
-//!   searches do not need to enumerate every variant.
+//! - [`FlightSqlNativeNotSupportedClass`], read from [`CapabilityReason::facts`], buckets
+//!   common capability-miss codes so log searches do not need to enumerate every variant.
 
 use crate::server::{
-    capability::CapabilityReason,
+    capability::{CapabilityReason, FlightSqlNativeNotSupportedClass},
     report::{CandidateOutcome, DataLayoutFixableNotSupported, PlanningReport},
 };
-
-/// Stable bucket for common Flight SQL native capability-miss codes.
-///
-/// The named variant covers a common Flight SQL capability miss; all other
-/// [`CapabilityReason`] codes collapse into [`FlightSqlNativeNotSupportedClass::Other`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlightSqlNativeNotSupportedClass {
-    /// DataFusion left a `SortPreservingMergeExec` edge case that native
-    /// lowering could not safely reproduce.
-    NativeSortPreservingMerge,
-    /// Any capability-miss code outside the common Flight SQL classes.
-    Other,
-}
-
-impl FlightSqlNativeNotSupportedClass {
-    /// Stable snake-case label used by log lines and tests.
-    ///
-    /// The named label intentionally matches the corresponding
-    /// [`CapabilityReason::code`] value so a single keyword search across server
-    /// logs covers both the capability-miss code and the bucket label. The
-    /// residual bucket returns `"other"`.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NativeSortPreservingMerge => "native_sort_preserving_merge_unsupported",
-            Self::Other => "other",
-        }
-    }
-
-    pub const fn from_capability_reason(reason: CapabilityReason) -> Self {
-        match reason {
-            CapabilityReason::NativeSortPreservingMergeUnsupported => Self::NativeSortPreservingMerge,
-            _ => Self::Other,
-        }
-    }
-}
 
 /// Emit the native planning diagnostics for a Flight SQL query, including a
 /// WARN line when the first relevant capability miss is fixable by changing table
@@ -62,7 +27,7 @@ pub fn log_native_planning_report_for_tables(query_id: &str, report: Option<&Pla
     }
 
     let first_not_supported = first_not_supported_reason(report);
-    let not_supported_class = first_not_supported.map(FlightSqlNativeNotSupportedClass::from_capability_reason);
+    let not_supported_class = first_not_supported.map(|reason| reason.facts().flight_class);
     tracing::debug!(
         query_id,
         selected_count = report.selected_count(),
@@ -129,33 +94,6 @@ mod tests {
             "native_sort_preserving_merge_unsupported"
         );
         assert_eq!(FlightSqlNativeNotSupportedClass::Other.as_str(), "other");
-    }
-
-    #[test]
-    fn classifies_named_buckets_from_capability_reason() {
-        assert_eq!(
-            FlightSqlNativeNotSupportedClass::from_capability_reason(
-                CapabilityReason::NativeSortPreservingMergeUnsupported
-            ),
-            FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge,
-        );
-    }
-
-    #[test]
-    fn other_bucket_covers_unrelated_capability_misses() {
-        for reason in [
-            CapabilityReason::UnsupportedOperator,
-            CapabilityReason::UnsupportedExpression,
-            CapabilityReason::UnsupportedType,
-            CapabilityReason::NativeBoundedJoinUnsupported,
-            CapabilityReason::NativeSourceSchemaMapping,
-        ] {
-            assert_eq!(
-                FlightSqlNativeNotSupportedClass::from_capability_reason(reason),
-                FlightSqlNativeNotSupportedClass::Other,
-                "{reason:?} should fall through to the residual class",
-            );
-        }
     }
 
     #[test]

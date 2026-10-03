@@ -1,4 +1,4 @@
-use datafusion::{common::Result, logical_expr::LogicalPlan};
+use datafusion::logical_expr::LogicalPlan;
 use query_engine::plan::MlForestModelFormat;
 use serde_json::{Map, Value};
 
@@ -7,7 +7,7 @@ use super::{
     error::{invalid_call, invalid_option},
     model_store::{ForestModelReference, ForestOutputRequest},
 };
-use crate::gpu_functions::dense_relation::infer_dense_relation_binding;
+use crate::{error::Result, gpu_functions::dense_relation::infer_dense_relation_binding};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CumlRelationBinding {

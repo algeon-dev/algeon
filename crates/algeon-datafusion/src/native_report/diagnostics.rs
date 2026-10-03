@@ -134,46 +134,25 @@ pub(super) fn unsupported_category(
     if let Some(rejection) = expression_rejection {
         return Some(expression_rejection_category(rejection));
     }
-    match reason {
-        CapabilityReason::UnsupportedExpression => first_aggregate_category(plan)
-            .filter(|category| {
-                matches!(
-                    category.as_str(),
-                    "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by" | "aggregate_argument_count"
-                )
-            })
-            .or_else(|| Some("expression".to_string())),
+    // Categories refined from plan content stay in this projection; every
+    // other reason reports the table's default category.
+    let refined = match reason {
+        CapabilityReason::UnsupportedExpression => first_aggregate_category(plan).filter(|category| {
+            matches!(
+                category.as_str(),
+                "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by" | "aggregate_argument_count"
+            )
+        }),
         CapabilityReason::UnsupportedOperator => first_aggregate_category(plan)
             .or_else(|| first_window_category(plan))
             .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
-            .or_else(|| first_global_aggregate_category(plan))
-            .or_else(|| Some("operator_shape".to_string())),
-        CapabilityReason::UnsupportedType => {
-            first_literal_source_type_category(plan).or_else(|| Some("type".to_string()))
-        },
-        CapabilityReason::NativeDistributedAggregateUnsupported => {
-            first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
-        },
-        CapabilityReason::NativeExactStatisticalInputPartitioned => Some("aggregate_partitioned_input".to_string()),
-        CapabilityReason::NativeSourceNonLocalObjectStore
-        | CapabilityReason::NativeSourceExprAdapter
-        | CapabilityReason::NativeSourceParquetFileReaderFactory
-        | CapabilityReason::NativeSourcePreserveOrder
-        | CapabilityReason::NativeSourceOutputOrdering
-        | CapabilityReason::NativeSourcePushedDownParquetPredicate
-        | CapabilityReason::NativeSourceEmpty
-        | CapabilityReason::NativeSourcePartitionValues
-        | CapabilityReason::NativeSourceByteRange
-        | CapabilityReason::NativeSourceRowSelection
-        | CapabilityReason::NativeSourceSchemaMapping => Some("source".to_string()),
-        CapabilityReason::NativeSortPreservingMergeUnsupported
-        | CapabilityReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
-        CapabilityReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),
-        CapabilityReason::NativeBoundedJoinUnsupported => {
-            first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
-        },
-        CapabilityReason::NativeCompiledPipelineUnsupported => Some("compiled_pipeline_contract".to_string()),
-    }
+            .or_else(|| first_global_aggregate_category(plan)),
+        CapabilityReason::UnsupportedType => first_literal_source_type_category(plan),
+        CapabilityReason::NativeDistributedAggregateUnsupported => first_aggregate_category(plan),
+        CapabilityReason::NativeBoundedJoinUnsupported => first_join_operator_category(plan),
+        _ => None,
+    };
+    Some(refined.unwrap_or_else(|| reason.facts().tsv_category.to_string()))
 }
 
 fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape: &str) -> Option<String> {

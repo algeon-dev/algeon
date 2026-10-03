@@ -4,7 +4,7 @@ use arrow::datatypes::{DataType, FieldRef, SchemaRef};
 #[cfg(feature = "server")]
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::{
-    common::{DFSchema, DFSchemaRef, Result},
+    common::{DFSchema, DFSchemaRef, DataFusionError, Result as DataFusionResult},
     logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 #[cfg(feature = "server")]
@@ -16,11 +16,15 @@ use query_engine::plan::{
 
 use super::{
     CumlOperation, CumlValidatedOptions, DenseVectorBinding,
-    error::{field_not_found, invalid_call, invalid_call_error, nullable_feature_field, unsupported_type},
+    error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
-use crate::gpu_functions::{
-    dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions,
+use crate::{
+    error::Result,
+    gpu_functions::{
+        dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
+        input_orderings_with_expressions,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -40,7 +44,7 @@ impl CumlLogicalNode {
     /// Builds a node for an operation without a bound model.
     /// `cuml_forest_predict` needs one and is rejected with `model_unbound`;
     /// use [`Self::try_new_with_model`] for it.
-    pub fn try_new(operation: CumlOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> Result<Self> {
+    pub fn try_new(operation: CumlOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> DataFusionResult<Self> {
         Self::try_new_with_model(operation, inputs, options_json, None)
     }
 
@@ -51,7 +55,19 @@ impl CumlLogicalNode {
         inputs: Vec<LogicalPlan>,
         options_json: &str,
         model: Option<Arc<MlForestModelSnapshot>>,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
+        let (options, output) = Self::validate_call(operation, &inputs, options_json, model.as_deref())?;
+        let schema = Arc::new(DFSchema::try_from(output.as_ref().clone())?);
+        let input_orderings = vec![Vec::new(); inputs.len()];
+        Ok(Self { operation, inputs, input_orderings, options, model, schema })
+    }
+
+    fn validate_call(
+        operation: CumlOperation,
+        inputs: &[LogicalPlan],
+        options_json: &str,
+        model: Option<&MlForestModelSnapshot>,
+    ) -> Result<(CumlValidatedOptions, SchemaRef)> {
         if inputs.len() != operation.descriptor().relation_roles.len() {
             return Err(invalid_call(
                 operation,
@@ -65,7 +81,7 @@ impl CumlLogicalNode {
             ));
         }
         let options = validate_options(operation, options_json)?;
-        match (operation, &model) {
+        match (operation, model) {
             (CumlOperation::ForestPredict, None) => {
                 return Err(invalid_call(
                     operation,
@@ -241,17 +257,16 @@ impl CumlLogicalNode {
                 format!("cuML training dimension {training} differs from predict dimension {predict}"),
             ));
         }
-        if let (Some(model), Some(Some(dimension))) = (&model, dimensions.first())
+        if let (Some(model), Some(Some(dimension))) = (model, dimensions.first())
             && *dimension != model.num_features()
         {
-            return Err(invalid_call_error(
+            return Err(invalid_call(
                 operation,
                 "forest_feature_count_mismatch",
                 format!("input has {dimension} features; the model expects {}", model.num_features()),
             )
             .with_log_safe_fact("expected", model.num_features())
-            .with_log_safe_fact("actual", dimension)
-            .into());
+            .with_log_safe_fact("actual", dimension));
         }
         let id_type = ids.last().expect("cuML requires a relation").clone();
         let output = match operation {
@@ -267,12 +282,10 @@ impl CumlLogicalNode {
             },
             CumlOperation::RandomForestRegressor => ml_predictions_output_schema(id_type, DataType::Float32),
             CumlOperation::ForestPredict => {
-                ml_forest_output_schema(id_type, model.as_ref().expect("forest model checked above").output())
+                ml_forest_output_schema(id_type, model.expect("forest model checked above").output())
             },
         };
-        let schema = Arc::new(DFSchema::try_from(output.as_ref().clone())?);
-        let input_orderings = vec![Vec::new(); inputs.len()];
-        Ok(Self { operation, inputs, input_orderings, options, model, schema })
+        Ok((options, output))
     }
 
     /// Declares each relation argument's order, which fixes its `row_ordinal`
@@ -408,18 +421,20 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
             &self.input_orderings,
         )
     }
-    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
+    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> DataFusionResult<Self> {
         let Some(input_orderings) = input_orderings_with_expressions(&self.input_orderings, exprs) else {
             return Err(invalid_call(
                 self.operation,
                 "unexpected_logical_expressions",
                 "cuML logical node expressions must be its input sort keys",
-            ));
+            )
+            .into());
         };
         let options_json =
             options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
         Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())?
             .with_input_orderings(input_orderings)
+            .map_err(DataFusionError::from)
     }
     fn supports_limit_pushdown(&self) -> bool {
         false

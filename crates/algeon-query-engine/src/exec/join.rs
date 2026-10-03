@@ -28,7 +28,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
             | JoinType::LeftMark
     ) {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.execute",
             "native join execution currently supports inner, left, full, left semi, left anti, left mark, and cross joins",
         )
@@ -43,7 +43,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     }
     if node.spec.join_type == JoinType::Left && node.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.execute",
             "native reusable hash left join execution requires the right side to be the build side",
         )
@@ -52,7 +52,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     }
     if node.spec.join_type == JoinType::Cross && node.spec.residual_predicate.is_some() {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.execute",
             "native cross join execution does not support residual predicates; use conditional join IR instead",
         )

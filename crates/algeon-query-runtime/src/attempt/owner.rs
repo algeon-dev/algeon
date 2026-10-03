@@ -1593,7 +1593,7 @@ mod tests {
             begin
                 .owner
                 .commit_terminal(RuntimeTerminalOutcome::Failed {
-                    error_code: AttemptFailureCode::Internal,
+                    error_code: AttemptFailureCode::Query(QueryErrorCode::Internal),
                     error_status: AttemptFailureStatus::Permanent,
                 })
                 .unwrap();
@@ -1704,7 +1704,7 @@ mod tests {
             &begin,
             &publisher,
             RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::CudfTemporaryFailure,
+                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             },
         );
@@ -1715,14 +1715,14 @@ mod tests {
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed { ref error_code, .. }
-                if *error_code == AttemptFailureCode::CudfTemporaryFailure
+                if *error_code == AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure)
         ));
         let primary = report.primary_failure.as_ref().expect("primary failure summary");
-        assert_eq!(primary.code(), AttemptFailureCode::CudfTemporaryFailure);
+        assert_eq!(primary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
         assert!(primary.text().is_none(), "native error text must not enter the stable report");
         let first_cleanup = report.first_cleanup_failure.as_ref().expect("first cleanup failure summary");
         assert_eq!(first_cleanup.phase(), CleanupFailurePhase::QueryServiceCleanup);
-        assert_eq!(first_cleanup.failure().code(), AttemptFailureCode::Internal);
+        assert_eq!(first_cleanup.failure().code(), AttemptFailureCode::Query(QueryErrorCode::Internal));
         assert!(!first_cleanup.complete(), "the first retained summary is incomplete after a later cleanup failure");
         // The bounded timeline carries the same facts when capture allows.
         let snapshot = begin.owner.sealed_snapshot_for_test().expect("sealed");
@@ -1747,7 +1747,7 @@ mod tests {
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         let summary = report.primary_failure.as_ref().expect("borrowed native summary");
-        assert_eq!(summary.code(), AttemptFailureCode::CudfTemporaryFailure);
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
         assert!(summary.text().is_none(), "the returned error, not the report, retains native message text");
     }
@@ -1791,12 +1791,12 @@ mod tests {
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::CudfTemporaryFailure,
+                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             }
         ));
         let summary = report.primary_failure.as_ref().expect("captured native primary summary");
-        assert_eq!(summary.code(), AttemptFailureCode::CudfTemporaryFailure);
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
         assert_eq!(summary.operation(), AttemptFailureOperation::Execution);
         assert_eq!(summary.facts().len(), 1);
@@ -1888,7 +1888,7 @@ mod tests {
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
         let summary = report.primary_failure.as_ref().expect("deadline summary");
-        assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
+        assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::Cancelled));
         assert_eq!(summary.origin(), AttemptFailureOrigin::Native);
         assert_eq!(summary.facts().len(), 1);
         assert_eq!(summary.facts()[0].value(), AttemptFailureFactValue::DeadlineExpired);
@@ -1907,7 +1907,7 @@ mod tests {
             let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
             assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
             let summary = report.primary_failure.as_ref().expect("control cancellation summary");
-            assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
+            assert_eq!(summary.code(), AttemptFailureCode::Query(QueryErrorCode::Cancelled));
             assert_eq!(summary.origin(), AttemptFailureOrigin::AttemptControl);
             assert!(summary.facts().is_empty());
         }
@@ -1916,7 +1916,7 @@ mod tests {
     #[test]
     fn control_terminal_paths_publish_text_free_primary_summaries() {
         for (outcome, code) in [
-            (RuntimeTerminalOutcome::Cancelled, AttemptFailureCode::Cancelled),
+            (RuntimeTerminalOutcome::Cancelled, AttemptFailureCode::Query(QueryErrorCode::Cancelled)),
             (RuntimeTerminalOutcome::Dropped, AttemptFailureCode::Dropped),
             (RuntimeTerminalOutcome::Panicked, AttemptFailureCode::Panicked),
         ] {
@@ -1983,7 +1983,7 @@ mod terminalize_race_tests {
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed { ref error_code, .. }
-                if *error_code == AttemptFailureCode::ServiceOverloaded
+                if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
         ));
         assert_eq!(report.disposition, AttemptDisposition::Native);
         assert_eq!(report.timestamps.admission_requested_ns, None);

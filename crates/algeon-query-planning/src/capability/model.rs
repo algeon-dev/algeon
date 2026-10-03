@@ -5,7 +5,11 @@
 //! add new labels instead of reusing old whole-plan family names.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{AggregateFunction, GraphAlgorithm, JoinSide, JoinType, NodeId, aggregate::AggregateStateContract};
+use super::{
+    AggregateFunction, GraphAlgorithm, JoinSide, JoinType, NodeId,
+    aggregate::AggregateStateContract,
+    rejection::{Reason, Rejection, RejectionOwner},
+};
 use crate::{
     plan::{
         EdgeDedupStrategy, EdgeWeightCombiner, MlAlgorithm, MlRelationRole, VectorAlgorithm, VectorAlgorithmNode,
@@ -43,22 +47,22 @@ pub enum CapabilityDecision {
     Satisfied,
     /// The capability failed at this scope; facts should name the local cause.
     Rejected {
-        /// Stable rejection code for reports and tests.
-        reason: &'static str,
+        /// Typed rejection reason; its label is the report code.
+        reason: Reason,
         /// Stable fact-key map with values formatted for diagnostics.
         facts: BTreeMap<&'static str, String>,
     },
 }
 
 impl CapabilityDecision {
-    pub(super) fn rejected(reason: &'static str, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
+    pub(super) fn rejected(reason: Reason, facts: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self::Rejected { reason, facts: facts.into_iter().collect() }
     }
 
-    /// Returns the stable rejection code for rejected decisions.
-    pub(crate) const fn rejection_reason(&self) -> Option<&'static str> {
+    /// Returns the rejection reason for rejected decisions.
+    pub(crate) const fn rejection_reason(&self) -> Option<Reason> {
         match self {
-            Self::Rejected { reason, .. } => Some(reason),
+            Self::Rejected { reason, .. } => Some(*reason),
             Self::Satisfied => None,
         }
     }
@@ -489,23 +493,6 @@ pub enum ResidentResource {
     },
 }
 
-/// Report-facing projection of the first capability rejection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityRejectionProjection {
-    /// Local owner whose rejection is projected into diagnostics.
-    pub owner: CapabilityRejectionOwner,
-    /// Stable rejection category for report/fact projections.
-    pub category: CapabilityRejectionCategory,
-    /// Contract scope used by capability-envelope reports.
-    pub(crate) contract_scope: CapabilityScope,
-    /// Stable diagnostic boundary label.
-    pub boundary: &'static str,
-    /// Stable rejection code.
-    pub reason: &'static str,
-    /// Stable fact-key map copied from the rejected capability decision.
-    pub facts: BTreeMap<&'static str, String>,
-}
-
 /// Stable category for rejected capability or envelope admission projections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityRejectionCategory {
@@ -540,24 +527,6 @@ impl CapabilityRejectionCategory {
     }
 }
 
-/// Local capability owner projected into capability-envelope contract diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CapabilityRejectionOwner {
-    /// Rejection owned by a node-local capability.
-    Node(NodeId),
-    /// Rejection owned by a producer-consumer edge.
-    Edge {
-        /// Producer node for the rejected edge.
-        producer: NodeId,
-        /// Consumer endpoint for the rejected edge.
-        consumer: EdgeConsumer,
-    },
-    /// Rejection owned by a subgraph invariant.
-    Invariant(InvariantId),
-    /// Rejection owned by a compiled-envelope admission gate.
-    Admission(&'static str),
-}
-
 /// Capability analysis for one lowered native query plan.
 ///
 /// The node, edge, and invariant vectors are the evidence surface that the
@@ -590,19 +559,17 @@ impl CapabilityAnalysis {
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
-    /// Projects the first local rejection into report diagnostics.
-    pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
+    /// The first local rejection of a sink-reachable node, edge, or invariant.
+    pub fn first_rejection(&self) -> Option<Rejection> {
         self.nodes
             .iter()
             .filter(|node| self.reachable_node_ids.contains(&node.node_id))
             .find_map(|node| {
-                Some(capability_rejection_projection(
-                    CapabilityRejectionOwner::Node(node.node_id),
-                    CapabilityScope::Node,
-                    "node_capability",
-                    node.executable.rejection_reason()?,
-                    node.executable.rejection_facts()?,
-                ))
+                Some(Rejection {
+                    owner: RejectionOwner::Node(node.node_id),
+                    reason: node.executable.rejection_reason()?,
+                    facts: node.executable.rejection_facts()?.clone(),
+                })
             })
             .or_else(|| {
                 self.edges
@@ -615,13 +582,11 @@ impl CapabilityAnalysis {
                             }
                     })
                     .find_map(|edge| {
-                        Some(capability_rejection_projection(
-                            CapabilityRejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
-                            CapabilityScope::Edge,
-                            "edge_capability",
-                            edge.decision.rejection_reason()?,
-                            edge.decision.rejection_facts()?,
-                        ))
+                        Some(Rejection {
+                            owner: RejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
+                            reason: edge.decision.rejection_reason()?,
+                            facts: edge.decision.rejection_facts()?.clone(),
+                        })
                     })
             })
             .or_else(|| {
@@ -629,49 +594,12 @@ impl CapabilityAnalysis {
                     .iter()
                     .filter(|invariant| invariant.nodes.iter().all(|node| self.reachable_node_ids.contains(node)))
                     .find_map(|invariant| {
-                        Some(capability_rejection_projection(
-                            CapabilityRejectionOwner::Invariant(invariant.invariant_id),
-                            CapabilityScope::Subgraph,
-                            "subgraph_capability",
-                            invariant.decision.rejection_reason()?,
-                            invariant.decision.rejection_facts()?,
-                        ))
+                        Some(Rejection {
+                            owner: RejectionOwner::Invariant(invariant.invariant_id),
+                            reason: invariant.decision.rejection_reason()?,
+                            facts: invariant.decision.rejection_facts()?.clone(),
+                        })
                     })
             })
-    }
-}
-
-fn capability_rejection_projection(
-    owner: CapabilityRejectionOwner,
-    contract_scope: CapabilityScope,
-    boundary: &'static str,
-    reason: &'static str,
-    facts: &BTreeMap<&'static str, String>,
-) -> CapabilityRejectionProjection {
-    let category = capability_rejection_category(&owner, reason, facts);
-    CapabilityRejectionProjection { owner, category, contract_scope, boundary, reason, facts: facts.clone() }
-}
-
-fn capability_rejection_category(
-    owner: &CapabilityRejectionOwner,
-    reason: &str,
-    facts: &BTreeMap<&'static str, String>,
-) -> CapabilityRejectionCategory {
-    if facts.contains_key("expression_family") {
-        return CapabilityRejectionCategory::UnsupportedExpressionFamily;
-    }
-    if facts.contains_key("data_type")
-        || facts.contains_key("dtype")
-        || reason.contains("data_type")
-        || reason.contains("dtype")
-    {
-        return CapabilityRejectionCategory::UnsupportedArrowDtype;
-    }
-    match owner {
-        CapabilityRejectionOwner::Node(_) => CapabilityRejectionCategory::UnsupportedNodeOperator,
-        CapabilityRejectionOwner::Edge { .. } => CapabilityRejectionCategory::MissingEdgeContract,
-        CapabilityRejectionOwner::Invariant(_) | CapabilityRejectionOwner::Admission(_) => {
-            CapabilityRejectionCategory::MissingSubgraphInvariant
-        },
     }
 }

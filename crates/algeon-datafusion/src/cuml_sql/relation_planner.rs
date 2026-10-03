@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::{
-    common::{DFSchema, DataFusionError, Result},
+    common::{DFSchema, DataFusionError, Result as DataFusionResult},
     logical_expr::{
         Extension, LogicalPlan,
         planner::{PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning},
@@ -16,11 +16,14 @@ use super::{
     model_store::{CumlModelStore, bind_operation_model},
     options::{options_from_named_values, validate_options},
 };
-use crate::gpu_functions::{
-    bind_named_arguments,
-    dense_relation::dense_relation_argument_definitions,
-    resolve_input_ordering,
-    scalar_arguments::{scalar_json, scalar_literal},
+use crate::{
+    error::Error,
+    gpu_functions::{
+        bind_named_arguments,
+        dense_relation::dense_relation_argument_definitions,
+        resolve_input_ordering,
+        scalar_arguments::{scalar_json, scalar_literal},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -43,7 +46,7 @@ impl RelationPlanner for CumlRelationPlanner {
         &self,
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
-    ) -> Result<RelationPlanning> {
+    ) -> DataFusionResult<RelationPlanning> {
         let Some(operation) = recognized_operation(&relation, context) else {
             return Ok(RelationPlanning::Original(Box::new(relation)));
         };
@@ -74,7 +77,8 @@ impl RelationPlanner for CumlRelationPlanner {
                 operation,
                 "unsupported_table_function_modifier",
                 "cuML relation functions accept named arguments and a result alias",
-            ));
+            )
+            .into());
         }
         let definitions = dense_relation_argument_definitions(
             operation.descriptor().relation_roles.iter().map(|role| role.as_str()),
@@ -134,12 +138,12 @@ fn value_argument(
     name: &'static str,
     expression: SqlExpr,
     context: &mut dyn RelationPlannerContext,
-) -> Result<Value> {
+) -> DataFusionResult<Value> {
     let expression = context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?;
     let invalid = || invalid_value(operation, name);
-    scalar_literal(&invalid, expression).and_then(|value| scalar_json(&invalid, value))
+    scalar_literal(&invalid, expression).and_then(|value| scalar_json(&invalid, value)).map_err(DataFusionError::from)
 }
 
-fn invalid_value(operation: CumlOperation, name: &'static str) -> DataFusionError {
+fn invalid_value(operation: CumlOperation, name: &'static str) -> Error {
     invalid_call(operation, "value_argument_not_literal", format!("cuML argument '{name}' must be a scalar literal"))
 }

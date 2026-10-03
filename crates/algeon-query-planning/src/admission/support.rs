@@ -2,9 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, CapabilityScope, CompiledJoinExecutionStrategy, EdgeConsumer,
-        KeyedHashJoinStrategyDecision, SubgraphInvariantKind,
+        CapabilityAnalysis, CapabilityDecision, CompiledJoinExecutionStrategy, EdgeConsumer,
+        KeyedHashJoinStrategyDecision, Reason, Rejection, RejectionOwner, SubgraphInvariantKind,
     },
     error::Result,
     pipeline::{
@@ -18,7 +17,7 @@ use crate::{
 pub enum CompiledBoundedPipelineSupport {
     /// A compiled-execution contract rejects the graph. The projection names
     /// the owner, the contract that failed, and its facts.
-    Unsupported(CapabilityRejectionProjection),
+    Unsupported(Rejection),
     /// The graph is inside the compiled executor envelope.
     Supported,
 }
@@ -28,28 +27,28 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     match join_task_groups(pipeline) {
         JoinTaskGroups::Complete(groups) if groups.is_empty() && !pipeline_tasks_within_compiled_contract(pipeline) => {
             return Ok(admission_rejection(
-                "compiled_pipeline_requires_join_task_group",
+                Reason::CompiledPipelineRequiresJoinTaskGroup,
                 [("pipeline_task_count", pipeline.tasks().len().to_string())],
             ));
         },
         JoinTaskGroups::Complete(_) => {},
         JoinTaskGroups::Incomplete { plan_node } => {
             return Ok(admission_rejection(
-                "compiled_pipeline_join_task_group_incomplete",
+                Reason::CompiledPipelineJoinTaskGroupIncomplete,
                 [("plan_node_id", plan_node.map_or_else(|| "none".to_string(), |node| node.to_string()))],
             ));
         },
     }
     if let Some((producer, kind)) = unsupported_shared_resident_producer(pipeline) {
         return Ok(admission_rejection(
-            "compiled_pipeline_shared_producer_task_kind_unsupported",
+            Reason::CompiledPipelineSharedProducerTaskKindUnsupported,
             [("producer_task_id", producer.to_string()), ("producer_task_kind", kind.as_str().to_string())],
         ));
     }
     let sink_path = sink_data_path(pipeline);
     if let Some(task) = stage_task_outside_sink_path(pipeline, &sink_path) {
         return Ok(admission_rejection(
-            "compiled_pipeline_stage_task_position_unsupported",
+            Reason::CompiledPipelineStageTaskPositionUnsupported,
             [("task_id", task.id().to_string()), ("task_kind", task.kind().as_str().to_string())],
         ));
     }
@@ -84,7 +83,7 @@ pub fn compiled_bounded_query_plan_support(
         JoinTaskGroups::Complete(groups) => groups,
         JoinTaskGroups::Incomplete { plan_node } => {
             return Ok(admission_rejection(
-                "compiled_pipeline_join_task_group_incomplete",
+                Reason::CompiledPipelineJoinTaskGroupIncomplete,
                 [("plan_node_id", plan_node.map_or_else(|| "none".to_string(), |node| node.to_string()))],
             ));
         },
@@ -93,7 +92,7 @@ pub fn compiled_bounded_query_plan_support(
         let Some(PlanNode::Join(join)) = plan.node(join_node).map(|node| &node.kind) else {
             return Ok(node_rejection(
                 join_node,
-                "compiled_pipeline_join_task_group_plan_node_mismatch",
+                Reason::CompiledPipelineJoinTaskGroupPlanNodeMismatch,
                 [("plan_node_id", join_node.to_string())],
             ));
         };
@@ -107,7 +106,7 @@ pub fn compiled_bounded_query_plan_support(
             Ok(None) | Err(KeyedHashJoinStrategyDecision::Selected { .. }) => {
                 return Ok(node_rejection(
                     join_node,
-                    "compiled_pipeline_join_execution_strategy_unavailable",
+                    Reason::CompiledPipelineJoinExecutionStrategyUnavailable,
                     [("plan_node_id", join_node.to_string())],
                 ));
             },
@@ -173,32 +172,18 @@ pub(super) fn task_kind_within_migrated_contract(kind: PipelineTaskKind) -> bool
 }
 
 fn admission_rejection(
-    reason: &'static str,
+    reason: Reason,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CompiledBoundedPipelineSupport {
-    CompiledBoundedPipelineSupport::Unsupported(CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Admission(reason),
-        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-        contract_scope: CapabilityScope::Subgraph,
-        boundary: "compiled_pipeline",
-        reason,
-        facts: BTreeMap::from_iter(facts),
-    })
+    CompiledBoundedPipelineSupport::Unsupported(Rejection::new(RejectionOwner::Plan, reason, facts))
 }
 
 fn node_rejection(
     node_id: NodeId,
-    reason: &'static str,
+    reason: Reason,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CompiledBoundedPipelineSupport {
-    CompiledBoundedPipelineSupport::Unsupported(CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Node(node_id),
-        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-        contract_scope: CapabilityScope::Node,
-        boundary: "compiled_pipeline",
-        reason,
-        facts: BTreeMap::from_iter(facts),
-    })
+    CompiledBoundedPipelineSupport::Unsupported(Rejection::new(RejectionOwner::Node(node_id), reason, facts))
 }
 
 fn unsupported_shared_resident_producer(pipeline: &CompiledPipeline) -> Option<(PipelineTaskId, PipelineTaskKind)> {
@@ -268,14 +253,14 @@ fn shared_resident_producer_lineage_rejection(
         .collect::<BTreeSet<_>>();
     if satisfied_shared_producers.is_empty() {
         return Some(admission_rejection(
-            "compiled_pipeline_shared_producer_lineage_unproven",
+            Reason::CompiledPipelineSharedProducerLineageUnproven,
             [("producer_task_id", first.id().to_string())],
         ));
     }
     computed.iter().filter_map(|task| task.plan_node()).find(|node| !satisfied_shared_producers.contains(node)).map(
         |node| {
             admission_rejection(
-                "compiled_pipeline_shared_producer_lineage_unproven",
+                Reason::CompiledPipelineSharedProducerLineageUnproven,
                 [("producer_node_id", node.to_string())],
             )
         },
@@ -491,17 +476,14 @@ fn single_task_of_kind(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> O
 
 /// The first task no compiled task contract covers. Windows are covered by
 /// [`window_input_ordering_rejection`] instead.
-fn task_outside_contract_rejection(pipeline: &CompiledPipeline) -> Option<CapabilityRejectionProjection> {
+fn task_outside_contract_rejection(pipeline: &CompiledPipeline) -> Option<Rejection> {
     let outside = pipeline
         .tasks()
         .iter()
         .find(|task| task.kind() != PipelineTaskKind::Window && !task_kind_within_migrated_contract(task.kind()))?;
-    Some(CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Admission("compiled_task_contract"),
-        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-        contract_scope: CapabilityScope::Subgraph,
-        boundary: "compiled_pipeline",
-        reason: "compiled_task_kind_outside_contract",
+    Some(Rejection {
+        owner: RejectionOwner::Plan,
+        reason: Reason::CompiledTaskKindOutsideContract,
         facts: BTreeMap::from([
             ("pipeline_task_kind", outside.kind().as_str().to_string()),
             ("pipeline_task_count", pipeline.tasks().len().to_string()),
@@ -511,10 +493,7 @@ fn task_outside_contract_rejection(pipeline: &CompiledPipeline) -> Option<Capabi
 
 /// A window that numbers rows in input order whose input the compiler did not
 /// record as ordered by the window keys.
-fn window_input_ordering_rejection(
-    plan: &QueryPlan,
-    pipeline: &CompiledPipeline,
-) -> Option<CapabilityRejectionProjection> {
+fn window_input_ordering_rejection(plan: &QueryPlan, pipeline: &CompiledPipeline) -> Option<Rejection> {
     let task = pipeline
         .tasks()
         .iter()
@@ -529,17 +508,12 @@ fn window_input_ordering_rejection(
     // A window or producer task without a plan node has no edge to name, and
     // its ordering is still unproven.
     let owner = match (producer, task.plan_node()) {
-        (Some(producer), Some(window)) => {
-            CapabilityRejectionOwner::Edge { producer, consumer: EdgeConsumer::Node(window) }
-        },
-        _ => CapabilityRejectionOwner::Admission("window_input_ordering_not_established"),
+        (Some(producer), Some(window)) => RejectionOwner::Edge { producer, consumer: EdgeConsumer::Node(window) },
+        _ => RejectionOwner::Plan,
     };
-    Some(CapabilityRejectionProjection {
+    Some(Rejection {
         owner,
-        category: CapabilityRejectionCategory::MissingEdgeContract,
-        contract_scope: CapabilityScope::Edge,
-        boundary: "compiled_pipeline",
-        reason: "window_input_ordering_not_established",
+        reason: Reason::WindowInputOrderingNotEstablished,
         facts: BTreeMap::from([("window_task", task.id().to_string())]),
     })
 }

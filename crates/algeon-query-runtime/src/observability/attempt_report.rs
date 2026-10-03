@@ -1249,10 +1249,7 @@ impl AttemptRetryAdvice {
                 if is_queue_overload(failure) {
                     return Self::backoff();
                 }
-                if matches!(
-                    failure.code(),
-                    AttemptFailureCode::CudfResourceExhausted | AttemptFailureCode::MemoryReservationFailed
-                ) {
+                if matches!(failure.code(), AttemptFailureCode::Query(QueryErrorCode::MemoryReservationFailed)) {
                     return match exact_allocator_event_source(resource_evidence) {
                         Some(
                             AttemptAllocatorEventSource::ReservationLimit
@@ -1279,17 +1276,17 @@ fn has_reason(failure: &AttemptFailureSummary, expected: AttemptFailureFactValue
 fn is_configuration_failure(failure: &AttemptFailureSummary) -> bool {
     matches!(
         failure.code(),
-        AttemptFailureCode::UnsupportedPlanShape
-            | AttemptFailureCode::UnsupportedOperator
-            | AttemptFailureCode::UnsupportedExpression
-            | AttemptFailureCode::UnsupportedType
-            | AttemptFailureCode::CudfUnsupported
-            | AttemptFailureCode::QueryMemoryLimitExceeded
+        AttemptFailureCode::Query(QueryErrorCode::UnsupportedPipelineContract)
+            | AttemptFailureCode::Query(QueryErrorCode::UnsupportedOperator)
+            | AttemptFailureCode::Query(QueryErrorCode::UnsupportedExpression)
+            | AttemptFailureCode::Query(QueryErrorCode::UnsupportedType)
+            | AttemptFailureCode::Query(QueryErrorCode::CudfUnsupported)
+            | AttemptFailureCode::Query(QueryErrorCode::QueryMemoryLimitExceeded)
     )
 }
 
 fn is_queue_overload(failure: &AttemptFailureSummary) -> bool {
-    failure.code() == AttemptFailureCode::ServiceOverloaded
+    failure.code() == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
         && failure.facts().iter().any(|fact| {
             fact.key() == AttemptFailureFactKey::Reason
                 && matches!(
@@ -1680,7 +1677,7 @@ impl RuntimeTerminalOutcome {
 
     pub(crate) const fn from_primary_failure(summary: &AttemptFailureSummary) -> Self {
         match summary.code() {
-            AttemptFailureCode::Cancelled => Self::Cancelled,
+            AttemptFailureCode::Query(QueryErrorCode::Cancelled) => Self::Cancelled,
             _ => Self::failed(summary),
         }
     }
@@ -1696,7 +1693,9 @@ impl RuntimeTerminalOutcome {
                 text: None,
                 facts: Vec::new(),
             }),
-            Self::Cancelled => Some(AttemptFailureSummary::control(AttemptFailureCode::Cancelled)),
+            Self::Cancelled => {
+                Some(AttemptFailureSummary::control(AttemptFailureCode::Query(QueryErrorCode::Cancelled)))
+            },
             Self::Dropped => Some(AttemptFailureSummary::control(AttemptFailureCode::Dropped)),
             Self::Panicked => Some(AttemptFailureSummary::control(AttemptFailureCode::Panicked)),
         }

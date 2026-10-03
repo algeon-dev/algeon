@@ -657,8 +657,8 @@ impl CacheQuarantineEvidence {
 /// domain contract and its recovery path instead.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct DomainExhaustionEvidence {
-    /// The predicate requires exactly one failed native attempt with the
-    /// canonical `CudfResourceExhausted` failure class.
+    /// The predicate requires exactly one failed native attempt rejected by
+    /// its query-domain cap (`QueryMemoryLimitExceeded`).
     pub(super) matched_native_resource_exhaustion_reports: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) failure_sequence: Option<usize>,
@@ -689,7 +689,7 @@ impl DomainExhaustionEvidence {
                     && attempt
                         .failure
                         .as_ref()
-                        .is_some_and(|failure| failure.origin == "Native" && failure.code == "CudfResourceExhausted")
+                        .is_some_and(|failure| failure.origin == "Native" && failure.code == "QueryMemoryLimitExceeded")
             })
             .collect::<Vec<_>>();
         let failure = (failures.len() == 1).then(|| failures[0]);
@@ -853,7 +853,7 @@ impl PhysicalAllocatorPressureEvidence {
                     && attempt
                         .failure
                         .as_ref()
-                        .is_some_and(|failure| failure.origin == "Native" && failure.code == "CudfResourceExhausted")
+                        .is_some_and(|failure| failure.origin == "Native" && failure.code == "QueryMemoryLimitExceeded")
             })
             .collect::<Vec<_>>();
         let failure = (failures.len() == 1).then(|| failures[0]);

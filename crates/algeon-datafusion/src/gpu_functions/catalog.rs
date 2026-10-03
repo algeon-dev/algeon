@@ -5,10 +5,8 @@ use std::{
     sync::Arc,
 };
 
-use datafusion::common::{DataFusionError, Result};
-
 use super::{GpuFunctionDescriptor, GpuFunctionFamily};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 /// Immutable lookup entry coupling a descriptor to its owning family adapter.
 #[derive(Clone)]
@@ -141,8 +139,8 @@ fn is_identifier(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-fn catalog_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.catalog", message).into()
+fn catalog_error(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.catalog", message)
 }
 
 #[cfg(test)]

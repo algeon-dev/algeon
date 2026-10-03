@@ -131,7 +131,7 @@ fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before
         )
         .expect_err("an unavailable device capability must reject locally");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
     assert_eq!(
         error.fact_value("required_capabilities"),
@@ -168,7 +168,7 @@ fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_gran
     graph_fragment.required_capabilities = vec![CUGRAPH_GRAPH_EXECUTION_CAPABILITY];
     let error = admitted.handle.join_fragment(&graph_fragment).expect_err("the granted device has no cuGraph");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("granted_device_capability_unavailable"));
     assert_eq!(error.fact_value("required_capabilities"), Some("cugraph_graph_execution"));
     assert_eq!(service.admission_snapshot().unwrap(), before, "a refused fragment does not touch the queue");
@@ -252,7 +252,7 @@ fn restricted_capability_service_and_requirement() -> (AdmissionTestController, 
 }
 
 fn assert_explicit_requirement_required(error: &QueryError) {
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("explicit_attempt_requirement_required"));
     assert_eq!(error.fact_value("restricted_device_count"), Some("1"));
 }

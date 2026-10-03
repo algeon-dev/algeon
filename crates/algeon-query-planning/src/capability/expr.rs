@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use super::{
     AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue, NodeId, QueryError, model::CapabilityDecision,
+    rejection::Reason,
 };
 use crate::{
     error::Result,
@@ -21,7 +22,7 @@ pub(super) struct ExpressionCapabilityRejection {
 
 pub(super) fn expression_rejection_decision(
     node_id: NodeId,
-    reason: &'static str,
+    reason: Reason,
     expression: &Expr,
     rejection: ExpressionCapabilityRejection,
 ) -> CapabilityDecision {
@@ -38,7 +39,7 @@ pub(super) fn expression_rejection_decision(
 
 pub(super) fn validation_result_decision(
     result: Result<()>,
-    reason: &'static str,
+    reason: Reason,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CapabilityDecision {
     match result {
@@ -48,7 +49,7 @@ pub(super) fn validation_result_decision(
 }
 
 pub(super) fn validation_error_decision(
-    reason: &'static str,
+    reason: Reason,
     error: QueryError,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CapabilityDecision {

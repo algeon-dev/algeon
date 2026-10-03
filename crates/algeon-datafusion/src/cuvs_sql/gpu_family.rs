@@ -13,7 +13,9 @@ use super::{
 };
 use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
-    dense_relation::{resolve_schema_only_input, schema_json, validation_error, validation_request_schema},
+    dense_relation::{
+        adapter_validation_error, resolve_schema_only_input, schema_json, validation_error, validation_request_schema,
+    },
 };
 
 const CUVS_FAMILY_ID: &str = "cuvs";
@@ -113,7 +115,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             Ok(options_json) => options_json,
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error, &mut details, "cuvs_validation_failed");
+                let (error_code, message) = adapter_validation_error(&error, &mut details, "cuvs_validation_failed");
                 return GpuCallValidation {
                     valid: false,
                     error_code: Some(error_code),

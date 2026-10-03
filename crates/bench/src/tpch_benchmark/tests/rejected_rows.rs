@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-
 use query_engine::{
-    capability::{CapabilityRejectionCategory, CapabilityScope},
-    contract_report::{CapabilityDecisionId, CapabilityDecisionOwner, CapabilityDecisionRow, CapabilityDecisionStatus},
-    mode::CapabilityEnvelopeStatus,
+    capability::{Reason, Rejection, RejectionOwner},
+    contract_report::CapabilityDecisionRow,
 };
 
 use super::*;
@@ -14,17 +11,13 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = not_supported_planning_row("q02");
-    planning.capability_decision_rows = vec![CapabilityDecisionRow {
-        execution_mode: CapabilityEnvelopeStatus::Rejected,
-        scope: CapabilityScope::Subgraph,
-        decision_id: CapabilityDecisionId { scope: CapabilityScope::Subgraph, index: 0 },
-        owner: CapabilityDecisionOwner::Admission("bounded_pipeline"),
-        category: Some(CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope),
-        boundary: "bounded_pipeline",
-        reason: "unsupported_compiled_pipeline_envelope",
-        status: CapabilityDecisionStatus::Rejected,
-        facts: BTreeMap::new(),
-    }];
+    planning.capability_decision_rows = vec![
+        CapabilityDecisionRow::from_rejection(
+            0,
+            &Rejection::new(RejectionOwner::Plan, Reason::CompiledTaskKindOutsideContract, []),
+        )
+        .expect("a plan-owned rejection projects to a subgraph row"),
+    ];
     let report = NativeTpchBenchmarkReport {
         metadata,
         config,

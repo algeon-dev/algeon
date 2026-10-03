@@ -153,9 +153,20 @@ pub algeon_datafusion::capability::CapabilityReason::UnsupportedOperator
 pub algeon_datafusion::capability::CapabilityReason::UnsupportedType
 impl algeon_datafusion::capability::CapabilityReason
 pub const fn algeon_datafusion::capability::CapabilityReason::code(self) -> &'static str
-pub const fn algeon_datafusion::capability::CapabilityReason::data_layout_fixable_property(self) -> core::option::Option<&'static str>
-pub const fn algeon_datafusion::capability::CapabilityReason::is_data_layout_fixable(self) -> bool
-pub const fn algeon_datafusion::capability::CapabilityReason::triage_code(self) -> query_planning::triage::TriageCode
+pub const fn algeon_datafusion::capability::CapabilityReason::facts(self) -> algeon_datafusion::capability::ReasonFacts
+pub enum algeon_datafusion::capability::FlightSqlNativeNotSupportedClass
+pub algeon_datafusion::capability::FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge
+pub algeon_datafusion::capability::FlightSqlNativeNotSupportedClass::Other
+impl algeon_datafusion::capability::FlightSqlNativeNotSupportedClass
+pub const fn algeon_datafusion::capability::FlightSqlNativeNotSupportedClass::as_str(self) -> &'static str
+pub struct algeon_datafusion::capability::ReasonFacts
+pub algeon_datafusion::capability::ReasonFacts::code: &'static str
+pub algeon_datafusion::capability::ReasonFacts::flight_class: algeon_datafusion::capability::FlightSqlNativeNotSupportedClass
+pub algeon_datafusion::capability::ReasonFacts::kind: algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind
+pub algeon_datafusion::capability::ReasonFacts::layout_property: core::option::Option<&'static str>
+pub algeon_datafusion::capability::ReasonFacts::remedy: algeon_datafusion::gpu_coverage::QueryGpuRemedy
+pub algeon_datafusion::capability::ReasonFacts::triage: query_planning::triage::TriageCode
+pub algeon_datafusion::capability::ReasonFacts::tsv_category: &'static str
 pub mod algeon_datafusion::cugraph_sql
 pub enum algeon_datafusion::cugraph_sql::CugraphAlgorithm
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithm::BetweennessCentrality
@@ -635,6 +646,19 @@ pub fn algeon_datafusion::cuvs_sql::cuvs_options_json_schema(query_planning::pla
 pub fn algeon_datafusion::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub type algeon_datafusion::cuvs_sql::CuvsAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuvs_sql::exec::node::CuvsRelationFunctionSpec>
 pub mod algeon_datafusion::error
+pub enum algeon_datafusion::error::ClientDetail
+pub algeon_datafusion::error::ClientDetail::RelationField
+pub algeon_datafusion::error::ClientDetail::RelationField::data_type: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::RelationField::field: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::UnsupportedColumn
+pub algeon_datafusion::error::ClientDetail::UnsupportedColumn::data_type: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::UnsupportedColumn::name: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::UnsupportedColumn::role: &'static str
+impl algeon_datafusion::error::ClientDetail
+pub fn algeon_datafusion::error::ClientDetail::entries(&self) -> alloc::vec::Vec<(&'static str, &str)>
+pub fn algeon_datafusion::error::ClientDetail::value(&self, &str) -> core::option::Option<&str>
+impl core::fmt::Debug for algeon_datafusion::error::ClientDetail
+pub fn algeon_datafusion::error::ClientDetail::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum algeon_datafusion::error::ErrorCode
 pub algeon_datafusion::error::ErrorCode::AlgorithmDidNotConverge
 pub algeon_datafusion::error::ErrorCode::Cancelled
@@ -643,7 +667,6 @@ pub algeon_datafusion::error::ErrorCode::CudfDependencyFailure
 pub algeon_datafusion::error::ErrorCode::CudfInvalidInput
 pub algeon_datafusion::error::ErrorCode::CudfInvariantViolation
 pub algeon_datafusion::error::ErrorCode::CudfPersistentFailure
-pub algeon_datafusion::error::ErrorCode::CudfResourceExhausted
 pub algeon_datafusion::error::ErrorCode::CudfTemporaryFailure
 pub algeon_datafusion::error::ErrorCode::CudfUnsupported
 pub algeon_datafusion::error::ErrorCode::DataFusionPlanning
@@ -714,6 +737,7 @@ impl core::fmt::Display for algeon_datafusion::error::ErrorStatus
 pub fn algeon_datafusion::error::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::error::Error
 impl algeon_datafusion::error::Error
+pub fn algeon_datafusion::error::Error::client_detail(&self) -> core::option::Option<&algeon_datafusion::error::ClientDetail>
 pub fn algeon_datafusion::error::Error::code(&self) -> algeon_datafusion::error::ErrorCode
 pub fn algeon_datafusion::error::Error::fact_value(&self, &str) -> core::option::Option<&str>
 pub fn algeon_datafusion::error::Error::facts(&self) -> &algeon_datafusion::error::Facts
@@ -725,6 +749,7 @@ pub fn algeon_datafusion::error::Error::operation(&self) -> &'static str
 pub fn algeon_datafusion::error::Error::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn algeon_datafusion::error::Error::status(&self) -> algeon_datafusion::error::ErrorStatus
 pub fn algeon_datafusion::error::Error::with_boxed_source(self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>) -> Self
+pub fn algeon_datafusion::error::Error::with_client_detail(self, algeon_datafusion::error::ClientDetail) -> Self
 pub fn algeon_datafusion::error::Error::with_fact(self, &'static str, impl alloc::string::ToString) -> Self
 pub fn algeon_datafusion::error::Error::with_log_safe_fact(self, &'static str, impl alloc::string::ToString) -> Self
 pub fn algeon_datafusion::error::Error::with_preserved_facts(self, algeon_datafusion::error::Facts) -> Self
@@ -757,7 +782,7 @@ pub fn algeon_datafusion::error::Facts::insert_log_safe(&mut self, &'static str,
 pub fn algeon_datafusion::error::Facts::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &str)>
 pub fn algeon_datafusion::error::Facts::log_safe_projection(&self) -> algeon_datafusion::error::LogSafeFactProjection
 pub fn algeon_datafusion::error::Facts::new() -> Self
-pub fn algeon_datafusion::error::Facts::retained_capture_entries(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn algeon_datafusion::error::Facts::retained_capture_entries(&self, core::option::Option<&algeon_datafusion::error::ClientDetail>) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 impl core::fmt::Debug for algeon_datafusion::error::Facts
 pub fn algeon_datafusion::error::Facts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::error::LogSafeFactProjection
@@ -770,8 +795,6 @@ pub fn algeon_datafusion::error::DataFusionErrorExt::find_algeon_error(&self) ->
 impl algeon_datafusion::error::DataFusionErrorExt for datafusion_common::error::DataFusionError
 pub fn datafusion_common::error::DataFusionError::find_algeon_error(&self) -> core::option::Option<&algeon_datafusion::error::Error>
 pub fn algeon_datafusion::error::datafusion_error_human_message(&datafusion_common::error::DataFusionError) -> alloc::string::String
-pub const fn algeon_datafusion::error::kind_for_code(algeon_datafusion::error::ErrorCode) -> algeon_datafusion::error::ErrorKind
-pub const fn algeon_datafusion::error::status_for_code(algeon_datafusion::error::ErrorCode) -> algeon_datafusion::error::ErrorStatus
 pub type algeon_datafusion::error::Result<T> = core::result::Result<T, algeon_datafusion::error::Error>
 pub mod algeon_datafusion::gpu_coverage
 pub enum algeon_datafusion::gpu_coverage::CandidateOutcomeKind
@@ -810,7 +833,6 @@ pub const fn algeon_datafusion::gpu_coverage::QueryGpuRejectionPhase::as_str(sel
 pub enum algeon_datafusion::gpu_coverage::QueryGpuRemedyKind
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedyKind::ConfigAction
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedyKind::CpuPreferred
-pub algeon_datafusion::gpu_coverage::QueryGpuRemedyKind::CudfRsGap
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedyKind::EngineGap
 pub algeon_datafusion::gpu_coverage::QueryGpuRemedyKind::UserAction
 impl algeon_datafusion::gpu_coverage::QueryGpuRemedyKind
@@ -1855,6 +1877,7 @@ pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::evidence: al
 pub algeon_datafusion::report::CandidateOutcome::NotSupported
 pub algeon_datafusion::report::CandidateOutcome::NotSupported::candidate: algeon_datafusion::report::GpuCandidate
 pub algeon_datafusion::report::CandidateOutcome::NotSupported::capability_reason: algeon_datafusion::capability::CapabilityReason
+pub algeon_datafusion::report::CandidateOutcome::NotSupported::detail: algeon_datafusion::report::NotSupportedDetail
 pub algeon_datafusion::report::CandidateOutcome::Selected
 pub algeon_datafusion::report::CandidateOutcome::Selected::candidate: algeon_datafusion::report::GpuCandidate
 impl algeon_datafusion::report::CandidateOutcome
@@ -1901,6 +1924,9 @@ pub algeon_datafusion::report::NativeCandidateCostEvidence::selected_row_groups_
 pub algeon_datafusion::report::NativeCandidateCostEvidence::selected_source_bytes_known: bool
 pub algeon_datafusion::report::NativeCandidateCostEvidence::sort_count: usize
 pub algeon_datafusion::report::NativeCandidateCostEvidence::source_count: usize
+pub struct algeon_datafusion::report::NotSupportedDetail
+impl algeon_datafusion::report::NotSupportedDetail
+pub fn algeon_datafusion::report::NotSupportedDetail::admission_rejection(&self) -> core::option::Option<&query_planning::capability::rejection::Rejection>
 pub struct algeon_datafusion::report::PlanningReport
 impl algeon_datafusion::report::PlanningReport
 pub fn algeon_datafusion::report::PlanningReport::data_layout_fixable_not_supported(&self) -> core::option::Option<algeon_datafusion::report::DataLayoutFixableNotSupported<'_>>

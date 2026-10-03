@@ -4,12 +4,12 @@ use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledEqualityJoinPreflightIndices,
     CompiledJoinMaterializationRequest, ExecutionMetrics, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, compiled_join_input_columns,
-    execution_overrides, materialize_compiled_indices_output,
+    ResidentFrameStreamPayload, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, bounded_invariant_violation,
+    compiled_join_input_columns, execution_overrides, materialize_compiled_indices_output,
     materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_compiled_one_shot_residual_output,
     observe_device_memory_bytes, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
     probe_side, record_one_shot_join_chunk_metrics, record_streamed_one_shot_join_metrics,
-    release_bounded_join_side_frame, stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
+    release_bounded_join_side_frame, stream_bounded_join_leaf_local_parquet_source_serial,
     validate_executable_join_subset,
 };
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
@@ -29,7 +29,7 @@ pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
     {
         return Ok(());
     }
-    Err(unsupported_bounded_shape(
+    Err(bounded_invariant_violation(
         "compiled one-shot equi join execution supports keyed inner joins with optional residual predicates and keyed left/full joins without residual predicates",
         "compiled_join_strategy_unsupported",
     )

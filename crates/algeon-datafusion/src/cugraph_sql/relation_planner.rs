@@ -5,7 +5,7 @@ use arrow::{
     datatypes::DataType,
 };
 use datafusion::{
-    common::{DFSchema, Result, ScalarValue},
+    common::{DFSchema, Result as DataFusionResult, ScalarValue},
     logical_expr::{
         Expr, Extension, LogicalPlan,
         planner::{PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning},
@@ -20,7 +20,10 @@ use super::{
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
     plan,
 };
-use crate::gpu_functions::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
+use crate::{
+    error::Result,
+    gpu_functions::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments},
+};
 
 #[derive(Debug, Clone)]
 pub struct CugraphRelationPlanner {
@@ -42,7 +45,7 @@ impl RelationPlanner for CugraphRelationPlanner {
         &self,
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
-    ) -> Result<RelationPlanning> {
+    ) -> DataFusionResult<RelationPlanning> {
         let Some(algorithm) = recognized_algorithm(&relation, context) else {
             return Ok(RelationPlanning::Original(Box::new(relation)));
         };
@@ -69,7 +72,7 @@ impl RelationPlanner for CugraphRelationPlanner {
             || sample.is_some()
             || !index_hints.is_empty()
         {
-            return Err(plan("cuGraph relation functions accept named arguments and a result alias"));
+            return Err(plan("cuGraph relation functions accept named arguments and a result alias").into());
         }
 
         let definitions = argument_definitions(algorithm);
@@ -104,29 +107,34 @@ impl RelationPlanner for CugraphRelationPlanner {
                 return Err(plan(format!(
                     "{} source_vertex must be a non-null scalar vertex",
                     algorithm.function_name()
-                )));
+                ))
+                .into());
             }
             if algorithm == CugraphAlgorithm::Bfs && !matches!(source, Some(CugraphBfsSource::Scalar(_))) {
-                return Err(plan("cugraph_bfs source_vertex must be a non-null scalar vertex"));
+                return Err(plan("cugraph_bfs source_vertex must be a non-null scalar vertex").into());
             }
         }
         if algorithm == CugraphAlgorithm::Bfs
             && let Some(expression) = arguments.take_value("source_vertices")
         {
             if source.is_some() {
-                return Err(plan("cugraph_bfs source_vertex, source_vertices, and sources are mutually exclusive"));
+                return Err(
+                    plan("cugraph_bfs source_vertex, source_vertices, and sources are mutually exclusive").into()
+                );
             }
             let expression = fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?)?;
             let parsed = parse_named_source(expression, algorithm)?;
             if !matches!(parsed, Some(CugraphBfsSource::LiteralList(_))) {
-                return Err(plan("cugraph_bfs source_vertices must be a non-empty typed array"));
+                return Err(plan("cugraph_bfs source_vertices must be a non-empty typed array").into());
             }
             source = parsed;
         }
         if algorithm == CugraphAlgorithm::Bfs {
             let relation_source = roles.contains(&CugraphRelationRole::Sources);
             if usize::from(source.is_some()) + usize::from(relation_source) != 1 {
-                return Err(plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources"));
+                return Err(
+                    plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources").into()
+                );
             }
         }
 
@@ -158,7 +166,10 @@ fn recognized_algorithm(relation: &TableFactor, context: &dyn RelationPlannerCon
     CugraphAlgorithm::all().find(|algorithm| algorithm.function_name() == name)
 }
 
-fn plan_relation_query(query: Box<SqlQuery>, context: &mut dyn RelationPlannerContext) -> Result<LogicalPlan> {
+fn plan_relation_query(
+    query: Box<SqlQuery>,
+    context: &mut dyn RelationPlannerContext,
+) -> DataFusionResult<LogicalPlan> {
     context.plan(TableFactor::Derived { lateral: false, subquery: query, alias: None, sample: None })
 }
 
@@ -196,25 +207,25 @@ fn argument_definitions(algorithm: CugraphAlgorithm) -> Vec<NamedArgumentDefinit
 /// Reduces `CAST(<literal> AS type)`, negated numeric literals, and
 /// `make_array(...)` of those to plain literals so typed literal arguments bind
 /// like untyped ones.
-fn fold_literal(expression: Expr) -> Result<Expr> {
+fn fold_literal(expression: Expr) -> DataFusionResult<Expr> {
     Ok(match expression {
         Expr::Cast(cast) => match fold_literal(*cast.expr)? {
             Expr::Literal(value, _) => Expr::Literal(value.cast_to(cast.field.data_type())?, None),
-            _ => return Err(plan("cuGraph literal cast must contain a literal")),
+            _ => return Err(plan("cuGraph literal cast must contain a literal").into()),
         },
         Expr::Negative(inner) => match fold_literal(*inner)? {
             Expr::Literal(value, _) => Expr::Literal(value.arithmetic_negate()?, None),
-            _ => return Err(plan("cuGraph negated literal must contain a numeric literal")),
+            _ => return Err(plan("cuGraph negated literal must contain a numeric literal").into()),
         },
         Expr::ScalarFunction(mut function) if function.name().eq_ignore_ascii_case("make_array") => {
-            function.args = function.args.into_iter().map(fold_literal).collect::<Result<Vec<_>>>()?;
+            function.args = function.args.into_iter().map(fold_literal).collect::<DataFusionResult<Vec<_>>>()?;
             Expr::ScalarFunction(function)
         },
         other => other,
     })
 }
 
-fn literal_json(expression: Expr, name: &str) -> Result<Value> {
+fn literal_json(expression: Expr, name: &str) -> DataFusionResult<Value> {
     match expression {
         Expr::Literal(value, _) => scalar_json(value, name),
         Expr::Negative(inner) => match literal_json(*inner, name)? {
@@ -222,12 +233,12 @@ fn literal_json(expression: Expr, name: &str) -> Result<Value> {
                 .as_f64()
                 .and_then(|value| Number::from_f64(-value))
                 .map(Value::Number)
-                .ok_or_else(|| plan(format!("cuGraph argument '{name}' is not a finite numeric literal"))),
-            _ => Err(plan(format!("cuGraph argument '{name}' must be a numeric literal"))),
+                .ok_or_else(|| plan(format!("cuGraph argument '{name}' is not a finite numeric literal")).into()),
+            _ => Err(plan(format!("cuGraph argument '{name}' must be a numeric literal")).into()),
         },
         Expr::Cast(cast) => {
             let Expr::Literal(value, _) = *cast.expr else {
-                return Err(plan(format!("cuGraph argument '{name}' cast must contain a literal")));
+                return Err(plan(format!("cuGraph argument '{name}' cast must contain a literal")).into());
             };
             scalar_json(value.cast_to(cast.field.data_type())?, name)
         },
@@ -235,13 +246,13 @@ fn literal_json(expression: Expr, name: &str) -> Result<Value> {
             .args
             .into_iter()
             .map(|argument| literal_json(argument, name))
-            .collect::<Result<Vec<_>>>()
+            .collect::<DataFusionResult<Vec<_>>>()
             .map(Value::Array),
-        _ => Err(plan(format!("cuGraph argument '{name}' must be a scalar or typed-array literal"))),
+        _ => Err(plan(format!("cuGraph argument '{name}' must be a scalar or typed-array literal")).into()),
     }
 }
 
-fn scalar_json(value: ScalarValue, name: &str) -> Result<Value> {
+fn scalar_json(value: ScalarValue, name: &str) -> DataFusionResult<Value> {
     let value = match value {
         ScalarValue::Null
         | ScalarValue::Boolean(None)
@@ -278,7 +289,7 @@ fn scalar_json(value: ScalarValue, name: &str) -> Result<Value> {
         },
         ScalarValue::List(values) => {
             if values.len() != 1 || values.is_null(0) {
-                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")));
+                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")).into());
             }
             let array = values.value(0);
             let mut result = Vec::with_capacity(array.len());
@@ -289,7 +300,7 @@ fn scalar_json(value: ScalarValue, name: &str) -> Result<Value> {
         },
         ScalarValue::LargeList(values) => {
             if values.len() != 1 || values.is_null(0) {
-                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")));
+                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")).into());
             }
             let array = values.value(0);
             let mut result = Vec::with_capacity(array.len());
@@ -298,7 +309,7 @@ fn scalar_json(value: ScalarValue, name: &str) -> Result<Value> {
             }
             Value::Array(result)
         },
-        _ => return Err(plan(format!("cuGraph argument '{name}' has an unsupported literal type"))),
+        _ => return Err(plan(format!("cuGraph argument '{name}' has an unsupported literal type")).into()),
     };
     Ok(value)
 }

@@ -9,7 +9,7 @@ use query_engine::{
 
 use super::{
     AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, CooperativeExec, CugraphAlgoExec,
-    CugraphAlgorithmSpec, CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError,
+    CugraphAlgorithmSpec, CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionResult,
     Error, ErrorCode, ExecutionPlan, PlanNode, Precision, RepartitionExec, Result, StatisticsArgs, StatisticsContext,
     TaskContext, cugraph_execution_capability_evidence, gpu_resident_producer_hard_output_row_upper_bound,
     task_context_with_query_admission_ticket,
@@ -75,11 +75,11 @@ pub(super) async fn resolve_native_edge_source_gpu_plan(
     .await?;
     let plan = refined.plan().clone_with_gpu_resident_sink();
     admit_query_plan(&plan, refined.statistical_aggregate_execution_mode(), refined.policy()).map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.edge_source",
             "the GPU-resident cuGraph edge source is not admitted",
             error,
-        ))
+        )
     })
 }
 
@@ -179,11 +179,11 @@ fn compile_cugraph_admission_ticket(
             (Some(invocation), Some(source)) if invocation.attempt().is_some() => {
                 let evidence =
                     AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(|error| {
-                        DataFusionError::from(Error::from_native(
+                        Error::from_native(
                             "algeon_datafusion.cugraph_sql.graph_ticket_ask",
                             "failed to compute cuGraph SQL graph-aware query admission ticket ask",
                             error,
-                        ))
+                        )
                     })?;
                 match invocation.attempt_admission_ticket(source, Some(evidence)) {
                     Some((ticket, true)) => {
@@ -209,8 +209,7 @@ fn compile_cugraph_admission_ticket(
                 "algeon_datafusion.cugraph_sql.graph_ticket_ask",
                 "the graph occurrence and invocation admission ticket belong to different backends",
             )
-            .with_log_safe_fact("reason", "graph_occurrence_admission_backend_mismatch")
-            .into());
+            .with_log_safe_fact("reason", "graph_occurrence_admission_backend_mismatch"));
         }
         let existing_evidence = ticket.attempt_capability_evidence_for_rebind();
         let graph_is_covered = existing_evidence
@@ -233,17 +232,17 @@ fn compile_cugraph_admission_ticket(
         });
         if !graph_is_covered || !edge_is_covered {
             ticket.bind_fragment_evidence(fragment_evidence_items).map_err(|error| {
-                DataFusionError::from(Error::from_native(
+                Error::from_native(
                     "algeon_datafusion.cugraph_sql.graph_ticket_ask",
                     "failed to bind prepared graph evidence to the invocation admission",
                     error,
-                ))
+                )
             })?;
         }
         return Ok((execution_config.with_existing_query_admission_ticket(ticket), graph_execution_plan));
     }
     if execution_config.query_admission_source().is_some() {
-        return Err(attempt_execution_required_error("algeon_datafusion.cugraph_sql.graph_ticket_ask").into());
+        return Err(attempt_execution_required_error("algeon_datafusion.cugraph_sql.graph_ticket_ask"));
     }
     Ok((execution_config, graph_execution_plan))
 }
@@ -335,7 +334,7 @@ pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&Quer
     plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
 }
 
-pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
+pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> DataFusionResult<Option<u64>> {
     if let Some(source) = edge_source.downcast_ref::<DataSourceExec>()
         && let Some(rows) = exact_row_count_for_datafusion_local_parquet_scan(source)
     {
@@ -358,7 +357,7 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result
 /// Returns cardinality evidence that is exact in the physical DataFusion
 /// plan. Inexact optimizer estimates must never be used for bounded
 /// graph admission.
-pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
+pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> DataFusionResult<Option<u64>> {
     let statistics_context = StatisticsContext::new();
     let partition_count = plan.properties().output_partitioning().partition_count();
     if partition_count <= 1 {
@@ -387,7 +386,7 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
     Ok(Some(total))
 }
 
-pub(super) fn resident_side_input_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
+pub(super) fn resident_side_input_output_rows(plan: &dyn ExecutionPlan) -> DataFusionResult<Option<u64>> {
     if let Some(rows) = gpu_resident_producer_hard_output_row_upper_bound(plan) {
         return Ok(Some(rows));
     }
@@ -457,8 +456,7 @@ pub(super) fn validate_standalone_bounded_source_contains_no_native_child(
         )
         .with_log_safe_fact("reason", "gpu_backend_required")
         .with_fact("source_kind", source_kind)
-        .with_log_safe_fact("remediation", "install_algeon_gpu_backend")
-        .into());
+        .with_log_safe_fact("remediation", "install_algeon_gpu_backend"));
     }
     Ok(())
 }

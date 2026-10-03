@@ -12,7 +12,7 @@
 use arrow::array::Int64Array;
 use query_engine::{
     admission::{AdmissionDecision, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
-    capability::CapabilityRejectionOwner,
+    capability::{Reason, RejectionOwner, UnsupportedPart},
     dynamic_filter::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
         DynamicFilterProducer, DynamicFilterRoute,
@@ -76,10 +76,10 @@ fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cyc
     .expect("admission should classify the control cycle");
 
     assert!(decision.admission().is_none());
-    let projection = decision.rejection_projection().expect("a rejected candidate carries its rejection projection");
-    assert_eq!(projection.reason, "compiled_pipeline_dependency_cycle");
-    assert_eq!(projection.owner, CapabilityRejectionOwner::Admission("compiled_pipeline_dependency_cycle"));
-    assert_eq!(projection.boundary, "compiled_pipeline");
+    let projection = decision.rejection().expect("a rejected candidate carries its rejection");
+    assert_eq!(projection.reason, Reason::CompiledPipelineDependencyCycle);
+    assert_eq!(projection.owner, RejectionOwner::Plan);
+    assert_eq!(projection.boundary(), "compiled_pipeline");
     assert!(projection.facts.contains_key("task_id"), "the cycle names the task it closed on: {:?}", projection);
 
     assert!(
@@ -350,8 +350,8 @@ fn capability_admission_rejects_row_number_over_unordered_input() {
         rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("window admission should not error");
-    let projection = decision.rejection_projection().expect("a row number over unordered input is rejected");
-    assert_eq!(projection.reason, "window_input_ordering_not_established");
+    let projection = decision.rejection().expect("a row number over unordered input is rejected");
+    assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 }
 
 /// A row-number window over a literal `(p, o)` source, partitioned by `p`,
@@ -403,8 +403,8 @@ fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_par
     let plan = partitioned_row_number_plan(Some(vec![SortExpr::new(Expr::column("o"), false, false)]), true);
 
     let decision = admit_default(&plan).expect("window admission should not error");
-    let projection = decision.rejection_projection().expect("an input not grouped by partition is rejected");
-    assert_eq!(projection.reason, "window_input_ordering_not_established");
+    let projection = decision.rejection().expect("an input not grouped by partition is rejected");
+    assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 
     let plan = partitioned_row_number_plan(
         Some(vec![SortExpr::new(Expr::column("p"), false, false), SortExpr::new(Expr::column("o"), false, false)]),
@@ -420,8 +420,8 @@ fn capability_admission_rejects_partitioned_row_number_without_order_over_unorde
     let plan = partitioned_row_number_plan(None, false);
 
     let decision = admit_default(&plan).expect("window admission should not error");
-    let projection = decision.rejection_projection().expect("an ungrouped partition input is rejected");
-    assert_eq!(projection.reason, "window_input_ordering_not_established");
+    let projection = decision.rejection().expect("an ungrouped partition input is rejected");
+    assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 }
 
 #[test]
@@ -477,8 +477,8 @@ fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_val
     let plan = builder.finish_with_host_sink(aggregate);
 
     let decision = admit_default(&plan).expect("an unsupported group key type is a decision");
-    let projection = decision.rejection_projection().expect("an unsupported group key type is rejected");
-    assert_eq!(projection.reason, "native_plan_validation_unsupported");
+    let projection = decision.rejection().expect("an unsupported group key type is rejected");
+    assert_eq!(projection.reason, Reason::PlanValidation(UnsupportedPart::DataType));
     assert_eq!(projection.facts.get("validation_code").map(String::as_str), Some("unsupported_type"));
     let AdmissionDecision::Rejected(rejection) = &decision else { unreachable!("checked above") };
     let error = rejection.execution_error(&plan);
@@ -501,8 +501,8 @@ fn capability_admission_rejects_rank_over_a_materialized_partition_key() {
         rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("window admission should not error");
-    let projection = decision.rejection_projection().expect("no compiled contract proves the rank input order");
-    assert_eq!(projection.reason, "window_input_ordering_not_established");
+    let projection = decision.rejection().expect("no compiled contract proves the rank input order");
+    assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 }
 
 /// TPC-DS q86 after aggregate-join pushdown: a rollup over a joined detail

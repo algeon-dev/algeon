@@ -2,7 +2,7 @@ use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
 use datafusion::{
-    common::{DFSchema, DFSchemaRef, Result},
+    common::{DFSchema, DFSchemaRef, DataFusionError, Result as DataFusionResult},
     logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
@@ -15,8 +15,12 @@ use super::{
     error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
-use crate::gpu_functions::{
-    dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions,
+use crate::{
+    error::Result,
+    gpu_functions::{
+        dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
+        input_orderings_with_expressions,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -31,7 +35,7 @@ pub struct CuvsLogicalNode {
 }
 
 impl CuvsLogicalNode {
-    pub fn try_new(operation: CuvsOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> Result<Self> {
+    pub fn try_new(operation: CuvsOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> DataFusionResult<Self> {
         let descriptor = operation.descriptor();
         if inputs.len() != descriptor.relation_roles.len() {
             return Err(invalid_call(
@@ -43,7 +47,8 @@ impl CuvsLogicalNode {
                     descriptor.relation_roles.len(),
                     inputs.len()
                 ),
-            ));
+            )
+            .into());
         }
         let options = validate_options(operation, options_json)?;
         let (dimensions, element) = validate_input_schemas(operation, &inputs, &options)?;
@@ -148,17 +153,20 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
         )
     }
 
-    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
+    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> DataFusionResult<Self> {
         let Some(input_orderings) = input_orderings_with_expressions(&self.input_orderings, exprs) else {
             return Err(invalid_call(
                 self.operation,
                 "unexpected_logical_expressions",
                 "cuVS logical node expressions must be its input sort keys",
-            ));
+            )
+            .into());
         };
         let options_json =
             options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
-        Self::try_new(self.operation, inputs, &options_json)?.with_input_orderings(input_orderings)
+        Self::try_new(self.operation, inputs, &options_json)?
+            .with_input_orderings(input_orderings)
+            .map_err(DataFusionError::from)
     }
 
     fn supports_limit_pushdown(&self) -> bool {
@@ -474,7 +482,7 @@ fn derive_output_schema(
     options: &CuvsValidatedOptions,
     dimensions: &[Option<usize>],
     element: VectorElementType,
-) -> Result<DFSchemaRef> {
+) -> DataFusionResult<DFSchemaRef> {
     let schema = match operation.descriptor().output_contract {
         CuvsOutputContract::KnnNeighbors => {
             let dataset_id = output_id_field(inputs[0].schema(), options.bindings()[0].id(), "neighbor_id")?;
@@ -506,7 +514,8 @@ fn derive_output_schema(
                     format!(
                         "n_components ({n_components}) exceeds the statically known feature dimension ({dimension})"
                     ),
-                ));
+                )
+                .into());
             }
             vector_pca_output_schema(
                 output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
@@ -517,7 +526,7 @@ fn derive_output_schema(
     Ok(Arc::new(DFSchema::try_from(schema.as_ref().clone())?))
 }
 
-fn output_id_field(schema: &DFSchema, input_name: &str, output_name: &str) -> Result<Field> {
+fn output_id_field(schema: &DFSchema, input_name: &str, output_name: &str) -> DataFusionResult<Field> {
     let input = schema.field_with_unqualified_name(input_name)?;
     Ok(Field::new(output_name, input.data_type().clone(), false))
 }

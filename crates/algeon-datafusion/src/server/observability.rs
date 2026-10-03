@@ -1157,7 +1157,7 @@ impl CapturedError {
             // Query-caller capture keeps the log-safe projection plus the
             // explicitly caller-visible schema details. Operational logs keep
             // using the log-safe projection alone and never see identifiers.
-            facts: error.facts().retained_capture_entries(),
+            facts: error.facts().retained_capture_entries(error.client_detail()),
             diagnostic: source_diagnostics.chain().unwrap_or_else(|| error.message()).to_string(),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
@@ -1180,7 +1180,7 @@ impl CapturedError {
             operation: operation.to_string(),
             diagnostic,
             message,
-            facts: facts.retained_capture_entries(),
+            facts: facts.retained_capture_entries(None),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
         }

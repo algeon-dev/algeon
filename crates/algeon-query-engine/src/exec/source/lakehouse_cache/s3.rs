@@ -27,7 +27,7 @@ pub(super) fn cache_maintenance_location(
     };
     if scheme != "s3" {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.lakehouse_cache.maintenance.location",
             "object-store lakehouse cache maintenance currently supports only S3 URIs",
         )

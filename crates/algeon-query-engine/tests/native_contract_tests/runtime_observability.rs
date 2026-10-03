@@ -11,6 +11,7 @@ use std::{
 };
 
 use query_engine::{
+    error::QueryErrorCode,
     metrics::QueryId,
     observability::{
         AttemptFailureCode, AttemptFailureStatus, DeterministicRuntimeObservationClock, ObservationSequence,
@@ -206,7 +207,7 @@ fn first_terminal_wins_and_live_snapshots_remain_explicitly_incomplete() {
     let first = session.seal(RuntimeTerminalOutcome::Succeeded).expect("first seal succeeds");
     let second = session
         .seal(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Internal,
+            error_code: AttemptFailureCode::Query(QueryErrorCode::Internal),
             error_status: AttemptFailureStatus::Permanent,
         })
         .expect("subsequent seal returns winner");
@@ -378,7 +379,7 @@ fn jsonl_matches_fixed_golden_bytes() {
     session.record(query_started);
     let snapshot = session
         .seal(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Internal,
+            error_code: AttemptFailureCode::Query(QueryErrorCode::Internal),
             error_status: AttemptFailureStatus::Permanent,
         })
         .expect("golden session seals");

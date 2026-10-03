@@ -1,12 +1,11 @@
 //! SQL scalar argument conversion shared by dense-relation function families.
 
-use datafusion::{
-    common::{DataFusionError, Result, ScalarValue},
-    logical_expr::Expr,
-};
+use datafusion::{common::ScalarValue, logical_expr::Expr};
 use serde_json::{Number, Value};
 
-pub(crate) fn scalar_literal(invalid: &impl Fn() -> DataFusionError, expression: Expr) -> Result<ScalarValue> {
+use crate::error::{Error, Result};
+
+pub(crate) fn scalar_literal(invalid: &impl Fn() -> Error, expression: Expr) -> Result<ScalarValue> {
     match expression {
         Expr::Literal(value, _) => Ok(value),
         Expr::Negative(inner) => negate_scalar(invalid, scalar_literal(invalid, *inner)?),
@@ -15,7 +14,7 @@ pub(crate) fn scalar_literal(invalid: &impl Fn() -> DataFusionError, expression:
     }
 }
 
-fn negate_scalar(invalid: &impl Fn() -> DataFusionError, value: ScalarValue) -> Result<ScalarValue> {
+fn negate_scalar(invalid: &impl Fn() -> Error, value: ScalarValue) -> Result<ScalarValue> {
     match value {
         ScalarValue::Int8(Some(value)) => {
             value.checked_neg().map(|value| ScalarValue::Int8(Some(value))).ok_or_else(invalid)
@@ -35,7 +34,7 @@ fn negate_scalar(invalid: &impl Fn() -> DataFusionError, value: ScalarValue) -> 
     }
 }
 
-pub(crate) fn scalar_json(invalid: &impl Fn() -> DataFusionError, value: ScalarValue) -> Result<Value> {
+pub(crate) fn scalar_json(invalid: &impl Fn() -> Error, value: ScalarValue) -> Result<Value> {
     let value = match value {
         ScalarValue::Null
         | ScalarValue::Boolean(None)

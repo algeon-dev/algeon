@@ -789,7 +789,7 @@ fn unsupported_large_filtered_grouped_stateful_merge_error(
     threshold: u64,
 ) -> QueryError {
     QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedOperator,
         "query_engine.aggregate.filtered_grouped_strategy",
         "large filtered grouped aggregate requires segmented state execution, but one or more aggregate states cannot be merged safely",
     )

@@ -9,10 +9,10 @@ use query_engine::plan::NodeId;
 use super::{
     AggregateSpec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, ColumnRef, CugraphAlgorithmParams,
     CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex,
-    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode,
-    GraphAlgorithm, GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
-    LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result,
-    Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan, result_schema_for_params,
+    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, Error, ErrorCode, GraphAlgorithm,
+    GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LiteralBatchSource,
+    NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef,
+    SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan, result_schema_for_params,
     vertex_id_domain_for_call,
 };
 use crate::cugraph_sql::registry::{CugraphLogicalOutputColumn, NATIVE_LOGICAL_ID_TYPE};
@@ -387,7 +387,7 @@ pub(super) fn logical_literal_vertex_batch(spec: &CugraphAlgorithmSpec) -> Resul
     let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Utf8, false)]));
     RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values)) as ArrayRef])
         .map(|batch| Some((batch, column.to_string())))
-        .map_err(DataFusionError::from)
+        .map_err(|error| plan(format!("failed to build the literal vertex batch for '{column}'")).with_source(error))
 }
 
 fn logical_betweenness_seed_values(seeds: &CugraphBetweennessSeeds) -> Result<(&'static str, Vec<&str>)> {
@@ -439,15 +439,13 @@ fn bfs_native_result_schema(return_target_info: bool) -> SchemaRef {
 
 fn normalized_bfs_base_field(schema: &SchemaRef, name: &'static str, nullable: bool) -> Result<Field> {
     let field = schema.field_with_name(name).map_err(|error| {
-        DataFusionError::from(
-            Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.cugraph_sql.bfs_result_schema",
-                "native BFS descriptor is missing a raw BFS base field",
-            )
-            .with_fact("column", name)
-            .with_source(error),
+        Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "algeon_datafusion.cugraph_sql.bfs_result_schema",
+            "native BFS descriptor is missing a raw BFS base field",
         )
+        .with_fact("column", name)
+        .with_source(error)
     })?;
     Ok(Field::new(field.name(), field.data_type().clone(), nullable))
 }

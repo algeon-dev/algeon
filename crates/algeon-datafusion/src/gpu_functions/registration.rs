@@ -2,13 +2,10 @@
 
 use std::sync::Arc;
 
-use datafusion::{
-    common::{DataFusionError, Result},
-    execution::SessionStateBuilder,
-};
+use datafusion::execution::SessionStateBuilder;
 
 use super::{GpuFunctionCatalog, GpuFunctionFamily, gpu_metadata_table_functions};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 /// Install one family into the builder's immutable GPU UDTF catalog.
 ///
@@ -44,8 +41,8 @@ pub(crate) fn install_gpu_function_family(
     Ok(())
 }
 
-fn install_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.install", message).into()
+fn install_error(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.install", message)
 }
 
 #[cfg(test)]

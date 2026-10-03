@@ -4,13 +4,13 @@ use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
     BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionMetrics, ExecutionOverrides,
     GpuDataFrame, GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
-    attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, execution_overrides,
-    join_index_error, join_side_output_upper_bound_bytes, keyed_filtered_semi_anti_join_capable, lower_null_equality,
-    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
-    null_aware_anti_probe_input, observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
+    attach_budget_token_failure_facts, bounded_invariant_violation, cudf_query_error,
+    execution_budget_token_for_boundary, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
+    keyed_filtered_semi_anti_join_capable, lower_null_equality, materialize_left_only_join_output_projection,
+    materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input,
+    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
     prepare_bounded_join_side_input_from_shared_frame, projected_input_columns,
-    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, unsupported_bounded_shape,
-    validate_executable_join_subset,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
 };
 use crate::{
     exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
@@ -25,7 +25,7 @@ pub(super) fn execute_compiled_filtered_join_build_from_frame(
 ) -> Result<BoundedCompiledFilteredJoinBuildState> {
     validate_executable_join_subset(node)?;
     if !keyed_filtered_semi_anti_join_capable(node) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "compiled filtered join build requires a filtered semi/anti/mark join node",
             "compiled_join_strategy_unsupported",
         ));
@@ -44,7 +44,7 @@ pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
 ) -> Result<BoundedCompiledFilteredJoinBuildState> {
     validate_executable_join_subset(node)?;
     if !keyed_filtered_semi_anti_join_capable(node) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "compiled filtered join build requires a filtered semi/anti/mark join node",
             "compiled_join_strategy_unsupported",
         ));

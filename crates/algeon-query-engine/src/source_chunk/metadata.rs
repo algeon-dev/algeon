@@ -470,7 +470,7 @@ fn source_metadata_fetch_location(file: &LocalParquetFile) -> Result<SourceMetad
     };
     if scheme != "s3" {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.source_metadata.location",
             "object-store source metadata fetch currently supports only S3 URIs",
         )

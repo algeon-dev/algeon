@@ -33,7 +33,7 @@ use query_engine::{
 mod code;
 
 use code::code_for_native_error;
-pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code};
+pub use code::{ErrorCode, ErrorKind, ErrorStatus};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -58,20 +58,53 @@ const MAX_LOG_SAFE_FACT_VALUE_BYTES: usize = 256;
 const MAX_LOG_SAFE_FACTS_RENDERED_BYTES: usize = 2_048;
 pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
 
-/// Caller-visible strict-rejection schema details.
+/// Caller schema detail an error names.
 ///
-/// These fact keys name the query caller's own schema detail (unsupported
-/// column name, Arrow type, and role) for actionable validation failures such
-/// as [`ErrorCode::FinalPlanRequirementUnsatisfied`]. They are deliberately
-/// *not* [`Error::with_log_safe_fact`] disclosure: values may contain user
-/// identifiers, so operational logs and [`fmt::Debug`] must never carry them.
-/// The server projection owner retains them explicitly for query-caller
-/// surfaces (Flight metadata allowlist, query-stats capture) alongside the
-/// log-safe projection, and composes them into the Flight status text because
-/// [`Error::message`] omits them. Do not extend this list without defining the
-/// disclosure contract of each projection that consumes it.
-const CLIENT_SCHEMA_DETAIL_FACT_KEYS: &[&str] =
-    &["unsupported_column", "unsupported_column_type", "unsupported_column_role"];
+/// The values name the query caller's own columns and Arrow types (nested
+/// types print field names), so they never enter operational logs,
+/// [`fmt::Debug`], or [`Error::message`]. The Flight status text, the Flight
+/// metadata allowlist, and query-stats capture read them from here.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ClientDetail {
+    /// A column whose Arrow type the configured GPU execution requirement
+    /// cannot execute.
+    UnsupportedColumn { name: String, data_type: String, role: &'static str },
+    /// A relation field whose Arrow type a GPU function rejects.
+    RelationField { field: String, data_type: String },
+}
+
+impl ClientDetail {
+    /// The detail as wire facts, under the keys query stats and Flight
+    /// metadata carry.
+    pub fn entries(&self) -> Vec<(&'static str, &str)> {
+        match self {
+            Self::UnsupportedColumn { name, data_type, role } => vec![
+                ("unsupported_column", name.as_str()),
+                ("unsupported_column_type", data_type.as_str()),
+                ("unsupported_column_role", role),
+            ],
+            Self::RelationField { field, data_type } => {
+                vec![("field", field.as_str()), ("actual_type", data_type.as_str())]
+            },
+        }
+    }
+
+    /// The wire fact `key` of this detail.
+    pub fn value(&self, key: &str) -> Option<&str> {
+        self.entries().into_iter().find_map(|(entry, value)| (entry == key).then_some(value))
+    }
+}
+
+impl fmt::Debug for ClientDetail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedColumn { role, .. } => {
+                f.debug_struct("UnsupportedColumn").field("role", role).finish_non_exhaustive()
+            },
+            Self::RelationField { .. } => f.debug_struct("RelationField").finish_non_exhaustive(),
+        }
+    }
+}
 
 /// DataFusion error inspection helpers provided by algeon-datafusion.
 pub trait DataFusionErrorExt {
@@ -306,42 +339,28 @@ impl Facts {
 
     /// Retained entries for query-caller-visible capture (query stats).
     ///
-    /// Combines the log-safe operational projection with the explicitly
-    /// caller-visible schema details from the crate-private
-    /// `CLIENT_SCHEMA_DETAIL_FACT_KEYS` allowlist.
-    /// Detail values are raw caller schema identifiers: they are sanitized
-    /// and bounded exactly like log-safe values, but their presence here is
-    /// an explicit per-key disclosure choice, not a general log-safety claim.
-    /// A single `error_facts_truncated` marker covers truncation in either
-    /// projection. Operational logs and [`fmt::Debug`] keep using
-    /// [`Self::log_safe_projection`] without these details.
-    pub fn retained_capture_entries(&self) -> Vec<(String, String)> {
+    /// Combines the log-safe operational projection with the error's
+    /// [`ClientDetail`]. Detail values are raw caller schema identifiers: they
+    /// are sanitized and bounded exactly like log-safe values, but their
+    /// presence here is a disclosure to the query caller, not a log-safety
+    /// claim. A single `error_facts_truncated` marker covers truncation in
+    /// either projection. Operational logs and [`fmt::Debug`] keep using
+    /// [`Self::log_safe_projection`] without the detail.
+    pub fn retained_capture_entries(&self, client_detail: Option<&ClientDetail>) -> Vec<(String, String)> {
         let safe = self.log_safe_projection();
-        let (mut details, details_truncated) = self.client_detail_entries();
+        let mut truncated = safe.truncated;
         let mut entries =
             safe.entries.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect::<Vec<_>>();
-        entries.append(&mut details);
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        if safe.truncated || details_truncated {
-            entries.push((ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string()));
-            entries.sort_by(|left, right| left.0.cmp(&right.0));
-        }
-        entries
-    }
-
-    fn client_detail_entries(&self) -> (Vec<(String, String)>, bool) {
-        let mut entries = Vec::with_capacity(CLIENT_SCHEMA_DETAIL_FACT_KEYS.len());
-        let mut truncated = false;
-        for key in CLIENT_SCHEMA_DETAIL_FACT_KEYS {
-            let Some(raw) = self.values.get(*key).filter(|fact| !fact.log_safe).map(|fact| fact.value.as_str()) else {
-                continue;
-            };
-            let sanitized = sanitize_log_text(raw);
-            let (value, value_truncated) = truncate_with_marker(&sanitized, MAX_LOG_SAFE_FACT_VALUE_BYTES);
+        for (key, raw) in client_detail.map(ClientDetail::entries).unwrap_or_default() {
+            let (value, value_truncated) = truncate_with_marker(&sanitize_log_text(raw), MAX_LOG_SAFE_FACT_VALUE_BYTES);
             truncated |= value_truncated;
             entries.push((key.to_string(), value));
         }
-        (entries, truncated)
+        if truncated {
+            entries.push((ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string()));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
     }
 }
 
@@ -441,6 +460,7 @@ pub struct Error {
     operation: &'static str,
     message: String,
     facts: Facts,
+    client_detail: Option<Box<ClientDetail>>,
     source: Option<BoxedSourceError>,
 }
 
@@ -617,7 +637,7 @@ impl Error {
         let message = message.into();
         let operation = if operation.is_empty() { FALLBACK_OPERATION } else { operation };
         let message = if message.is_empty() { FALLBACK_MESSAGE.to_string() } else { message };
-        Self { code, operation, message, facts: Facts::new(), source: None }
+        Self { code, operation, message, facts: Facts::new(), client_detail: None, source: None }
     }
 
     /// Adds one machine-readable fact.
@@ -646,11 +666,8 @@ impl Error {
     /// opt in. Ordinary and externally supplied facts must use
     /// [`Self::with_fact`] and remain hidden by default.
     ///
-    /// Caller-visible schema details (for example strict-rejection column
-    /// names) are also [`Self::with_fact`] facts, never log-safe ones, even
-    /// though the server projection owner retains them explicitly for
-    /// query-caller surfaces. Operational logs must not carry user
-    /// identifiers to make a document claim true. The reserved
+    /// Caller schema details (for example strict-rejection column names) are
+    /// a [`ClientDetail`], never log-safe facts. The reserved
     /// `error_facts_truncated` key remains available through raw typed lookup,
     /// but cannot be opted into the projection; only the projection itself may
     /// emit that retained marker.
@@ -659,6 +676,14 @@ impl Error {
     #[must_use]
     pub fn with_log_safe_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.facts.insert_log_safe(key, value.to_string());
+        self
+    }
+
+    /// Attaches the caller schema detail this error names, when none is
+    /// attached yet.
+    #[must_use]
+    pub fn with_client_detail(mut self, detail: ClientDetail) -> Self {
+        self.client_detail.get_or_insert_with(|| Box::new(detail));
         self
     }
 
@@ -853,6 +878,11 @@ impl Error {
     }
 
     /// Returns the underlying source error when one was attached.
+    /// Caller schema detail this error names.
+    pub fn client_detail(&self) -> Option<&ClientDetail> {
+        self.client_detail.as_deref()
+    }
+
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
@@ -1197,7 +1227,7 @@ mod tests {
     #[test]
     fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
         let native = QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedPipelineContract,
             "query_engine.admission.composed_consumer",
             "a composed graph attempt lacks a complete ordered memory schedule",
         )
@@ -1466,14 +1496,17 @@ mod tests {
             "algeon_datafusion.test.strict_capture",
             "strict rejection probe",
         )
-        .with_fact("unsupported_column", "countDetail")
-        .with_fact("unsupported_column_type", "List(Int64)")
+        .with_client_detail(ClientDetail::UnsupportedColumn {
+            name: "countDetail".to_string(),
+            data_type: "List(Int64)".to_string(),
+            role: "projected",
+        })
         .with_log_safe_fact("reason", "unsupported_type");
 
         let logs = error.facts().log_safe_projection().rendered().unwrap_or_default();
         assert!(!logs.contains("countDetail"), "operational logs must not carry caller schema detail: {logs}");
 
-        let retained = error.facts().retained_capture_entries();
+        let retained = error.facts().retained_capture_entries(error.client_detail());
         assert!(
             retained.contains(&("unsupported_column".to_string(), "countDetail".to_string())),
             "query-caller capture must retain the strict-rejection detail: {retained:?}"

@@ -139,7 +139,7 @@ impl QueryService {
             return Ok(AttemptRequirement::empty());
         }
         Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::InvalidPlan,
             "query_engine.query_service.admission",
             "an explicit attempt requirement is required by the installed device capability profiles",
         )
@@ -232,7 +232,7 @@ impl QueryService {
         required_capabilities: &[ExecutionCapability],
     ) -> QueryError {
         QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.query_service.admission",
             "no installed device supports every required native capability",
         )

@@ -6,14 +6,14 @@ use super::{
     JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
     PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource,
-    ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns,
-    concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side, join_keys_for_side,
-    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
-    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
-    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
-    record_partitioned_join_operator_metrics, record_streamed_partitioned_hash_join_metrics,
-    release_partitioned_join_side, run_partitioned_join_driver, stream_bounded_join_leaf_local_parquet_source_serial,
-    unsupported_bounded_shape, validate_partitioned_hash_equi_join,
+    ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, bounded_invariant_violation,
+    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side,
+    join_keys_for_side, materialize_compiled_keyed_equality_join_indices_with_preflight,
+    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partitioned_join_partition_count,
+    partitioned_join_target_bytes_for_context, partitioned_streaming_probe_supported,
+    prepare_bounded_join_side_input_from_resident_frame, probe_side, record_partitioned_join_operator_metrics,
+    record_streamed_partitioned_hash_join_metrics, release_partitioned_join_side, run_partitioned_join_driver,
+    stream_bounded_join_leaf_local_parquet_source_serial, validate_partitioned_hash_equi_join,
 };
 use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
 
@@ -189,7 +189,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_partitioned_hash_equi_join(node)?;
     if !partitioned_streaming_probe_supported(node) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
@@ -309,7 +309,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_partitioned_hash_equi_join(node)?;
     if !partitioned_streaming_probe_supported(node) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
@@ -384,7 +384,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     if !partitioned_streaming_probe_supported(node) {
         inputs.release_all(execution);
         release_partitioned_join_side(build.partitioned);
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
             "compiled_join_strategy_unsupported",
         )
@@ -830,7 +830,7 @@ fn partitioned_probe_one_chunk(
             // Split-build single-chunk probes always return lazy; any other
             // variant would mean the strategy changed under us.
             release_bounded_compiled_join_probe_state(lane_execution, other);
-            return Err(unsupported_bounded_shape(
+            return Err(bounded_invariant_violation(
                 "partitioned parallel probe expected a lazy stream for its chunk",
                 "partitioned_parallel_probe_unexpected_state",
             ));

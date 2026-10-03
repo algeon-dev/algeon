@@ -207,7 +207,7 @@ fn admitted_context_gate_rejects_changed_scope_evidence() {
             .context()
             .validate_admitted_plan_capabilities(&changed_plan)
             .expect_err("a changed plan must not reuse admitted evidence");
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.code(), QueryErrorCode::InternalInvariantViolation);
         assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
 
         drop(admitted);
@@ -234,7 +234,7 @@ fn placement_only_service_context_fails_closed_without_plan_evidence() {
         .context()
         .validate_admitted_plan_capabilities(&plan)
         .expect_err("service execution requires admitted plan evidence");
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::InternalInvariantViolation);
     assert_eq!(error.fact_value("reason"), Some("admitted_capability_evidence_missing"));
 }
 

@@ -8,9 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     capability::{
-        CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-        CompiledJoinExecutionStrategy, EdgeConsumer, KeyedHashJoinStrategyOptions, keyed_hash_join_capable,
-        keyed_residual_left_match_join_capable,
+        CompiledJoinExecutionStrategy, EdgeConsumer, KeyedHashJoinStrategyOptions, Reason, Rejection, RejectionOwner,
+        keyed_hash_join_capable, keyed_residual_left_match_join_capable,
     },
     expr::{Expr, SortExpr},
     pipeline::model::{
@@ -32,7 +31,7 @@ pub(super) fn resolve_task_and_resource_contracts(
     tasks: Vec<PipelineTask>,
     resources: Vec<ResidentResource>,
     edges: &[PipelineEdge],
-) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), CapabilityRejectionProjection> {
+) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), Rejection> {
     let graph = ContractGraph { plan, keyed_hash_join, tasks, resources, edges };
     let graph = graph.with_task_contracts();
     let graph = graph.with_resource_contracts();
@@ -144,7 +143,7 @@ impl ContractGraph<'_> {
         }
     }
 
-    fn into_parts(self) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), CapabilityRejectionProjection> {
+    fn into_parts(self) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), Rejection> {
         if let Some(rejection) = self.exclusive_consumer_rejection() {
             return Err(rejection);
         }
@@ -154,7 +153,7 @@ impl ContractGraph<'_> {
     /// A task that moves its whole input out of the schedule cannot share it
     /// with a second consumer; the compiler has no conversion that gives both
     /// consumers a correct payload.
-    fn exclusive_consumer_rejection(&self) -> Option<CapabilityRejectionProjection> {
+    fn exclusive_consumer_rejection(&self) -> Option<Rejection> {
         let resource = self.resources.iter().find(|resource| {
             resource.consumers().len() > 1
                 && resource
@@ -168,15 +167,12 @@ impl ContractGraph<'_> {
             .iter()
             .filter_map(|consumer| self.task(*consumer))
             .find(|consumer| task_consumes_input_exclusively(consumer))?;
-        Some(CapabilityRejectionProjection {
-            owner: CapabilityRejectionOwner::Edge {
+        Some(Rejection {
+            owner: RejectionOwner::Edge {
                 producer: producer.plan_node()?,
                 consumer: EdgeConsumer::Node(consumer.plan_node()?),
             },
-            category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-            contract_scope: CapabilityScope::Edge,
-            boundary: "compiled_pipeline",
-            reason: "consumer_requires_exclusive_input",
+            reason: Reason::ConsumerRequiresExclusiveInput,
             facts: BTreeMap::from([
                 ("producer_task", producer.id().to_string()),
                 ("producer_task_kind", producer.kind().as_str().to_string()),

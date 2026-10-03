@@ -12,8 +12,8 @@ use tonic::{
 
 use crate::server::{
     adapter_error::{
-        DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
-        Facts, FailedStatement, classify, datafusion_error_human_message,
+        ClientDetail, DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics,
+        ErrorStatus, Facts, FailedStatement, classify, datafusion_error_human_message,
     },
     observability::CapturedError,
 };
@@ -245,22 +245,28 @@ impl ServerError {
 }
 
 fn adapter_error_with_message(message: String, source: Error) -> Error {
-    let facts = source.facts().clone();
-    Error::new(source.code(), source.operation(), message).with_preserved_facts(facts).with_source(source)
+    with_message(&source, &message).with_source(source)
 }
 
 fn server_error_from_datafusion_error(message: String, source: DataFusionError) -> Error {
-    if let Some((code, operation, facts)) = source
-        .find_algeon_error()
-        .map(|adapter_source| (adapter_source.code(), adapter_source.operation(), adapter_source.facts().clone()))
-    {
-        return Error::new(code, operation, message).with_preserved_facts(facts).with_source(source);
+    if let Some(error) = source.find_algeon_error().map(|adapter_source| with_message(adapter_source, &message)) {
+        return error.with_source(source);
     }
     let code = classify(&source, FailedStatement::Other);
     let datafusion_error = datafusion_error_variant(&source);
     Error::new(code, "algeon_datafusion.server.session", message)
         .with_log_safe_fact("datafusion_error", datafusion_error)
         .with_source(source)
+}
+
+/// `source`'s classification, facts, and client detail under a server
+/// message.
+fn with_message(source: &Error, message: &str) -> Error {
+    let error = Error::new(source.code(), source.operation(), message).with_preserved_facts(source.facts().clone());
+    match source.client_detail() {
+        Some(detail) => error.with_client_detail(detail.clone()),
+        None => error,
+    }
 }
 
 #[derive(Debug)]
@@ -532,13 +538,12 @@ fn client_status_message(error: &Error) -> String {
             "host memory pool exhausted while processing the request: {}. Reduce query resource usage; retrying the same request unchanged may fail again",
             error.message()
         ),
-        ErrorCode::DeviceOutOfMemory
-        | ErrorCode::DeviceAllocationFailed
-        | ErrorCode::MemoryReservationFailed
-        | ErrorCode::CudfResourceExhausted => format!(
-            "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
-            error.message()
-        ),
+        ErrorCode::DeviceOutOfMemory | ErrorCode::DeviceAllocationFailed | ErrorCode::MemoryReservationFailed => {
+            format!(
+                "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
+                error.message()
+            )
+        },
         _ if error.kind() == ErrorKind::ResourceExhausted => format!(
             "resource exhausted while processing the request: {}. Change the request to use fewer resources; do not retry the same request unchanged",
             error.message()
@@ -558,25 +563,17 @@ fn client_status_message(error: &Error) -> String {
 /// identifiers.
 ///
 /// Owners keep column and field names and their Arrow types out of
-/// `Error::message()`, which the boundary log records verbatim. The values
-/// travel as ordinary facts and are composed here, so they reach the query
-/// caller and never the log. Returns `None` when the error does not carry the
-/// complete fact set of one of these rejections.
+/// `Error::message()`, which the boundary log records verbatim, and attach
+/// them as a [`ClientDetail`]. The text is composed here, so the identifiers
+/// reach the query caller and never the log.
 fn client_schema_detail_message(error: &Error) -> Option<String> {
-    match error.code() {
-        ErrorCode::FinalPlanRequirementUnsatisfied => Some(format!(
-            "GPU execution does not support {} column `{}` with Arrow type `{}`",
-            error.fact_value("unsupported_column_role")?,
-            error.fact_value("unsupported_column")?,
-            error.fact_value("unsupported_column_type")?,
-        )),
-        ErrorCode::UnsupportedType => Some(format!(
-            "{} (field '{}' has Arrow type `{}`)",
-            error.message(),
-            error.fact_value("field")?,
-            error.fact_value("actual_type")?,
-        )),
-        _ => None,
+    match error.client_detail()? {
+        ClientDetail::UnsupportedColumn { name, data_type, role } => {
+            Some(format!("GPU execution does not support {role} column `{name}` with Arrow type `{data_type}`"))
+        },
+        ClientDetail::RelationField { field, data_type } => {
+            Some(format!("{} (field '{field}' has Arrow type `{data_type}`)", error.message()))
+        },
     }
 }
 
@@ -625,27 +622,14 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
         }));
     }
     let mut omitted: Vec<&'static str> = Vec::new();
-    insert_fact_metadata(
-        status.metadata_mut(),
-        UNSUPPORTED_COLUMN_METADATA_KEY,
-        error,
-        "unsupported_column",
-        &mut omitted,
-    );
-    insert_fact_metadata(
-        status.metadata_mut(),
-        UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
-        error,
-        "unsupported_column_type",
-        &mut omitted,
-    );
-    insert_fact_metadata(
-        status.metadata_mut(),
-        UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
-        error,
-        "unsupported_column_role",
-        &mut omitted,
-    );
+    for (metadata_key, detail_key) in [
+        (UNSUPPORTED_COLUMN_METADATA_KEY, "unsupported_column"),
+        (UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "unsupported_column_type"),
+        (UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "unsupported_column_role"),
+    ] {
+        let value = error.client_detail().and_then(|detail| detail.value(detail_key));
+        insert_metadata_value(status.metadata_mut(), metadata_key, detail_key, value, &mut omitted);
+    }
     insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option", &mut omitted);
@@ -677,7 +661,17 @@ fn insert_fact_metadata(
     fact_key: &'static str,
     omitted: &mut Vec<&'static str>,
 ) {
-    let Some(value) = error.fact_value(fact_key) else {
+    insert_metadata_value(metadata, metadata_key, fact_key, error.fact_value(fact_key), omitted);
+}
+
+fn insert_metadata_value(
+    metadata: &mut MetadataMap,
+    metadata_key: &'static str,
+    fact_key: &'static str,
+    value: Option<&str>,
+    omitted: &mut Vec<&'static str>,
+) {
+    let Some(value) = value else {
         return;
     };
     if !value.is_ascii() {
@@ -1035,7 +1029,11 @@ mod tests {
         let status = adapter_error_to_status(
             &Error::new(ErrorCode::InvalidRequest, TEST_OPERATION, "invalid request")
                 .with_log_safe_fact("log_classification", "request_shape")
-                .with_fact("unsupported_column", "countDetail"),
+                .with_client_detail(ClientDetail::UnsupportedColumn {
+                    name: "countDetail".to_string(),
+                    data_type: "Int64".to_string(),
+                    role: "projected",
+                }),
         );
 
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
@@ -1376,7 +1374,6 @@ mod tests {
             (ErrorCode::DeviceOutOfMemory, "sealed attempt report"),
             (ErrorCode::DeviceAllocationFailed, "sealed attempt report"),
             (ErrorCode::MemoryReservationFailed, "sealed attempt report"),
-            (ErrorCode::CudfResourceExhausted, "sealed attempt report"),
         ];
 
         for (code, expected) in cases {
@@ -1506,9 +1503,11 @@ mod tests {
                 "GPU execution does not support a projected column with an unsupported Arrow type",
             )
             .with_fact("reason", "unsupported_type")
-            .with_fact("unsupported_column", "countDetail")
-            .with_fact("unsupported_column_type", "List(Decimal128(10, 2))")
-            .with_fact("unsupported_column_role", "projected")
+            .with_client_detail(ClientDetail::UnsupportedColumn {
+                name: "countDetail".to_string(),
+                data_type: "List(Decimal128(10, 2))".to_string(),
+                role: "projected",
+            })
             .into(),
             TEST_OPERATION,
             FailedStatement::Other,
@@ -1619,9 +1618,11 @@ mod tests {
             "GPU execution does not support a projected column with an unsupported Arrow type",
         )
         .with_log_safe_fact("reason", "unsupported_type")
-        .with_fact("unsupported_column", column)
-        .with_fact("unsupported_column_type", column_type)
-        .with_fact("unsupported_column_role", "projected")
+        .with_client_detail(ClientDetail::UnsupportedColumn {
+            name: column.to_string(),
+            data_type: column_type.to_string(),
+            role: "projected",
+        })
     }
 
     #[test]
@@ -1779,6 +1780,7 @@ mod tests {
             NotSupportedDetail {
                 column: Some(UnsupportedColumnDetail::new(COLUMN, COLUMN_TYPE, "projected")),
                 expression: None,
+                admission: None,
             },
         );
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
@@ -1786,7 +1788,7 @@ mod tests {
             native::final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&report));
 
         assert!(!error.message().contains(COLUMN), "{}", error.message());
-        assert_eq!(error.fact_value("unsupported_column"), Some(COLUMN));
+        assert_eq!(error.client_detail().and_then(|detail| detail.value("unsupported_column")), Some(COLUMN));
         assert!(!error.facts().log_safe_projection().rendered().unwrap_or_default().contains(COLUMN));
 
         let (status, logs) = with_captured_logs(|| adapter_error_to_status(&error));
@@ -1813,17 +1815,18 @@ mod tests {
             required_feature: "cuml",
             feature_disabled_message: "cuML algorithm execution requires the cuml Cargo feature",
         };
-        let error = context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32");
-        let adapter = error.find_algeon_error().expect("typed adapter error");
+        let adapter = context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32");
 
         assert_eq!(adapter.code(), ErrorCode::UnsupportedType);
         assert!(!adapter.message().contains(FIELD), "{}", adapter.message());
         assert!(adapter.message().contains("Float32"), "{}", adapter.message());
-        assert_eq!(adapter.fact_value("field"), Some(FIELD));
-        assert_eq!(adapter.fact_value("actual_type"), Some(ACTUAL_TYPE));
+        assert_eq!(
+            adapter.client_detail(),
+            Some(&ClientDetail::RelationField { field: FIELD.to_string(), data_type: ACTUAL_TYPE.to_string() })
+        );
 
         let (status, logs) = with_captured_logs(|| {
-            datafusion_error_to_status_for_operation(error, TEST_OPERATION, FailedStatement::Other)
+            datafusion_error_to_status_for_operation(adapter.into(), TEST_OPERATION, FailedStatement::Other)
         });
 
         assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");

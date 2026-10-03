@@ -125,7 +125,7 @@ fn reader_decimal_type_metadata_error(
     detail: Option<&'static str>,
 ) -> QueryError {
     let mut error = QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedType,
         "query_engine.source_metadata.reader_decimal_type",
         "remote decimal reader predicates require Parquet footer reader type metadata",
     )

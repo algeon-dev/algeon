@@ -1,4 +1,3 @@
-use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use query_engine::{
     admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
@@ -8,7 +7,11 @@ use query_engine::{
     rapids_backend::rapids_analysis_context,
 };
 
-use crate::{error::Error, native_exec::AlgeonNativeExecutionConfig, report::GpuCandidate};
+use crate::{
+    error::{Error, Result},
+    native_exec::AlgeonNativeExecutionConfig,
+    report::GpuCandidate,
+};
 
 /// Adapter-side capability-contract diagnostics collected during planning.
 ///
@@ -92,21 +95,27 @@ impl NativeCapabilityCompiledGraphDiagnostics {
 pub(super) fn native_admission_decision(
     plan: &QueryPlan,
     execution_config: &AlgeonNativeExecutionConfig,
-) -> DataFusionResult<AdmissionDecision> {
+) -> Result<AdmissionDecision> {
     admit(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
         execution_config.planning_policy(),
         rapids_analysis_context(execution_config.planning_policy()),
     )
-    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+    .map_err(|error| {
+        Error::from_native(
+            "algeon_datafusion.native.admission",
+            "native admission could not decide the candidate plan",
+            stamp_native_error_correlation(error, execution_config),
+        )
+    })
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(
     candidate: GpuCandidate,
     execution_config: &AlgeonNativeExecutionConfig,
     admission: &AdmittedPlan,
-) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
+) -> Result<NativeCapabilityContractDiagnostics> {
     let report = stamp_capability_report_correlation(
         CapabilityContractReport::from_admission(admission).map_err(|error| {
             capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
@@ -127,8 +136,8 @@ pub(super) fn rejected_plan_contract_diagnostics(
     candidate: GpuCandidate,
     execution_config: &AlgeonNativeExecutionConfig,
     rejection: &AdmissionRejection,
-) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
-    let blocking_contract = CapabilityDecisionRow::from_rejection_projection(0, rejection.projection())
+) -> Result<NativeCapabilityContractDiagnostics> {
+    let blocking_contract = CapabilityDecisionRow::from_rejection(0, rejection.rejection())
         .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(NativeCapabilityContractDiagnostics {
         accepted_candidates: Vec::new(),
@@ -136,13 +145,12 @@ pub(super) fn rejected_plan_contract_diagnostics(
     })
 }
 
-fn capability_contract_report_error(error: QueryError) -> DataFusionError {
+fn capability_contract_report_error(error: QueryError) -> Error {
     Error::from_native(
         "algeon_datafusion.native.capability_contract_diagnostics",
         "capability-contract diagnostics could not be built",
         error,
     )
-    .into()
 }
 
 fn stamp_capability_report_correlation(
@@ -185,7 +193,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::native_exec::SourceChunking;
+    use crate::{error::ErrorCode, native_exec::SourceChunking};
 
     #[test]
     fn bounded_decision_admits_under_the_configured_planning_policy() {
@@ -216,5 +224,35 @@ mod tests {
         let admission = decision.admission().expect("a literal inner join is admitted");
 
         assert_eq!(admission.policy(), execution_config.planning_policy());
+    }
+
+    #[test]
+    fn malformed_candidate_fails_instead_of_falling_back() {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("literal batch");
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        let right =
+            builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+        let key = |input| ColumnRef::input(input, "k", "k");
+        // The left key names the right input: the IR is malformed, so no
+        // DataFusion fallback can be correct for it.
+        let join = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(1), key(1))])
+                .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
+            Arc::clone(&schema),
+        );
+        let plan = builder.finish_with_host_sink(join);
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
+
+        let error = native_admission_decision(&plan, &execution_config).expect_err("a malformed plan is not decidable");
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
     }
 }

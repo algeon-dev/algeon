@@ -17,6 +17,7 @@ use super::{
         ScheduleConstraint, SubgraphInvariant, SubgraphInvariantKind,
     },
     node::produced_properties,
+    rejection::Reason,
 };
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
@@ -215,7 +216,7 @@ pub(super) fn solve_build_before_probe_invariant(
     };
     if build_nodes.contains(&join_id) || probe_nodes.contains(&join_id) {
         return CapabilityDecision::rejected(
-            "build_before_probe_cycle",
+            Reason::BuildBeforeProbeCycle,
             [
                 ("join_id", join_id.to_string()),
                 ("build_input", build_input.to_string()),
@@ -241,11 +242,14 @@ pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeC
 
     for producer in reachable {
         let Some(node) = plan.node(producer) else {
-            return CapabilityDecision::rejected("resident_lifetime_missing_node", [("node_id", producer.to_string())]);
+            return CapabilityDecision::rejected(
+                Reason::ResidentLifetimeMissingNode,
+                [("node_id", producer.to_string())],
+            );
         };
         if !produced_properties(node).contains(&ProducedProperty::Resident) {
             return CapabilityDecision::rejected(
-                "resident_lifetime_requires_resident_frame",
+                Reason::ResidentLifetimeRequiresResidentFrame,
                 [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
             );
         }
@@ -257,7 +261,7 @@ pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeC
             }
             if matches!(edge.decision, CapabilityDecision::Rejected { .. }) {
                 return CapabilityDecision::rejected(
-                    "resident_lifetime_edge_rejected",
+                    Reason::ResidentLifetimeEdgeRejected,
                     [("producer", producer.to_string()), ("consumer", edge_consumer_fact(edge.consumer))],
                 );
             }
@@ -274,13 +278,13 @@ pub(super) fn solve_shared_resident_subplan_invariant(
 ) -> CapabilityDecision {
     let Some(node) = plan.node(producer) else {
         return CapabilityDecision::rejected(
-            "shared_resident_subplan_missing_node",
+            Reason::SharedResidentSubplanMissingNode,
             [("node_id", producer.to_string())],
         );
     };
     if !produced_properties(node).contains(&ProducedProperty::Resident) {
         return CapabilityDecision::rejected(
-            "shared_resident_subplan_requires_resident_frame",
+            Reason::SharedResidentSubplanRequiresResidentFrame,
             [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         );
     }
@@ -289,13 +293,13 @@ pub(super) fn solve_shared_resident_subplan_invariant(
             edges.iter().find(|edge| edge.producer == producer && edge.consumer == EdgeConsumer::Node(*consumer))
         else {
             return CapabilityDecision::rejected(
-                "shared_resident_subplan_missing_edge",
+                Reason::SharedResidentSubplanMissingEdge,
                 [("producer", producer.to_string()), ("consumer", consumer.to_string())],
             );
         };
         if matches!(edge.decision, CapabilityDecision::Rejected { .. }) {
             return CapabilityDecision::rejected(
-                "shared_resident_subplan_edge_rejected",
+                Reason::SharedResidentSubplanEdgeRejected,
                 [("producer", producer.to_string()), ("consumer", consumer.to_string())],
             );
         }
@@ -310,38 +314,38 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
 ) -> CapabilityDecision {
     let Some(producer) = plan.node(shared_producer) else {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_missing_node",
+            Reason::AggregateSharedProducerMissingNode,
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
     let Some(aggregate_node) = plan.node(aggregate_id) else {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_missing_aggregate",
+            Reason::AggregateSharedProducerMissingAggregate,
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
     let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_consumer_not_aggregate",
+            Reason::AggregateSharedProducerConsumerNotAggregate,
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
     if !produced_properties(producer).contains(&ProducedProperty::Resident) {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_requires_resident_frame",
+            Reason::AggregateSharedProducerRequiresResidentFrame,
             [("shared_producer", shared_producer.to_string())],
         );
     }
 
     let Some((peeled_input, _projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input) else {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_input_lineage_unresolved",
+            Reason::AggregateSharedProducerInputLineageUnresolved,
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
     if peeled_input != shared_producer {
         return CapabilityDecision::rejected(
-            "aggregate_shared_producer_requires_dataflow_identity",
+            Reason::AggregateSharedProducerRequiresDataflowIdentity,
             [
                 ("shared_producer", shared_producer.to_string()),
                 ("aggregate_id", aggregate_id.to_string()),
@@ -361,7 +365,7 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
         };
         if !producer_lineages.contains(&input_lineage) {
             return CapabilityDecision::rejected(
-                "aggregate_shared_producer_requires_input_lineage",
+                Reason::AggregateSharedProducerRequiresInputLineage,
                 [
                     ("shared_producer", shared_producer.to_string()),
                     ("aggregate_id", aggregate_id.to_string()),
@@ -376,7 +380,7 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
 fn output_lineages_for_node(plan: &QueryPlan, node_id: NodeId) -> Result<Vec<OutputLineage>, CapabilityDecision> {
     let Some(node) = plan.node(node_id) else {
         return Err(CapabilityDecision::rejected(
-            "aggregate_shared_producer_missing_node",
+            Reason::AggregateSharedProducerMissingNode,
             [("shared_producer", node_id.to_string())],
         ));
     };
@@ -390,19 +394,19 @@ pub(super) fn solve_projection_transparent_residency_invariant(
 ) -> CapabilityDecision {
     let Some(producer) = plan.node(peeled_producer) else {
         return CapabilityDecision::rejected(
-            "projection_transparent_residency_missing_producer",
+            Reason::ProjectionTransparentResidencyMissingProducer,
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
     };
     let Some(projection) = plan.node(projection_id) else {
         return CapabilityDecision::rejected(
-            "projection_transparent_residency_missing_projection",
+            Reason::ProjectionTransparentResidencyMissingProjection,
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
     };
     if !matches!(projection.kind, PlanNode::Projection(_)) {
         return CapabilityDecision::rejected(
-            "projection_transparent_residency_consumer_not_projection",
+            Reason::ProjectionTransparentResidencyConsumerNotProjection,
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
     }
@@ -410,7 +414,7 @@ pub(super) fn solve_projection_transparent_residency_invariant(
         || !produced_properties(projection).contains(&ProducedProperty::Resident)
     {
         return CapabilityDecision::rejected(
-            "projection_transparent_residency_requires_resident_frames",
+            Reason::ProjectionTransparentResidencyRequiresResidentFrames,
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
     }
@@ -424,13 +428,13 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
 ) -> CapabilityDecision {
     let Some(producer) = plan.node(peeled_producer) else {
         return CapabilityDecision::rejected(
-            "resident_unary_chain_missing_producer",
+            Reason::ResidentUnaryChainMissingProducer,
             [("peeled_producer", peeled_producer.to_string())],
         );
     };
     if !produced_properties(producer).contains(&ProducedProperty::Resident) {
         return CapabilityDecision::rejected(
-            "resident_unary_chain_requires_resident_producer",
+            Reason::ResidentUnaryChainRequiresResidentProducer,
             [("peeled_producer", peeled_producer.to_string())],
         );
     }
@@ -438,7 +442,7 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
     for chain_id in chain_ids_from_consumer.iter().rev() {
         let Some(chain_node) = plan.node(*chain_id) else {
             return CapabilityDecision::rejected(
-                "resident_unary_chain_missing_node",
+                Reason::ResidentUnaryChainMissingNode,
                 [("node_id", chain_id.to_string()), ("peeled_producer", peeled_producer.to_string())],
             );
         };
@@ -457,14 +461,14 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
             | PlanNode::VectorAlgorithm(_)
             | PlanNode::MlAlgorithm(_) => {
                 return CapabilityDecision::rejected(
-                    "resident_unary_chain_requires_filter_projection_nodes",
+                    Reason::ResidentUnaryChainRequiresFilterProjectionNodes,
                     [("node_id", chain_id.to_string()), ("operator", node_operator_fact(&chain_node.kind).to_string())],
                 );
             },
         };
         if actual_input != expected_input {
             return CapabilityDecision::rejected(
-                "resident_unary_chain_requires_connected_nodes",
+                Reason::ResidentUnaryChainRequiresConnectedNodes,
                 [
                     ("node_id", chain_id.to_string()),
                     ("expected_input", expected_input.to_string()),
@@ -474,7 +478,7 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
         }
         if !produced_properties(chain_node).contains(&ProducedProperty::Resident) {
             return CapabilityDecision::rejected(
-                "resident_unary_chain_requires_resident_nodes",
+                Reason::ResidentUnaryChainRequiresResidentNodes,
                 [("node_id", chain_id.to_string()), ("peeled_producer", peeled_producer.to_string())],
             );
         }
@@ -493,7 +497,7 @@ pub(super) fn solve_residual_uses_both_inputs_invariant(join_id: NodeId, join: &
         return CapabilityDecision::Satisfied;
     }
     CapabilityDecision::rejected(
-        "residual_does_not_reference_both_inputs",
+        Reason::ResidualDoesNotReferenceBothInputs,
         [
             ("join_id", join_id.to_string()),
             ("references_left", references_left.to_string()),

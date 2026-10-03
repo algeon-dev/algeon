@@ -1,6 +1,6 @@
 use std::{any::Any, sync::Arc};
 
-use datafusion::{catalog::Session, execution::context::SessionConfig};
+use datafusion::{catalog::Session, common::DataFusionError, execution::context::SessionConfig};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -119,11 +119,12 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
             }
         }
         let values = request.options.as_object().cloned().unwrap_or_default();
-        let result = options_from_named_values(operation, &inputs, values).and_then(|json| {
-            let model =
-                bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &json)?)?;
-            CumlLogicalNode::try_new_with_model(operation, inputs, &json, model)
-        });
+        let result =
+            options_from_named_values(operation, &inputs, values).map_err(DataFusionError::from).and_then(|json| {
+                let model =
+                    bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &json)?)?;
+                CumlLogicalNode::try_new_with_model(operation, inputs, &json, model)
+            });
         match result {
             Ok(node) => {
                 let canonical: Value =

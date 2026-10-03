@@ -1,8 +1,6 @@
 //! Structured validation errors shared by dense-relation SQL families.
 
-use datafusion::common::DataFusionError;
-
-use crate::error::{Error, ErrorCode};
+use crate::error::{ClientDetail, Error, ErrorCode};
 
 pub(crate) struct DenseRelationErrorContext {
     pub(crate) family: &'static str,
@@ -15,30 +13,21 @@ pub(crate) struct DenseRelationErrorContext {
 }
 
 impl DenseRelationErrorContext {
-    pub(crate) fn invalid_call(
-        &self,
-        operation: &'static str,
-        reason: &'static str,
-        message: impl Into<String>,
-    ) -> DataFusionError {
-        self.invalid_call_error(operation, reason, message).into()
-    }
-
     pub(crate) fn invalid_option(
         &self,
         operation: &'static str,
         reason: &'static str,
         argument: Option<&'static str>,
         message: impl Into<String>,
-    ) -> DataFusionError {
-        let error = self.invalid_call_error(operation, reason, message);
+    ) -> Error {
+        let error = self.invalid_call(operation, reason, message);
         match argument {
-            Some(argument) => error.with_log_safe_fact("argument", argument).into(),
-            None => error.into(),
+            Some(argument) => error.with_log_safe_fact("argument", argument),
+            None => error,
         }
     }
 
-    pub(crate) fn invalid_call_error(
+    pub(crate) fn invalid_call(
         &self,
         operation: &'static str,
         reason: &'static str,
@@ -54,8 +43,8 @@ impl DenseRelationErrorContext {
         operation: &'static str,
         relation_role: &'static str,
         key: String,
-    ) -> DataFusionError {
-        self.invalid_call_error(
+    ) -> Error {
+        self.invalid_call(
             operation,
             "input_ordering_key_not_projected",
             format!(
@@ -65,15 +54,9 @@ impl DenseRelationErrorContext {
         )
         .with_log_safe_fact("relation_role", relation_role)
         .with_fact("key", key)
-        .into()
     }
 
-    pub(crate) fn field_not_found(
-        &self,
-        operation: &'static str,
-        relation_role: &'static str,
-        field: &str,
-    ) -> DataFusionError {
+    pub(crate) fn field_not_found(&self, operation: &'static str, relation_role: &'static str, field: &str) -> Error {
         Error::new(
             ErrorCode::FieldNotFound,
             self.validate_schema_operation,
@@ -82,7 +65,6 @@ impl DenseRelationErrorContext {
         .with_log_safe_fact(self.operation_fact, operation)
         .with_log_safe_fact("relation_role", relation_role)
         .with_fact("field", field)
-        .into()
     }
 
     pub(crate) fn unsupported_type(
@@ -92,11 +74,11 @@ impl DenseRelationErrorContext {
         field: &str,
         actual: impl ToString,
         expected: impl ToString,
-    ) -> DataFusionError {
+    ) -> Error {
         let expected = expected.to_string();
-        // `field` and `actual_type` name the caller's own schema (nested Arrow
-        // types print field names), so they stay out of the logged message and
-        // the log-safe facts. The Flight status text composes them from the facts.
+        // The field and its type name the caller's own schema (nested Arrow
+        // types print field names), so they travel as client detail and stay
+        // out of the logged message and facts.
         Error::new(
             ErrorCode::UnsupportedType,
             self.validate_schema_operation,
@@ -104,10 +86,8 @@ impl DenseRelationErrorContext {
         )
         .with_log_safe_fact(self.operation_fact, operation)
         .with_log_safe_fact("relation_role", relation_role)
-        .with_fact("field", field)
-        .with_fact("actual_type", actual)
+        .with_client_detail(ClientDetail::RelationField { field: field.to_string(), data_type: actual.to_string() })
         .with_log_safe_fact("expected_type", expected)
-        .into()
     }
 
     /// Nullable feature/vector-element field rejection, with a remedy fact:
@@ -118,8 +98,8 @@ impl DenseRelationErrorContext {
         operation: &'static str,
         relation_role: &'static str,
         field: &str,
-    ) -> DataFusionError {
-        self.invalid_call_error(
+    ) -> Error {
+        self.invalid_call(
             operation,
             "nullable_feature_field",
             format!("{} {relation_role} feature field '{field}' must be non-nullable", self.family),
@@ -129,15 +109,13 @@ impl DenseRelationErrorContext {
             "wrap the column with COALESCE(column, <fallback>) or CAST a null-free expression; \
              WHERE column IS NOT NULL does not change schema nullability",
         )
-        .into()
     }
 
-    pub(crate) fn feature_disabled(&self, operation: &'static str) -> DataFusionError {
+    pub(crate) fn feature_disabled(&self, operation: &'static str) -> Error {
         Error::new(ErrorCode::UnsupportedOperator, self.execute_operation, self.feature_disabled_message)
             .with_log_safe_fact(self.operation_fact, operation)
             .with_log_safe_fact("reason", "required_feature_disabled")
             .with_log_safe_fact("required_feature", self.required_feature)
             .with_log_safe_fact("host_fallback", "disabled")
-            .into()
     }
 }

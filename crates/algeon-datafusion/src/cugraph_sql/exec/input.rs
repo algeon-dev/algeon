@@ -20,10 +20,10 @@ use query_engine::{
 
 use super::{
     AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode,
-    CugraphAlgorithmSpec, DataFusionError, Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame,
-    GpuResidentInputMap, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics, HostBatchCursorConfig,
-    MemoryConsumer, MemoryReservation, QueryExecutionRequest, QueryOutput, RecordBatch, RecordBatchStream,
-    RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt,
+    CugraphAlgorithmSpec, DataFusionError, DataFusionResult, Error, ErrorCode, ExecutionContext, ExecutionPlan,
+    GpuDataFrame, GpuResidentInputMap, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics,
+    HostBatchCursorConfig, MemoryConsumer, MemoryReservation, QueryExecutionRequest, QueryOutput, RecordBatch,
+    RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt,
     as_algeon_native_composed_exec, as_algeon_native_exec, counted_cudf_runtime, edge_source_output_rows,
     execute_gpu_resident_producer_with_context, execute_query_plan, finalize_graph_query_outcome,
     get_record_batch_memory_size, gpu_resident_producer, gpu_resident_producer_input_name, plan_contains_algeon_native,
@@ -143,13 +143,13 @@ impl CugraphInputRowBounds {
     pub(super) fn from_execution_plans(
         edge_source: &dyn ExecutionPlan,
         predicate_sources: &[Arc<dyn ExecutionPlan>],
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         Ok(Self {
             edge: edge_source_output_rows(edge_source)?,
             predicates: predicate_sources
                 .iter()
                 .map(|source| resident_side_input_output_rows(source.as_ref()))
-                .collect::<Result<Vec<_>>>()?,
+                .collect::<DataFusionResult<Vec<_>>>()?,
         })
     }
 
@@ -196,7 +196,7 @@ pub(super) async fn stage_cugraph_inputs(
     task_context: Arc<TaskContext>,
     cancellation: &ExecutionCancellation,
     max_staging_bytes: usize,
-) -> Result<StagedCugraphInputs> {
+) -> DataFusionResult<StagedCugraphInputs> {
     collect_cugraph_inputs(
         spec,
         edge_source,
@@ -208,6 +208,7 @@ pub(super) async fn stage_cugraph_inputs(
     )
     .await?
     .prepare_logical_inputs(spec)
+    .map_err(DataFusionError::from)
 }
 
 pub(super) async fn collect_cugraph_inputs(
@@ -218,13 +219,13 @@ pub(super) async fn collect_cugraph_inputs(
     cancellation: &ExecutionCancellation,
     max_input_staging_bytes: usize,
     max_output_staging_bytes: usize,
-) -> Result<CollectedCugraphInputs> {
+) -> DataFusionResult<CollectedCugraphInputs> {
     cancellation.check("algeon_datafusion.cugraph_sql.host_input_staging").map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.host_input_staging",
             "cuGraph host-input staging was cancelled before execution",
             error,
-        ))
+        )
     })?;
     let reservation = MemoryConsumer::new(CUGRAPH_HOST_INPUT_MEMORY_CONSUMER)
         .with_can_spill(false)
@@ -267,7 +268,7 @@ async fn stage_cugraph_source(
     max_staging_bytes: usize,
     staged_bytes: &AtomicUsize,
     reservation: &MemoryReservation,
-) -> Result<StagedCugraphSource> {
+) -> DataFusionResult<StagedCugraphSource> {
     if gpu_resident_producer(plan.as_ref()).is_some() {
         let plan = prepare_gpu_resident_producer_for_execution(plan, Arc::clone(&task_context)).await?;
         return Ok(StagedCugraphSource::Native { schema: plan.schema(), plan });
@@ -296,7 +297,7 @@ async fn stage_cugraph_source(
                 while let Some(batch) = tokio::select! {
                     batch = stream.try_next() => batch?,
                     error = cancellation.terminated(HOST_INPUT_STAGING) => {
-                        return Err(host_staging_cancelled(error));
+                        return Err(host_staging_cancelled(error).into());
                     },
                 } {
                     check_host_staging_cancellation(cancellation)?;
@@ -326,8 +327,8 @@ pub(super) fn check_host_staging_cancellation(cancellation: &ExecutionCancellati
     cancellation.check(HOST_INPUT_STAGING).map_err(host_staging_cancelled)
 }
 
-fn host_staging_cancelled(error: QueryError) -> DataFusionError {
-    DataFusionError::from(Error::from_native(HOST_INPUT_STAGING, "cuGraph host-input staging was cancelled", error))
+fn host_staging_cancelled(error: QueryError) -> Error {
+    Error::from_native(HOST_INPUT_STAGING, "cuGraph host-input staging was cancelled", error)
 }
 
 fn reserve_host_staging_batch(
@@ -353,18 +354,16 @@ fn reserve_host_staging_batch(
     };
     reservation.try_grow(batch_bytes).map_err(|source| {
         staged_bytes.fetch_sub(batch_bytes, Ordering::Relaxed);
-        DataFusionError::from(
-            Error::new(
-                ErrorCode::MemoryReservationFailed,
-                "algeon_datafusion.cugraph_sql.host_staging_reservation",
-                "DataFusion host memory pool denied cuGraph staging",
-            )
-            .with_fact("boundary", boundary)
-            .with_fact("source_kind", source_kind)
-            .with_fact("requested_bytes", batch_bytes)
-            .with_fact("staged_bytes", staged)
-            .with_source(source),
+        Error::new(
+            ErrorCode::MemoryReservationFailed,
+            "algeon_datafusion.cugraph_sql.host_staging_reservation",
+            "DataFusion host memory pool denied cuGraph staging",
         )
+        .with_fact("boundary", boundary)
+        .with_fact("source_kind", source_kind)
+        .with_fact("requested_bytes", batch_bytes)
+        .with_fact("staged_bytes", staged)
+        .with_source(source)
     })?;
     Ok(())
 }
@@ -375,7 +374,7 @@ pub(super) fn host_staging_limit_error(
     staged_bytes: usize,
     next_batch_bytes: usize,
     max_staging_bytes: usize,
-) -> DataFusionError {
+) -> Error {
     Error::new(
         ErrorCode::HostStagingLimitExceeded,
         "algeon_datafusion.cugraph_sql.host_staging_limit",
@@ -386,11 +385,10 @@ pub(super) fn host_staging_limit_error(
     .with_fact("staged_bytes", staged_bytes)
     .with_fact("next_batch_bytes", next_batch_bytes)
     .with_fact("max_staging_bytes", max_staging_bytes)
-    .into()
 }
 
 impl CollectedCugraphInputs {
-    pub(super) fn row_bounds(&self) -> Result<CugraphInputRowBounds> {
+    pub(super) fn row_bounds(&self) -> DataFusionResult<CugraphInputRowBounds> {
         cugraph_input_row_bounds(&self.edge, &self.predicates)
     }
 
@@ -409,7 +407,7 @@ impl CollectedCugraphInputs {
 }
 
 impl StagedCugraphInputs {
-    pub(super) fn row_bounds(&self) -> Result<CugraphInputRowBounds> {
+    pub(super) fn row_bounds(&self) -> DataFusionResult<CugraphInputRowBounds> {
         cugraph_input_row_bounds(&self.edge, &self.predicates)
     }
 
@@ -426,11 +424,11 @@ impl StagedCugraphInputs {
             .with_fact("reason", "admission_graph_plan_missing")
         })?;
         context.validate_admitted_plan_capabilities(graph_plan).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.cugraph_sql.admission",
                 "the admitted cuGraph graph plan does not match runtime execution",
                 error,
-            ))
+            )
         })
     }
 
@@ -439,7 +437,7 @@ impl StagedCugraphInputs {
         context: &ExecutionContext,
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
-    ) -> Result<UploadedCugraphInputs> {
+    ) -> DataFusionResult<UploadedCugraphInputs> {
         self.validate_admission(context)?;
         let Self {
             edge,
@@ -466,14 +464,14 @@ impl StagedCugraphInputs {
 fn cugraph_input_row_bounds(
     edge: &StagedCugraphSource,
     predicates: &[StagedCugraphSource],
-) -> Result<CugraphInputRowBounds> {
+) -> DataFusionResult<CugraphInputRowBounds> {
     Ok(CugraphInputRowBounds {
         edge: edge.row_upper_bound(StagedCugraphSourceRole::Edge)?,
         predicates: predicates
             .iter()
             .enumerate()
             .map(|(index, source)| source.row_upper_bound(StagedCugraphSourceRole::Predicate(index)))
-            .collect::<Result<Vec<_>>>()?,
+            .collect::<DataFusionResult<Vec<_>>>()?,
     })
 }
 
@@ -490,13 +488,15 @@ impl StagedCugraphSource {
         }
     }
 
-    fn row_upper_bound(&self, role: StagedCugraphSourceRole) -> Result<Option<u64>> {
+    fn row_upper_bound(&self, role: StagedCugraphSourceRole) -> DataFusionResult<Option<u64>> {
         match self {
             Self::Native { plan, .. } => match role {
                 StagedCugraphSourceRole::Edge => edge_source_output_rows(plan.as_ref()),
                 StagedCugraphSourceRole::Predicate(_) => resident_side_input_output_rows(plan.as_ref()),
             },
-            Self::Host { batches, .. } => checked_staged_host_rows(batches, role).map(Some),
+            Self::Host { batches, .. } => {
+                checked_staged_host_rows(batches, role).map(Some).map_err(DataFusionError::from)
+            },
         }
     }
 
@@ -506,7 +506,7 @@ impl StagedCugraphSource {
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
         admitted_edge_source_gpu_plan: Option<Arc<AdmittedPlan>>,
-    ) -> Result<GpuDataFrame> {
+    ) -> DataFusionResult<GpuDataFrame> {
         match self {
             Self::Native { plan, .. } => {
                 execute_edge_source_to_gpu(context, metrics, plan, task_context, admitted_edge_source_gpu_plan).await
@@ -523,11 +523,7 @@ fn checked_staged_host_rows(batches: &[RecordBatch], role: StagedCugraphSourceRo
     })
 }
 
-fn staged_host_row_overflow(
-    role: StagedCugraphSourceRole,
-    accumulated_rows: u64,
-    next_batch_rows: u64,
-) -> DataFusionError {
+fn staged_host_row_overflow(role: StagedCugraphSourceRole, accumulated_rows: u64, next_batch_rows: u64) -> Error {
     let mut error = Error::new(
         ErrorCode::SizeOverflow,
         "algeon_datafusion.cugraph_sql.host_input_rows",
@@ -545,7 +541,7 @@ fn staged_host_row_overflow(
     if let StagedCugraphSourceRole::Predicate(index) = role {
         error = error.with_fact("predicate_index", index);
     }
-    error.into()
+    error
 }
 
 #[derive(Clone, Debug)]
@@ -604,7 +600,7 @@ impl EagerCugraphHostOutput {
 }
 
 impl Stream for EagerCugraphHostOutput {
-    type Item = Result<RecordBatch>;
+    type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let batch = self.batches.get(self.next_batch).cloned();
@@ -639,11 +635,11 @@ pub(super) fn materialize_gpu_output_eagerly(
         ..HostBatchCursorConfig::default()
     };
     let mut cursor = handle.into_host_batch_cursor(cancellation, config).map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.host_output_cursor",
             "failed to create bounded cuGraph host-output cursor",
             error,
-        ))
+        )
     })?;
     let reservation = MemoryConsumer::new(CUGRAPH_HOST_OUTPUT_MEMORY_CONSUMER)
         .with_can_spill(false)
@@ -652,24 +648,22 @@ pub(super) fn materialize_gpu_output_eagerly(
     let mut batches = Vec::new();
     while let Some(prepared) = cursor.prepare_next_batch().map_err(|error| {
         if error.code() == QueryErrorCode::HostMaterializationLimitExceeded {
-            return DataFusionError::from(
-                Error::new(
-                    ErrorCode::HostStagingLimitExceeded,
-                    "algeon_datafusion.cugraph_sql.host_staging_limit",
-                    "one cuGraph host-output row exceeded the configured staging limit",
-                )
-                .with_fact("boundary", "output")
-                .with_fact("source_kind", "graph_result")
-                .with_fact("staged_bytes", staged_bytes)
-                .with_fact("max_staging_bytes", output_limit_bytes)
-                .with_source(error),
-            );
+            return Error::new(
+                ErrorCode::HostStagingLimitExceeded,
+                "algeon_datafusion.cugraph_sql.host_staging_limit",
+                "one cuGraph host-output row exceeded the configured staging limit",
+            )
+            .with_fact("boundary", "output")
+            .with_fact("source_kind", "graph_result")
+            .with_fact("staged_bytes", staged_bytes)
+            .with_fact("max_staging_bytes", output_limit_bytes)
+            .with_source(error);
         }
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.cugraph_sql.host_output_cursor",
             "failed to size the next bounded cuGraph host-output batch",
             error,
-        ))
+        )
     })? {
         let estimated_bytes = prepared.estimated_materialization_bytes();
         let Some(next_estimated_bytes) = staged_bytes.checked_add(estimated_bytes) else {
@@ -693,36 +687,32 @@ pub(super) fn materialize_gpu_output_eagerly(
             ));
         }
         reservation.try_grow(estimated_bytes).map_err(|source| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::MemoryReservationFailed,
-                    "algeon_datafusion.cugraph_sql.host_staging_reservation",
-                    "DataFusion host memory pool denied cuGraph output staging",
-                )
-                .with_fact("boundary", "output")
-                .with_fact("requested_bytes", estimated_bytes)
-                .with_fact("staged_bytes", staged_bytes)
-                .with_source(source),
+            Error::new(
+                ErrorCode::MemoryReservationFailed,
+                "algeon_datafusion.cugraph_sql.host_staging_reservation",
+                "DataFusion host memory pool denied cuGraph output staging",
             )
+            .with_fact("boundary", "output")
+            .with_fact("requested_bytes", estimated_bytes)
+            .with_fact("staged_bytes", staged_bytes)
+            .with_source(source)
         })?;
         let batch = cursor.materialize_prepared_batch(prepared).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.cugraph_sql.host_output_cursor",
                 "failed to materialize a reserved cuGraph host-output batch",
                 error,
-            ))
+            )
         })?;
         let actual_bytes = get_record_batch_memory_size(&batch);
         let surplus = estimated_bytes.checked_sub(actual_bytes).ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::CudfInvariantViolation,
-                    "algeon_datafusion.cugraph_sql.host_output_cursor",
-                    "materialized cuGraph Arrow output exceeded its pre-copy estimate",
-                )
-                .with_fact("estimated_bytes", estimated_bytes)
-                .with_fact("actual_bytes", actual_bytes),
+            Error::new(
+                ErrorCode::CudfInvariantViolation,
+                "algeon_datafusion.cugraph_sql.host_output_cursor",
+                "materialized cuGraph Arrow output exceeded its pre-copy estimate",
             )
+            .with_fact("estimated_bytes", estimated_bytes)
+            .with_fact("actual_bytes", actual_bytes)
         })?;
         if surplus != 0 {
             reservation.shrink(surplus);
@@ -744,7 +734,7 @@ pub(super) fn materialize_gpu_output_eagerly(
 pub(super) fn prepare_cugraph_source_metadata(
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-) -> BoxFuture<'static, Result<Arc<dyn ExecutionPlan>>> {
+) -> BoxFuture<'static, DataFusionResult<Arc<dyn ExecutionPlan>>> {
     Box::pin(async move {
         if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
             return Ok(
@@ -784,7 +774,7 @@ pub(super) async fn execute_edge_source_to_gpu(
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
     admitted_edge_source_gpu_plan: Option<Arc<AdmittedPlan>>,
-) -> Result<GpuDataFrame> {
+) -> DataFusionResult<GpuDataFrame> {
     if gpu_resident_producer(plan.as_ref()).is_some() {
         let (_, handle) =
             execute_gpu_resident_producer_with_context(plan.as_ref(), context, 0, Arc::clone(&task_context)).await?;
@@ -838,7 +828,7 @@ pub(super) async fn execute_edge_source_to_gpu(
                     )
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<DataFusionResult<Vec<_>>>()?;
         context.validate_admitted_composed_attempt(admitted.plan(), &runtime_occurrence_ids).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "algeon_datafusion.cugraph_sql.edge_source_composed.admission",
@@ -898,7 +888,7 @@ pub(super) fn record_batches_to_gpu(
     context: &ExecutionContext,
     schema: SchemaRef,
     batches: &[RecordBatch],
-) -> Result<GpuDataFrame> {
+) -> DataFusionResult<GpuDataFrame> {
     let runtime = counted_cudf_runtime(
         context,
         "algeon_datafusion.cugraph_sql.edge_source_host_import.runtime",

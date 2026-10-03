@@ -1,11 +1,11 @@
-use datafusion::{common::Result, logical_expr::LogicalPlan};
+use datafusion::logical_expr::LogicalPlan;
 use serde_json::{Map, Value};
 
 use super::{
     CuvsOperation, CuvsOutputContract, CuvsRelationRole, DenseVectorBinding, GpuOptionKind, canonicalize_cuvs_options,
     error::{invalid_call, invalid_option},
 };
-use crate::gpu_functions::dense_relation::infer_dense_relation_binding;
+use crate::{error::Result, gpu_functions::dense_relation::infer_dense_relation_binding};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CuvsVectorRelationBinding {

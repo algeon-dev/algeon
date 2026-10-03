@@ -16,6 +16,7 @@ use super::{
         VectorInputRole,
     },
     node::{produced_properties, source_format_capability},
+    rejection::Reason,
 };
 
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {
@@ -63,7 +64,7 @@ fn left_anti_dedup_edge_decision(
                 && producer_state != Some(AggregateStateContract::DedupGroupOnly)
             {
                 return CapabilityDecision::rejected(
-                    "left_anti_build_requires_dedup_aggregate",
+                    Reason::LeftAntiBuildRequiresDedupAggregate,
                     [
                         ("producer", producer.to_string()),
                         (
@@ -85,7 +86,7 @@ fn left_anti_dedup_edge_decision(
             });
             if build_dedup && !anti_probe_input_is_dedup_proven(plan, producer, &mut BTreeSet::new()) {
                 return CapabilityDecision::rejected(
-                    "left_anti_probe_requires_dedup_proven_input",
+                    Reason::LeftAntiProbeRequiresDedupProvenInput,
                     [
                         ("producer", producer.to_string()),
                         (
@@ -182,13 +183,13 @@ pub(super) fn edge_contract_kinds(
 pub(super) fn edge_decision(plan: &QueryPlan, producer: NodeId, consumer: EdgeConsumer) -> CapabilityDecision {
     let Some(producer_node) = plan.node(producer) else {
         return CapabilityDecision::rejected(
-            "missing_edge_producer",
+            Reason::MissingEdgeProducer,
             [("producer", producer.to_string()), ("consumer", edge_consumer_fact(consumer))],
         );
     };
     if !produced_properties(producer_node).contains(&ProducedProperty::Resident) {
         return CapabilityDecision::rejected(
-            "missing_edge_required_property",
+            Reason::MissingEdgeRequiredProperty,
             [
                 ("producer", producer.to_string()),
                 ("consumer", edge_consumer_fact(consumer)),

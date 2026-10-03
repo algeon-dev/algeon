@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
-    capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole},
+    capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, Reason, UnsupportedPart},
     dimension_pruning::local_dimension_pruning_resolver,
     exec::preflight_query_plan,
     expr::{BinaryOp, Expr, LiteralValue},
@@ -446,7 +446,7 @@ fn validation_and_capability_reject_bad_ml_contracts() {
             .find(|node| node.node_id == plan.root_id())
             .unwrap();
         let CapabilityDecision::Rejected { reason: rejection, facts } = root.executable else { panic!("must reject") };
-        assert_eq!(rejection, "unsupported_ml_algorithm_node_capability");
+        assert_eq!(rejection, Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())));
         assert_eq!(facts.get("reason").map(String::as_str), Some(reason));
     }
 
@@ -699,7 +699,7 @@ fn forest_feature_count_mismatch_rejects_preflight_and_capability() {
         .find(|node| node.node_id == plan.root_id())
         .unwrap();
     let CapabilityDecision::Rejected { reason, facts } = root.executable else { panic!("must reject") };
-    assert_eq!(reason, "unsupported_ml_algorithm_node_capability");
+    assert_eq!(reason, Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::Operator));
     assert_eq!(facts.get("reason").map(String::as_str), Some("forest_feature_count_mismatch"));
     assert_eq!(facts.get("expected").map(String::as_str), Some("4"));
     assert_eq!(facts.get("actual").map(String::as_str), Some("3"));

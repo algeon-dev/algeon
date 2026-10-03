@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use query_engine::{capability::CapabilityDecision, expr::ColumnRef, rapids_backend::rapids_analysis_context};
+use query_engine::{
+    capability::{CapabilityDecision, Reason},
+    expr::ColumnRef,
+    rapids_backend::rapids_analysis_context,
+};
 
 use super::*;
 
@@ -78,7 +82,7 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
     let CapabilityDecision::Rejected { reason, facts } = &rejected_node.executable else {
         unreachable!("rejected node carries a rejection");
     };
-    assert_eq!(*reason, "unsupported_join_residual_expression_capability");
+    assert_eq!(*reason, Reason::UnsupportedJoinResidualExpressionCapability);
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
     assert_eq!(facts.get("reason").map(String::as_str), Some("join_residual_expression_family_not_supported"));
 

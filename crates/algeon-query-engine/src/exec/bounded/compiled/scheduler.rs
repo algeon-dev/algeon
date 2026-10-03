@@ -914,7 +914,7 @@ mod tests {
             })
             .expect("secondary cleanup evidence is retained");
         assert_eq!(cleanup.phase(), CleanupFailurePhase::TaskExecution);
-        assert_eq!(cleanup.failure().code(), AttemptFailureCode::MemoryReservationFailed);
+        assert_eq!(cleanup.failure().code(), AttemptFailureCode::Query(QueryErrorCode::MemoryReservationFailed));
         assert_eq!(cleanup.failure().status(), AttemptFailureStatus::Temporary);
         assert_eq!(cleanup.failure().operation(), AttemptFailureOperation::Cleanup);
     }

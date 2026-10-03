@@ -7,11 +7,7 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef;
-use datafusion::{
-    common::{DataFusionError, Result},
-    physical_expr::LexOrdering,
-    physical_plan::ExecutionPlan,
-};
+use datafusion::{common::Result as DataFusionResult, physical_expr::LexOrdering, physical_plan::ExecutionPlan};
 use query_engine::plan::QueryPlan;
 
 use super::{
@@ -21,12 +17,15 @@ use super::{
     },
     lowering::lower_cuvs_query_plan,
 };
-use crate::native_exec::{
-    AlgeonNativeExecutionConfig,
-    child_inputs::NativeChildBinding,
-    relation_function::{
-        RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSpec,
-        RelationFunctionText,
+use crate::{
+    error::{Error, Result},
+    native_exec::{
+        AlgeonNativeExecutionConfig,
+        child_inputs::NativeChildBinding,
+        relation_function::{
+            RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSpec,
+            RelationFunctionText,
+        },
     },
 };
 
@@ -48,7 +47,7 @@ impl RelationFunctionExec<CuvsRelationFunctionSpec> {
         input_orderings: Vec<Option<LexOrdering>>,
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         let id = NEXT_CUVS_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         let input_names =
             (0..inputs.len()).map(|index| format!("__algeon_datafusion_cuvs_input_{id}_{index}")).collect();
@@ -89,10 +88,10 @@ impl RelationFunctionSpec for CuvsRelationFunctionSpec {
     fn feature_available(&self) -> bool {
         cfg!(feature = "cuvs")
     }
-    fn feature_disabled(&self) -> DataFusionError {
+    fn feature_disabled(&self) -> Error {
         feature_disabled(self.operation)
     }
-    fn invalid_child_count(&self) -> DataFusionError {
+    fn invalid_child_count(&self) -> Error {
         invalid_call(
             self.operation,
             "physical_child_count_mismatch",

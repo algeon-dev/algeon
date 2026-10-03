@@ -1596,7 +1596,7 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
     let mut report = cpu_attempt_report("terminal-error-identity");
     let failure = AttemptFailureSummary::from_native_error(
         &QueryError::new(
-            QueryErrorCode::CudfResourceExhausted,
+            QueryErrorCode::DeviceAllocationFailed,
             "algeon_datafusion.test.terminal_error_identity",
             "native execution failed",
         ),
@@ -1633,7 +1633,7 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
         .expect("sealed runtime JSONL has one footer");
 
     assert_eq!(footer["data"]["terminal"]["kind"], "failed");
-    assert_eq!(footer["data"]["terminal"]["error_code"], "cudf_resource_exhausted");
+    assert_eq!(footer["data"]["terminal"]["error_code"], "device_allocation_failed");
     assert_eq!(footer["data"]["terminal"]["error_status"], "temporary");
 }
 

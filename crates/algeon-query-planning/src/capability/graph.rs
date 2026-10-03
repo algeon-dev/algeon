@@ -4,7 +4,7 @@
 //! nodes that admission and invariant analyses share.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{JoinSide, NodeId, PlanNode, QueryPlan, model::CapabilityDecision};
+use super::{JoinSide, NodeId, PlanNode, QueryPlan, model::CapabilityDecision, rejection::Reason};
 
 // Proves a dependency walk can be scheduled without cycles or missing nodes.
 pub(super) struct GraphScheduleProof<'a> {
@@ -20,7 +20,7 @@ impl<'a> GraphScheduleProof<'a> {
     pub(super) fn schedule_from(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
         let Some(node) = self.plan.node(node_id) else {
             return Err(CapabilityDecision::rejected(
-                "topological_schedule_missing_node",
+                Reason::TopologicalScheduleMissingNode,
                 [("node_id", node_id.to_string())],
             ));
         };
@@ -28,14 +28,14 @@ impl<'a> GraphScheduleProof<'a> {
             Some(VisitState::Done) => return Ok(()),
             Some(VisitState::Visiting) => {
                 return Err(CapabilityDecision::rejected(
-                    "topological_schedule_cycle",
+                    Reason::TopologicalScheduleCycle,
                     [("node_id", node_id.to_string())],
                 ));
             },
             Some(VisitState::Unvisited) => {},
             None => {
                 return Err(CapabilityDecision::rejected(
-                    "topological_schedule_missing_node",
+                    Reason::TopologicalScheduleMissingNode,
                     [("node_id", node_id.to_string())],
                 ));
             },
@@ -95,7 +95,7 @@ impl<'a> ReachableCollector<'a> {
     fn collect(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
         let Some(node) = self.plan.node(node_id) else {
             return Err(CapabilityDecision::rejected(
-                "reachable_subgraph_missing_node",
+                Reason::ReachableSubgraphMissingNode,
                 [("node_id", node_id.to_string())],
             ));
         };
@@ -103,14 +103,14 @@ impl<'a> ReachableCollector<'a> {
             Some(VisitState::Done) => return Ok(()),
             Some(VisitState::Visiting) => {
                 return Err(CapabilityDecision::rejected(
-                    "reachable_subgraph_cycle",
+                    Reason::ReachableSubgraphCycle,
                     [("node_id", node_id.to_string())],
                 ));
             },
             Some(VisitState::Unvisited) => {},
             None => {
                 return Err(CapabilityDecision::rejected(
-                    "reachable_subgraph_missing_node",
+                    Reason::ReachableSubgraphMissingNode,
                     [("node_id", node_id.to_string())],
                 ));
             },

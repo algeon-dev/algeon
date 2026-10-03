@@ -624,7 +624,7 @@ fn lower_gpu_native_statistical_partial_aggregate_plan(
             },
             _ => {
                 return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::UnsupportedOperator,
                     "query_engine.aggregate.statistical_moments.partial_lower_expr",
                     "gpu-native statistical partial aggregate supports only floating statistical aggregates and avg",
                 )
@@ -676,7 +676,7 @@ fn lower_gpu_native_statistical_final_merge_plan(
             },
             _ => {
                 return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::UnsupportedOperator,
                     "query_engine.aggregate.statistical_moments.final_merge_lower_expr",
                     "gpu-native statistical final aggregate supports only floating statistical aggregates and avg",
                 )
