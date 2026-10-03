@@ -54,10 +54,10 @@ pub(super) fn join_limit_projection_plan() -> QueryPlan {
 ///
 /// This is the TPC-DS q32/q38/q87/q92/q97 shape: a `date_dim`-style scan is
 /// filtered once and fanned out to several join branches. A deferrable Parquet
-/// read hands the filter a source stream and the filter re-stages it, so the
-/// shared resource reaches the joins as a source stream whose producer is the
-/// filter rather than the scan.
-fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
+/// read hands the filter a source stream and the filter re-stages it; the
+/// joins share the filter's output, so the filter reads the scan once into
+/// the frame both joins build from.
+pub(super) fn shared_filtered_dimension_fan_out_plan(dimension_path: &Path, fact_paths: [&Path; 2]) -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("d", DataType::Int32, false),
         Field::new("v", DataType::Int32, true),
@@ -77,14 +77,14 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
 
     let mut builder = QueryPlanBuilder::new();
     let dimension = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/shared-filtered-dimension.parquet",
+        dimension_path,
         Arc::clone(&dim_schema),
         vec!["d".into(), "year".into()],
     )));
     let filtered_dimension = builder.add_filter(
         dimension,
-        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(2000)))).unwrap();
-    let join_against_dimension = |builder: &mut QueryPlanBuilder, path: &str| {
+        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000)))).unwrap();
+    let join_against_dimension = |builder: &mut QueryPlanBuilder, path: &Path| {
         let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
             path,
             Arc::clone(&fact_schema),
@@ -105,8 +105,8 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
             Arc::clone(&joined_schema),
         ).unwrap()
     };
-    let store_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-store-sales.parquet");
-    let web_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-web-sales.parquet");
+    let store_sales = join_against_dimension(&mut builder, fact_paths[0]);
+    let web_sales = join_against_dimension(&mut builder, fact_paths[1]);
     let combined = builder.add_join(
         store_sales,
         web_sales,
@@ -151,7 +151,10 @@ fn composed_pipeline_admits_projection_over_join_limit() {
 fn composed_pipeline_admits_a_filtered_source_scan_shared_by_several_joins() {
     // A bare shared scan was always admitted; the same scan with a filter above
     // it must be too, because the filter only re-stages the scan's stream.
-    let plan = shared_filtered_dimension_fan_out_plan();
+    let plan = shared_filtered_dimension_fan_out_plan(
+        Path::new("/tmp/shared-filtered-dimension.parquet"),
+        [Path::new("/tmp/shared-filtered-store-sales.parquet"), Path::new("/tmp/shared-filtered-web-sales.parquet")],
+    );
     assert!(
         bounded_pipeline_admission(&plan).unwrap().is_some(),
         "a filtered dimension scan shared by several joins should be admitted"

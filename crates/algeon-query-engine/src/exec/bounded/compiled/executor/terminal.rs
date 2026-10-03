@@ -11,7 +11,7 @@ use crate::{
                 resource::CompiledGpuResourcePayload,
             },
             execute_bounded_unary, execute_bounded_union, materialize_bounded_frame_to_host,
-            materialize_bounded_join_leaf_local_parquet_source_stream, union_branch_with_output_names,
+            union_branch_with_output_names,
         },
         operators::execute_limit,
     },
@@ -29,24 +29,20 @@ impl CompiledGpuTaskExecutor<'_> {
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
         let limit = limit_node(self.plan, task, node_id)?;
-        if state.resource_payload(input)?.applied_limit() == Some(node_id) {
-            let input_payload = state.consume_task_input_resource(task, input)?;
-            let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
-                return Err(invalid("compiled fused limit can only pass through resident frame input")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id));
-            };
-            return Ok(vec![(output, CompiledGpuResource::new(*frame))]);
-        }
-
-        let input_payload = state.resource_payload(input)?;
-        let frame = execute_bounded_unary(
-            &mut self.execution,
-            node_id,
-            input_payload.clone_frame(),
-            |context, input, metrics| execute_limit(context, limit, input, metrics),
-        )
-        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        let input_frame = match self.take_task_input(task, state, input)? {
+            // The fused top-k already applied this limit, offset included;
+            // applying it again would skip the offset rows twice.
+            CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit } if applied_limit == Some(node_id) => {
+                return Ok(vec![(output, CompiledGpuResource::new(*frame))]);
+            },
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => *frame,
+            payload => return Err(self.reject_task_input(task, input, payload)?),
+        };
+        let frame =
+            execute_bounded_unary(&mut self.execution, node_id, input_frame.frame, |context, input, metrics| {
+                execute_limit(context, limit, input, metrics)
+            })
+            .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
@@ -95,13 +91,7 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Result<Vec<ResidentGpuFrame>> {
         let mut inputs = Vec::new();
         for resource in task.input_resources() {
-            if state.can_consume_task_input_resource(task, *resource) {
-                let payload = state.consume_task_input_resource(task, *resource)?;
-                self.union_payload_to_inputs(task, node_id, *resource, payload, true, &mut inputs)?;
-            } else {
-                let payload = state.resource_payload(*resource)?;
-                self.union_payload_ref_to_inputs(task, node_id, *resource, payload, &mut inputs)?;
-            }
+            inputs.push(self.take_frame_input(task, state, *resource)?);
         }
         let Some(node) = self.plan.node(node_id) else {
             return Err(invalid("compiled union task references a missing plan node")
@@ -111,80 +101,10 @@ impl CompiledGpuTaskExecutor<'_> {
         inputs.into_iter().map(|input| union_branch_with_output_names(node_id, input, node.output_schema())).collect()
     }
 
-    pub(super) fn union_payload_to_inputs(
-        &mut self,
-        task: &PipelineTask,
-        node_id: NodeId,
-        resource: ResidentResourceId,
-        payload: CompiledGpuResource,
-        consumed: bool,
-        inputs: &mut Vec<ResidentGpuFrame>,
-    ) -> Result<()> {
-        match payload.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(*frame),
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                inputs.extend(stream.into_remaining_frames_owned(&mut self.execution)?)
-            },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                if !consumed {
-                    return Err(invalid("compiled union task cannot share a deferred join leaf source")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                }
-                let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-                inputs.push(materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)?);
-            },
-            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                if !consumed {
-                    return Err(invalid("compiled union task cannot share a pending source read")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                }
-                inputs.push(prefetch.finish(&mut self.execution)?);
-            },
-        }
-        Ok(())
-    }
-
-    pub(super) fn union_payload_ref_to_inputs(
-        &mut self,
-        task: &PipelineTask,
-        node_id: NodeId,
-        resource: ResidentResourceId,
-        payload: &CompiledGpuResource,
-        inputs: &mut Vec<ResidentGpuFrame>,
-    ) -> Result<()> {
-        match &payload.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                inputs.push(ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() });
-            },
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                for frame in stream.frames() {
-                    inputs.push(ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() });
-                }
-            },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
-                return Err(invalid("compiled union task cannot share a deferred join leaf source")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("resident_resource_id", resource));
-            },
-            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
-                return Err(invalid("compiled union task cannot share a pending source read")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("resident_resource_id", resource));
-            },
-        }
-        Ok(())
-    }
-
     pub(super) fn execute_sink_materialize_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         if self.pipeline.sink().kind() != SinkBoundaryKind::HostArrowMaterialization
             || self.pipeline.sink().input() != task.id()
@@ -201,7 +121,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
         let input = single_input_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
         let ResultSink::HostArrow { input: final_node_id, schema } = self.plan.sink() else {
             return Err(invalid("compiled sink materialize task requires a host Arrow sink")
                 .with_fact("compiled_task_id", task.id())
@@ -216,10 +135,11 @@ impl CompiledGpuTaskExecutor<'_> {
                     .with_fact("plan_node_id", final_node_id)
             })?
             .output_schema();
+        let input_frame = self.take_frame_input(task, state, input)?;
         let output = materialize_bounded_frame_to_host(
             &mut self.execution,
-            input_payload.clone_frame(),
-            input_payload.observed_device_bytes(),
+            input_frame.frame,
+            input_frame.device_bytes,
             *final_node_id,
             executable_schema,
             schema,

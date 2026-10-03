@@ -19,6 +19,7 @@ use crate::{
             BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
             compiled::{
                 ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid,
+                resource::CompiledGpuResourcePayload,
             },
             run_budgeted,
         },
@@ -435,26 +436,32 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(stream)
     }
 
+    /// Applies the post-decode source routes ready since the last consumer to
+    /// a source frame several consumers share. The planner routes a filter to
+    /// a shared source only when every consumer accepts it, so the filtered
+    /// frame replaces the stored one.
     pub(super) fn apply_ready_dynamic_filters_to_shared_source_resource(
         &mut self,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
         resource: ResidentResourceId,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let Some(source_node_id) = self.local_parquet_source_node_for_resource(resource) else {
-            return Ok(false);
+            return Ok(());
         };
+        let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = &state.resource_payload(resource)?.payload else {
+            return Ok(());
+        };
+        let input = frame.frame.clone();
         let already_applied = self.source_post_decode_applied_routes.get(&resource).cloned().unwrap_or_default();
-        let input_payload = state.resource_payload(resource)?;
-        let input = input_payload.clone_frame();
         let Some((frame, applied_routes)) =
             self.apply_ready_dynamic_filters_to_shared_source_frame(source_node_id, input, &already_applied)?
         else {
-            return Ok(false);
+            return Ok(());
         };
         let old = state.replace_resource_payload(resource, CompiledGpuResource::new(frame))?;
         <Self as CompiledTaskExecutor>::release_resource(self, resource, old)?;
         self.source_post_decode_applied_routes.entry(resource).or_default().extend(applied_routes);
-        Ok(true)
+        Ok(())
     }
 
     fn apply_ready_dynamic_filters_to_shared_source_frame(
@@ -610,60 +617,6 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(frame)
     }
 
-    pub(super) fn apply_dynamic_filters_to_filter_shared_frame(
-        &mut self,
-        filter_node_id: NodeId,
-        filter: &FilterNode,
-        input: GpuDataFrame,
-    ) -> Result<Option<ResidentGpuFrame>> {
-        let routes = self.filter_dynamic_filter_routes(filter_node_id);
-        if routes.is_empty() {
-            return Ok(None);
-        }
-        self.ensure_dynamic_filter_routes_ready(filter_node_id, &routes)?;
-        let input_schema = self.dynamic_filter_consumer_input_schema(filter_node_id, filter.input)?;
-        let mut input = Some(input);
-        let mut frame: Option<ResidentGpuFrame> = None;
-        for route in &routes {
-            let Some((dynamic_filter, predicate)) = self.resolve_dynamic_filter_predicate(route, input_schema.as_ref())
-            else {
-                continue;
-            };
-            let dynamic_filter_node = FilterNode { input: filter.input, predicate };
-            let rows_before = frame.as_ref().map_or_else(
-                || input.as_ref().map(|input| input.num_rows() as u64),
-                |frame| Some(frame.frame.num_rows() as u64),
-            );
-            frame = Some(match frame.take() {
-                Some(frame) => run_budgeted(
-                    &mut self.execution,
-                    filter_node_id,
-                    "compiled_dynamic_filter_filter",
-                    frame.frame,
-                    |context, input, token, metrics| {
-                        execute_filter_with_budget(context, &dynamic_filter_node, input, token, metrics)
-                    },
-                )?,
-                None => run_budgeted(
-                    &mut self.execution,
-                    filter_node_id,
-                    "compiled_dynamic_filter_filter",
-                    input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    |context, input, token, metrics| {
-                        execute_filter_with_budget(context, &dynamic_filter_node, input, token, metrics)
-                    },
-                )?,
-            });
-            self.execution.metrics().record_dynamic_filter_applied_post_decode(
-                route,
-                &dynamic_filter,
-                rows_before,
-                frame.as_ref().map(|frame| frame.frame.num_rows() as u64),
-            );
-        }
-        Ok(frame)
-    }
-
     pub(super) fn apply_dynamic_filters_to_filter_stream(
         &mut self,
         filter_node_id: NodeId,
@@ -691,69 +644,6 @@ impl CompiledGpuTaskExecutor<'_> {
             self.execution.metrics().record_dynamic_filter_applied_post_decode(route, &dynamic_filter, None, None);
         }
         Ok(stream)
-    }
-
-    pub(super) fn apply_dynamic_filters_to_join_probe_shared_frame(
-        &mut self,
-        join_node_id: NodeId,
-        join: &JoinNode,
-        input: GpuDataFrame,
-    ) -> Result<Option<ResidentGpuFrame>> {
-        let routes = self.join_probe_dynamic_filter_routes(join_node_id);
-        if routes.is_empty() {
-            return Ok(None);
-        }
-        self.ensure_dynamic_filter_routes_ready(join_node_id, &routes)?;
-        let probe_input = join_probe_input_node(join);
-        let probe_schema = Arc::clone(
-            self.plan
-                .node(probe_input)
-                .ok_or_else(|| {
-                    invalid("compiled dynamic-filter probe consumer references a missing probe input")
-                        .with_fact("join_node_id", join_node_id)
-                        .with_fact("probe_input_node_id", probe_input)
-                })?
-                .output_schema(),
-        );
-        let mut input = Some(input);
-        let mut frame: Option<ResidentGpuFrame> = None;
-        for route in &routes {
-            let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
-                continue;
-            };
-            let filter_node = FilterNode { input: probe_input, predicate };
-            let rows_before = frame.as_ref().map_or_else(
-                || input.as_ref().map(|input| input.num_rows() as u64),
-                |frame| Some(frame.frame.num_rows() as u64),
-            );
-            frame = Some(match frame.take() {
-                Some(frame) => run_budgeted(
-                    &mut self.execution,
-                    join_node_id,
-                    "compiled_dynamic_filter_join_probe",
-                    frame.frame,
-                    |context, input, token, metrics| {
-                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
-                    },
-                )?,
-                None => run_budgeted(
-                    &mut self.execution,
-                    join_node_id,
-                    "compiled_dynamic_filter_join_probe",
-                    input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    |context, input, token, metrics| {
-                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
-                    },
-                )?,
-            });
-            self.execution.metrics().record_dynamic_filter_applied_post_decode(
-                route,
-                &filter,
-                rows_before,
-                frame.as_ref().map(|frame| frame.frame.num_rows() as u64),
-            );
-        }
-        Ok(frame)
     }
 
     pub(super) fn apply_dynamic_filters_to_join_probe_stream(

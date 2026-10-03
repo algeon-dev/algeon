@@ -16,13 +16,12 @@ use crate::{
             },
             resource::CompiledGpuResourcePayload,
         },
-        consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_frame,
-        execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
-        execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame,
+        consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_resident_frame,
+        execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
         execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
         execute_bounded_compiled_join_probe_from_stream,
     },
-    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing},
+    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId},
     plan::{JoinNode, NodeId},
 };
 
@@ -41,59 +40,19 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         let input = single_input_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
-        let build = if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?;
-            match input_payload.payload {
-                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                    let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-                    self.execute_join_build_from_leaf_stream(task, node_id, node, stream)
-                },
-                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                    let frame = prefetch.finish(&mut self.execution)?;
-                    self.execute_join_build_from_resident_frame(task, node_id, node, frame)
-                },
-                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                    self.execute_join_build_from_resident_frame(task, node_id, node, *frame)
-                },
-                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                    self.execute_join_build_from_frame_stream(task, node_id, node, stream)
-                },
-            }
-        } else {
-            let input_payload = state.resource_payload(input)?;
-            if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
-                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
-                self.execute_join_build_from_leaf_stream(task, node_id, node, stream)
-            } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
-                let stream = stream.alias(node_id, "compiled_join_build_stream_alias")?;
+        let build = match self.take_task_input(task, state, input)? {
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => self
+                .apply_dynamic_filters_to_source_stream(*stream)
+                .and_then(|stream| self.execute_join_build_from_leaf_stream(task, node_id, node, stream)),
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch
+                .finish(&mut self.execution)
+                .and_then(|frame| self.execute_join_build_from_resident_frame(task, node_id, node, frame)),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                self.execute_join_build_from_resident_frame(task, node_id, node, *frame)
+            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 self.execute_join_build_from_frame_stream(task, node_id, node, stream)
-            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
-            {
-                Err(invalid("compiled join build cannot share a pending source read")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("resident_resource_id", input))
-            } else {
-                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
-                let input_payload = state.resource_payload(input)?;
-                let input_frame = input_payload.clone_frame();
-                self.produce_hash_join_build_dynamic_filters(node_id, node, &[input_frame.frame()])?;
-                let strategy = self.select_join_build_strategy(
-                    task,
-                    node_id,
-                    node,
-                    &input_frame,
-                    input_payload.observed_device_bytes(),
-                )?;
-                execute_bounded_compiled_join_build_from_frame(
-                    &mut self.execution,
-                    node_id,
-                    node,
-                    strategy.strategy,
-                    self.policy.keyed_hash_join,
-                    input_frame,
-                )
-            }
+            },
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_builds.insert(node_id, build);
@@ -219,11 +178,9 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
         let lazy_output = self.join_probe_output_consumed_as_stream(node_id);
-        let probe = if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?;
-            match input_payload.payload {
-                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                    let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;
+        let probe = match self.take_task_input(task, state, input)? {
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream).and_then(|stream| {
                     execute_bounded_compiled_join_probe_from_stream(
                         &mut self.execution,
                         node_id,
@@ -232,10 +189,12 @@ impl CompiledGpuTaskExecutor<'_> {
                         stream,
                         lazy_output,
                     )
-                },
-                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                    let frame = prefetch.finish(&mut self.execution)?;
-                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, frame)?;
+                })
+            },
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch
+                .finish(&mut self.execution)
+                .and_then(|frame| self.apply_dynamic_filters_to_join_probe_frame(node_id, node, frame))
+                .and_then(|frame| {
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         &mut self.execution,
                         node_id,
@@ -243,9 +202,9 @@ impl CompiledGpuTaskExecutor<'_> {
                         build,
                         frame,
                     )
-                },
-                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, *frame)?;
+                }),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                self.apply_dynamic_filters_to_join_probe_frame(node_id, node, *frame).and_then(|frame| {
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         &mut self.execution,
                         node_id,
@@ -253,9 +212,10 @@ impl CompiledGpuTaskExecutor<'_> {
                         build,
                         frame,
                     )
-                },
-                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                    let stream = self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream)?;
+                })
+            },
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream).and_then(|stream| {
                     execute_bounded_compiled_join_probe_from_frame_stream(
                         &mut self.execution,
                         node_id,
@@ -264,71 +224,8 @@ impl CompiledGpuTaskExecutor<'_> {
                         stream,
                         self.aggregate_dispatch.as_ref(),
                     )
-                },
-            }
-        } else {
-            let input_payload = state.resource_payload(input)?;
-            if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
-                let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, stream)?;
-                execute_bounded_compiled_join_probe_from_stream(
-                    &mut self.execution,
-                    node_id,
-                    node,
-                    build,
-                    stream,
-                    lazy_output,
-                )
-            } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
-                if self.resource_data_form(input) != ResidentDataForm::FrameStream {
-                    return Err(invalid("compiled join probe cannot share this resident frame stream")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", input));
-                }
-                let stream = match stream.alias(node_id, "compiled_join_probe_stream_alias") {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        return Err(error);
-                    },
-                };
-                let stream = self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream)?;
-                execute_bounded_compiled_join_probe_from_frame_stream(
-                    &mut self.execution,
-                    node_id,
-                    node,
-                    build,
-                    stream,
-                    self.aggregate_dispatch.as_ref(),
-                )
-            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
-            {
-                return Err(invalid("compiled join probe cannot share a pending source read")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("resident_resource_id", input));
-            } else {
-                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
-                let input_payload = state.resource_payload(input)?;
-                if let Some(frame) =
-                    self.apply_dynamic_filters_to_join_probe_shared_frame(node_id, node, input_payload.clone_frame())?
-                {
-                    execute_bounded_compiled_join_probe_from_resident_frame(
-                        &mut self.execution,
-                        node_id,
-                        node,
-                        build,
-                        frame,
-                    )
-                } else {
-                    execute_bounded_compiled_join_probe_from_frame(
-                        &mut self.execution,
-                        node_id,
-                        node,
-                        build,
-                        input_payload.clone_frame(),
-                    )
-                }
-            }
+                })
+            },
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_probes.insert(node_id, probe);
@@ -355,11 +252,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 BoundedCompiledJoinMaterializeOutput::Frame(frame) => CompiledGpuResource::new(*frame),
                 BoundedCompiledJoinMaterializeOutput::Stream(frames) => CompiledGpuResource::frame_stream(frames),
                 BoundedCompiledJoinMaterializeOutput::LazyStream(stream) => {
-                    if self.resource_sharing(output) != ResourceSharing::SingleConsume {
-                        CompiledGpuResource::frame_stream(stream.into_remaining_frames_owned(&mut self.execution)?)
-                    } else {
-                        CompiledGpuResource::frame_stream_payload(stream)
-                    }
+                    CompiledGpuResource::frame_stream_payload(stream)
                 },
             }
         } else {

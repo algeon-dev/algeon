@@ -20,8 +20,6 @@ mod state;
 pub use executor::CompiledGpuTaskExecutor;
 #[cfg(not(feature = "test-hooks"))]
 use executor::CompiledGpuTaskExecutor;
-#[cfg(test)]
-pub(crate) use frame_stream::YieldedFrameCounterTestHarness;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]

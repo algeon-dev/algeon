@@ -6,8 +6,7 @@ use std::{
 use super::{
     common::{
         BoundedJoinSideFrame, join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
-        prepare_bounded_join_side_input_from_shared_frame, projected_output_columns_for_retained_sizing,
-        release_bounded_join_side_frame,
+        projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
     },
     cudf_query_error, *,
 };
@@ -367,7 +366,7 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
                 return Some(Ok(output));
             }
             let inputs = self.inputs.as_mut()?;
-            let mut input = match inputs.next_yielded_frame(execution) {
+            let input = match inputs.next_frame(execution) {
                 Some(Ok(input)) => input,
                 Some(Err(error)) => return Some(Err(error)),
                 None => {
@@ -375,7 +374,6 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
                     return None;
                 },
             };
-            let input = input.take_for_release();
             let build = self.build.as_ref().expect("root hash join build state released before stream end");
             let outputs = match execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
                 execution,
@@ -399,43 +397,6 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
         if let Some(build) = self.build.take() {
             release_bounded_root_hash_join_build_state(build);
         }
-    }
-}
-
-pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    node: &JoinNode,
-    strategy: CompiledJoinExecutionStrategy,
-    strategy_options: KeyedHashJoinStrategyOptions,
-    input: GpuDataFrame,
-) -> Result<BoundedCompiledJoinBuildState> {
-    match strategy {
-        CompiledJoinExecutionStrategy::HashEqui => {
-            execute_bounded_root_hash_join_build_from_frame(execution, node, input)
-                .map(BoundedCompiledJoinBuildState::Hash)
-        },
-        CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            execute_compiled_filtered_join_build_from_frame(execution, node_id, node, input)
-                .map(BoundedCompiledJoinBuildState::Filtered)
-        },
-        CompiledJoinExecutionStrategy::OneShotEqui
-        | CompiledJoinExecutionStrategy::PartitionedHashEqui
-        | CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual
-        | CompiledJoinExecutionStrategy::KeylessConditional { .. }
-        | CompiledJoinExecutionStrategy::KeylessOuterCross
-        | CompiledJoinExecutionStrategy::ProjectedCross
-        | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
-            let side = node.spec.build_side;
-            let columns = compiled_join_input_columns(node, strategy, side)?;
-            let input = prepare_bounded_join_side_input_from_shared_frame(execution, input, &columns, side)?;
-            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState {
-                strategy,
-                strategy_options,
-                side,
-                input,
-            }))
-        },
     }
 }
 
@@ -472,63 +433,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
                 side,
                 input,
             }))
-        },
-    }
-}
-
-pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    node: &JoinNode,
-    build: BoundedCompiledJoinBuildState,
-    input: GpuDataFrame,
-) -> Result<BoundedCompiledJoinProbeState> {
-    match build {
-        BoundedCompiledJoinBuildState::Hash(build) => {
-            execute_bounded_root_hash_join_probe_from_frame(execution, node_id, node, build, input)
-                .map(BoundedCompiledJoinProbeState::Hash)
-        },
-        BoundedCompiledJoinBuildState::Filtered(build) => {
-            execute_compiled_filtered_join_probe_from_frame(execution, node, build, input)
-                .map(BoundedCompiledJoinProbeState::Filtered)
-        },
-        BoundedCompiledJoinBuildState::Prepared(build) => {
-            if mixed_left_match_probe_supported(node, build.strategy) {
-                let bytes = observe_device_memory_bytes(&input, execution.metrics())?;
-                return execute_compiled_mixed_left_join_probe_from_frame_stream(
-                    execution,
-                    node,
-                    build,
-                    ResidentFrameStreamPayload::new(vec![ResidentGpuFrame::with_device_bytes(input, bytes)]),
-                );
-            }
-            let side = probe_side(build.side);
-            let columns = compiled_join_input_columns(node, build.strategy, side)?;
-            let probe = prepare_bounded_join_side_input_from_shared_frame(execution, input, &columns, side)?;
-            let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
-            Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
-                strategy: build.strategy,
-                strategy_options: build.strategy_options,
-                left,
-                right,
-            }))
-        },
-        BoundedCompiledJoinBuildState::Partitioned(build) => {
-            let bytes = match observe_device_memory_bytes(&input, execution.metrics()) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    release_partitioned_join_side(build.partitioned);
-                    return Err(error);
-                },
-            };
-            execute_bounded_compiled_join_probe_from_frame_stream(
-                execution,
-                node_id,
-                node,
-                BoundedCompiledJoinBuildState::Partitioned(build),
-                ResidentFrameStreamPayload::new(vec![ResidentGpuFrame::with_device_bytes(input, bytes)]),
-                None,
-            )
         },
     }
 }
@@ -748,8 +652,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                 }
             } else {
                 let mut outputs = Vec::new();
-                while let Some(input) = inputs.next_yielded_frame(execution) {
-                    let mut input = match input {
+                while let Some(input) = inputs.next_frame(execution) {
+                    let input = match input {
                         Ok(input) => input,
                         Err(error) => {
                             inputs.release_all(execution);
@@ -757,7 +661,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                             return Err(error);
                         },
                     };
-                    let input = input.take_for_release();
                     match execute_compiled_filtered_join_probe_chunk_from_resident_frame(
                         execution, node_id, node, &build, input,
                     ) {

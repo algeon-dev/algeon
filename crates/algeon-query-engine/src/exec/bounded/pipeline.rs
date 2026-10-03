@@ -1,7 +1,5 @@
 //! Bounded-pipeline execution boundary (the single capability-first path).
 
-#[cfg(test)]
-pub(crate) use super::compiled::YieldedFrameCounterTestHarness;
 use super::compiled::execute_compiled_pipeline;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]

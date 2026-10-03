@@ -515,14 +515,14 @@ impl PartitionedHashEquiJoinProbeStreamSource {
     fn load_next_probe_chunk(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<bool>> {
         if self.pending_probe_chunk.is_none() {
             let inputs = self.inputs.as_mut()?;
-            let mut input = match inputs.next_yielded_frame(execution) {
+            let input = match inputs.next_frame(execution) {
                 Some(Ok(input)) => input,
                 Some(Err(error)) => return Some(Err(error)),
                 None => return None,
             };
             let probe = match prepare_bounded_join_side_input_from_resident_frame(
                 execution,
-                input.take_for_release(),
+                input,
                 &self.probe_columns,
                 probe_side(self.build_side),
             ) {

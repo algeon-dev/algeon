@@ -1,14 +1,8 @@
-use std::{
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::collections::VecDeque;
 
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
-    error::{QueryError, QueryErrorCode, Result},
+    error::Result,
     exec::{
         ExecutionMetrics,
         bounded::{BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_projection, run_budgeted},
@@ -27,117 +21,10 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// their input's hint until output frames are observed; this is not an
     /// exact final-output allocation measurement.
     total_bytes_hint: u64,
-    /// Observed device bytes of the yielded frames that no consumer has taken
-    /// yet. Vec-backed payloads start at the sum of their frames' observed
-    /// bytes because every frame is already live; producer-backed payloads
-    /// start at 0. Storage the producer still retains is not counted here and
-    /// is added by `live_observed_device_bytes()`.
-    live_observed_device_bytes: Arc<AtomicU64>,
     aggregate_num_rows: u64,
     num_columns: usize,
     frames: VecDeque<ResidentGpuFrame>,
     producer: Option<ResidentFrameStreamProducer>,
-}
-
-pub(in crate::exec::bounded) struct YieldedFrame {
-    frame: Option<ResidentGpuFrame>,
-    release_guard: YieldedFrameReleaseGuard,
-}
-
-impl YieldedFrame {
-    pub(in crate::exec::bounded) fn yield_from_producer(frame: ResidentGpuFrame, live_counter: Arc<AtomicU64>) -> Self {
-        let contributed_bytes = frame.device_bytes();
-        Self { frame: Some(frame), release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, true) }
-    }
-
-    fn from_existing_payload_frame(frame: ResidentGpuFrame, live_counter: Arc<AtomicU64>) -> Self {
-        let contributed_bytes = frame.device_bytes();
-        Self {
-            frame: Some(frame),
-            release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, false),
-        }
-    }
-
-    pub(in crate::exec::bounded) fn take_for_release(&mut self) -> ResidentGpuFrame {
-        let frame = self.frame.take().expect("YieldedFrame::take_for_release called twice");
-        self.release_guard.take_for_release("YieldedFrame::take_for_release called twice");
-        frame
-    }
-}
-
-pub(crate) struct YieldedFrameReleaseGuard {
-    live_counter: Arc<AtomicU64>,
-    contributed_bytes: u64,
-    drained: bool,
-}
-
-impl YieldedFrameReleaseGuard {
-    pub(in crate::exec::bounded) fn new(
-        live_counter: Arc<AtomicU64>,
-        contributed_bytes: u64,
-        increment_on_create: bool,
-    ) -> Self {
-        if increment_on_create {
-            // Relaxed ordering: this counter is accounting only, never a
-            // happens-before edge; saturation preserves the serial semantics.
-            let _ = live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-                Some(live.saturating_add(contributed_bytes))
-            });
-        }
-        Self { live_counter, contributed_bytes, drained: false }
-    }
-
-    pub(crate) fn take_for_release(&mut self, double_take_message: &'static str) {
-        assert!(!self.drained, "{double_take_message}");
-        let _ = self.live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-            Some(live.saturating_sub(self.contributed_bytes))
-        });
-        self.drained = true;
-    }
-}
-
-impl Drop for YieldedFrameReleaseGuard {
-    fn drop(&mut self) {
-        if self.drained {
-            return;
-        }
-        let _ = self.live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-            Some(live.saturating_sub(self.contributed_bytes))
-        });
-        debug_assert!(
-            std::thread::panicking(),
-            "YieldedFrame dropped without take_for_release; its {} observed device bytes left the live counter \
-             without a consumer taking the frame",
-            self.contributed_bytes
-        );
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct YieldedFrameCounterTestHarness {
-    live_counter: Arc<AtomicU64>,
-}
-
-#[cfg(test)]
-impl Default for YieldedFrameCounterTestHarness {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl YieldedFrameCounterTestHarness {
-    pub(crate) fn new() -> Self {
-        Self { live_counter: Arc::new(AtomicU64::new(0)) }
-    }
-
-    pub(crate) fn live_bytes(&self) -> u64 {
-        self.live_counter.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameReleaseGuard {
-        YieldedFrameReleaseGuard::new(Arc::clone(&self.live_counter), contributed_bytes, true)
-    }
 }
 
 /// Lazy producer behind a resident frame stream payload.
@@ -170,11 +57,6 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource: Send {
     /// transformations may be replayed instead of retaining finalized frames.
     fn alias(&self) -> Option<Box<dyn ResidentFrameStreamSource>> {
         None
-    }
-
-    /// Device storage still owned by the producer, excluding frames already yielded.
-    fn retained_device_bytes(&self) -> u64 {
-        0
     }
 
     /// Retained state carrying the stream's complete group-key set before any
@@ -216,7 +98,6 @@ impl ResidentFrameStreamPayload {
         Self {
             max_frame_bytes_hint,
             total_bytes_hint,
-            live_observed_device_bytes: Arc::new(AtomicU64::new(total_bytes_hint)),
             aggregate_num_rows,
             num_columns,
             frames: frames.into(),
@@ -234,7 +115,6 @@ impl ResidentFrameStreamPayload {
         Self {
             max_frame_bytes_hint,
             total_bytes_hint,
-            live_observed_device_bytes: Arc::new(AtomicU64::new(0)),
             aggregate_num_rows,
             num_columns,
             frames: VecDeque::new(),
@@ -248,15 +128,6 @@ impl ResidentFrameStreamPayload {
 
     pub(in crate::exec::bounded) fn total_bytes_hint(&self) -> u64 {
         self.total_bytes_hint
-    }
-
-    pub(in crate::exec::bounded) fn live_observed_device_bytes(&self) -> u64 {
-        self.live_observed_device_bytes.load(Ordering::Relaxed).saturating_add(
-            self.producer
-                .as_ref()
-                .and_then(|producer| producer.inner.as_ref())
-                .map_or(0, |source| source.retained_device_bytes()),
-        )
     }
 
     pub(in crate::exec::bounded) fn num_rows(&self) -> u64 {
@@ -278,23 +149,6 @@ impl ResidentFrameStreamPayload {
         }
     }
 
-    pub(in crate::exec::bounded) fn frames(&self) -> impl Iterator<Item = &ResidentGpuFrame> {
-        assert!(self.producer.is_none(), "lazy frame streams cannot expose an eager frame slice");
-        self.frames.iter()
-    }
-
-    pub(in crate::exec::bounded) fn alias(&self, node_id: NodeId, memory_boundary: &'static str) -> Result<Self> {
-        self.try_alias().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.exec.bounded.compiled.frame_stream",
-                "resident frame stream producer cannot create an independent consumer",
-            )
-            .with_fact("node_id", node_id)
-            .with_fact("memory_boundary", memory_boundary)
-        })
-    }
-
     pub(super) fn try_alias(&self) -> Option<Self> {
         if let Some(producer) = &self.producer {
             return Some(Self::from_producer(
@@ -313,11 +167,9 @@ impl ResidentFrameStreamPayload {
         Some(Self::new(frames))
     }
 
-    pub(in crate::exec::bounded) fn into_shared(self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<Self> {
-        if let Some(alias) = self.try_alias() {
-            return Ok(alias);
-        }
-        self.into_remaining_frames_owned(execution).map(Self::new)
+    /// Whether frames are still produced on demand rather than all resident.
+    pub(in crate::exec::bounded) fn is_lazy(&self) -> bool {
+        self.producer.is_some()
     }
 
     pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
@@ -328,21 +180,14 @@ impl ResidentFrameStreamPayload {
         self.frames.len()
     }
 
-    pub(in crate::exec::bounded) fn next_yielded_frame(
+    pub(in crate::exec::bounded) fn next_frame(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
-    ) -> Option<Result<YieldedFrame>> {
-        if !self.frames.is_empty() {
-            let frame = self.frames.pop_front().expect("non-empty frame stream had no front frame");
-            return Some(Ok(YieldedFrame::from_existing_payload_frame(
-                frame,
-                Arc::clone(&self.live_observed_device_bytes),
-            )));
+    ) -> Option<Result<ResidentGpuFrame>> {
+        if let Some(frame) = self.frames.pop_front() {
+            return Some(Ok(frame));
         }
-        let producer = self.producer.as_mut()?;
-        producer.next_frame(execution).map(|result| {
-            result.map(|frame| YieldedFrame::yield_from_producer(frame, Arc::clone(&self.live_observed_device_bytes)))
-        })
+        self.producer.as_mut()?.next_frame(execution)
     }
 
     pub(in crate::exec::bounded) fn collect_remaining_frames_owned(
@@ -351,8 +196,8 @@ impl ResidentFrameStreamPayload {
     ) -> Result<Vec<ResidentGpuFrame>> {
         let mut accumulated = Vec::new();
         loop {
-            match self.next_yielded_frame(execution) {
-                Some(Ok(mut yielded)) => accumulated.push(yielded.take_for_release()),
+            match self.next_frame(execution) {
+                Some(Ok(frame)) => accumulated.push(frame),
                 Some(Err(error)) => return Err(error),
                 None => return Ok(accumulated),
             }
@@ -370,7 +215,6 @@ impl ResidentFrameStreamPayload {
 
     pub(in crate::exec::bounded) fn release_remaining_frames(&mut self) {
         self.frames.clear();
-        self.live_observed_device_bytes.store(0, Ordering::Relaxed);
     }
 
     pub(in crate::exec::bounded) fn release_producer(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
@@ -461,15 +305,10 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
         }))
     }
 
-    fn retained_device_bytes(&self) -> u64 {
-        self.input.as_ref().map_or(0, ResidentFrameStreamPayload::live_observed_device_bytes)
-    }
-
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         let input = self.input.as_mut()?;
-        match input.next_yielded_frame(execution) {
-            Some(Ok(mut yielded)) => {
-                let frame = yielded.take_for_release();
+        match input.next_frame(execution) {
+            Some(Ok(frame)) => {
                 let input_rows = frame.frame.num_rows() as u64;
                 Some(self.execute(execution, frame).inspect(|output| {
                     self.record_metrics(input_rows, output, execution.metrics());

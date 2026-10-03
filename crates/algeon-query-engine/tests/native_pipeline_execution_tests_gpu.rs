@@ -44,8 +44,8 @@ use query_engine::{
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
-        ResidentResourceId, SinkBoundary, SinkBoundaryKind, compile_pipeline,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentDataForm, ResidentLifetime,
+        ResidentResource, ResidentResourceId, ResourceSharing, SinkBoundary, SinkBoundaryKind, compile_pipeline,
     },
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,

@@ -85,13 +85,55 @@ pub(super) struct ActivatedDeferredResidentPhase {
     grant_identity: GrantIdentity,
 }
 
+/// One input that activated a deferred-resident phase. Every later execution
+/// of the phase must present an input with the same data facts and the same
+/// allocation under the same grant.
 #[derive(Debug)]
 pub(super) struct ActivatedDeferredResidentInput {
-    producer_execution_scope_fingerprint: PlanFingerprint,
     input_name: String,
-    input_schema: SchemaRef,
-    input_memory_identity: cudf::DataFrameMemoryIdentity,
-    input_row_count: u64,
+    facts: DeferredResidentFacts,
+    memory_identity: cudf::DataFrameMemoryIdentity,
+}
+
+/// Data facts of one deferred resident input: the producer scope that wrote
+/// it, its schema, and its row count.
+#[derive(Debug, PartialEq)]
+pub(super) struct DeferredResidentFacts {
+    producer_execution_scope_fingerprint: PlanFingerprint,
+    schema: SchemaRef,
+    row_count: u64,
+}
+
+impl DeferredResidentFacts {
+    pub(super) fn read(input_name: &str, input: &GpuResultHandle) -> Result<Self> {
+        let producer_execution_scope_fingerprint = input.producer_execution_scope().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "query_engine.runtime.context",
+                "an admitted deferred resident occurrence has no producer scope",
+            )
+            .with_fact("reason", "deferred_resident_input_scope_missing")
+            .with_fact("input_name", input_name)
+        })?;
+        let row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::SizeOverflow,
+                "query_engine.runtime.context",
+                "the resident input row count exceeds the admission integer range",
+            )
+            .with_fact("reason", "deferred_resident_input_row_count_overflow")
+            .with_fact("input_name", input_name)
+        })?;
+        Ok(Self { producer_execution_scope_fingerprint, schema: Arc::clone(input.schema()), row_count })
+    }
+
+    pub(super) fn producer_execution_scope_fingerprint(&self) -> PlanFingerprint {
+        self.producer_execution_scope_fingerprint
+    }
+
+    pub(super) fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
 }
 
 impl ActivatedDeferredResidentPhase {
@@ -106,49 +148,71 @@ impl ActivatedDeferredResidentPhase {
                 .with_fact("reason", "deferred_resident_input_missing")
                 .with_fact("input_name", &activated.input_name)
             })?;
-            activated.validate(input, grant, self)?;
+            activated.validate_facts(input)?;
+            activated.validate_binding(input, grant, self.grant_identity)?;
         }
         Ok(())
     }
 }
 
 impl ActivatedDeferredResidentInput {
-    fn validate(
-        &self,
+    /// Binds an input whose facts already matched its admitted producer
+    /// occurrence to its allocation under `grant`.
+    pub(super) fn bind(
+        input_name: String,
+        facts: DeferredResidentFacts,
         input: &GpuResultHandle,
         grant: &MemoryGrant,
-        phase: &ActivatedDeferredResidentPhase,
-    ) -> Result<()> {
-        let row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::InternalInvariantViolation,
-                "query_engine.runtime.context",
-                "the materialized graph input row count does not fit the admission contract",
-            )
-            .with_fact("reason", "deferred_graph_input_row_count_overflow")
-        })?;
-        let physical_bytes = input.device_allocated_size_bytes()?;
-        let retained_by_grant = input.retained_owner_identity_for(grant).is_some();
-        if phase.grant_identity != grant.identity()
-            || input.schema() != &self.input_schema
-            || input.frame().memory_identity() != self.input_memory_identity
-            || input.producer_execution_scope() != Some(self.producer_execution_scope_fingerprint)
-            || row_count != self.input_row_count
-            || (physical_bytes > 0 && !retained_by_grant)
-        {
-            return Err(QueryError::new(
-                QueryErrorCode::InternalInvariantViolation,
-                "query_engine.runtime.context",
-                "the GPU-resident graph input differs from the frame that activated its admitted phase",
-            )
-            .with_fact("reason", "deferred_graph_input_identity_mismatch")
-            .with_fact("input_name", &self.input_name)
-            .with_fact("input_row_count", row_count)
-            .with_fact("activated_row_count", self.input_row_count)
-            .with_fact("input_device_bytes", physical_bytes));
+    ) -> Result<Self> {
+        validate_grant_retention(&input_name, input, grant)?;
+        Ok(Self { input_name, facts, memory_identity: input.frame().memory_identity() })
+    }
+
+    fn validate_facts(&self, input: &GpuResultHandle) -> Result<()> {
+        let facts = DeferredResidentFacts::read(&self.input_name, input)?;
+        if facts != self.facts {
+            return Err(self
+                .identity_mismatch()
+                .with_fact("input_row_count", facts.row_count)
+                .with_fact("activated_row_count", self.facts.row_count));
         }
         Ok(())
     }
+
+    fn validate_binding(&self, input: &GpuResultHandle, grant: &MemoryGrant, phase_grant: GrantIdentity) -> Result<()> {
+        validate_grant_retention(&self.input_name, input, grant)?;
+        if phase_grant != grant.identity() || input.frame().memory_identity() != self.memory_identity {
+            return Err(self.identity_mismatch());
+        }
+        Ok(())
+    }
+
+    fn identity_mismatch(&self) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::InternalInvariantViolation,
+            "query_engine.runtime.context",
+            "the GPU-resident graph input differs from the frame that activated its admitted phase",
+        )
+        .with_fact("reason", "deferred_graph_input_identity_mismatch")
+        .with_fact("input_name", &self.input_name)
+    }
+}
+
+/// A deferred resident input that holds device storage must be retained by
+/// the attempt's grant, so the phase never reads storage another grant owns.
+fn validate_grant_retention(input_name: &str, input: &GpuResultHandle, grant: &MemoryGrant) -> Result<()> {
+    let physical_bytes = input.device_allocated_size_bytes()?;
+    if physical_bytes > 0 && input.retained_owner_identity_for(grant).is_none() {
+        return Err(QueryError::new(
+            QueryErrorCode::InternalInvariantViolation,
+            "query_engine.runtime.context",
+            "a deferred resident input is not retained by the admitted grant",
+        )
+        .with_fact("reason", "deferred_resident_grant_owner_mismatch")
+        .with_fact("input_name", input_name)
+        .with_fact("input_device_bytes", physical_bytes));
+    }
+    Ok(())
 }
 
 /// One native execution observation boundary selected from context ownership.

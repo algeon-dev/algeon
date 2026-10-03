@@ -30,9 +30,6 @@ extern crate self as query_engine;
 #[cfg(test)]
 #[path = "execution_integration_tests/runtime_observability.rs"]
 mod runtime_observability_integration_tests;
-#[cfg(test)]
-#[path = "../tests/native_contract_tests/yielded_frame.rs"]
-mod yielded_frame;
 
 pub use query_planning::admission;
 /// Backend capability contract plan validation asks the execution owner.
