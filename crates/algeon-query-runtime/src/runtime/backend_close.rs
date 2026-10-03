@@ -518,7 +518,9 @@ impl CloseCompletion {
     ) -> Result<GpuBackendCloseSnapshot> {
         let mut state = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
             super::deadline::DeadlineMutexLockError::Poisoned => close_wait_poisoned_error(),
-            super::deadline::DeadlineMutexLockError::TimedOut => close_timeout_error(self.snapshot(lifecycle)),
+            // The phase lives behind the lock this wait could not take, so
+            // the error omits the quiescence facts instead of blocking on it.
+            super::deadline::DeadlineMutexLockError::TimedOut => self.timeout_error(None, lifecycle),
         })?;
         loop {
             if let Some(failure) = state.failure.clone() {
@@ -535,10 +537,10 @@ impl CloseCompletion {
                 return Ok(self.snapshot_with(state.phase, false, lifecycle));
             }
             if super::deadline::deadline_expired(deadline) {
-                return Err(close_timeout_error(self.snapshot_with(state.phase, false, lifecycle)));
+                return Err(self.timeout_error(Some(state.phase), lifecycle));
             }
             let Some(remaining) = super::deadline::deadline_remaining(deadline) else {
-                return Err(close_timeout_error(self.snapshot_with(state.phase, false, lifecycle)));
+                return Err(self.timeout_error(Some(state.phase), lifecycle));
             };
             // Every wakeup re-reads the full wait state at the top of the
             // loop, so a failure recorded during the wait is reported as a
@@ -547,6 +549,29 @@ impl CloseCompletion {
                 self.changed.wait_timeout(state, remaining).map_err(|_error| close_wait_poisoned_error())?;
             state = next;
         }
+    }
+
+    /// Timeout error from state readable without blocking: lifecycle permits
+    /// and cleanup counters always, quiescence facts only when `phase` was
+    /// read under the wait lock.
+    fn timeout_error(&self, phase: Option<u8>, lifecycle: &BackendLifecycle) -> QueryError {
+        let lifecycle = lifecycle.snapshot();
+        let mut error =
+            QueryError::new(QueryErrorCode::ServiceOverloaded, CLOSE_OPERATION, "timed out waiting for backend close")
+                .with_fact("reason", "backend_close_timeout");
+        if let Some(phase) = phase {
+            error = error
+                .with_fact(
+                    "gpu_resource_quiescent",
+                    phase == PHASE_GPU_QUIESCENT || phase == PHASE_OBSERVATION_QUIESCENT,
+                )
+                .with_fact("observation_quiescent", phase == PHASE_OBSERVATION_QUIESCENT);
+        }
+        error
+            .with_fact("active_gpu_permits", lifecycle.active_gpu_permits)
+            .with_fact("active_observation_permits", lifecycle.active_observation_permits)
+            .with_fact("cleanup_deadline_elapsed_count", self.deadline_elapsed.load(Ordering::Relaxed))
+            .with_fact("cleanup_late_success_count", self.late_successes.load(Ordering::Relaxed))
     }
 }
 
@@ -562,17 +587,6 @@ pub struct GpuBackendCloseSnapshot {
     pub cleanup_failed: bool,
     pub cleanup_deadline_elapsed_count: u64,
     pub cleanup_late_success_count: u64,
-}
-
-fn close_timeout_error(snapshot: GpuBackendCloseSnapshot) -> QueryError {
-    QueryError::new(QueryErrorCode::ServiceOverloaded, CLOSE_OPERATION, "timed out waiting for backend close")
-        .with_fact("reason", "backend_close_timeout")
-        .with_fact("gpu_resource_quiescent", snapshot.gpu_resource_quiescent)
-        .with_fact("observation_quiescent", snapshot.observation_quiescent)
-        .with_fact("active_gpu_permits", snapshot.active_gpu_permits)
-        .with_fact("active_observation_permits", snapshot.active_observation_permits)
-        .with_fact("cleanup_deadline_elapsed_count", snapshot.cleanup_deadline_elapsed_count)
-        .with_fact("cleanup_late_success_count", snapshot.cleanup_late_success_count)
 }
 
 fn close_wait_poisoned_error() -> QueryError {
@@ -602,7 +616,11 @@ pub(crate) fn reject_reentrant_observation_close() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+        time::{Duration, Instant},
+    };
 
     use super::{CleanupPhaseProgress, CloseCompletion};
     use crate::runtime::{backend_lifecycle::BackendLifecycle, query_service::QueryServiceDrainPhase};
@@ -671,5 +689,39 @@ mod tests {
         let error = state.wait_until(Instant::now(), &lifecycle).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
         assert_eq!(error.fact_value("gpu_resource_quiescent"), Some("false"));
+    }
+
+    #[test]
+    fn waiting_while_the_wait_lock_is_held_times_out_before_the_holder_releases_it() {
+        let state = Arc::new(CloseCompletion::new());
+        let lifecycle = BackendLifecycle::new();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || {
+                let _guard = state.wait.lock().unwrap();
+                locked_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        };
+        locked_rx.recv().unwrap();
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || {
+                result_tx.send(state.wait_until(Instant::now() + Duration::from_millis(20), &lifecycle)).unwrap();
+            })
+        };
+        let result = result_rx.recv_timeout(Duration::from_secs(10));
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        waiter.join().unwrap();
+
+        let error = result.expect("wait_until must return while the wait lock is still held").unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
+        assert_eq!(error.fact_value("gpu_resource_quiescent"), None);
+        assert_eq!(error.fact_value("active_gpu_permits"), Some("0"));
     }
 }
