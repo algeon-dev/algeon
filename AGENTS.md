@@ -34,27 +34,26 @@
 
 ## Technical writing and anti-slop
 
-- **No false agency**: Never attribute human actions, consciousness, or feelings
-  to algorithms, data, or compilers (e.g. do not write `the planner decides`,
-  `the data tells us`, or `the engine understands`). Name the specific
-  condition, hardware constraint, or user input.
-- **No em-dashes**: The em-dash character (`—`) is banned across code comments
-  and technical documentation. Use commas, semicolons, parentheses, or separate
-  sentences.
-- **No rule of three or buzzword triads**: Prohibit listing three generic
-  adjectives (e.g. `fast, reliable, and scalable`, `flexible, robust, and extensible`).
-- **No binary contrasts and colon reveals**: Avoid theatrical structures such as
-  `It is not about X; it is about Y` or `The reality: X`.
-- **Burstiness and sentence length**: Vary sentence length and shape; runs of
-  same-length, subject-verb-object sentences read as generated text.
-- **Fact-dense, source-locked technical claims**: Every paragraph must advance
-  a concrete invariant, benchmark number, architectural boundary, or API contract.
-  Delete any sentence that functions purely as ungrounded promotional uplift.
-- **Direct reporting and interaction**: Omit conversational filler, flattery, and
-  apologies. State changed files, line ranges, non-obvious rationale, verification
-  commands and outcomes, and open technical decisions directly.
-- **Domain anti-slop policy**: prose about the GPU query engine, physical
-  optimization, or CUDA memory allocation follows
+- Never attribute human actions, consciousness, or feelings to algorithms,
+  data, or compilers (e.g. do not write `the planner decides`, `the data tells
+  us`, or `the engine understands`). Name the specific condition, hardware
+  constraint, or user input.
+- The em-dash character (`—`) is banned across code comments and technical
+  documentation. Use commas, semicolons, parentheses, or separate sentences.
+- Do not list three generic adjectives (e.g. `fast, reliable, and scalable`,
+  `flexible, robust, and extensible`).
+- Avoid theatrical binary contrasts and colon reveals such as `It is not about
+  X; it is about Y` or `The reality: X`.
+- Vary sentence length and shape; runs of same-length, subject-verb-object
+  sentences read as generated text.
+- Every paragraph must advance a concrete invariant, benchmark number,
+  architectural boundary, or API contract. Delete any sentence that functions
+  purely as ungrounded promotional uplift.
+- Omit conversational filler, flattery, and apologies. State changed files,
+  line ranges, non-obvious rationale, verification commands and outcomes, and
+  open technical decisions directly.
+- Prose about the GPU query engine, physical optimization, or CUDA memory
+  allocation follows
   [`.config/policies/algeon_domain_anti_slop.md`](.config/policies/algeon_domain_anti_slop.md).
 
 ## Project boundaries

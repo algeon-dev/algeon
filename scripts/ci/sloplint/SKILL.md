@@ -99,7 +99,7 @@ When voice is appropriate, avoid uniform sentence structures, bloodless neutrali
 
 **Watch for (tier 1, dead giveaways):** delve, tapestry, vibrant, crucial, meticulous, seamless, groundbreaking, leverage, synergy, transformative, paramount, multifaceted, myriad, cornerstone, empower, catalyst, nestled, realm, unpack, deep dive, actionable, impactful, learnings, robust, embark, showcase, foster, garner, interplay, enduring, pivotal, intricate, harness, testament, underscore
 **Watch for (tier 2, suspicious in density):** additionally, furthermore, moreover, notably, paradigm, holistic, utilize, facilitate, nuanced, elucidate, encompass, streamline, spearhead, bolster, poised, cutting-edge
-**Problem:** These words appear 5-20x more often in post-2023 text, and they co-occur. One is a hint; three is a confession. See [references/vocabulary.md](references/vocabulary.md) for the full tiered list with replacements.
+**Problem:** These words appear 5-20x more often in post-2023 text, and they co-occur. One is a hint; three is a confession.
 **Before:** "An enduring testament to Italian colonial influence is the widespread adoption of pasta in the local culinary landscape."
 **After:** "Pasta dishes, introduced during Italian colonization, remain common."
 
@@ -256,7 +256,7 @@ Before returning the final rewrite, scan it for the em dash and en dash characte
 
 ### 31. Filler phrases
 
-**Before -> After:** "In order to achieve this goal" -> "To achieve this". "Due to the fact that" -> "Because". "At this point in time" -> "Now". "In the event that" -> "If". "has the ability to" -> "can". "It is important to note that the data shows" -> "The data shows". Full table in [references/phrases.md](references/phrases.md).
+**Before -> After:** "In order to achieve this goal" -> "To achieve this". "Due to the fact that" -> "Because". "At this point in time" -> "Now". "In the event that" -> "If". "has the ability to" -> "can". "It is important to note that the data shows" -> "The data shows".
 
 ### 32. Excessive hedging
 
@@ -390,7 +390,3 @@ In pasted-text mode, deliver the draft, the brief audit bullets, and the final r
 ## Reference
 
 - [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), maintained by WikiProject AI Cleanup. Key insight: "LLMs use statistical algorithms to guess what should come next. The result tends toward the most statistically likely result that applies to the widest variety of cases."
-- Full word/phrase lists: [references/vocabulary.md](references/vocabulary.md), [references/phrases.md](references/phrases.md)
-- Structural anti-patterns in table form: [references/structures.md](references/structures.md)
-- Writing positively like a human: [references/style-guide.md](references/style-guide.md)
-- Quick pre-delivery checklist: [references/checklist.md](references/checklist.md)

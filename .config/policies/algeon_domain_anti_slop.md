@@ -24,6 +24,8 @@ First-order clichés (`delve`, `leverage`, `robust`, `crucial`, "In summary", em
 
 ## Phrases and words to never use
 
+These bans cover a word used as filler or metaphor. A word that is part of an Algeon identifier, setting, or metric name (`max_source_reads_in_flight`, `headroom_bytes`, `CompiledPipeline`) stays in prose that describes that item.
+
 - Single-culprit and superlative framing: "One trap first", "the one mandatory tuning", "the only spill signal", "the only option where", "one genuinely attractive property", "All three share one rule", "the single biggest win", "Cancellation is the big one", "where the real trouble is", "the differentiator is", "The question is which one", "the simplest correct move", "the sub-allocator is missing", "your problem".
 - Count teasers: "Two consequences follow", "Two subtleties.", "Two notes on this session.", "Two things the allocator does not fix", "Two smaller reasons.", "the two spots", "The test below does both.", "the four areas you named", "the three reuse attributes". "Two" is the tell.
 - Colon-label fragments: "Short version:", "Status: proposal.", "Target:", "Recommendation:", "Operator flow:", "Per option:", "First-cut configuration:", "Opaque but observable:", "Notes on the checks:".
@@ -107,4 +109,4 @@ First-order clichés (`delve`, `leverage`, `robust`, `crucial`, "In summary", em
 
 ## Instead
 
-Instead of reaching for any of these defaults, be creative. Vary your approach: sentence shape, paragraph rhythm, how confidence is signaled, how a section opens and closes, which facts get used. If you catch yourself about to use any of the patterns listed above, stop and do something different.
+Answer the question at the scope it was asked: a *why* question gets causes, and a checklist request gets a checklist. Let the wording track the evidence. A measured or source-checked result names its command or source; an inference reads as one ("probably", "I expect"). Name the component that performs each action, such as the RMM pool resource or the device ledger. Mix sentence lengths and connectives as the content needs; "because", "however", semicolons, and parentheses all have a place, and a paragraph may end on a plain fact. Give a number only with its source or measurement.
