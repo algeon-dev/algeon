@@ -4,6 +4,10 @@ use std::{
 };
 
 use arrow::datatypes::Schema as ArrowSchema;
+use query_planning::{
+    expr::UnaryMathOp,
+    naming::{first_available_numeric_suffix_from, unique_alias_with_suffix},
+};
 
 use super::{
     AggregateExecutionStage, AggregateExpr, AggregateFunction, AggregateSpec, AggregateStrategyCapabilityDecision,
@@ -19,10 +23,6 @@ use super::{
     lower_expr, record_grouped_aggregate_strategy_decision,
     record_single_grouped_aggregate_strategy_decision_with_metrics,
     select_partial_aggregate_strategy_decision_with_options,
-};
-use crate::{
-    expr::UnaryMathOp,
-    naming::{first_available_numeric_suffix_from, unique_alias_with_suffix},
 };
 
 const STATISTICAL_MOMENTS_FACT: &str = "algebraic_moments";

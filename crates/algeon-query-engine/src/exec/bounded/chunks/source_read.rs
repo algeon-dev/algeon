@@ -1,5 +1,8 @@
 use std::time::Instant;
 
+use query_planning::policy::PlanningPolicy;
+use query_runtime::observability::SourceReadFact;
+
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetSource, NodeId,
     QueryError, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk, chunk_retry_facts,
@@ -11,8 +14,6 @@ use super::{
 use crate::{
     chunk::SourceChunkBatch,
     exec::retry::{RetryLimits, backoff_before_retry},
-    observability::SourceReadFact,
-    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -297,14 +298,15 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
-        chunk::SourceChunkBatch,
+    use query_planning::{
+        execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
         expr::{BinaryOp, Expr, LiteralValue},
-        runtime::{MemoryControlPolicy, SourceChunkPlanningMode, StandaloneConfig},
         source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
+    use query_runtime::runtime::StandaloneConfig;
+
+    use super::*;
+    use crate::chunk::SourceChunkBatch;
 
     #[test]
     fn generic_source_batches_cap_decode_scratch_risk_only() {

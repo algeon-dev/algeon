@@ -21,9 +21,9 @@ use datafusion::{
     execution::TaskContext,
     prelude::SessionConfig,
 };
-use query_engine::admission::AttemptCapabilityEvidence;
+use query_planning::admission::AttemptCapabilityEvidence;
 #[cfg(feature = "server")]
-use query_engine::runtime::IoLifecycle;
+use query_runtime::runtime::IoLifecycle;
 
 use super::NativePlanningDiagnostics;
 use crate::{

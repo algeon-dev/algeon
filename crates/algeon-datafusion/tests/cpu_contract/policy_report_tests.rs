@@ -2,7 +2,7 @@ use algeon_datafusion::{
     capability::CapabilityReason,
     report::{CandidateOutcome, CandidateOutcomeKind, GpuCandidate, NotSupportedDetail, PlanningReport},
 };
-use query_engine::{
+use query_planning::{
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageVerdict},
 };

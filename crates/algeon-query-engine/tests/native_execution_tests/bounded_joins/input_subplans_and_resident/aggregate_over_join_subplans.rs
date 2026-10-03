@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use query_engine::{
-    admission::{admit, bounded_join_unsupported_shape_facts},
-    rapids_backend::rapids_analysis_context,
-};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::admission::{admit, bounded_join_unsupported_shape_facts};
 
 use super::*;
 

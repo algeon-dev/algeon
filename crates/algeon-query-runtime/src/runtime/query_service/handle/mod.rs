@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use query_planning::correlation::TraceId;
+
 use super::{
     super::context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
     resources::QueryServiceResources,
@@ -15,7 +17,6 @@ use super::{
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::attempt::AttemptOwner;
 use crate::{
-    metrics::TraceId,
     observability::{AttemptAdmissionWaitFact, RuntimeStreamLeaseScope},
     runtime::{
         GpuExecutorLease, StreamPermitClass,

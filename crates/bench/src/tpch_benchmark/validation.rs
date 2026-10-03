@@ -1,5 +1,5 @@
 use arrow::datatypes::SchemaRef;
-use query_engine::harness::StableFnv1a64;
+use query_planning::util::StableFnv1a64;
 
 use super::*;
 

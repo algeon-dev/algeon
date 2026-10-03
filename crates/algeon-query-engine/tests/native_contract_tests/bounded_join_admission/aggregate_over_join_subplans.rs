@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver,
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     plan::{NodeId, QueryPlan},
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

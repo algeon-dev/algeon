@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use query_planning::source::LakehouseCacheFillMode;
+
 use super::{
     BackgroundLakehouseCacheFillEnqueue, DataFrame, ExecutionBudgetRequest, ExecutionContext, ExecutionMetrics,
     GpuDataFrame, LakehouseOptimizedBatchCacheEntry, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions,
@@ -9,7 +11,7 @@ use super::{
     optimized_cache_path_fact, record_background_cache_chunk_fill_enqueue_runtime,
     record_background_cache_file_fill_enqueue_runtime, record_source_chunk_batch_read_runtime, record_source_read,
 };
-use crate::{chunk::SourceChunkBatch, source::LakehouseCacheFillMode};
+use crate::chunk::SourceChunkBatch;
 
 pub(super) fn record_background_cache_file_fill_enqueue(
     context: &ExecutionContext,

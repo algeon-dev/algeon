@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use query_engine::{
-    expr::Expr,
-    metrics::{BudgetedExecutionEvent, QueryMetrics},
-};
+use query_planning::expr::Expr;
+use query_runtime::metrics::{BudgetedExecutionEvent, QueryMetrics};
 
 pub(super) fn budgeted_events<'a>(metrics: &'a QueryMetrics, operation: &str) -> Vec<&'a BudgetedExecutionEvent> {
     metrics.budgeted_execution_events.iter().filter(|event| event.operation == operation).collect()

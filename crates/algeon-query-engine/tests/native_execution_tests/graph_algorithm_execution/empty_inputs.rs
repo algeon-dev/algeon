@@ -1,4 +1,4 @@
-use query_engine::error::QueryErrorStatus;
+use query_planning::error::QueryErrorStatus;
 
 fn empty_int32_edges_batch(schema: Arc<Schema>) -> RecordBatch {
     RecordBatch::try_new(

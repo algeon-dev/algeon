@@ -1,13 +1,17 @@
 use query_engine::{
-    admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     dimension_pruning::local_dimension_pruning_resolver,
-    error::QueryErrorCode,
     exec::{
         ExecutionMetrics, QueryExecutionRequest, admit_query_plan, execute_query_plan as engine_execute_query_plan,
     },
-    observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
-    pipeline::SortStrategy,
     rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
+    admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
+    error::QueryErrorCode,
+    pipeline::SortStrategy,
+};
+use query_runtime::{
+    observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
     runtime::resident::GpuResidentInputMap,
 };
 

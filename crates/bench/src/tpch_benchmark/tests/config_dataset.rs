@@ -1,7 +1,8 @@
 use std::fs;
 
 use algeon_datafusion::planner::AlgeonGpuExecutionMode;
-use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode};
+use query_planning::execution_contracts::SourceChunkPlanningMode;
+use query_runtime::runtime::GpuDeviceMemoryLimit;
 
 use super::*;
 use crate::report_workload::RelationalExecutionSelection;

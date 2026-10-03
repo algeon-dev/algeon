@@ -1,4 +1,4 @@
-use query_engine::pipeline::{AcceptedInputForm, PipelineTaskKind};
+use query_planning::{pipeline::AcceptedInputForm, pipeline::PipelineTaskKind};
 
 /// Join → Limit → Projection over throwaway paths.
 ///

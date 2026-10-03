@@ -10,20 +10,19 @@ use std::{
     time::Instant,
 };
 
-use query_engine::{
-    error::QueryErrorCode,
-    metrics::QueryId,
-    observability::{
-        AttemptFailureCode, AttemptFailureStatus, DeterministicRuntimeObservationClock, ObservationSequence,
-        PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow, QueryBoundaryKind,
-        RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeEventContext, RuntimeObservationConfig,
-        RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus, RuntimeObservationLossReason,
-        RuntimeObservationPayload, RuntimeObservationRecord, RuntimeObservationRecordClass,
-        RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimePlanNodeId, RuntimeQueryId,
-        RuntimeQueryLifecycle, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSpanId,
-        RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
-        TaskDefinitionRow, write_runtime_observation_jsonl,
-    },
+use query_planning::{
+    correlation::{QueryId, TraceId},
+    error::{AttemptFailureCode, QueryErrorCode},
+};
+use query_runtime::observability::{
+    AttemptFailureStatus, DeterministicRuntimeObservationClock, ObservationSequence, PlanEdgeRow,
+    PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA,
+    RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationExportErrorKind,
+    RuntimeObservationExportErrorStatus, RuntimeObservationLossReason, RuntimeObservationPayload,
+    RuntimeObservationRecord, RuntimeObservationRecordClass, RuntimeObservationRecordDisposition,
+    RuntimeObservationSession, RuntimePlanNodeId, RuntimeQueryLifecycle, RuntimeResourceDomain, RuntimeResourceId,
+    RuntimeResourceRow, RuntimeSpanId, RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTimelineEvent,
+    RuntimeTopologyRecord, TaskDefinitionRow, write_runtime_observation_jsonl,
 };
 
 const LARGE_BYTE_LIMIT: u64 = 16 * 1024 * 1024;
@@ -34,7 +33,7 @@ fn test_session(
     let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1_234_567)));
     let session = RuntimeObservationSession::with_clock(
         "query-observation",
-        Some(RuntimeTraceId::new("trace-parent")),
+        Some(TraceId::new("trace-parent")),
         config,
         Arc::clone(&clock) as _,
     );
@@ -329,7 +328,7 @@ fn jsonl_matches_fixed_golden_bytes() {
     let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1_234)));
     let session = RuntimeObservationSession::with_clock(
         "golden-query",
-        Some(RuntimeTraceId::new("golden-trace")),
+        Some(TraceId::new("golden-trace")),
         RuntimeObservationConfig::bounded(6, 4_096),
         Arc::clone(&clock) as _,
     );
@@ -433,12 +432,12 @@ fn disabled_session_does_not_construct_lazy_payload() {
 #[test]
 fn runtime_query_identity_uses_one_canonical_representation() {
     for raw in ["", " ", "\t\n"] {
-        assert_eq!(RuntimeQueryId::new(raw).as_str(), QueryId::UNASSIGNED);
-        let decoded: RuntimeQueryId =
+        assert_eq!(QueryId::new(raw).as_str(), QueryId::UNASSIGNED);
+        let decoded: QueryId =
             serde_json::from_str(&serde_json::to_string(raw).expect("identity serializes")).expect("identity parses");
         assert_eq!(decoded.as_str(), QueryId::UNASSIGNED);
     }
-    assert_eq!(RuntimeQueryId::new("normal-query").as_str(), "normal-query");
+    assert_eq!(QueryId::new("normal-query").as_str(), "normal-query");
 }
 
 #[test]

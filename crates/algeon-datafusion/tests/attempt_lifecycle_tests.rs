@@ -21,12 +21,10 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::{StreamExt, stream::once};
-use query_engine::{
-    error::QueryErrorCode,
-    observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureCode,
-        AttemptFailureFactValue, AttemptHealthTransition, QueryAttemptReport, RuntimeTerminalOutcome,
-    },
+use query_planning::error::{AttemptFailureCode, QueryErrorCode};
+use query_runtime::observability::{
+    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureFactValue,
+    AttemptHealthTransition, QueryAttemptReport, RuntimeTerminalOutcome,
 };
 use tokio::{sync::OwnedSemaphorePermit, time::sleep};
 

@@ -12,15 +12,15 @@ use datafusion::{
     execution::context::TaskContext,
     physical_plan::{ExecutionPlan, SendableRecordBatchStream},
 };
-use query_engine::{
+use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
+use query_planning::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::{DeferredGraphExecutionScopeIdentity, QueryPlan},
-    runtime::{
-        ExecutionContext,
-        resident::{GpuResidentInputMap, GpuResultHandle},
-    },
+};
+use query_runtime::runtime::{
+    ExecutionContext,
+    resident::{GpuResidentInputMap, GpuResultHandle},
 };
 
 use super::{

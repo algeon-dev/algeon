@@ -25,7 +25,8 @@ use datafusion::{
     },
 };
 use futures::{FutureExt, TryStreamExt, future::BoxFuture};
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{
         DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, LakehouseFooterPruningEvent,
@@ -37,7 +38,6 @@ use query_engine::{
     },
     plan::{NodeId, QueryPlan},
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::{LocalParquetSource, SourceColumnRef},
 };
 

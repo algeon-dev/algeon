@@ -3,12 +3,10 @@
 //! These tests pin the attempt identity, correlation
 //! validation, and report envelope through the crate's public API only.
 
-use query_engine::{
-    error::QueryErrorCode,
-    observability::{
-        AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, MAX_ATTEMPT_QUERY_ID_BYTES,
-        MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA,
-    },
+use query_planning::error::QueryErrorCode;
+use query_runtime::observability::{
+    AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, MAX_ATTEMPT_QUERY_ID_BYTES,
+    MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA,
 };
 
 #[test]
@@ -75,7 +73,7 @@ fn correlation_limits_are_pinned_public_constants() {
 
 #[test]
 fn query_attempt_report_serde_round_trips_with_stable_field_names() {
-    use query_engine::observability::{
+    use query_runtime::observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
         AttemptRetryAdvice, AttemptTimestamps, QueryAttemptReport, RuntimeTerminalOutcome,
     };

@@ -2,9 +2,10 @@ use std::cmp;
 
 use arrow::datatypes::DataType as ArrowDataType;
 use cudf::ops::materialization;
+use query_runtime::observability::BudgetWindowPeaks;
 
 use super::{filtered_segment_policy::FilteredAggregateSegmentationPolicy, *};
-use crate::{datatypes::arrow_fixed_width_byte_size, observability::BudgetWindowPeaks};
+use crate::datatypes::arrow_fixed_width_byte_size;
 
 pub(super) fn unsupported_stateful_filtered_merge(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| {

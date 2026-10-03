@@ -1,17 +1,17 @@
 use std::time::Duration;
 
 use query_engine::{
-    admission, attempt,
-    error::{self, Result},
-    exec::{self, QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
-    native_error, observability,
-    plan::{self, QueryPlan},
+    exec,
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
+};
+use query_planning::{admission, error, error::Result, plan, plan::QueryPlan, source};
+use query_runtime::{
+    attempt, native_error, observability, runtime,
     runtime::{
-        self, ExecutionContext, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+        ExecutionContext, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
         GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
         QueueBounds, resident::GpuResidentInputMap,
     },
-    source,
 };
 
 fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usize) -> Result<QueryService> {

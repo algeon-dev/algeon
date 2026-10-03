@@ -30,19 +30,21 @@ use parquet::{
     arrow::ArrowWriter,
     file::{metadata::KeyValue, properties::WriterProperties},
 };
-use query_engine::{
+use query_engine::exec::admit_query_plan;
+use query_planning::{
     admission::AttemptCapabilityEvidence,
-    exec::admit_query_plan,
     expr::{Expr, SortExpr, SortSpec},
     mode::StatisticalAggregateExecutionMode,
-    observability::{AttemptDisposition, RuntimeTerminalOutcome},
     plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     policy::PlanningPolicy,
-    runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
         GraphSimpleDirectedEdgeTopology, LiteralBatchSource, LocalParquetFile, LocalParquetSource,
     },
+};
+use query_runtime::{
+    observability::{AttemptDisposition, RuntimeTerminalOutcome},
+    runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
 };
 use tokio::{task::yield_now, time::timeout};
 

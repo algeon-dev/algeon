@@ -1,7 +1,8 @@
+use query_planning::source::GpuResidentSource;
+
 use super::{
     ExecutionContext, ExecutionMetrics, GpuDataFrame, GpuResidentInputMap, QueryError, QueryErrorCode, Result,
 };
-use crate::source::GpuResidentSource;
 
 /// Read a caller-supplied GPU-resident source by plan-local input name.
 ///

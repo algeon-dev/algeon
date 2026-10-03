@@ -6,14 +6,14 @@ use std::{
 };
 
 use parquet::file::{metadata::ParquetMetaData, reader::SerializedFileReader};
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
         DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet, apply_dynamic_filters_to_local_parquet_source,
     },
     plan::NodeId,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;
@@ -626,7 +626,7 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
+        query_planning::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -666,7 +666,7 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
+        query_planning::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -704,7 +704,7 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
+        query_planning::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -774,7 +774,7 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
+        query_planning::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -819,7 +819,7 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::none(),
+        query_planning::source::SourceFooterFacts::none(),
     )
     .unwrap();
 
@@ -850,7 +850,7 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
         &[&route],
         &filters,
         rapids_analysis_context(PlanningPolicy::default()),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
+        query_planning::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =

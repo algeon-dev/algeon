@@ -13,7 +13,7 @@ use datafusion::{
     execution::{SessionStateBuilder, object_store::ObjectStoreRegistry, runtime_env::RuntimeEnvBuilder},
     object_store::ObjectStore,
 };
-use query_engine::runtime::{S3SourceStorageProfile, SourceStorageProfile};
+use query_runtime::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 use url::Url;
 
 use crate::{

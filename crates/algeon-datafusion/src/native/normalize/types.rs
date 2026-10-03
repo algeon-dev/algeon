@@ -6,7 +6,7 @@ use datafusion::{
     physical_expr::window::WindowExpr,
     physical_plan::{empty::EmptyExec, placeholder_row::PlaceholderRowExec},
 };
-use query_engine::expr::LimitSpec;
+use query_planning::expr::LimitSpec;
 
 use super::{
     AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan, FilterExec, GpuCandidate,

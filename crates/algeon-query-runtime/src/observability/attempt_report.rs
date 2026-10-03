@@ -2,14 +2,15 @@
 
 use std::fmt;
 
-use query_planning::{
-    error::{AllocationSource, AttemptFailureCode, QueryError, QueryErrorCode, QueryErrorStatus, Result},
-    schedule_projection::{AttemptComposedScheduleProjection, AttemptId},
+use query_planning::error::{
+    AllocationSource, AttemptFailureCode, QueryError, QueryErrorCode, QueryErrorStatus, Result,
 };
 use serde::{
     Deserialize, Serialize,
     de::{self, SeqAccess, Visitor},
 };
+
+use crate::observability::{AttemptComposedScheduleProjection, AttemptId};
 
 /// Schema label of [`QueryAttemptReport`]. Decoding rejects every other label.
 pub const QUERY_ATTEMPT_REPORT_SCHEMA: &str = "query_engine.query_attempt_report";

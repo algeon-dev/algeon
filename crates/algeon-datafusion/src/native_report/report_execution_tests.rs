@@ -10,9 +10,9 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
     },
 };
-use query_engine::{
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     contract_report::CapabilityContractReport,
-    dimension_pruning::local_dimension_pruning_resolver,
     expr::{AggregateSpec, ColumnRef, Expr},
     mode::CapabilityEnvelopeStatus,
     optimizer::{AggregateJoinPushdownDiagnostics, NativeOptimizerDiagnostics, optimize_query_plan},
@@ -21,7 +21,6 @@ use query_engine::{
         QueryPlan, QueryPlanBuilder,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 

@@ -10,7 +10,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use query_engine::observability::{QueryAttemptReport, SealedAttemptProjection};
+use query_runtime::observability::{QueryAttemptReport, SealedAttemptProjection};
 use serde::Serialize;
 
 use super::{

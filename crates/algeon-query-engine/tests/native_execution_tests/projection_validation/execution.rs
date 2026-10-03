@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::expr::CaseWhen;
+use query_planning::expr::CaseWhen;
 
 use super::*;
 

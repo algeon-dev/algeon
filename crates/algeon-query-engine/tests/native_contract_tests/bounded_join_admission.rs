@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     admission::{AdmittedPlan, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     backend::AnalysisContext,
     error::{QueryError, Result},
     mode::StatisticalAggregateExecutionMode,
     plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

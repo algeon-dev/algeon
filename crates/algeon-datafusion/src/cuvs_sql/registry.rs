@@ -5,7 +5,7 @@
 //! `query-engine` facade. This module intentionally contains no second
 //! operation map or schema definition.
 
-pub use query_engine::plan::{
+pub use query_planning::plan::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
     CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
     CUVS_TOP_K_FUNCTION, CuvsOperation, CuvsOperationDescriptor, CuvsOutputContract, CuvsRelationRole,

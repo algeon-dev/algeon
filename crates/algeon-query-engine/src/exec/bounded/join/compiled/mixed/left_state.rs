@@ -1,16 +1,14 @@
 use std::time::Instant;
 
-use crate::{
-    exec::bounded::join::compiled::{
-        BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
-        BoundedExecutionAttempt, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId, ResidentFrameStreamPayload,
-        ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options, join_index_error,
-        join_side_output_upper_bound_bytes, lower_join_residual_predicate,
-        materialize_left_only_join_output_projection, observe_device_memory_bytes,
-        prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
-        residual_input_columns,
-    },
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
+use crate::exec::bounded::join::compiled::{
+    BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
+    BoundedExecutionAttempt, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId, ResidentFrameStreamPayload,
+    ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options, join_index_error,
+    join_side_output_upper_bound_bytes, lower_join_residual_predicate, materialize_left_only_join_output_projection,
+    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
+    projected_output_columns_for_retained_sizing, residual_input_columns,
 };
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join_probe_from_frame_stream(

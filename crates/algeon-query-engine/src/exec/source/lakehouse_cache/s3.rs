@@ -1,10 +1,10 @@
 use object_store::path::Path as ObjectStorePath;
-
-use super::cache::stable_log_hash;
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     source::{ParquetSourceLocation, ResolvedParquetSource, redacted_object_store_path_diagnostic},
 };
+
+use super::cache::stable_log_hash;
 
 pub(in crate::exec::source) struct CacheMaintenanceLocation {
     pub(in crate::exec::source) bucket: String,

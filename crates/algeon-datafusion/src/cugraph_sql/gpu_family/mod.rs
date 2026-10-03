@@ -14,7 +14,7 @@ use datafusion::{
     execution::SessionState,
     logical_expr::{LogicalPlan, LogicalPlanBuilder},
 };
-use query_engine::plan::GraphVertexIdTypeSupport;
+use query_planning::plan::GraphVertexIdTypeSupport;
 use serde_json::{Value, json};
 
 use super::{

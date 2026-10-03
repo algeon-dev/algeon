@@ -6,12 +6,11 @@ use std::{path::PathBuf, sync::Arc};
 
 #[cfg(feature = "cuml")]
 use cuml::{ForestModelFormat, ForestOutput, ForestOutputKind, ForestPrecision};
-use query_engine::plan::{MlForestModelFormat, MlForestModelSnapshot};
 #[cfg(feature = "cuml")]
-use query_engine::{
-    native_error::cuml_query_error,
-    plan::{MlForestModelFacts, MlForestOutputContract, MlForestPrecision},
-};
+use query_engine::native_error::cuml_query_error;
+use query_planning::plan::{MlForestModelFormat, MlForestModelSnapshot};
+#[cfg(feature = "cuml")]
+use query_planning::{plan::MlForestModelFacts, plan::MlForestOutputContract, plan::MlForestPrecision};
 
 #[cfg(feature = "cuml")]
 use super::error::invalid_option;

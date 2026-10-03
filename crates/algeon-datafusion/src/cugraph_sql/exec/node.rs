@@ -5,11 +5,11 @@ use std::{
 };
 
 use futures::stream::once;
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
-    runtime::cache_observation_fingerprint,
 };
+use query_runtime::runtime::cache_observation_fingerprint;
 
 use super::{
     AlgeonNativeExecutionConfig, AlgeonNativeMetrics, Boundedness, BoxFuture, CUGRAPH_EDGE_DESTINATION_COLUMN,

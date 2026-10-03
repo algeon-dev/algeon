@@ -12,8 +12,9 @@ use datafusion::{
         },
     },
 };
-use query_engine::{
-    datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::{
+    datatypes::is_timestamp_with_timezone,
     expr::DatePart as NativeDatePart,
     validation::{is_integral_type, is_string_type, substring_stop_position},
 };

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use query_engine::observability::RuntimeObservationConfig;
+use query_runtime::observability::RuntimeObservationConfig;
 
 use super::{EnvValues, Result, ServerError, checked_config_duration, file::ServerObservabilityFileConfig};
 use crate::server::coordinator::logical_capture_reservation_bytes;

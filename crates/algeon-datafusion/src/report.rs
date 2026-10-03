@@ -15,15 +15,15 @@
 //! `not_selected_by_cost` projection labels shared by
 //! [`crate::gpu_coverage`] and [`crate::native_report`].
 
-use query_engine::{
+pub use query_planning::{
     capability::Rejection,
-    plan::NativePlanCostFacts,
-    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
-};
-pub use query_engine::{
-    metrics::{PlanNodeId, QueryId, TraceId},
+    correlation::{PlanNodeId, QueryId, TraceId},
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageSummary, TriageVerdict},
+};
+use query_planning::{
+    plan::NativePlanCostFacts,
+    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
 };
 use serde_json::{Value, json};
 

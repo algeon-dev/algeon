@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use query_engine::plan::{
+use query_planning::plan::{
     MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelSnapshot, MlForestPredictParams, QueryPlan,
     QueryPlanBuilder,
 };

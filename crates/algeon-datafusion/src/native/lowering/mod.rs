@@ -21,7 +21,7 @@ use bindings::{FieldBinding, LoweredNativeInput, RequiredFields, executable_sche
 use datafusion::{datasource::memory::MemorySourceConfig, physical_plan::ExecutionPlan};
 #[cfg(test)]
 pub(in crate::native) use expr::lower_physical_expr as lower_physical_expr_for_test;
-use query_engine::{
+use query_planning::{
     expr::{Expr as NativeExpr, LimitSpec as NativeLimitSpec},
     plan::{
         ProjectionOutput as NativeProjectionOutput, QueryPlan as NativeQueryPlan,

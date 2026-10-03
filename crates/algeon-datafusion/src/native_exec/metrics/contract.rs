@@ -1,7 +1,10 @@
 //! Ordered native-to-DataFusion metric contract.
 
 #[cfg(test)]
-use query_engine::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QueryMetrics};
+use query_runtime::{
+    metrics::MetricAggregation, metrics::MetricDescriptor, metrics::MetricDirection, metrics::MetricUnit,
+    metrics::QueryMetrics,
+};
 
 #[cfg(test)]
 const fn metric(

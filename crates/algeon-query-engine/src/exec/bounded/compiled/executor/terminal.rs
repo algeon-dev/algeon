@@ -1,22 +1,23 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
-use crate::{
+use query_planning::{
     error::Result,
-    exec::{
-        bounded::{
-            ResidentGpuFrame,
-            compiled::{
-                helpers::{
-                    attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
-                },
-                resource::CompiledGpuResourcePayload,
-            },
-            execute_bounded_unary, execute_bounded_union, materialize_bounded_frame_to_host,
-            union_branch_with_output_names,
-        },
-        operators::execute_limit,
-    },
     pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing, SinkBoundaryKind},
     plan::{NodeId, PlanNode, ResultSink},
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
+use crate::exec::{
+    bounded::{
+        ResidentGpuFrame,
+        compiled::{
+            helpers::{
+                attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
+            },
+            resource::CompiledGpuResourcePayload,
+        },
+        execute_bounded_unary, execute_bounded_union, materialize_bounded_frame_to_host,
+        union_branch_with_output_names,
+    },
+    operators::execute_limit,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

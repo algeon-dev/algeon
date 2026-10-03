@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::parquet::schema::types::SchemaDescriptor;
 use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
-use query_engine::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
+use query_planning::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
 use super::{
     BinaryExpr, CastExpr, Column, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr, IsNullExpr,

@@ -38,22 +38,22 @@ use datafusion::{
 };
 use futures::{FutureExt, Stream, future::BoxFuture};
 #[cfg(test)]
-use query_engine::admission::AttemptCapabilityEvidence;
-use query_engine::{
+use query_planning::admission::AttemptCapabilityEvidence;
+use query_planning::error::QueryError;
+use query_runtime::{
     attempt::{
         AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCompletionFactory, AttemptHandle, AttemptOwner,
         BeginAttemptRequest,
     },
-    error::QueryError,
     observability::AttemptFailureSummary,
     runtime::GpuBackendSession,
 };
-pub use query_engine::{
+pub use query_runtime::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
-    graph_observation::GraphMeasuredPeakRow,
     observability::{
         AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext,
         QueryAttemptReport, RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        graph_observation::GraphMeasuredPeakRow,
     },
 };
 

@@ -55,7 +55,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::{
+use query_planning::{
     expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LimitSpec, LiteralValue},
     plan::{
         AggregateNode, JoinNode, JoinNullEquality as NativeJoinNullEquality,

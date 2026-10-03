@@ -14,9 +14,10 @@ use query_planning::{
     plan::NodeId,
     source::{LocalParquetFile, LocalParquetSource, parquet_source_path_fact},
 };
+use query_runtime::runtime::ExecutionContext;
 
 use super::{SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, metadata::read_parquet_metadata};
-use crate::{rapids_backend::rapids_backend, runtime::ExecutionContext};
+use crate::rapids_backend::rapids_backend;
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
 pub fn plan_local_parquet_source_chunks(

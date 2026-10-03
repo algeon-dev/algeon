@@ -1,4 +1,4 @@
-//! Native error projection facade.
+//! Native error projection.
 //!
 //! The cuDF projection is owned by the runtime's native boundary so the
 //! runtime and the engine classify a `cudf::Error` identically. cuVS is used
@@ -13,7 +13,6 @@ use std::error::Error as StdError;
 use cudf::core::error::FactKeyName;
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
-pub use query_runtime::native_error::{cudf_message_fact, cudf_query_error, query_error_code_for_cudf_error};
 pub(crate) use query_runtime::native_error::{
     cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure,
 };

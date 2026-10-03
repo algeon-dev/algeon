@@ -11,7 +11,18 @@ use arrow::datatypes::DataType;
 use cudf::frame::dataframe::{ParquetDictionaryPolicy, ParquetWriteOptions};
 use futures::StreamExt;
 use object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
-use query_planning::util::fnv1a64;
+use query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::{
+        LakehouseCacheFillMode, LakehouseCacheStatus, ParquetReadStrategy, ParquetReaderDecimalType,
+        ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef,
+    },
+    util::fnv1a64,
+};
+use query_runtime::{
+    observability::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome},
+    runtime::{CacheFillBytePermit, S3ObjectStoreKey},
+};
 
 use super::{
     cudf_query_error,
@@ -23,16 +34,9 @@ use super::{
 use crate::{
     chunk::SourceChunkBatch,
     datatypes::is_arrow_fixed_width,
-    error::{QueryError, QueryErrorCode, Result},
-    observability::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome},
     parquet_metadata::{
         PARQUET_FOOTER_SIDECAR_SUFFIX, object_store_query_error, parquet_footer_sidecar_path,
         write_parquet_footer_sidecar_from_file,
-    },
-    runtime::{CacheFillBytePermit, S3ObjectStoreKey},
-    source::{
-        LakehouseCacheFillMode, LakehouseCacheStatus, ParquetReadStrategy, ParquetReaderDecimalType,
-        ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef,
     },
 };
 

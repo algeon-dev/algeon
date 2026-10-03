@@ -18,7 +18,7 @@ use bench::{
         },
     },
 };
-use query_engine::mode::{StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract};
+use query_planning::mode::{StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract};
 use workloads::tpcds::{WorkloadResult, prepare_tpcds_report_dataset};
 
 const ALGEON_TPCDS_PARITY_QUERY_IDS_ENV: &str = "ALGEON_TPCDS_PARITY_QUERY_IDS";

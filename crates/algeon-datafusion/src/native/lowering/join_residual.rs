@@ -12,7 +12,7 @@ use datafusion::{
     },
     physical_plan::joins::utils::JoinFilter,
 };
-use query_engine::{
+use query_planning::{
     expr::{
         BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue,
     },

@@ -10,9 +10,9 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
-use query_engine::{
+use query_planning::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
-    metrics::QueryId,
+    correlation::QueryId,
     optimizer::NativeOptimizerDiagnostics,
     plan::QueryPlan,
     source::SourceDiagnostics,
@@ -693,8 +693,8 @@ mod tests {
     use datafusion::physical_plan::coop::CooperativeExec;
     use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     #[cfg(feature = "cugraph")]
-    use query_engine::source::GpuResidentSource;
-    use query_engine::{
+    use query_planning::source::GpuResidentSource;
+    use query_planning::{
         plan::{QueryPlan, QueryPlanBuilder},
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };

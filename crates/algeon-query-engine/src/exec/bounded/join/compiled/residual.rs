@@ -3,6 +3,8 @@ use std::{
     time::Instant,
 };
 
+use query_planning::expr::CaseWhen;
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, Expr, GpuDataFrame,
     JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics, QueryError,
@@ -10,7 +12,6 @@ use super::{
     datafusion_order_columns, execution_budget_token_for_boundary, lower_expr, observe_device_memory_bytes, probe_side,
     residual_input_columns, side_metric,
 };
-use crate::expr::CaseWhen;
 
 #[expect(
     clippy::too_many_arguments,

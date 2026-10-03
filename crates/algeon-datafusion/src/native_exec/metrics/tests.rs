@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricCategory};
-use query_engine::{
+use query_runtime::{
     metrics::{
         JoinOperatorMetrics, OperatorMetrics, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
     },

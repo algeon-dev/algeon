@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_engine::plan::MlForestModelDigest;
+use query_planning::plan::MlForestModelDigest;
 
 use crate::server::{
     adapter_error::{Error, ErrorCode},

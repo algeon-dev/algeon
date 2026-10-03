@@ -1,12 +1,11 @@
 use std::{path::Path, sync::Arc};
 
 use arrow::array::{Int32Array, Int64Array};
-use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver,
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     expr::ColumnRef,
     optimizer::{AggregateJoinPushdownRejectedReason, NativeOptimizerChange, optimize_query_plan},
     plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

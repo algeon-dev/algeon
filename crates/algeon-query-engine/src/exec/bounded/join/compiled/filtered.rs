@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
     BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionMetrics, GpuDataFrame,
@@ -10,10 +12,7 @@ use super::{
     observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame, projected_input_columns,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
 };
-use crate::{
-    exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
-};
+use crate::exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe};
 
 pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,

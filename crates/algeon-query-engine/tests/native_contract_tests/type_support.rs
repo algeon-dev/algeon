@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{Decimal32Type, Decimal64Type, UnionFields, UnionMode, validate_decimal_precision_and_scale};
-use query_engine::{
-    backend::BackendCapabilities, datatypes::is_narrow_decimal_carry_type, exec::preflight_query_plan,
-    rapids_backend::rapids_backend,
-};
+use query_engine::{exec::preflight_query_plan, rapids_backend::rapids_backend};
+use query_planning::{backend::BackendCapabilities, datatypes::is_narrow_decimal_carry_type};
 
 use super::*;
 

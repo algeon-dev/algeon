@@ -105,9 +105,9 @@ fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
 #[cfg(test)]
 mod tests {
     use cudf::{ErrorCode, testing::error::new_with_for_test};
+    use query_planning::source::{CredentialMode, ResolvedParquetSource};
 
     use super::*;
-    use crate::source::{CredentialMode, ResolvedParquetSource};
 
     #[test]
     fn remote_direct_read_errors_redact_object_store_locations() {

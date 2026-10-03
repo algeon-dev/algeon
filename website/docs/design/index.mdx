@@ -120,11 +120,12 @@ Two pages carry the details behind this flow:
         per-device ledger, immutable grants, caches, observations, and metrics.</>,
     },
     {
-      kind: 'engine', name: 'query-engine', note: 'execution · composition · public facade', tone: 'bridge',
+      kind: 'engine', name: 'query-engine', note: 'execution · composition', tone: 'bridge',
       sub: 'crates/algeon-query-engine',
-      detail: <>The native execution owner and compatible facade. It composes
-        one planning result with one runtime grant, executes relational, graph,
-        vector, and source work, and re-exports the established public paths.</>,
+      detail: <>The native execution owner. It composes one planning result
+        with one runtime grant and executes relational, graph, vector, and
+        source work. Callers import planning and runtime items from their own
+        crates.</>,
     },
     {
       kind: 'bindings', name: 'components/(cudf, cugraph, cuvs, cuml)', note: 'safe Rust over RAPIDS', tone: 'gpu',
@@ -156,7 +157,7 @@ The root workspace contains these crates. Default members are the adapter,
 | `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph, cuVS, and cuML UDTFs, the GPU UDTF catalog, reports, and errors. The only crate that depends on DataFusion. |
 | `query-planning` | `crates/algeon-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
 | `query-runtime` | `crates/algeon-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
-| `query-engine` | `crates/algeon-query-engine` | Native execution composition and the public facade that re-exports planning and runtime. |
+| `query-engine` | `crates/algeon-query-engine` | Native execution composition. |
 | `workloads` | `crates/workloads` | Benchmark catalogs, fixtures, dataset discovery, and DataFusion registration. |
 | `server` | `crates/algeon-server` | Standalone binary/package shell for the Arrow Flight SQL service; implementation and library API belong to `algeon-datafusion::server`. |
 | `bench` | `crates/bench` | Benchmark, report, triage, and stress binaries. Non-default member. |
@@ -381,7 +382,7 @@ contract each one must keep stable.
 | Which DataFusion physical shapes lower natively | `crates/algeon-datafusion/src/native/normalize.rs`, `crates/algeon-datafusion/src/native/lowering/`, `crates/algeon-datafusion/src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names, final-plan requirements |
 | Native IR, optimizer, capability, proof, or compiled-pipeline semantics | `crates/algeon-query-planning/src/{plan,expr,source,optimizer,capability,admission,pipeline}/` | One proof path and structured planning diagnostics; no family-name shortcuts |
 | Attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/algeon-query-runtime/src/{attempt,runtime,observability,metrics}/` | One ledger, immutable grants, and runtime observation projections |
-| Native execution semantics or planning/runtime composition | `crates/algeon-query-engine/src/exec/` | Engine execution contracts and facade compatibility |
+| Native execution semantics or planning/runtime composition | `crates/algeon-query-engine/src/exec/` | Engine execution contracts |
 | cuGraph or cuVS SQL behavior | `crates/algeon-datafusion/src/cugraph_sql/`, `crates/algeon-datafusion/src/cuvs_sql/`, `crates/algeon-datafusion/src/gpu_functions/`, `crates/algeon-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
 | Parquet source or workspace-overlay behavior | `crates/algeon-datafusion/src/native/source.rs`, `crates/algeon-datafusion/src/native/lowering/source/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | GPU memory, streams, source readers, or graph/vector interop | `components/cudf`, `components/cugraph`, `components/cuvs` | Component crate APIs and FFI error mapping |

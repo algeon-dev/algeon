@@ -21,7 +21,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
-use query_engine::mode::StatisticalAggregateExecutionMode;
+use query_planning::mode::StatisticalAggregateExecutionMode;
 
 use super::{
     CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,

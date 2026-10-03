@@ -5,28 +5,30 @@ use std::{
 };
 
 use arrow::record_batch::RecordBatch;
+use query_planning::{
+    dynamic_filter::{DynamicFilterId, DynamicFilterSet},
+    error::{QueryError, QueryErrorCode, Result},
+    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
+    plan::{NodeId, QueryPlan},
+    policy::PlanningPolicy,
+};
+use query_runtime::{
+    native_error::cudf_query_error,
+    runtime::{
+        ExecutionContext,
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    },
+};
 
 use super::{
     CompiledGpuResource, helpers::invalid, resource::CompiledGpuResourcePayload, scheduler::CompiledTaskExecutor,
     state::CompiledPipelineState,
 };
-use crate::{
-    dynamic_filter::{DynamicFilterId, DynamicFilterSet},
-    error::{QueryError, QueryErrorCode, Result},
-    exec::{
-        ExecutionMetrics,
-        bounded::{
-            BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ResidentGpuFrame,
-            release_bounded_compiled_join_probe_state,
-        },
-    },
-    native_error::cudf_query_error,
-    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
-    plan::{NodeId, QueryPlan},
-    policy::PlanningPolicy,
-    runtime::{
-        ExecutionContext,
-        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+use crate::exec::{
+    ExecutionMetrics,
+    bounded::{
+        BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ResidentGpuFrame,
+        release_bounded_compiled_join_probe_state,
     },
 };
 

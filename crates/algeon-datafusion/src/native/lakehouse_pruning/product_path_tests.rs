@@ -31,15 +31,15 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::{StreamExt, stream::BoxStream};
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
     policy::PlanningPolicy,
-    runtime::S3SourceStorageProfile,
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
+use query_runtime::runtime::S3SourceStorageProfile;
 use tokio::{task::yield_now, time::timeout};
 
 use super::prune_native_query_plan;

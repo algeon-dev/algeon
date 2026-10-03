@@ -2,6 +2,11 @@ use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::ScalarValue;
+use query_planning::{
+    expression_lowering_policy::ExpressionLoweringPolicy,
+    naming::unique_name_with_suffix_from,
+    plan::{ShiftDirection, WindowFunction},
+};
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp,
@@ -18,11 +23,6 @@ use super::{
     lower_partial_aggregate_spec, lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec,
     memory_failure, projection_schema_mismatch_error, schema_with_datafusion_order_columns,
     sort_by_datafusion_order_if_present, validate_avg_output_fields, validate_global_aggregate_capability, when,
-};
-use crate::{
-    expression_lowering_policy::ExpressionLoweringPolicy,
-    naming::unique_name_with_suffix_from,
-    plan::{ShiftDirection, WindowFunction},
 };
 
 mod aggregate;

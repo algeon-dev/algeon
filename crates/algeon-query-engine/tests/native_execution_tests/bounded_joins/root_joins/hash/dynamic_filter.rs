@@ -1,15 +1,5 @@
-use query_engine::{
-    admission::{admit, bounded_join_unsupported_shape_facts},
-    dimension_pruning::local_dimension_pruning_resolver,
-    dynamic_filter::{
-        DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterProducer,
-        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
-    },
-    optimizer::{
-        DynamicFilterRouteDiscoveryOptions, JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan,
-    },
-    rapids_backend::rapids_analysis_context,
-};
+use query_planning::{admission::admit, admission::bounded_join_unsupported_shape_facts, dynamic_filter::DynamicFilterConsumer, dynamic_filter::DynamicFilterConsumerLowering, dynamic_filter::DynamicFilterProducer, dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, optimizer::DynamicFilterRouteDiscoveryOptions, optimizer::JoinBuildSideSelectionOptions, optimizer::NativeOptimizerOptions, optimizer::optimize_query_plan};
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
 
 #[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source() {

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use query_engine::error::QueryErrorCode;
+use query_planning::error::QueryErrorCode;
 
 /// Declares [`ErrorCode`] from one list: each variant with its report label,
 /// [`ErrorKind`], and [`ErrorStatus`]. Every table derives from the list, so a

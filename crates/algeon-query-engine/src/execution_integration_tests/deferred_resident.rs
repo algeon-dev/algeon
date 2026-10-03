@@ -1,8 +1,5 @@
 fn shared_roles_fixture() -> (plan::QueryPlan, Arc<ArrowSchema>) {
-    use query_engine::{
-        expr::{BinaryOp, Expr, LiteralValue},
-        source::{LocalParquetFile, LocalParquetSource, SourceNode},
-    };
+    use query_planning::{expr::BinaryOp, expr::Expr, expr::LiteralValue, source::LocalParquetFile, source::LocalParquetSource, source::SourceNode};
 
     let schema = Arc::new(ArrowSchema::new(vec![
         ArrowField::new("vertexId", ArrowDataType::Utf8, false),
@@ -34,11 +31,7 @@ fn shared_two_join_fixture() -> (
     Arc<ArrowSchema>,
     Arc<ArrowSchema>,
 ) {
-    use query_engine::{
-        expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
-        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
-    };
+    use query_planning::{expr::BinaryOp, expr::ColumnRef, expr::Expr, expr::LiteralValue, plan::JoinKey, plan::JoinOutputColumn, plan::JoinSide, plan::JoinSpec, plan::JoinType, plan::QueryPlanBuilder, source::GpuResidentSource, source::LocalParquetFile, source::LocalParquetSource, source::SourceNode};
 
     let (roles_plan, roles_schema) = shared_roles_fixture();
     let similarity_schema = Arc::new(ArrowSchema::new(vec![
@@ -145,10 +138,7 @@ fn composed_provenance_evidence(
 
 fn same_schema_provenance_fixture()
 -> (plan::QueryPlan, plan::QueryPlan, plan::QueryPlan, Arc<ArrowSchema>) {
-    use query_engine::{
-        plan::QueryPlanBuilder,
-        source::{GpuResidentSource, LocalParquetSource, SourceNode},
-    };
+    use query_planning::{plan::QueryPlanBuilder, source::GpuResidentSource, source::LocalParquetSource, source::SourceNode};
 
     let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new(
         "value",

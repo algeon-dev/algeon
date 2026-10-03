@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use query_planning::execution_contracts::MemoryControlPolicy;
+
 use super::{ExecutionContext, ExecutionMetrics, QueryError, QueryErrorCode, Result};
-use crate::runtime::MemoryControlPolicy;
 
 const BOUNDED_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 

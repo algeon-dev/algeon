@@ -8,7 +8,9 @@ use query_planning::{
     admission::AttemptRequirement,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
+    correlation::QueryId,
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     mode::StatisticalAggregateExecutionMode,
 };
 #[cfg(test)]
@@ -19,19 +21,16 @@ use super::LakehouseCacheFillConfig;
 #[cfg(test)]
 use super::{DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 use super::{
-    DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
-    MemoryControlPolicy, MemoryGrant, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool, MemoryGrant,
+    SourceSchedulerPolicy,
     context::{
         AdmittedAttempt, PlanScope, QueryServiceEpochUser, StreamBinding, memory_control_policy_for_grant,
         validate_service_stream_pool_device,
     },
 };
-use crate::{
-    metrics::QueryId,
-    observability::{
-        AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
-        RuntimeObservationPayload, RuntimeTerminalOutcome,
-    },
+use crate::observability::{
+    AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
+    RuntimeObservationPayload, RuntimeTerminalOutcome,
 };
 
 mod admission;

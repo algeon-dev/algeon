@@ -1,4 +1,4 @@
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode},
     plan::{MlAlgorithmNode, NodeId},
 };
@@ -20,12 +20,12 @@ pub(in crate::exec) fn ml_algorithm_execution_unavailable(node_id: NodeId, node:
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::DataType;
-
-    use super::*;
-    use crate::plan::{
+    use query_planning::plan::{
         MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlRelationBinding, MlTsvdParams, VectorRowIdBinding,
         vector_pca_output_schema,
     };
+
+    use super::*;
 
     #[test]
     fn unavailable_ml_feature_returns_structured_facts() {

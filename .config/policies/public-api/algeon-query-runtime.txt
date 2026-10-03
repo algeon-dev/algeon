@@ -56,11 +56,11 @@ impl core::fmt::Debug for query_runtime::attempt::AttemptCompletionFactory
 pub fn query_runtime::attempt::AttemptCompletionFactory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::attempt::AttemptHandle(_)
 impl query_runtime::attempt::AttemptHandle
-pub fn query_runtime::attempt::AttemptHandle::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
+pub fn query_runtime::attempt::AttemptHandle::attempt_id(&self) -> query_runtime::observability::AttemptId
 pub fn query_runtime::attempt::AttemptHandle::cancellation(&self) -> query_runtime::attempt::AttemptCancellation
 pub fn query_runtime::attempt::AttemptHandle::disposition(&self) -> core::option::Option<query_runtime::observability::AttemptDisposition>
 pub fn query_runtime::attempt::AttemptHandle::is_terminal(&self) -> bool
-pub fn query_runtime::attempt::AttemptHandle::record_composed_schedule_projection(&self, query_planning::schedule_projection::AttemptComposedScheduleProjection) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
+pub fn query_runtime::attempt::AttemptHandle::record_composed_schedule_projection(&self, query_runtime::observability::AttemptComposedScheduleProjection) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptHandle::record_gpu_execution_started(&self) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptHandle::record_native_failure(&self, &query_planning::error::QueryError)
 pub fn query_runtime::attempt::AttemptHandle::record_physical_execution_started(&self) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
@@ -75,7 +75,7 @@ pub struct query_runtime::attempt::AttemptOwner(_)
 impl query_runtime::attempt::AttemptOwner
 pub fn query_runtime::attempt::AttemptOwner::admission_binding(&self) -> query_runtime::attempt::AttemptAdmissionBinding
 pub fn query_runtime::attempt::AttemptOwner::admission_rejection(&self) -> query_runtime::attempt::AttemptAdmissionRejection
-pub fn query_runtime::attempt::AttemptOwner::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
+pub fn query_runtime::attempt::AttemptOwner::attempt_id(&self) -> query_runtime::observability::AttemptId
 pub fn query_runtime::attempt::AttemptOwner::cancellation(&self) -> query_runtime::attempt::AttemptCancellation
 pub fn query_runtime::attempt::AttemptOwner::commit_failure_summary(&self, query_runtime::observability::AttemptFailureSummary) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
 pub fn query_runtime::attempt::AttemptOwner::commit_query_error(&self, &query_planning::error::QueryError) -> core::result::Result<(), query_runtime::attempt::lifecycle::AttemptLifecycleError>
@@ -97,9 +97,6 @@ pub fn query_runtime::attempt::BeginAttemptRequest::default() -> Self
 impl core::fmt::Debug for query_runtime::attempt::BeginAttemptRequest
 pub fn query_runtime::attempt::BeginAttemptRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod query_runtime::metrics
-pub use query_runtime::metrics::PlanNodeId
-pub use query_runtime::metrics::QueryId
-pub use query_runtime::metrics::TraceId
 #[repr(usize)] pub enum query_runtime::metrics::BackendMetric
 pub query_runtime::metrics::BackendMetric::admission_active_attempts
 pub query_runtime::metrics::BackendMetric::admission_live_grant_bytes
@@ -307,7 +304,7 @@ pub query_runtime::metrics::QueryMetrics::final_merge_max_fan_in: u64
 pub query_runtime::metrics::QueryMetrics::final_merge_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::final_sort_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::graph_algorithm_runtime_rows: alloc::vec::Vec<query_runtime::metrics::GraphAlgorithmRuntimeMetrics>
-pub query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows: alloc::vec::Vec<query_planning::graph_observation::GraphMeasuredPeakRow>
+pub query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows: alloc::vec::Vec<query_runtime::observability::graph_observation::GraphMeasuredPeakRow>
 pub query_runtime::metrics::QueryMetrics::hash_join_build_count: u64
 pub query_runtime::metrics::QueryMetrics::hash_join_hash_table_bytes: u64
 pub query_runtime::metrics::QueryMetrics::input_batches: u64
@@ -376,11 +373,11 @@ pub fn query_runtime::metrics::QueryMetrics::record_source_read_runtime(&mut sel
 impl query_runtime::metrics::QueryMetrics
 pub fn query_runtime::metrics::QueryMetrics::descriptors() -> &'static [query_runtime::metrics::MetricDescriptor]
 impl query_runtime::metrics::QueryMetrics
-pub fn query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows(&self) -> &[query_planning::graph_observation::GraphMeasuredPeakRow]
+pub fn query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows(&self) -> &[query_runtime::observability::graph_observation::GraphMeasuredPeakRow]
 pub fn query_runtime::metrics::QueryMetrics::record_graph_algorithm_runtime(&mut self, query_runtime::metrics::GraphAlgorithmRuntimeMetrics)
 pub fn query_runtime::metrics::QueryMetrics::record_graph_claim_calibration(&mut self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
 pub fn query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_algorithm_started(&mut self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
-pub fn query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_measurement(&mut self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, query_planning::graph_observation::GraphMeasuredPeakProvenance)
+pub fn query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_measurement(&mut self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance)
 impl query_runtime::metrics::QueryMetrics
 pub fn query_runtime::metrics::QueryMetrics::merge_from(&mut self, query_runtime::metrics::QueryMetrics)
 pub fn query_runtime::metrics::QueryMetrics::new(impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
@@ -494,10 +491,33 @@ pub fn query_runtime::native_error::cudf_unsupported_type_error(&'static str, im
 pub fn query_runtime::native_error::memory_failure(&cudf::core::error::BudgetExhaustionDetail) -> query_planning::error::context::MemoryFailure
 pub fn query_runtime::native_error::query_error_code_for_cudf_error(&cudf::core::error::Error) -> query_planning::error::QueryErrorCode
 pub mod query_runtime::observability
-pub use query_runtime::observability::AttemptComposedScheduleProjection
-pub use query_runtime::observability::AttemptId
-pub use query_runtime::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA
-pub use query_runtime::observability::RuntimeTaskId
+pub mod query_runtime::observability::graph_observation
+pub enum query_runtime::observability::graph_observation::GraphClaimExecutionState
+pub query_runtime::observability::graph_observation::GraphClaimExecutionState::AlgorithmStarted
+pub query_runtime::observability::graph_observation::GraphClaimExecutionState::Pending
+impl query_runtime::observability::graph_observation::GraphClaimExecutionState
+pub const fn query_runtime::observability::graph_observation::GraphClaimExecutionState::as_str(self) -> &'static str
+impl core::fmt::Display for query_runtime::observability::graph_observation::GraphClaimExecutionState
+pub fn query_runtime::observability::graph_observation::GraphClaimExecutionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance::CacheScopeHighWater
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance::Unavailable
+impl query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance
+pub const fn query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance::as_str(self) -> &'static str
+impl core::fmt::Display for query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance
+pub fn query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_runtime::observability::graph_observation::GraphMeasuredPeakRow
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::algorithm: query_planning::plan::graph_algorithm::definition::GraphAlgorithm
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::execution_state: query_runtime::observability::graph_observation::GraphClaimExecutionState
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::measured_peak_bytes: core::option::Option<u64>
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::measured_peak_provenance: query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::node_id: alloc::string::String
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::node_index: usize
+pub query_runtime::observability::graph_observation::GraphMeasuredPeakRow::query_id: core::option::Option<query_planning::correlation::QueryId>
+impl query_runtime::observability::graph_observation::GraphMeasuredPeakRow
+pub fn query_runtime::observability::graph_observation::GraphMeasuredPeakRow::pending(core::option::Option<query_planning::correlation::QueryId>, impl core::convert::Into<alloc::string::String>, usize, query_planning::plan::graph_algorithm::definition::GraphAlgorithm) -> Self
+pub fn query_runtime::observability::graph_observation::GraphMeasuredPeakRow::record_measured_peak(&mut self, core::option::Option<u64>, query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance)
+pub fn query_runtime::observability::graph_observation::GraphMeasuredPeakRow::to_json(&self) -> serde_json::value::Value
 pub enum query_runtime::observability::AttemptAllocatorEventSource
 pub query_runtime::observability::AttemptAllocatorEventSource::AllocationLimit
 pub query_runtime::observability::AttemptAllocatorEventSource::Physical
@@ -841,6 +861,22 @@ pub query_runtime::observability::AttemptAdmissionFact::device_ordinal: usize
 pub query_runtime::observability::AttemptAdmissionFact::grant_bytes: u64
 pub struct query_runtime::observability::AttemptAdmissionWaitFact
 pub query_runtime::observability::AttemptAdmissionWaitFact::submission_sequence: u64
+#[non_exhaustive] pub struct query_runtime::observability::AttemptComposedScheduleProjection
+pub query_runtime::observability::AttemptComposedScheduleProjection::attempt_id: query_runtime::observability::AttemptId
+pub query_runtime::observability::AttemptComposedScheduleProjection::attempt_wide_fixed_bytes: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::complete_peak_bytes: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::consumer_additional_peak_bytes: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::consumer_scope_fingerprint: alloc::string::String
+pub query_runtime::observability::AttemptComposedScheduleProjection::consumer_stage_peak_bytes: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::device_ordinal: usize
+pub query_runtime::observability::AttemptComposedScheduleProjection::fingerprint: alloc::string::String
+pub query_runtime::observability::AttemptComposedScheduleProjection::grant_bytes: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::grant_id: u64
+pub query_runtime::observability::AttemptComposedScheduleProjection::producer_occurrences: alloc::vec::Vec<query_runtime::observability::schedule_projection::AttemptComposedScheduleOccurrence>
+pub query_runtime::observability::AttemptComposedScheduleProjection::schema: alloc::string::String
+impl query_runtime::observability::AttemptComposedScheduleProjection
+pub fn query_runtime::observability::AttemptComposedScheduleProjection::fingerprint_matches_contents(&self) -> bool
+pub fn query_runtime::observability::AttemptComposedScheduleProjection::for_test(usize, u64, u64) -> Self
 pub struct query_runtime::observability::AttemptFailureSummary
 impl query_runtime::observability::AttemptFailureSummary
 pub const fn query_runtime::observability::AttemptFailureSummary::backend_closing() -> Self
@@ -860,6 +896,16 @@ pub query_runtime::observability::AttemptFinalDomainUsage::peak_aligned_bytes: u
 pub query_runtime::observability::AttemptFinalDomainUsage::peak_bytes: u64
 impl core::convert::From<cudf::core::memory::usage::QueryMemoryDomainUsage> for query_runtime::observability::AttemptFinalDomainUsage
 pub fn query_runtime::observability::AttemptFinalDomainUsage::from(cudf::core::memory::usage::QueryMemoryDomainUsage) -> Self
+pub struct query_runtime::observability::AttemptId(_)
+impl query_runtime::observability::AttemptId
+pub fn query_runtime::observability::AttemptId::as_bytes(&self) -> &[u8; 16]
+pub fn query_runtime::observability::AttemptId::mint() -> Self
+impl core::fmt::Display for query_runtime::observability::AttemptId
+pub fn query_runtime::observability::AttemptId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for query_runtime::observability::AttemptId
+pub fn query_runtime::observability::AttemptId::serialize<S>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for query_runtime::observability::AttemptId
+pub fn query_runtime::observability::AttemptId::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct query_runtime::observability::AttemptQueryId(_)
 impl query_runtime::observability::AttemptQueryId
 pub fn query_runtime::observability::AttemptQueryId::as_str(&self) -> &str
@@ -899,9 +945,9 @@ pub fn query_runtime::observability::AttemptTraceContext::deserialize<D>(D) -> c
 pub struct query_runtime::observability::BarrierDefinitionRow
 pub query_runtime::observability::BarrierDefinitionRow::barrier_id: query_runtime::observability::RuntimeBarrierId
 pub query_runtime::observability::BarrierDefinitionRow::barrier_kind: alloc::string::String
-pub query_runtime::observability::BarrierDefinitionRow::downstream_task_ids: alloc::vec::Vec<query_planning::execution_contracts::RuntimeTaskId>
+pub query_runtime::observability::BarrierDefinitionRow::downstream_task_ids: alloc::vec::Vec<query_runtime::observability::RuntimeTaskId>
 pub query_runtime::observability::BarrierDefinitionRow::plan_execution_id: query_runtime::observability::PlanExecutionId
-pub query_runtime::observability::BarrierDefinitionRow::upstream_task_ids: alloc::vec::Vec<query_planning::execution_contracts::RuntimeTaskId>
+pub query_runtime::observability::BarrierDefinitionRow::upstream_task_ids: alloc::vec::Vec<query_runtime::observability::RuntimeTaskId>
 pub struct query_runtime::observability::BudgetWindowPeaks
 pub query_runtime::observability::BudgetWindowPeaks::observed_peak_bytes: core::option::Option<u64>
 pub query_runtime::observability::BudgetWindowPeaks::retained_bytes: core::option::Option<u64>
@@ -914,10 +960,10 @@ pub const fn query_runtime::observability::CleanupFailureSummary::phase(&self) -
 pub struct query_runtime::observability::CompiledEdgeRow
 pub query_runtime::observability::CompiledEdgeRow::edge_id: query_runtime::observability::RuntimePipelineEdgeId
 pub query_runtime::observability::CompiledEdgeRow::edge_kind: alloc::string::String
-pub query_runtime::observability::CompiledEdgeRow::from_task_id: query_planning::execution_contracts::RuntimeTaskId
+pub query_runtime::observability::CompiledEdgeRow::from_task_id: query_runtime::observability::RuntimeTaskId
 pub query_runtime::observability::CompiledEdgeRow::plan_execution_id: query_runtime::observability::PlanExecutionId
 pub query_runtime::observability::CompiledEdgeRow::resource_ids: alloc::vec::Vec<query_runtime::observability::RuntimeResourceId>
-pub query_runtime::observability::CompiledEdgeRow::to_task_id: query_planning::execution_contracts::RuntimeTaskId
+pub query_runtime::observability::CompiledEdgeRow::to_task_id: query_runtime::observability::RuntimeTaskId
 pub struct query_runtime::observability::DeterministicRuntimeObservationClock
 impl query_runtime::observability::DeterministicRuntimeObservationClock
 pub fn query_runtime::observability::DeterministicRuntimeObservationClock::advance(&self, u64) -> u64
@@ -986,7 +1032,7 @@ pub fn query_runtime::observability::MetricsRecorder::record_gpu_resident_input_
 pub fn query_runtime::observability::MetricsRecorder::record_graph_algorithm_runtime(&self, query_runtime::metrics::GraphAlgorithmRuntimeMetrics)
 pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
 pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_algorithm_started(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
-pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_measurement(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, query_planning::graph_observation::GraphMeasuredPeakProvenance)
+pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_measurement(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance)
 pub fn query_runtime::observability::MetricsRecorder::record_hash_join_build(&self)
 pub fn query_runtime::observability::MetricsRecorder::record_hash_join_hash_table_bytes(&self, u64)
 pub fn query_runtime::observability::MetricsRecorder::record_host_to_device_upload(&self, u64, u64)
@@ -1039,12 +1085,12 @@ pub query_runtime::observability::PlanNodeRow::plan_execution_id: query_runtime:
 pub struct query_runtime::observability::QueryAttemptReport
 pub query_runtime::observability::QueryAttemptReport::admission: core::option::Option<query_runtime::observability::AttemptAdmissionFact>
 pub query_runtime::observability::QueryAttemptReport::admission_wait: core::option::Option<query_runtime::observability::AttemptAdmissionWaitFact>
-pub query_runtime::observability::QueryAttemptReport::attempt_id: query_planning::schedule_projection::AttemptId
+pub query_runtime::observability::QueryAttemptReport::attempt_id: query_runtime::observability::AttemptId
 pub query_runtime::observability::QueryAttemptReport::capacity_disposition: query_runtime::observability::AttemptCapacityDisposition
 pub query_runtime::observability::QueryAttemptReport::cleanup_disposition: query_runtime::observability::AttemptCleanupDisposition
 pub query_runtime::observability::QueryAttemptReport::cleanup_failure_count: u64
 pub query_runtime::observability::QueryAttemptReport::cleanup_failure_count_complete: bool
-pub query_runtime::observability::QueryAttemptReport::composed_schedule: core::option::Option<query_planning::schedule_projection::AttemptComposedScheduleProjection>
+pub query_runtime::observability::QueryAttemptReport::composed_schedule: core::option::Option<query_runtime::observability::AttemptComposedScheduleProjection>
 pub query_runtime::observability::QueryAttemptReport::device_ordinal: core::option::Option<usize>
 pub query_runtime::observability::QueryAttemptReport::disposition: query_runtime::observability::AttemptDisposition
 pub query_runtime::observability::QueryAttemptReport::final_domain_usage: core::option::Option<query_runtime::observability::AttemptFinalDomainUsage>
@@ -1137,7 +1183,7 @@ pub const fn query_runtime::observability::RuntimeObservationHandle::disabled() 
 pub fn query_runtime::observability::RuntimeObservationHandle::is_same_session(&self, &Self) -> bool
 pub fn query_runtime::observability::RuntimeObservationHandle::live_snapshot(&self) -> core::option::Option<query_runtime::observability::LiveRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationHandle::metrics_checkpoint(&self, &query_runtime::observability::PlanExecutionId) -> core::option::Option<query_runtime::observability::metrics_summary::QueryMetricsCheckpoint>
-pub fn query_runtime::observability::RuntimeObservationHandle::query_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeQueryId>
+pub fn query_runtime::observability::RuntimeObservationHandle::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_runtime::observability::RuntimeObservationHandle::record<F>(&self, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationHandle::record_for_plan<F>(&self, query_runtime::observability::PlanExecutionId, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationHandle::record_source_read(&self, &query_runtime::observability::PlanExecutionId, query_runtime::observability::SourceReadFact)
@@ -1146,7 +1192,7 @@ pub fn query_runtime::observability::RuntimeObservationHandle::record_topology<F
 pub fn query_runtime::observability::RuntimeObservationHandle::record_with_context<F>(&self, query_runtime::observability::RuntimeEventContext, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationHandle::sealed_snapshot(&self) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationHandle::source_location_id(&self, &str) -> core::option::Option<query_runtime::observability::runtime_observation::RuntimeSourceLocationId>
-pub fn query_runtime::observability::RuntimeObservationHandle::trace_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeTraceId>
+pub fn query_runtime::observability::RuntimeObservationHandle::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 impl core::fmt::Debug for query_runtime::observability::RuntimeObservationHandle
 pub fn query_runtime::observability::RuntimeObservationHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::observability::RuntimeObservationLimits
@@ -1160,14 +1206,14 @@ pub fn query_runtime::observability::RuntimeObservationOwner::finish_query(&self
 pub fn query_runtime::observability::RuntimeObservationOwner::from_session(query_runtime::observability::RuntimeObservationSession) -> Self
 pub fn query_runtime::observability::RuntimeObservationOwner::handle(&self) -> query_runtime::observability::RuntimeObservationHandle
 pub fn query_runtime::observability::RuntimeObservationOwner::live_snapshot(&self) -> core::option::Option<query_runtime::observability::LiveRuntimeObservationSnapshot>
-pub fn query_runtime::observability::RuntimeObservationOwner::new(impl core::convert::Into<query_runtime::observability::RuntimeQueryId>, core::option::Option<query_runtime::observability::RuntimeTraceId>, query_runtime::observability::RuntimeObservationConfig) -> Self
-pub fn query_runtime::observability::RuntimeObservationOwner::query_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeQueryId>
+pub fn query_runtime::observability::RuntimeObservationOwner::new(impl core::convert::Into<query_planning::correlation::QueryId>, core::option::Option<query_planning::correlation::TraceId>, query_runtime::observability::RuntimeObservationConfig) -> Self
+pub fn query_runtime::observability::RuntimeObservationOwner::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_runtime::observability::RuntimeObservationOwner::record_terminal_outcome(&self, query_runtime::observability::RuntimeTerminalOutcome)
 pub fn query_runtime::observability::RuntimeObservationOwner::register_seal_observer<F>(&self, F) where F: core::ops::function::Fn(query_runtime::observability::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn query_runtime::observability::RuntimeObservationOwner::seal(&self, query_runtime::observability::RuntimeTerminalOutcome) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationOwner::sealed_snapshot(&self) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
-pub fn query_runtime::observability::RuntimeObservationOwner::trace_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeTraceId>
-pub fn query_runtime::observability::RuntimeObservationOwner::with_clock(impl core::convert::Into<query_runtime::observability::RuntimeQueryId>, core::option::Option<query_runtime::observability::RuntimeTraceId>, query_runtime::observability::RuntimeObservationConfig, alloc::sync::Arc<dyn query_runtime::observability::clock::RuntimeObservationClock>) -> Self
+pub fn query_runtime::observability::RuntimeObservationOwner::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
+pub fn query_runtime::observability::RuntimeObservationOwner::with_clock(impl core::convert::Into<query_planning::correlation::QueryId>, core::option::Option<query_planning::correlation::TraceId>, query_runtime::observability::RuntimeObservationConfig, alloc::sync::Arc<dyn query_runtime::observability::clock::RuntimeObservationClock>) -> Self
 impl core::default::Default for query_runtime::observability::RuntimeObservationOwner
 pub fn query_runtime::observability::RuntimeObservationOwner::default() -> Self
 impl core::fmt::Debug for query_runtime::observability::RuntimeObservationOwner
@@ -1178,16 +1224,16 @@ pub const fn query_runtime::observability::RuntimeObservationSession::config(&se
 pub const fn query_runtime::observability::RuntimeObservationSession::disabled() -> Self
 pub fn query_runtime::observability::RuntimeObservationSession::handle(&self) -> query_runtime::observability::RuntimeObservationHandle
 pub fn query_runtime::observability::RuntimeObservationSession::live_snapshot(&self) -> core::option::Option<query_runtime::observability::LiveRuntimeObservationSnapshot>
-pub fn query_runtime::observability::RuntimeObservationSession::new(impl core::convert::Into<query_runtime::observability::RuntimeQueryId>, core::option::Option<query_runtime::observability::RuntimeTraceId>, query_runtime::observability::RuntimeObservationConfig) -> Self
-pub fn query_runtime::observability::RuntimeObservationSession::query_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeQueryId>
+pub fn query_runtime::observability::RuntimeObservationSession::new(impl core::convert::Into<query_planning::correlation::QueryId>, core::option::Option<query_planning::correlation::TraceId>, query_runtime::observability::RuntimeObservationConfig) -> Self
+pub fn query_runtime::observability::RuntimeObservationSession::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_runtime::observability::RuntimeObservationSession::record<F>(&self, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationSession::record_for_plan<F>(&self, query_runtime::observability::PlanExecutionId, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationSession::record_topology<F>(&self, query_runtime::observability::RuntimeObservationRecordClass, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeTopologyRecord
 pub fn query_runtime::observability::RuntimeObservationSession::record_with_context<F>(&self, query_runtime::observability::RuntimeEventContext, F) -> query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> query_runtime::observability::RuntimeObservationPayload
 pub fn query_runtime::observability::RuntimeObservationSession::seal(&self, query_runtime::observability::RuntimeTerminalOutcome) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationSession::sealed_snapshot(&self) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
-pub fn query_runtime::observability::RuntimeObservationSession::trace_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeTraceId>
-pub fn query_runtime::observability::RuntimeObservationSession::with_clock(impl core::convert::Into<query_runtime::observability::RuntimeQueryId>, core::option::Option<query_runtime::observability::RuntimeTraceId>, query_runtime::observability::RuntimeObservationConfig, alloc::sync::Arc<dyn query_runtime::observability::clock::RuntimeObservationClock>) -> Self
+pub fn query_runtime::observability::RuntimeObservationSession::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
+pub fn query_runtime::observability::RuntimeObservationSession::with_clock(impl core::convert::Into<query_planning::correlation::QueryId>, core::option::Option<query_planning::correlation::TraceId>, query_runtime::observability::RuntimeObservationConfig, alloc::sync::Arc<dyn query_runtime::observability::clock::RuntimeObservationClock>) -> Self
 pub struct query_runtime::observability::RuntimeOperatorStageGuard
 impl query_runtime::observability::RuntimeOperatorStageGuard
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::cancel(self)
@@ -1213,7 +1259,7 @@ pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_node_id(
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_partition_index(self, usize) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_reserved_bytes(self, u64) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_strategy_label(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_task_id(self, query_planning::execution_contracts::RuntimeTaskId) -> Self
+pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_task_id(self, query_runtime::observability::RuntimeTaskId) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_vector_algorithm(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_vector_dimension(self, usize) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_vector_relation_role(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -1246,20 +1292,6 @@ impl core::convert::From<alloc::string::String> for query_runtime::observability
 pub fn query_runtime::observability::RuntimePlanNodeId::from(alloc::string::String) -> Self
 impl core::fmt::Display for query_runtime::observability::RuntimePlanNodeId
 pub fn query_runtime::observability::RuntimePlanNodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct query_runtime::observability::RuntimeQueryId(_)
-impl query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::as_str(&self) -> &str
-pub fn query_runtime::observability::RuntimeQueryId::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::convert::From<&str> for query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::from(&str) -> Self
-impl core::convert::From<alloc::string::String> for query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::from(alloc::string::String) -> Self
-impl core::convert::From<query_planning::correlation::QueryId> for query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::from(query_planning::correlation::QueryId) -> Self
-impl core::fmt::Display for query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'de> serde_core::de::Deserialize<'de> for query_runtime::observability::RuntimeQueryId
-pub fn query_runtime::observability::RuntimeQueryId::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct query_runtime::observability::RuntimeQueryLifecycle
 impl query_runtime::observability::RuntimeQueryLifecycle
 pub fn query_runtime::observability::RuntimeQueryLifecycle::execution_scope(&self) -> query_runtime::observability::RuntimeExecutionObservationScope
@@ -1308,7 +1340,7 @@ pub query_runtime::observability::RuntimeReservationObservation::source_read_con
 pub query_runtime::observability::RuntimeReservationObservation::source_read_estimated_bytes: core::option::Option<u64>
 pub query_runtime::observability::RuntimeReservationObservation::source_read_planning_bytes: core::option::Option<u64>
 pub query_runtime::observability::RuntimeReservationObservation::stage: core::option::Option<alloc::string::String>
-pub query_runtime::observability::RuntimeReservationObservation::task_attempt_id: core::option::Option<query_planning::execution_contracts::TaskAttemptId>
+pub query_runtime::observability::RuntimeReservationObservation::task_attempt_id: core::option::Option<query_runtime::observability::task_identity::TaskAttemptId>
 pub query_runtime::observability::RuntimeReservationObservation::task_kind: core::option::Option<alloc::string::String>
 pub struct query_runtime::observability::RuntimeResourceId(_)
 impl query_runtime::observability::RuntimeResourceId
@@ -1321,11 +1353,11 @@ pub fn query_runtime::observability::RuntimeResourceId::from(alloc::string::Stri
 impl core::fmt::Display for query_runtime::observability::RuntimeResourceId
 pub fn query_runtime::observability::RuntimeResourceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::observability::RuntimeResourceRow
-pub query_runtime::observability::RuntimeResourceRow::consumer_task_ids: alloc::vec::Vec<query_planning::execution_contracts::RuntimeTaskId>
+pub query_runtime::observability::RuntimeResourceRow::consumer_task_ids: alloc::vec::Vec<query_runtime::observability::RuntimeTaskId>
 pub query_runtime::observability::RuntimeResourceRow::domain: query_runtime::observability::RuntimeResourceDomain
 pub query_runtime::observability::RuntimeResourceRow::lifetime: alloc::string::String
 pub query_runtime::observability::RuntimeResourceRow::plan_execution_id: core::option::Option<query_runtime::observability::PlanExecutionId>
-pub query_runtime::observability::RuntimeResourceRow::producer_task_id: core::option::Option<query_planning::execution_contracts::RuntimeTaskId>
+pub query_runtime::observability::RuntimeResourceRow::producer_task_id: core::option::Option<query_runtime::observability::RuntimeTaskId>
 pub query_runtime::observability::RuntimeResourceRow::resource_id: query_runtime::observability::RuntimeResourceId
 pub query_runtime::observability::RuntimeResourceRow::resource_kind: alloc::string::String
 pub struct query_runtime::observability::RuntimeSinkId(_)
@@ -1342,7 +1374,7 @@ pub struct query_runtime::observability::RuntimeSourceReadObservation
 pub query_runtime::observability::RuntimeSourceReadObservation::chunk_index: usize
 pub query_runtime::observability::RuntimeSourceReadObservation::file_index: usize
 pub query_runtime::observability::RuntimeSourceReadObservation::lifecycle: query_runtime::observability::SourceReadLifecycleState
-pub query_runtime::observability::RuntimeSourceReadObservation::task_id: query_planning::execution_contracts::RuntimeTaskId
+pub query_runtime::observability::RuntimeSourceReadObservation::task_id: query_runtime::observability::RuntimeTaskId
 pub query_runtime::observability::RuntimeSourceReadObservation::worker_id: query_runtime::observability::RuntimeWorkerId
 pub struct query_runtime::observability::RuntimeSpanId(_)
 impl query_runtime::observability::RuntimeSpanId
@@ -1352,14 +1384,24 @@ pub struct query_runtime::observability::RuntimeStreamLeaseScope
 pub query_runtime::observability::RuntimeStreamLeaseScope::gpu_job_id: core::option::Option<query_runtime::observability::runtime_observation::RuntimeJobId>
 pub query_runtime::observability::RuntimeStreamLeaseScope::gpu_worker_id: core::option::Option<query_runtime::observability::RuntimeWorkerId>
 pub query_runtime::observability::RuntimeStreamLeaseScope::source_worker_id: core::option::Option<query_runtime::observability::RuntimeWorkerId>
-pub query_runtime::observability::RuntimeStreamLeaseScope::task_id: core::option::Option<query_planning::execution_contracts::RuntimeTaskId>
+pub query_runtime::observability::RuntimeStreamLeaseScope::task_id: core::option::Option<query_runtime::observability::RuntimeTaskId>
 impl query_runtime::observability::RuntimeStreamLeaseScope
 pub fn query_runtime::observability::RuntimeStreamLeaseScope::for_plan(query_runtime::observability::PlanExecutionId) -> Self
+pub struct query_runtime::observability::RuntimeTaskId(_)
+impl query_runtime::observability::RuntimeTaskId
+pub fn query_runtime::observability::RuntimeTaskId::as_str(&self) -> &str
+pub fn query_runtime::observability::RuntimeTaskId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&str> for query_runtime::observability::RuntimeTaskId
+pub fn query_runtime::observability::RuntimeTaskId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for query_runtime::observability::RuntimeTaskId
+pub fn query_runtime::observability::RuntimeTaskId::from(alloc::string::String) -> Self
+impl core::fmt::Display for query_runtime::observability::RuntimeTaskId
+pub fn query_runtime::observability::RuntimeTaskId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::observability::RuntimeTaskLifecycle
 impl query_runtime::observability::RuntimeTaskLifecycle
 pub fn query_runtime::observability::RuntimeTaskLifecycle::fail(self, impl core::convert::Into<alloc::string::String>, bool)
 pub fn query_runtime::observability::RuntimeTaskLifecycle::finish(self)
-pub fn query_runtime::observability::RuntimeTaskLifecycle::new(query_runtime::observability::RuntimeObservationHandle, query_runtime::observability::PlanExecutionId, query_planning::execution_contracts::TaskAttemptId, impl core::convert::Into<alloc::string::String>, query_runtime::observability::RuntimeSpanId, query_runtime::observability::RuntimeSpanId) -> Self
+pub fn query_runtime::observability::RuntimeTaskLifecycle::new(query_runtime::observability::RuntimeObservationHandle, query_runtime::observability::PlanExecutionId, query_runtime::observability::task_identity::TaskAttemptId, impl core::convert::Into<alloc::string::String>, query_runtime::observability::RuntimeSpanId, query_runtime::observability::RuntimeSpanId) -> Self
 pub fn query_runtime::observability::RuntimeTaskLifecycle::panicked(self)
 impl core::ops::drop::Drop for query_runtime::observability::RuntimeTaskLifecycle
 pub fn query_runtime::observability::RuntimeTaskLifecycle::drop(&mut self)
@@ -1369,16 +1411,6 @@ pub query_runtime::observability::RuntimeTimelineEvent::payload: query_runtime::
 pub query_runtime::observability::RuntimeTimelineEvent::plan_execution_id: core::option::Option<query_runtime::observability::PlanExecutionId>
 pub query_runtime::observability::RuntimeTimelineEvent::sequence: query_runtime::observability::ObservationSequence
 pub query_runtime::observability::RuntimeTimelineEvent::span_id: core::option::Option<query_runtime::observability::RuntimeSpanId>
-pub struct query_runtime::observability::RuntimeTraceId(_)
-impl query_runtime::observability::RuntimeTraceId
-pub fn query_runtime::observability::RuntimeTraceId::as_str(&self) -> &str
-pub fn query_runtime::observability::RuntimeTraceId::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::convert::From<&str> for query_runtime::observability::RuntimeTraceId
-pub fn query_runtime::observability::RuntimeTraceId::from(&str) -> Self
-impl core::convert::From<alloc::string::String> for query_runtime::observability::RuntimeTraceId
-pub fn query_runtime::observability::RuntimeTraceId::from(alloc::string::String) -> Self
-impl core::fmt::Display for query_runtime::observability::RuntimeTraceId
-pub fn query_runtime::observability::RuntimeTraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::observability::RuntimeWorkerId(_)
 impl query_runtime::observability::RuntimeWorkerId
 pub fn query_runtime::observability::RuntimeWorkerId::as_str(&self) -> &str
@@ -1403,7 +1435,7 @@ pub query_runtime::observability::SealedAttemptLabels::resource_evidence: &'stat
 pub query_runtime::observability::SealedAttemptLabels::retry_prerequisite: &'static str
 pub query_runtime::observability::SealedAttemptLabels::retry_recovery: &'static str
 pub struct query_runtime::observability::SealedAttemptProjection
-pub query_runtime::observability::SealedAttemptProjection::attempt_id: query_planning::schedule_projection::AttemptId
+pub query_runtime::observability::SealedAttemptProjection::attempt_id: query_runtime::observability::AttemptId
 pub query_runtime::observability::SealedAttemptProjection::capacity_disposition: query_runtime::observability::AttemptCapacityDisposition
 pub query_runtime::observability::SealedAttemptProjection::cleanup_disposition: query_runtime::observability::AttemptCleanupDisposition
 pub query_runtime::observability::SealedAttemptProjection::cleanup_failure_count: u64
@@ -1431,7 +1463,7 @@ pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::topology(
 impl query_runtime::observability::SealedRuntimeObservationSnapshot
 pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::query_metrics(&self, &query_runtime::observability::PlanExecutionId) -> core::option::Option<&query_runtime::metrics::QueryMetrics>
 pub struct query_runtime::observability::SinkDefinitionRow
-pub query_runtime::observability::SinkDefinitionRow::input_task_id: query_planning::execution_contracts::RuntimeTaskId
+pub query_runtime::observability::SinkDefinitionRow::input_task_id: query_runtime::observability::RuntimeTaskId
 pub query_runtime::observability::SinkDefinitionRow::plan_execution_id: query_runtime::observability::PlanExecutionId
 pub query_runtime::observability::SinkDefinitionRow::sink_id: query_runtime::observability::RuntimeSinkId
 pub query_runtime::observability::SinkDefinitionRow::sink_kind: alloc::string::String
@@ -1443,31 +1475,27 @@ pub query_runtime::observability::SourceReadTotals::source_read_queue_wait_time:
 pub struct query_runtime::observability::TaskDefinitionRow
 pub query_runtime::observability::TaskDefinitionRow::plan_execution_id: query_runtime::observability::PlanExecutionId
 pub query_runtime::observability::TaskDefinitionRow::plan_node_id: core::option::Option<query_runtime::observability::RuntimePlanNodeId>
-pub query_runtime::observability::TaskDefinitionRow::task_id: query_planning::execution_contracts::RuntimeTaskId
+pub query_runtime::observability::TaskDefinitionRow::task_id: query_runtime::observability::RuntimeTaskId
 pub query_runtime::observability::TaskDefinitionRow::task_kind: alloc::string::String
 pub struct query_runtime::observability::WorkerDefinitionRow
 pub query_runtime::observability::WorkerDefinitionRow::device_ordinal: core::option::Option<u32>
 pub query_runtime::observability::WorkerDefinitionRow::plan_execution_id: core::option::Option<query_runtime::observability::PlanExecutionId>
 pub query_runtime::observability::WorkerDefinitionRow::worker_id: query_runtime::observability::RuntimeWorkerId
 pub query_runtime::observability::WorkerDefinitionRow::worker_kind: alloc::string::String
+pub const query_runtime::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA: &str
 pub const query_runtime::observability::MAX_ATTEMPT_QUERY_ID_BYTES: usize
 pub const query_runtime::observability::MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize
 pub const query_runtime::observability::QUERY_ATTEMPT_REPORT_SCHEMA: &str
 pub const query_runtime::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA: &str
 pub const query_runtime::observability::SEALED_ATTEMPT_PROJECTION_SCHEMA: &str
 pub fn query_runtime::observability::stage_context_from_execution(&impl query_runtime::observability::operator_stage::RuntimeExecutionStageContext) -> (query_runtime::observability::RuntimeObservationHandle, core::option::Option<query_runtime::observability::PlanExecutionId>, core::option::Option<query_runtime::observability::RuntimeSpanId>)
-pub fn query_runtime::observability::task_attempt_id(impl core::convert::Into<query_planning::execution_contracts::RuntimeTaskId>, u32) -> query_planning::execution_contracts::TaskAttemptId
+pub fn query_runtime::observability::task_attempt_id(impl core::convert::Into<query_runtime::observability::RuntimeTaskId>, u32) -> query_runtime::observability::task_identity::TaskAttemptId
 pub fn query_runtime::observability::write_runtime_observation_jsonl<W: core::io::write::Write>(&query_runtime::observability::SealedRuntimeObservationSnapshot, &mut W) -> core::result::Result<(), query_runtime::observability::RuntimeObservationExportError>
 pub mod query_runtime::runtime
 pub use query_runtime::runtime::CacheGraphActivity
 pub use query_runtime::runtime::CacheSourceActivity
 pub use query_runtime::runtime::CacheSourceEventSnapshot
 pub use query_runtime::runtime::DeviceCacheReport
-pub use query_runtime::runtime::MemoryControlPolicy
-pub use query_runtime::runtime::MemoryResourcePolicy
-pub use query_runtime::runtime::ReservationKind
-pub use query_runtime::runtime::SourceChunkPlanningMode
-pub use query_runtime::runtime::SourceSchedulerPolicy
 pub use query_runtime::runtime::cache_observation_fingerprint
 pub mod query_runtime::runtime::resident
 pub struct query_runtime::runtime::resident::GpuDataFrame
@@ -1600,6 +1628,12 @@ pub const fn query_runtime::runtime::GpuExecutionJobKind::as_str(self) -> &'stat
 pub query_runtime::runtime::GpuMemoryOwnership::StaticPartition
 pub query_runtime::runtime::GpuMemoryOwnership::StaticPartition::allocation_limit_bytes: u64
 pub query_runtime::runtime::GpuMemoryOwnership::WholeDeviceExclusive
+pub enum query_runtime::runtime::MemoryResourcePolicy
+pub query_runtime::runtime::MemoryResourcePolicy::DefaultCuda
+pub query_runtime::runtime::MemoryResourcePolicy::ExternalRuntime
+pub query_runtime::runtime::MemoryResourcePolicy::Pool
+pub query_runtime::runtime::MemoryResourcePolicy::Pool::initial_pool_size: usize
+pub query_runtime::runtime::MemoryResourcePolicy::Pool::maximum_pool_size: core::option::Option<usize>
 pub enum query_runtime::runtime::S3SourceStorageCredential
 pub query_runtime::runtime::S3SourceStorageCredential::DefaultChain
 pub query_runtime::runtime::S3SourceStorageCredential::Static
@@ -1769,7 +1803,7 @@ pub fn query_runtime::runtime::ExecutionContext::runtime_observation(&self) -> &
 pub fn query_runtime::runtime::ExecutionContext::shared_runtime(&self) -> query_planning::error::Result<alloc::sync::Arc<cudf::runtime::owner::Runtime>>
 pub fn query_runtime::runtime::ExecutionContext::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn query_runtime::runtime::ExecutionContext::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
-pub fn query_runtime::runtime::ExecutionContext::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
+pub fn query_runtime::runtime::ExecutionContext::source_scheduler_policy(&self) -> query_runtime::runtime::SourceSchedulerPolicy
 pub fn query_runtime::runtime::ExecutionContext::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn query_runtime::runtime::ExecutionContext::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 pub fn query_runtime::runtime::ExecutionContext::with_datafusion_order_tracking(self, bool) -> Self
@@ -1784,7 +1818,7 @@ pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> q
 impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::standalone(query_runtime::runtime::StandaloneConfig) -> query_planning::error::Result<Self>
 impl query_runtime::runtime::ExecutionContext
-pub fn query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> query_planning::error::Result<core::option::Option<query_planning::schedule_projection::AttemptComposedScheduleProjection>>
+pub fn query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> query_planning::error::Result<core::option::Option<query_runtime::observability::AttemptComposedScheduleProjection>>
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::with_admitted_gpu_inputs(&self, &query_planning::plan::core::QueryPlan, &query_runtime::runtime::resident::GpuResidentInputMap) -> query_planning::error::Result<Self>
 impl query_runtime::runtime::ExecutionContext
@@ -1980,7 +2014,7 @@ pub query_runtime::runtime::QueryExecutionConfig::min_retry_chunk_row_groups: us
 pub query_runtime::runtime::QueryExecutionConfig::planning_policy: query_planning::policy::PlanningPolicy
 pub query_runtime::runtime::QueryExecutionConfig::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_runtime::runtime::QueryExecutionConfig::source_chunk_planning_options: query_planning::chunk::policy::SourceChunkPlanningOptions
-pub query_runtime::runtime::QueryExecutionConfig::source_scheduler_policy: query_planning::execution_contracts::SourceSchedulerPolicy
+pub query_runtime::runtime::QueryExecutionConfig::source_scheduler_policy: query_runtime::runtime::SourceSchedulerPolicy
 pub query_runtime::runtime::QueryExecutionConfig::source_storage_profiles: alloc::vec::Vec<query_runtime::runtime::SourceStorageProfile>
 pub query_runtime::runtime::QueryExecutionConfig::statistical_aggregate_execution_mode: query_planning::mode::StatisticalAggregateExecutionMode
 impl core::default::Default for query_runtime::runtime::QueryExecutionConfig
@@ -2003,7 +2037,7 @@ pub fn query_runtime::runtime::QueryHandle::join_fragment(&self, &query_planning
 pub fn query_runtime::runtime::QueryHandle::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
 pub fn query_runtime::runtime::QueryHandle::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn query_runtime::runtime::QueryHandle::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
-pub fn query_runtime::runtime::QueryHandle::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
+pub fn query_runtime::runtime::QueryHandle::source_scheduler_policy(&self) -> query_runtime::runtime::SourceSchedulerPolicy
 pub fn query_runtime::runtime::QueryHandle::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub struct query_runtime::runtime::QueryServiceAdmissionSnapshot
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::active_queries: usize
@@ -2049,6 +2083,15 @@ pub fn query_runtime::runtime::S3SourceStorageProfile::with_static_credentials(s
 pub fn query_runtime::runtime::S3SourceStorageProfile::with_unsigned_requests(self) -> Self
 impl core::fmt::Debug for query_runtime::runtime::S3SourceStorageProfile
 pub fn query_runtime::runtime::S3SourceStorageProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_runtime::runtime::SourceSchedulerPolicy
+impl query_runtime::runtime::SourceSchedulerPolicy
+pub const fn query_runtime::runtime::SourceSchedulerPolicy::enables_prefetch(self) -> bool
+pub const fn query_runtime::runtime::SourceSchedulerPolicy::max_source_reads_in_flight(self) -> usize
+pub const fn query_runtime::runtime::SourceSchedulerPolicy::new(usize) -> Self
+pub const fn query_runtime::runtime::SourceSchedulerPolicy::serialized() -> Self
+pub fn query_runtime::runtime::SourceSchedulerPolicy::validate(self) -> query_planning::error::Result<()>
+impl core::default::Default for query_runtime::runtime::SourceSchedulerPolicy
+pub fn query_runtime::runtime::SourceSchedulerPolicy::default() -> Self
 pub struct query_runtime::runtime::SourceStorageProfile
 impl query_runtime::runtime::SourceStorageProfile
 pub fn query_runtime::runtime::SourceStorageProfile::build_s3_object_store(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> query_planning::error::Result<alloc::sync::Arc<dyn object_store::ObjectStore>>
@@ -2062,14 +2105,14 @@ pub struct query_runtime::runtime::StandaloneConfig
 pub query_runtime::runtime::StandaloneConfig::cancellation: query_runtime::runtime::ExecutionCancellation
 pub query_runtime::runtime::StandaloneConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
 pub query_runtime::runtime::StandaloneConfig::memory_control_policy: query_planning::execution_contracts::MemoryControlPolicy
-pub query_runtime::runtime::StandaloneConfig::memory_policy: query_planning::execution_contracts::MemoryResourcePolicy
+pub query_runtime::runtime::StandaloneConfig::memory_policy: query_runtime::runtime::MemoryResourcePolicy
 pub query_runtime::runtime::StandaloneConfig::query_id: core::option::Option<query_planning::correlation::QueryId>
 pub query_runtime::runtime::StandaloneConfig::runtime: core::option::Option<alloc::sync::Arc<cudf::runtime::owner::Runtime>>
 pub query_runtime::runtime::StandaloneConfig::service_stream_pool: core::option::Option<service_stream::ServiceStreamPool>
 pub query_runtime::runtime::StandaloneConfig::service_stream_pool_size: core::option::Option<usize>
 pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_options: query_planning::chunk::policy::SourceChunkPlanningOptions
-pub query_runtime::runtime::StandaloneConfig::source_scheduler_policy: query_planning::execution_contracts::SourceSchedulerPolicy
+pub query_runtime::runtime::StandaloneConfig::source_scheduler_policy: query_runtime::runtime::SourceSchedulerPolicy
 pub query_runtime::runtime::StandaloneConfig::source_storage_profiles: alloc::vec::Vec<query_runtime::runtime::SourceStorageProfile>
 pub query_runtime::runtime::StandaloneConfig::trace_id: core::option::Option<query_planning::correlation::TraceId>
 impl query_runtime::runtime::StandaloneConfig

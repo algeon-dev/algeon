@@ -1,13 +1,13 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
-
-use super::{final_merge_policy::BoundedFinalMergePolicy, *};
-use crate::{
+use query_planning::{
     capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
     expr::{SortExpr, SortSpec},
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
 };
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
+
+use super::{final_merge_policy::BoundedFinalMergePolicy, *};
 
 mod compiled;
 mod incremental;

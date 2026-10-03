@@ -1,6 +1,13 @@
 use std::time::Instant;
 
 use cudf::{Exec, interop::arrow_host::arrow_type_from_cudf_dtype};
+use query_planning::{
+    expr::{alias_wrapped_column, representation_cast_column},
+    plan::ProjectionOutput,
+};
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
 
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
@@ -8,14 +15,7 @@ use super::{
     cudf_dtype_from_arrow_type, cudf_query_error, datafusion_order_columns, is_supported_arrow_implicit_cast,
     lower_projection_output_expr, projection_schema_mismatch_error,
 };
-use crate::{
-    expr::{alias_wrapped_column, representation_cast_column},
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
-    plan::ProjectionOutput,
-    rapids_backend::rapids_backend,
-};
+use crate::rapids_backend::rapids_backend;
 
 pub(in crate::exec) fn execute_projection_with_budget(
     context: &ExecutionContext,

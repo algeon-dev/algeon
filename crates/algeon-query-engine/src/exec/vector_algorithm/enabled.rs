@@ -13,29 +13,27 @@ use cuvs::{
     KMeansModel, KMeansParams, MatrixLayout, OwnedMatrix, PairwiseElement, PcaOutputBuffers, PcaParams, PcaSolver,
     ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
+use query_planning::plan::{
+    DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorCagraBuildAlgo,
+    VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit, VectorKMeansMetric,
+    VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+    VectorTopKParams,
+};
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
 
 use super::assembly::{
     KnnAssemblyParams, assemble_kmeans_output, assemble_knn_output, assemble_pairwise_distance_output,
     assemble_pca_output, assemble_top_k_output,
 };
-use crate::{
-    exec::{
-        GpuDataFrame,
-        dense_relation::{
-            DenseRelationInputs, VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for,
-            relation_dimension, relation_element_type_for, relation_input_for, size_overflow_for,
-        },
-        *,
+use crate::exec::{
+    GpuDataFrame,
+    dense_relation::{
+        DenseRelationInputs, VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for,
+        relation_dimension, relation_element_type_for, relation_input_for, size_overflow_for,
     },
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
-    plan::{
-        DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
-        VectorCagraBuildAlgo, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit,
-        VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
-        VectorRelationBinding, VectorTopKParams,
-    },
+    *,
 };
 
 const EXECUTE_OPERATION: &str = "query_engine.vector_algorithm.execute";
@@ -1917,16 +1915,16 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
+    use query_planning::{
         plan::{
             PlanNode, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorPcaParams, VectorRowIdBinding,
             vector_pca_output_schema,
         },
-        runtime::{ExecutionCancellation, StandaloneConfig},
         source::{GpuResidentSource, SourceNode},
     };
+    use query_runtime::runtime::{ExecutionCancellation, StandaloneConfig};
+
+    use super::*;
 
     #[test]
     fn dispatch_rejects_an_element_outside_an_operation_sealed_set() {

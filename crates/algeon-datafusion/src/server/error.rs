@@ -1,9 +1,9 @@
 use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::DataFusionError;
-use query_engine::error::QueryError;
+use query_planning::error::QueryError;
 #[cfg(test)]
-use query_engine::error::QueryErrorCode;
+use query_planning::error::QueryErrorCode;
 use tonic::{
     Status,
     metadata::{MetadataMap, MetadataValue},

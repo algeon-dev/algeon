@@ -1,9 +1,8 @@
+use query_planning::plan::NodeId;
+
 use super::ResidentFrameStreamPayload;
-use crate::{
-    exec::bounded::{
-        BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
-    },
-    plan::NodeId,
+use crate::exec::bounded::{
+    BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
 };
 
 /// GPU-resident payload stored in the compiled scheduler resource table.

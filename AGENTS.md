@@ -58,15 +58,20 @@
 
 ## Project boundaries
 
-`algeon-datafusion` lowers DataFusion physical plans through the compatible
-`query-engine` facade and executes them via the Rust components under
-`components/`. DataFusion-dependent code belongs in
+`algeon-datafusion` lowers DataFusion physical plans to the native IR and
+executes them through `query-planning`, `query-runtime`, and `query-engine`
+and the Rust components under `components/`. It depends on each of those crates
+directly and imports every item from its owner; no crate re-exports another
+crate's modules as a facade. DataFusion-dependent code belongs in
 `crates/algeon-datafusion`; IR, optimizer, capability, proof, admission
 contracts, and pipeline belong in
 `crates/algeon-query-planning`; attempt lifecycle, query service, device ledger,
 immutable grants, cache, observation, and metrics belong in
-`crates/algeon-query-runtime`; native execution composition and facade
-compatibility belong in `crates/algeon-query-engine`.
+`crates/algeon-query-runtime`; native execution composition belongs in
+`crates/algeon-query-engine`. Public signatures may name owner-crate types; the
+adapter re-exports each one it exposes, and
+`.config/policies/public-api/algeon-datafusion-owner-types.tsv` records that
+disposition.
 
 - `cudf`, `cugraph`, `cuvs`, and `cuml` are members of the root workspace. Every
   published package carries an `algeon-` prefix, because the bare RAPIDS names

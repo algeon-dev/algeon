@@ -10,7 +10,7 @@ use bench::report_workload::clickbench::{
     ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
     clickbench_native_profile_settings_with_env,
 };
-use query_engine::runtime::SourceChunkPlanningMode;
+use query_planning::execution_contracts::SourceChunkPlanningMode;
 
 fn clickbench_native_profile_settings_from<const N: usize>(
     env: [(&'static str, &str); N],

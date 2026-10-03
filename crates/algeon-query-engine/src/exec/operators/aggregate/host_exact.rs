@@ -630,8 +630,9 @@ fn add_filtered_materialization_facts(
 
 #[cfg(test)]
 mod tests {
+    use query_runtime::runtime::StandaloneConfig;
+
     use super::*;
-    use crate::runtime::StandaloneConfig;
 
     #[test]
     fn filtered_materialization_facts_preserve_original_filter_count_for_exact_host_rows() {

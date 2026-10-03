@@ -50,13 +50,14 @@ use datafusion::{
 };
 use exec_plans::*;
 use futures::StreamExt;
-use query_engine::{
+use query_planning::{
     chunk::SourceChunkPlanningOptions,
+    execution_contracts::SourceChunkPlanningMode,
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::QueryPlanBuilder,
-    runtime::{LakehouseCacheFillConfig, SourceChunkPlanningMode},
     source::{GpuResidentSource, SourceNode},
 };
+use query_runtime::runtime::LakehouseCacheFillConfig;
 use support_core::*;
 
 use super::AlgeonNativeMetrics;

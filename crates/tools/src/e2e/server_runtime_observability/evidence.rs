@@ -10,7 +10,7 @@ use std::{
 use arrow::record_batch::RecordBatch;
 use arrow_flight::FlightData;
 use prost::Message as _;
-use query_engine::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA;
+use query_runtime::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA;
 use serde::Serialize;
 use serde_json::{Value, json};
 

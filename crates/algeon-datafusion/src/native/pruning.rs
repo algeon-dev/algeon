@@ -24,7 +24,7 @@ use datafusion::{
     },
     physical_plan::filter::FilterExec,
 };
-use query_engine::source::PredicateDisposition as NativePredicateDisposition;
+use query_planning::source::PredicateDisposition as NativePredicateDisposition;
 
 use super::{expression_contract::validate_physical_expr_contract, footers::parquet_footer};
 use crate::capability::CapabilityReason;

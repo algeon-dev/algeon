@@ -47,7 +47,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::mode::StatisticalAggregateExecutionMode;
+use query_planning::mode::StatisticalAggregateExecutionMode;
 use workloads::tpch::{TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset};
 
 #[path = "../support/analytical_olap_planning.rs"]

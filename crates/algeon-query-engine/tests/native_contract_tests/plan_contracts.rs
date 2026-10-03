@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use query_engine::{capability::Reason, policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{capability::Reason, policy::PlanningPolicy};
 
 use super::*;
 

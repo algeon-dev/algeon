@@ -1,12 +1,12 @@
 use std::time::Instant;
 
 use cudf::{Exec, ScalarValue, interop::arrow_host::all_null_list_series};
+use query_planning::{datatypes::is_supported_list_carry_type, source::MissingColumn};
 
 use super::{
     DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
     QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
 };
-use crate::{datatypes::is_supported_list_carry_type, source::MissingColumn};
 
 pub(super) fn materialize_missing_columns(
     context: &ExecutionContext,

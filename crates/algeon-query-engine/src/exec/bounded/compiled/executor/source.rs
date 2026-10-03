@@ -1,17 +1,18 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor};
-use crate::{
+use query_planning::{
     error::Result,
-    exec::bounded::{
-        compiled::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
-        execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source,
-        execute_bounded_local_parquet_source, materialize_bounded_join_leaf_local_parquet_source_stream,
-        plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
-        plan_bounded_shared_join_aggregate_local_parquet_source_stream,
-        try_start_bounded_join_leaf_local_parquet_source_prefetch,
-    },
     pipeline::{PipelineTask, ResidentResourceId, ResourceSharing, SourceOutput, TaskPhysical},
     plan::{NodeId, PlanNode},
     source::{LocalParquetSource, SourceNode},
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor};
+use crate::exec::bounded::{
+    compiled::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+    execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source, execute_bounded_local_parquet_source,
+    materialize_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+    try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

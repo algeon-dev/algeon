@@ -6,7 +6,8 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode},
     },
 };
-use query_engine::{datatypes::is_supported_arrow_type, expr::AggregateFunction as NativeAggregateFunction};
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::expr::AggregateFunction as NativeAggregateFunction;
 
 use super::{NativePlanRejection, peel_repartition};
 use crate::{

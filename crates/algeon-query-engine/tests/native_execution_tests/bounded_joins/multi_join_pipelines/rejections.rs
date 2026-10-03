@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     capability::{CapabilityDecision, Reason},
     expr::ColumnRef,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

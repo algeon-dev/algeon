@@ -3,6 +3,7 @@
 mod attempt_report;
 mod cache_fill_event;
 mod clock;
+pub mod graph_observation;
 mod jsonl;
 mod lifecycle;
 mod metrics_recorder;
@@ -10,6 +11,8 @@ mod metrics_summary;
 mod operator_stage;
 mod recorder;
 mod runtime_observation;
+mod schedule_projection;
+mod task_identity;
 
 #[cfg(test)]
 pub(crate) use attempt_report::AttemptFailureOrigin;
@@ -50,12 +53,6 @@ pub(crate) use metrics_summary::{MetricsCaptureMode, MetricsCompleteness, QueryM
 pub use metrics_summary::{SourceReadFact, SourceReadTotals};
 pub(crate) use operator_stage::RuntimeExecutionStageContext;
 pub use operator_stage::{RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, stage_context_from_execution};
-pub(crate) use query_planning::execution_contracts::{RuntimeAttemptId, TaskAttemptId};
-pub use query_planning::{
-    error::AttemptFailureCode,
-    execution_contracts::RuntimeTaskId,
-    schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA},
-};
 #[cfg(test)]
 pub(crate) use recorder::RuntimeObservationDeliveryGate;
 pub(crate) use recorder::{
@@ -78,13 +75,16 @@ pub use runtime_observation::{
     PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA,
     RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeGpuJobObservation, RuntimeObservationLimits,
     RuntimeObservationLossReason, RuntimeObservationPayload, RuntimeObservationRecord, RuntimeObservationRecordClass,
-    RuntimeOperatorStageKind, RuntimeOperatorStageState, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeQueryId,
+    RuntimeOperatorStageKind, RuntimeOperatorStageState, RuntimePipelineEdgeId, RuntimePlanNodeId,
     RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId, RuntimeReservationObservation,
     RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeSourceReadObservation,
-    RuntimeSpanId, RuntimeStreamLeaseScope, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
-    RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseLifecycleState, TaskDefinitionRow,
-    TaskLifecycleState, WorkerDefinitionRow,
+    RuntimeSpanId, RuntimeStreamLeaseScope, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeWorkerId,
+    SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseLifecycleState, TaskDefinitionRow, TaskLifecycleState,
+    WorkerDefinitionRow,
 };
+pub use schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA};
+pub use task_identity::RuntimeTaskId;
+pub(crate) use task_identity::{RuntimeAttemptId, TaskAttemptId};
 
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]

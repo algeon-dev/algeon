@@ -41,7 +41,7 @@ use algeon_datafusion::{
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
 };
 use datafusion::prelude::SessionContext;
-use query_engine::observability::{AttemptFailureFactKey, SealedAttemptProjection};
+use query_runtime::observability::{AttemptFailureFactKey, SealedAttemptProjection};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 use workloads::{tpcds::describe_tpcds_dataset, tpch::describe_tpch_dataset};
 

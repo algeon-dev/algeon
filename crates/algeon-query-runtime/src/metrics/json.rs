@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
-use query_planning::graph_observation::GraphMeasuredPeakRow;
+use query_planning::correlation::{PlanNodeId, QueryId, TraceId};
 use serde_json::{Map, Value, json};
 
 use super::{
     AggregateStrategyDecisionMetrics, BudgetedExecutionEvent, CompiledTaskId, DynamicFilterRuntimeMetrics,
-    GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics, OperatorMetrics, PlanNodeId,
-    PlanTaskMapping, QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
-    TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
+    GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics, OperatorMetrics, PlanTaskMapping,
+    QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
 };
+use crate::observability::graph_observation::GraphMeasuredPeakRow;
 
 /// Identifies the layout of the JSON document [`QueryMetrics::to_json`] emits.
 pub const QUERY_METRICS_JSON_SCHEMA: &str = "query_engine.query_metrics";

@@ -26,6 +26,8 @@ baseline_interop='pub struct rapids_interop::PreparedTableExport'
 baseline_bench='pub mod bench::tpch_benchmark'
 baseline_cudf='pub mod cudf'
 baseline_cugraph='pub mod cugraph'
+baseline_cuvs='pub mod cuvs'
+baseline_cuml='pub mod cuml'
 
 # A deterministic fake toolchain identity, in the same shape
 # current_toolchain_identity() in the real script produces.
@@ -88,6 +90,8 @@ case "\${crate}" in
   bench) printf '%s\n' "\${FAKE_ALGEON_BENCH:-${baseline_bench}}" ;;
   algeon-cudf) printf '%s\n' "\${FAKE_CUDF_ALGEON:-${baseline_cudf}}" ;;
   algeon-cugraph) printf '%s\n' "\${FAKE_CUGRAPH_ALGEON:-${baseline_cugraph}}" ;;
+  algeon-cuvs) printf '%s\n' "\${FAKE_CUVS_ALGEON:-${baseline_cuvs}}" ;;
+  algeon-cuml) printf '%s\n' "\${FAKE_CUML_ALGEON:-${baseline_cuml}}" ;;
   *)
     echo "unexpected fake cargo-public-api crate: \${crate}" >&2
     exit 97
@@ -108,6 +112,8 @@ write_clean_snapshots() {
   printf '%s\n' "${baseline_bench}" >"${dir}/bench.txt"
   printf '%s\n' "${baseline_cudf}" >"${dir}/algeon-cudf.txt"
   printf '%s\n' "${baseline_cugraph}" >"${dir}/algeon-cugraph.txt"
+  printf '%s\n' "${baseline_cuvs}" >"${dir}/algeon-cuvs.txt"
+  printf '%s\n' "${baseline_cuml}" >"${dir}/algeon-cuml.txt"
   cp .config/policies/public-api/*-hidden.tsv "${dir}/"
 }
 
@@ -159,7 +165,7 @@ assert_not_contains() {
 
 CHECK_SCRIPT=scripts/ci/check_public_api_surface.sh
 
-# 1. Clean baseline: check passes for all eight independently snapshotted crates
+# 1. Clean baseline: check passes for all ten independently snapshotted crates
 # and every hidden ledger matches its crate's source.
 clean_dir="${tmp_dir}/snapshots/clean"
 write_clean_snapshots "${clean_dir}"
@@ -173,10 +179,12 @@ assert_contains "${tmp_dir}/clean.output" "PASS: algeon-interop public API match
 assert_contains "${tmp_dir}/clean.output" "PASS: bench public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cudf public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cugraph public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cuvs public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cuml public API matches"
 for hidden_ledger in algeon-cudf algeon-datafusion algeon-query-engine algeon-query-planning algeon-query-runtime; do
   assert_contains "${tmp_dir}/clean.output" "hidden symbols license-checked against ${hidden_ledger}-hidden.tsv"
 done
-echo "PASS: clean snapshot matches for all eight independently snapshotted crates and five hidden ledgers"
+echo "PASS: clean snapshot matches for all ten independently snapshotted crates and five hidden ledgers"
 
 # 2. Fault injection: a forbidden item reappears in one crate's public API.
 # This is the regression this whole check exists to catch, and it must fail
@@ -290,20 +298,20 @@ echo "PASS: an unknown or missing mode argument is a usage error"
 facade_dir="${tmp_dir}/facade_policy"
 mkdir -p "${facade_dir}"
 facade_snapshot="${facade_dir}/algeon-datafusion.txt"
-facade_ledger="${facade_dir}/algeon-datafusion-engine-types.tsv"
+facade_ledger="${facade_dir}/algeon-datafusion-owner-types.tsv"
 facade_output="${facade_dir}/output"
-facade_header=$'public_symbol\tengine_type\tconsumer\tdecision\tfacade_path\treason\tphase'
-facade_engine_type='query_engine::observability::attempt_report::AttemptId'
+facade_header=$'public_symbol\towner_type\tconsumer\tdecision\tfacade_path\treason\tphase'
+facade_owner_type='query_runtime::observability::schedule_projection::AttemptId'
 printf '%s\n' \
   'pub use algeon_datafusion::attempt::AttemptId' \
-  "pub fn algeon_datafusion::attempt::id() -> ${facade_engine_type}" \
+  "pub fn algeon_datafusion::attempt::id() -> ${facade_owner_type}" \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::AttemptId\tquery_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
-assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
+assert_contains "${facade_output}" "PASS: 1 live owner types have unique approved facade reachability"
 echo "PASS: an approved selective re-export has a reachable facade path"
 
 printf '%s\n' \
@@ -311,10 +319,10 @@ printf '%s\n' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_engine::observability::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
-assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
+assert_contains "${facade_output}" "PASS: 1 live owner types have unique approved facade reachability"
 echo "PASS: a pure facade re-export has a live disposition"
 
 printf '%s\n' \
@@ -322,38 +330,38 @@ printf '%s\n' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_engine::observability::RuntimeTerminalOutcome\tattempt observability\tHIDE\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tHIDE\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: a pure facade re-export with HIDE disposition passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "forbidden HIDE type reappeared in the live surface: query_engine::observability::RuntimeTerminalOutcome"
+assert_contains "${facade_output}" "forbidden HIDE type reappeared in the live surface: query_runtime::observability::attempt_report::RuntimeTerminalOutcome"
 echo "PASS: a pure facade re-export cannot bypass a HIDE disposition"
 
 printf '%s\n' \
   'pub use algeon_datafusion::attempt::AttemptId' \
-  "pub fn algeon_datafusion::attempt::id() -> ${facade_engine_type}" \
-  'pub fn algeon_datafusion::native::plan() -> query_engine::plan::core::QueryPlan' \
+  "pub fn algeon_datafusion::attempt::id() -> ${facade_owner_type}" \
+  'pub fn algeon_datafusion::native::plan() -> query_planning::plan::core::QueryPlan' \
   >"${facade_snapshot}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
-  echo "FAIL: an unclassified live engine type passed the facade policy" >&2
+  echo "FAIL: an unclassified live owner type passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "live engine type has no disposition: query_engine::plan::core::QueryPlan"
-echo "PASS: an unclassified live engine type fails closed"
+assert_contains "${facade_output}" "live owner type has no disposition: query_planning::plan::core::QueryPlan"
+echo "PASS: an unclassified live owner type fails closed"
 
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::AttemptId\tquery_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
-  $'algeon_datafusion::native::plan\tquery_engine::plan::core::QueryPlan\tnative IR\tHIDE\talgeon_datafusion::report::PlanningReport\traw IR stays engine-owned\t5' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'algeon_datafusion::native::plan\tquery_planning::plan::core::QueryPlan\tnative IR\tHIDE\talgeon_datafusion::report::PlanningReport\traw IR stays planning-owned\t5' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
-  echo "FAIL: a live HIDE engine type passed the facade policy" >&2
+  echo "FAIL: a live HIDE owner type passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "query_engine::plan::core::QueryPlan is live but disposition is HIDE"
-echo "PASS: a HIDE engine type cannot reappear in the public surface"
+assert_contains "${facade_output}" "query_planning::plan::core::QueryPlan is live but disposition is HIDE"
+echo "PASS: a HIDE owner type cannot reappear in the public surface"
 
 
 # Native component top-level namespace policy fault-injection tests
@@ -366,6 +374,7 @@ cat >"${native_snapshot_dir}/algeon-cudf.txt" <<'EOF'
 pub mod cudf
 pub mod cudf::core
 pub mod cudf::device
+pub mod cudf::diagnostics
 pub mod cudf::frame
 pub mod cudf::hash
 pub mod cudf::interop

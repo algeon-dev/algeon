@@ -3,7 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use query_engine::plan::{
+use query_planning::plan::{
     VectorAlgorithmParams, VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo,
     VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit,
     VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,

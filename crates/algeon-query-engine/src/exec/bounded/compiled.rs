@@ -27,6 +27,23 @@ pub use lanes::{LaneDispatchSupport, run_resident_lane_borrow};
 #[cfg(not(feature = "test-hooks"))]
 use lanes::{LaneDispatchSupport, run_resident_lane_borrow};
 use lanes::{is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline};
+use query_planning::{
+    error::Result,
+    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
+    plan::{QueryPlan, ResultSink},
+    policy::PlanningPolicy,
+};
+#[cfg(test)]
+use query_runtime::observability::assert_live_topology_references_resolve;
+use query_runtime::{
+    observability::{
+        BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimeExecutionObservationScope,
+        RuntimeObservationRecordClass, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeResourceDomain,
+        RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId, RuntimeTopologyRecord, SinkDefinitionRow,
+        TaskDefinitionRow,
+    },
+    runtime::{ExecutionContext, resident::GpuResidentInputMap},
+};
 #[cfg(feature = "test-hooks")]
 pub use resource::CompiledGpuResource;
 #[cfg(not(feature = "test-hooks"))]
@@ -38,22 +55,7 @@ pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor};
 #[cfg(feature = "test-hooks")]
 pub use state::CompiledPipelineState;
 
-#[cfg(test)]
-use crate::observability::assert_live_topology_references_resolve;
-use crate::{
-    error::Result,
-    exec::{ExecutionMetrics, output::QueryOutput},
-    observability::{
-        BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimeExecutionObservationScope,
-        RuntimeObservationRecordClass, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeResourceDomain,
-        RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId, RuntimeTopologyRecord, SinkDefinitionRow,
-        TaskDefinitionRow,
-    },
-    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
-    plan::{QueryPlan, ResultSink},
-    policy::PlanningPolicy,
-    runtime::{ExecutionContext, resident::GpuResidentInputMap},
-};
+use crate::exec::{ExecutionMetrics, output::QueryOutput};
 
 pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     context: &ExecutionContext,
@@ -222,18 +224,17 @@ fn prioritized_join_build_tasks(pipeline: &CompiledPipeline) -> BTreeSet<Pipelin
 mod topology_tests {
     use std::collections::BTreeSet;
 
-    use super::*;
-    use crate::{
-        observability::{
-            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle,
-            RuntimeTopologyRecord,
-        },
-        pipeline::{
-            CompiledPipeline, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
-            ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SourceReadPlan,
-            TaskPhysical,
-        },
+    use query_planning::pipeline::{
+        CompiledPipeline, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
+        ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SourceReadPlan,
+        TaskPhysical,
     };
+    use query_runtime::observability::{
+        PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle,
+        RuntimeTopologyRecord,
+    };
+
+    use super::*;
 
     fn topology_pipeline() -> CompiledPipeline {
         let producer = PipelineTaskId::new(0);

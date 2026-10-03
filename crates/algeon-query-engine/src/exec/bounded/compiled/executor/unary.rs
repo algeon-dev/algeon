@@ -1,19 +1,20 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
-use crate::{
+use query_planning::{
     error::Result,
-    exec::{
-        bounded::{
-            compiled::{
-                frame_stream::{map_filter_resident_frame_stream, map_projection_resident_frame_stream},
-                helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
-                resource::CompiledGpuResourcePayload,
-            },
-            execute_bounded_projection, run_budgeted,
-        },
-        operators::execute_filter_with_budget,
-    },
     pipeline::{PipelineTask, ResidentResourceId},
     plan::PlanNode,
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
+use crate::exec::{
+    bounded::{
+        compiled::{
+            frame_stream::{map_filter_resident_frame_stream, map_projection_resident_frame_stream},
+            helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+            resource::CompiledGpuResourcePayload,
+        },
+        execute_bounded_projection, run_budgeted,
+    },
+    operators::execute_filter_with_budget,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

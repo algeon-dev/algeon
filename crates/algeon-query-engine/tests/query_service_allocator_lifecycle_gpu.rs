@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, InstallSpec};
-use query_engine::{
-    error::QueryErrorCode,
+use query_planning::error::QueryErrorCode;
+use query_runtime::{
     observability::RuntimeObservationHandle,
     runtime::{
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,

@@ -1,4 +1,4 @@
-use query_engine::optimizer::{JoinFilterReassociationOptions, OuterJoinNullRejectionOptions};
+use query_planning::{optimizer::JoinFilterReassociationOptions, optimizer::OuterJoinNullRejectionOptions};
 
 #[test]
 fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_right_nulls() {

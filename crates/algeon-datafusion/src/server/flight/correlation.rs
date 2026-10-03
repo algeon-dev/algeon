@@ -80,9 +80,10 @@ mod correlation_tests {
         time::{Duration, Instant},
     };
 
-    use query_engine::observability::{
+    use query_planning::correlation::QueryId;
+    use query_runtime::observability::{
         QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig, RuntimeObservationOwner,
-        RuntimeObservationPayload, RuntimeObservationRecordDisposition, RuntimeQueryId, RuntimeReservationAction,
+        RuntimeObservationPayload, RuntimeObservationRecordDisposition, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeReservationId, RuntimeReservationObservation,
     };
     use tokio::{spawn, task::yield_now, time::timeout};
@@ -771,7 +772,7 @@ mod correlation_tests {
         // Stands in for the statement's attempt, which records into its own
         // observation and hands the sealed snapshot to the coordinator.
         let attempt_observation =
-            RuntimeObservationOwner::new(RuntimeQueryId::new(QUERY_ID), None, service.runtime_observation_config);
+            RuntimeObservationOwner::new(QueryId::new(QUERY_ID), None, service.runtime_observation_config);
         let observation = attempt_observation.handle();
         let execution = planning.into_execution().unwrap();
         let source_location_id =

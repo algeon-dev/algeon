@@ -64,6 +64,8 @@ cuvs-sys = { workspace = true, optional = true }
 cuml = { workspace = true, optional = true }
 cuml-sys = { workspace = true, optional = true }
 query-engine = { workspace = true }
+query-planning = { workspace = true }
+query-runtime = { workspace = true }
 datafusion = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 futures = { workspace = true }

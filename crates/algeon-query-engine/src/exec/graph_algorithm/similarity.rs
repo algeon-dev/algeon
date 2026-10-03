@@ -1,6 +1,7 @@
 //! Shared explicit-pair similarity execution.
 
 use cugraph::cudf_interop::vertex_pairs_from_prepared_columns;
+use query_planning::plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, planned_resident_graph_key};
 
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NvtxRange, QueryError,
@@ -8,7 +9,6 @@ use super::{
     normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph, similarity_params,
     table_graph_options,
 };
-use crate::plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, planned_resident_graph_key};
 
 pub(super) fn execute_similarity(
     context: &ExecutionContext,

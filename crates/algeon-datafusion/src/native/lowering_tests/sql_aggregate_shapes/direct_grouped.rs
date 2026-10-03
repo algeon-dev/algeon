@@ -1,6 +1,5 @@
-use query_engine::{
-    policy::PlanningPolicy, rapids_backend::rapids_analysis_context, source::validate_local_parquet_source,
-};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{policy::PlanningPolicy, source::validate_local_parquet_source};
 
 use super::*;
 use crate::native::ParquetReadStrategyConfig;

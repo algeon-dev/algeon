@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::{QueryId, QueryMetrics};
+use query_planning::correlation::QueryId;
+
+use super::QueryMetrics;
 
 /// Join-strategy decision facts captured for diagnostics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

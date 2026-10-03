@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use super::{MetricsProjection, QueryId, QueryMetrics, optional_u64};
+use query_planning::correlation::QueryId;
+
+use super::{MetricsProjection, QueryMetrics, optional_u64};
 use crate::observability::QueryMetricsCheckpoint;
 
 /// Runtime evidence for one local-Parquet source read.

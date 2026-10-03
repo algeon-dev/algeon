@@ -51,7 +51,7 @@ use datafusion::{
 use futures::executor::block_on;
 use parquet::arrow::ArrowWriter;
 use proptest::prelude::*;
-use query_engine::{
+use query_planning::{
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
     plan::{NativePlanCostOptions, NativePlanCostReason},
 };

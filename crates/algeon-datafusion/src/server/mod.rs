@@ -20,7 +20,7 @@ use std::{
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use futures::future::BoxFuture;
-use query_engine::runtime::GpuBackendDeviceStartupRecord;
+use query_runtime::runtime::GpuBackendDeviceStartupRecord;
 use tokio::{net::TcpListener, signal::ctrl_c, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};

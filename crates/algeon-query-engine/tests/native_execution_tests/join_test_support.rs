@@ -1,9 +1,7 @@
 use std::{path::Path, sync::Arc};
 
-use query_engine::{
-    admission::admit, error::QueryError, exec::output::QueryExecutionResult, expr::ColumnRef, plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
-};
+use query_engine::{exec::output::QueryExecutionResult, rapids_backend::rapids_analysis_context};
+use query_planning::{admission::admit, error::QueryError, expr::ColumnRef, plan::QueryPlan};
 
 use super::*;
 

@@ -1,4 +1,5 @@
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use query_runtime::observability::SourceReadFact;
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, Result,
@@ -6,7 +7,6 @@ use super::{
     attach_source_batch_resource_facts, observe_device_memory_bytes, read_local_parquet_chunk,
     read_local_parquet_chunk_batch_required_only_no_commit, source_adjacent::execute_source_adjacent_chunk_stages,
 };
-use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) partial: CommittedPartial,

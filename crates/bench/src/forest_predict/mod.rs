@@ -63,7 +63,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::TryStreamExt;
-use query_engine::observability::{
+use query_runtime::observability::{
     RuntimeObservationPayload, RuntimeOperatorStageState, SealedRuntimeObservationSnapshot,
     write_runtime_observation_jsonl,
 };

@@ -33,7 +33,6 @@ pub mod execution_contracts;
 pub mod expr;
 #[doc(hidden)]
 pub mod expression_lowering_policy;
-pub mod graph_observation;
 mod ml_validation;
 pub mod mode;
 pub mod naming;
@@ -44,8 +43,6 @@ pub mod plan;
 pub mod policy;
 #[doc(hidden)]
 pub mod prepared;
-#[doc(hidden)]
-pub mod schedule_projection;
 pub mod source;
 pub mod triage;
 #[doc(hidden)]

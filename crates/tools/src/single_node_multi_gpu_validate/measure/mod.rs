@@ -36,7 +36,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::StreamExt as _;
-use query_engine::{
+use query_runtime::{
     metrics::{BackendMetric, backend_metric_descriptors},
     observability::{
         AttemptComposedScheduleProjection, AttemptDisposition, COMPOSED_SCHEDULE_PROJECTION_SCHEMA, QueryAttemptReport,
@@ -1132,7 +1132,8 @@ fn elapsed_ns(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use query_engine::{harness::StableFnv1a64, observability::AttemptId};
+    use query_planning::util::StableFnv1a64;
+    use query_runtime::observability::AttemptId;
 
     use super::*;
 

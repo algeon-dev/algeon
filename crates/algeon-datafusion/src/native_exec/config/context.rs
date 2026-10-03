@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::error::{QueryError, Result as QueryEngineResult};
+use query_planning::error::{QueryError, Result as QueryEngineResult};
 
 use super::{
     AlgeonNativeExecutionConfig, AlgeonNativeExecutionContext, ExecutionContext, IoLifecycle, QueryAdmissionFacts,

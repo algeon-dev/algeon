@@ -7,7 +7,7 @@ use datafusion::{
     },
     physical_plan::{ExecutionPlan, filter::FilterExec},
 };
-use query_engine::{
+use query_planning::{
     expr::LimitSpec as NativeLimitSpec,
     plan::QueryPlanBuilder as NativeQueryPlanBuilder,
     source::{

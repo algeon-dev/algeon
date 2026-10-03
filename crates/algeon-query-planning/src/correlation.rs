@@ -6,17 +6,19 @@
 
 use std::{
     fmt,
-    ops::Deref,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use serde::{Deserialize, Serialize};
 
 use crate::plan::NodeId;
 
 static NEXT_QUERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Query-wide diagnostic correlation id.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
 pub struct QueryId(String);
 
 impl QueryId {
@@ -78,16 +80,18 @@ impl fmt::Display for QueryId {
     }
 }
 
-impl Deref for QueryId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
+/// Decoding applies the same canonicalization as [`QueryId::new`], so a
+/// blank serialized id reads back as [`QueryId::UNASSIGNED`].
+impl<'de> Deserialize<'de> for QueryId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        String::deserialize(deserializer).map(Self::new)
     }
 }
 
 /// Optional parent trace id used to join multiple query ids under one request.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct TraceId(String);
 
 impl TraceId {
@@ -117,14 +121,6 @@ impl From<&str> for TraceId {
 impl fmt::Display for TraceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl Deref for TraceId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
     }
 }
 
@@ -168,14 +164,6 @@ impl fmt::Display for PlanNodeId {
     }
 }
 
-impl Deref for PlanNodeId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
 /// Typed diagnostic id for a compiled native task.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CompiledTaskId(String);
@@ -207,13 +195,5 @@ impl From<&str> for CompiledTaskId {
 impl fmt::Display for CompiledTaskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-impl Deref for CompiledTaskId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
     }
 }

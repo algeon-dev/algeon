@@ -3,12 +3,10 @@ use cudf::ops::materialization::{
     MaterializedColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES as CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES,
     STRING_OFFSET_BYTES_CONSERVATIVE as CUDF_STRING_OFFSET_BYTES_CONSERVATIVE, table_upper_bound_preflight,
 };
+use query_planning::error::{QueryError, QueryErrorCode, Result};
+use query_runtime::native_error::cudf_query_error;
 
-use crate::{
-    datatypes::cudf_dtype_from_arrow_type,
-    error::{QueryError, QueryErrorCode, Result},
-    native_error::cudf_query_error,
-};
+use crate::datatypes::cudf_dtype_from_arrow_type;
 
 pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = CUDF_STRING_OFFSET_BYTES_CONSERVATIVE as u64;
 pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES as u64;

@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
-use query_engine::observability::{
+use query_planning::correlation::QueryId;
+use query_runtime::observability::{
     AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId,
     AttemptRetryAdvice, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA, QueryAttemptReport, RuntimeObservationConfig,
-    RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+    RuntimeObservationOwner, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
 };
 
 /// A succeeded, not-admitted attempt report for `query_id`.
@@ -59,8 +60,7 @@ pub(crate) fn sealed_attempt_report_snapshot(
     report: QueryAttemptReport,
 ) -> (QueryAttemptReport, SealedRuntimeObservationSnapshot) {
     let query_id = report.query_id.as_ref().map_or("attempt-query", |query_id| query_id.as_str());
-    let owner =
-        RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096));
+    let owner = RuntimeObservationOwner::new(QueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096));
     seal_attempt_observation(owner, report)
 }
 

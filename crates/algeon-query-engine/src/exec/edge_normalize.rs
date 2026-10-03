@@ -1,10 +1,11 @@
 use std::time::Instant;
 
+use query_planning::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
+
 use super::{
     CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, ExecutionMetrics,
     GpuDataFrame, NodeId, Result, cudf_query_error,
 };
-use crate::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
 
 pub(super) fn execute_edge_normalize(
     context: &ExecutionContext,

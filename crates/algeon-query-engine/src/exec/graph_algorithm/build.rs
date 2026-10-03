@@ -8,13 +8,13 @@ use cugraph::cudf_interop::TableGraphOptions;
 use cugraph::cudf_interop::graph_from_prepared_table_export;
 #[cfg(feature = "cugraph")]
 use cugraph::types::GraphProperties;
+#[cfg(feature = "cugraph")]
+use query_planning::{plan::GraphAlgorithmSpec, plan::GraphConstructionPolicy};
 
 use super::{
     DataFrame, EdgeColumnRole, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     cudf_query_error, graph_build_range, map_cugraph_error, validate_edge_column,
 };
-#[cfg(feature = "cugraph")]
-use crate::plan::{GraphAlgorithmSpec, GraphConstructionPolicy};
 
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_uncached_cugraph_graph<T, F>(

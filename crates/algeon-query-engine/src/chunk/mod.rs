@@ -9,7 +9,6 @@ pub(crate) use query_planning::chunk::{
     object_store_decimal_reader_predicate_requires_footer_contract, plan_source_chunk_batches,
     plan_source_chunk_batches_with_row_cap, source_file_for_chunk,
 };
-pub use query_planning::chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel};
 
 #[cfg(test)]
 mod tests;

@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use query_engine::runtime::{
+use query_runtime::runtime::{
     GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
     GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,

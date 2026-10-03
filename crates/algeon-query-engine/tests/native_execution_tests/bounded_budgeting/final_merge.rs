@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
 use query_engine::{
-    error::Result as QueryEngineResult,
     exec::{
         CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
         CompiledTaskExecutor, ExecutionMetrics,
     },
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
+    error::Result as QueryEngineResult,
     expr::ColumnRef,
     pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId, compile_pipeline},
     plan::NodeId,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

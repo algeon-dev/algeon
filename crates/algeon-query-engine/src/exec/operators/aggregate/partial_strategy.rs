@@ -1,19 +1,18 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use arrow::datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
-use query_planning::util::fnv1a64;
+use query_planning::{
+    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
+    source::parquet_source_path_fact,
+    util::fnv1a64,
+};
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateSpec,
     AggregateStrategyCandidateRejection, AggregateStrategyCapabilityDecision, ExecutionMetrics, Expr, NodeId,
     PartialAggregateInputEvidence, SourceChunk,
 };
-use crate::{
-    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
-    datatypes::arrow_fixed_width_byte_size,
-    exec::execution_metrics::PriorEvidenceScope,
-    source::parquet_source_path_fact,
-};
+use crate::{datatypes::arrow_fixed_width_byte_size, exec::execution_metrics::PriorEvidenceScope};
 
 #[cfg(test)]
 pub(super) fn select_partial_aggregate_strategy_decision(

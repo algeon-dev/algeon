@@ -1,15 +1,16 @@
 use std::collections::VecDeque;
 
-use crate::{
+use query_planning::{
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
     error::Result,
-    exec::{
-        ExecutionMetrics,
-        bounded::{BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_projection, run_budgeted},
-        operators::execute_filter_with_budget,
-    },
     plan::{FilterNode, NodeId, ProjectionNode},
-    runtime::resident::GpuDataFrame,
+};
+use query_runtime::runtime::resident::GpuDataFrame;
+
+use crate::exec::{
+    ExecutionMetrics,
+    bounded::{BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_projection, run_budgeted},
+    operators::execute_filter_with_budget,
 };
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {

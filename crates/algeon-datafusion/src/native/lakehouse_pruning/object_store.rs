@@ -6,12 +6,8 @@ use datafusion::{
     execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     object_store::{Error as ObjectStoreError, ObjectStore, path::Path as ObjectStorePath},
 };
-use query_engine::{
-    object_store_error::{object_store_error_detail, object_store_error_kind},
-    plan::NodeId,
-    source::ParquetSourceLocation,
-    util::fnv1a64,
-};
+use query_engine::object_store_error::{object_store_error_detail, object_store_error_kind};
+use query_planning::{plan::NodeId, source::ParquetSourceLocation, util::fnv1a64};
 
 use crate::error::ErrorSourceDiagnostics;
 

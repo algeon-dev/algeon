@@ -1,4 +1,4 @@
-use query_engine::{
+use query_planning::{
     capability::{Reason, Rejection, RejectionOwner},
     contract_report::CapabilityDecisionRow,
 };

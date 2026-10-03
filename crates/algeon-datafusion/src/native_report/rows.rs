@@ -6,7 +6,7 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
+use query_planning::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
 
 use super::{
     metrics::NativeDataFusionExecutionMetrics,

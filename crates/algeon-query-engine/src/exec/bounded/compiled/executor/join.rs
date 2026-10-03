@@ -1,29 +1,30 @@
+use query_planning::{
+    capability::JoinForm,
+    error::Result,
+    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId},
+    plan::{JoinNode, NodeId},
+};
+
 use super::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState,
     admission::{JoinBuildStreamEstimate, settle_partitioned_join_build},
 };
-use crate::{
-    capability::JoinForm,
-    error::Result,
-    exec::bounded::{
-        BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt,
-        BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
-        BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
-        compiled::{
-            ResidentFrameStreamPayload,
-            helpers::{
-                attach_task_facts, invalid, join_node, plan_node, single_input_resource, single_output_resource,
-                task_join_plan,
-            },
-            resource::CompiledGpuResourcePayload,
+use crate::exec::bounded::{
+    BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt,
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
+    compiled::{
+        ResidentFrameStreamPayload,
+        helpers::{
+            attach_task_facts, invalid, join_node, plan_node, single_input_resource, single_output_resource,
+            task_join_plan,
         },
-        consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_resident_frame,
-        execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
-        execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
-        execute_bounded_compiled_join_probe_from_stream,
+        resource::CompiledGpuResourcePayload,
     },
-    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId},
-    plan::{JoinNode, NodeId},
+    consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_resident_frame,
+    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
+    execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
+    execute_bounded_compiled_join_probe_from_stream,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

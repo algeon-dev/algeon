@@ -7,4 +7,4 @@ pub(super) fn sanitize_field_name(name: &str) -> String {
 pub(super) fn unique_name_with_suffix(base: &str, mut is_available: impl FnMut(&str) -> bool) -> String {
     unique_alias_with_suffix(base, |candidate| !is_available(candidate))
 }
-use query_engine::naming::unique_alias_with_suffix;
+use query_planning::naming::unique_alias_with_suffix;

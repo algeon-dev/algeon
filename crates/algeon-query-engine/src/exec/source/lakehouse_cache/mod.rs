@@ -41,18 +41,19 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
-
-    use super::*;
-    use crate::{
-        chunk::SourceChunkBatch,
+    use query_planning::{
+        execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
-        runtime::{LakehouseCacheFillConfig, SourceChunkPlanningMode, StandaloneConfig},
         source::{
             CredentialMode, LakehouseCacheFillMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn,
             ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
             SourceColumnRef, parquet_file_path_fact, parquet_file_stable_id_fact,
         },
     };
+    use query_runtime::runtime::{LakehouseCacheFillConfig, StandaloneConfig};
+
+    use super::*;
+    use crate::chunk::SourceChunkBatch;
 
     #[test]
     fn complete_cache_file_hit_requires_expected_size() {

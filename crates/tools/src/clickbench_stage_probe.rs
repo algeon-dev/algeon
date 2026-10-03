@@ -33,9 +33,9 @@ use datafusion::{
     common::DataFusionError, execution::SessionStateBuilder, physical_plan::ExecutionPlan, prelude::SessionContext,
 };
 use futures::TryStreamExt;
-use query_engine::{
+use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
+use query_runtime::{
     attempt::{AttemptOwner, BeginAttemptRequest},
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     observability::{
         AttemptDisposition, AttemptQueryId, LiveRuntimeObservationSnapshot, RuntimeObservationConfig,
         RuntimeObservationHandle, RuntimeObservationPayload, RuntimeOperatorStageState, RuntimeTerminalOutcome,

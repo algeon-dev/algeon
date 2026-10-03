@@ -1,11 +1,12 @@
+use query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::{ParquetSourceLocation, ResolvedParquetSource},
+};
+use query_runtime::runtime::{CacheFillBytePermit, S3ObjectStoreKey};
+
 use super::{
     s3::{CacheMaintenanceLocation, cache_maintenance_location, object_store_bucket_fact},
     *,
-};
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    runtime::{CacheFillBytePermit, S3ObjectStoreKey},
-    source::{ParquetSourceLocation, ResolvedParquetSource},
 };
 
 pub(in crate::exec::source) struct PendingCacheMaintenanceFetch {
@@ -180,8 +181,9 @@ fn cache_fill_concurrency_timeout_error(
 mod tests {
     use std::time::Duration;
 
+    use query_runtime::runtime::{ExecutionCancellation, LakehouseCacheFillConfig, StandaloneConfig};
+
     use super::*;
-    use crate::runtime::{ExecutionCancellation, LakehouseCacheFillConfig, StandaloneConfig};
 
     #[test]
     fn a_payload_the_fill_budget_cannot_cover_is_refused_and_its_reservation_returns() {

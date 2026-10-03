@@ -115,8 +115,9 @@ use normalize::{
     make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
 };
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
-use query_engine::{
-    datatypes::{diagnostic_arrow_type, is_supported_arrow_type},
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::{
+    datatypes::diagnostic_arrow_type,
     error::QueryError,
     expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
@@ -594,7 +595,7 @@ mod tests {
         record_batch::RecordBatch,
     };
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
-    use query_engine::{
+    use query_planning::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
         plan::{
             EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions,

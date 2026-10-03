@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver, exec::preflight_query_plan,
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
     capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, Reason, UnsupportedPart},
-    dimension_pruning::local_dimension_pruning_resolver,
-    exec::preflight_query_plan,
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::{PipelineTaskKind, compile_pipeline},
@@ -17,7 +19,6 @@ use query_engine::{
         ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
 

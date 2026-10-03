@@ -3,11 +3,11 @@ use std::{collections::HashSet, sync::Arc};
 use algeon_datafusion::error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus, Result};
 use arrow::error::ArrowError;
 use datafusion::common::{DataFusionError, Diagnostic, Result as DataFusionResult};
-use query_engine::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, QueryErrorStatus},
-    runtime::ExecutionCancellation,
     triage::{TriageCode, TriageVerdict},
 };
+use query_runtime::runtime::ExecutionCancellation;
 
 const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::Cancelled, ErrorStatus::Permanent),

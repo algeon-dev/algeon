@@ -10,6 +10,8 @@ use std::{
     },
 };
 
+use query_planning::correlation::{QueryId, TraceId};
+
 use super::{
     AttemptReportSealProvider, BudgetWindow, BudgetWindowPeaks, CleanupFailureSummary, DeferredRuntimeObservationSeal,
     LiveRuntimeObservationSnapshot, MetricsCaptureMode, MetricsCompleteness, OsSourceLocationDigestKeyProvider,
@@ -17,13 +19,13 @@ use super::{
     RuntimeClockDomain, RuntimeEventContext, RuntimeObservationClock, RuntimeObservationConfig,
     RuntimeObservationHandle, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest,
     RuntimeObservationPayload, RuntimeObservationRecordClass, RuntimeObservationRecordDisposition,
-    RuntimeObservationRecorderState, RuntimeObservationSealObserver, RuntimeObservationSessionInner, RuntimeQueryId,
-    RuntimeSourceLocationId, RuntimeTerminalOutcome, RuntimeTopologyRecord, RuntimeTraceId,
-    SealedRuntimeObservationSnapshot, SourceLocationDigestKeyProvider, SourceLocationDigestKeyState,
-    SourceLocationDigestKeyUnavailable, SourceReadFact, SourceReadRuntimeMetrics, SystemRuntimeObservationClock,
+    RuntimeObservationRecorderState, RuntimeObservationSealObserver, RuntimeObservationSessionInner,
+    RuntimeSourceLocationId, RuntimeTerminalOutcome, RuntimeTopologyRecord, SealedRuntimeObservationSnapshot,
+    SourceLocationDigestKeyProvider, SourceLocationDigestKeyState, SourceLocationDigestKeyUnavailable, SourceReadFact,
+    SourceReadRuntimeMetrics, SystemRuntimeObservationClock,
 };
 use crate::{
-    metrics::{BoundaryMetrics, QueryId, TraceId},
+    metrics::BoundaryMetrics,
     observability::{LakehouseCacheFillEvent, LakehouseCacheFillEventSnapshot, recorder::ExecutionProgress},
 };
 
@@ -58,8 +60,8 @@ impl RuntimeObservationHandle {
     /// capture, not the query's metrics reduction. Only [`Self::disabled`]
     /// produces a session with no recorder at all.
     pub(super) fn new(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
     ) -> Self {
         Self::with_clock(query_id, trace_id, config, Arc::new(SystemRuntimeObservationClock::new()))
@@ -67,8 +69,8 @@ impl RuntimeObservationHandle {
 
     /// Creates a session using an injected clock.
     pub(super) fn with_clock(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> Self {
@@ -82,8 +84,8 @@ impl RuntimeObservationHandle {
     }
 
     pub(super) fn with_clock_and_source_location_digest_key(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         clock: Arc<dyn RuntimeObservationClock>,
         source_location_digest_key_provider: &dyn SourceLocationDigestKeyProvider,
@@ -169,12 +171,12 @@ impl RuntimeObservationHandle {
     }
 
     /// Returns the immutable query identity when recording is enabled.
-    pub fn query_id(&self) -> Option<&RuntimeQueryId> {
+    pub fn query_id(&self) -> Option<&QueryId> {
         self.trace_inner().map(|inner| &inner.manifest.query_id)
     }
 
     /// Returns the immutable optional parent trace identity.
-    pub fn trace_id(&self) -> Option<&RuntimeTraceId> {
+    pub fn trace_id(&self) -> Option<&TraceId> {
         self.trace_inner().and_then(|inner| inner.manifest.trace_id.as_ref())
     }
 

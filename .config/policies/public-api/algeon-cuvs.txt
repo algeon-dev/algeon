@@ -1,0 +1,369 @@
+pub mod cuvs
+pub enum cuvs::CagraBuildAlgo
+pub cuvs::CagraBuildAlgo::IvfPq
+pub cuvs::CagraBuildAlgo::NnDescent
+pub enum cuvs::CagraSearchAlgo
+pub cuvs::CagraSearchAlgo::Auto
+pub cuvs::CagraSearchAlgo::MultiCta
+pub cuvs::CagraSearchAlgo::MultiKernel
+pub cuvs::CagraSearchAlgo::SingleCta
+pub enum cuvs::DistanceMetric
+pub cuvs::DistanceMetric::CosineExpanded
+pub cuvs::DistanceMetric::InnerProduct
+pub cuvs::DistanceMetric::L2Expanded
+pub cuvs::DistanceMetric::L2SqrtExpanded
+#[non_exhaustive] pub enum cuvs::ErrorKind
+pub cuvs::ErrorKind::InvalidInput
+pub cuvs::ErrorKind::InvalidState
+pub cuvs::ErrorKind::OutOfMemory
+pub cuvs::ErrorKind::Unexpected
+pub cuvs::ErrorKind::Unsupported
+impl core::fmt::Display for cuvs::ErrorKind
+pub fn cuvs::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuvs::ErrorStatus
+pub cuvs::ErrorStatus::Permanent
+pub cuvs::ErrorStatus::Persistent
+pub cuvs::ErrorStatus::Temporary
+impl core::fmt::Display for cuvs::ErrorStatus
+pub fn cuvs::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuvs::IvfPqCodebookKind
+pub cuvs::IvfPqCodebookKind::PerCluster
+pub cuvs::IvfPqCodebookKind::PerSubspace
+pub enum cuvs::KMeansInit
+pub cuvs::KMeansInit::Array
+pub cuvs::KMeansInit::KMeansPlusPlus
+pub cuvs::KMeansInit::Random
+pub enum cuvs::KMeansMetric
+pub cuvs::KMeansMetric::L2Expanded
+pub cuvs::KMeansMetric::L2SqrtExpanded
+pub enum cuvs::MatrixLayout
+pub cuvs::MatrixLayout::ColumnMajor
+pub cuvs::MatrixLayout::RowMajor
+impl core::convert::From<cudf::runtime::matrix::DenseMatrixLayout> for cuvs::MatrixLayout
+pub fn cuvs::MatrixLayout::from(cudf::runtime::matrix::DenseMatrixLayout) -> Self
+impl core::convert::From<cuvs::MatrixLayout> for cudf::runtime::matrix::DenseMatrixLayout
+pub fn cudf::runtime::matrix::DenseMatrixLayout::from(cuvs::MatrixLayout) -> Self
+pub enum cuvs::PcaSolver
+pub cuvs::PcaSolver::CovarianceDivideAndConquer
+pub cuvs::PcaSolver::CovarianceJacobi
+pub struct cuvs::BruteForceIndex<'data>
+impl<'data> cuvs::BruteForceIndex<'data>
+pub fn cuvs::BruteForceIndex<'data>::build(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'data, f32>, cuvs::DistanceMetric) -> cuvs::Result<Self>
+pub fn cuvs::BruteForceIndex<'data>::close(self) -> cuvs::Result<()>
+pub fn cuvs::BruteForceIndex<'data>::columns(&self) -> usize
+pub fn cuvs::BruteForceIndex<'data>::rows(&self) -> usize
+pub fn cuvs::BruteForceIndex<'data>::search_into(&self, &cuvs::ValidatedDeviceTensor<'_, f32>, usize, &mut cuvs::DeviceBuffer<i64>, &mut cuvs::DeviceBuffer<f32>) -> cuvs::Result<cuvs::KnnSearchOutput>
+impl core::fmt::Debug for cuvs::BruteForceIndex<'_>
+pub fn cuvs::BruteForceIndex<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cuvs::BruteForceIndex<'_>
+pub fn cuvs::BruteForceIndex<'_>::drop(&mut self)
+pub struct cuvs::CagraIndex<'data, T: cuvs::CagraElement>
+impl<'data, T: cuvs::CagraElement> cuvs::CagraIndex<'data, T>
+pub fn cuvs::CagraIndex<'data, T>::build(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'data, T>, cuvs::CagraIndexParams) -> cuvs::Result<Self>
+pub fn cuvs::CagraIndex<'data, T>::close(self) -> cuvs::Result<()>
+pub fn cuvs::CagraIndex<'data, T>::columns(&self) -> usize
+pub fn cuvs::CagraIndex<'data, T>::rows(&self) -> usize
+pub fn cuvs::CagraIndex<'data, T>::search_into(&self, &cuvs::ValidatedDeviceTensor<'_, T>, usize, cuvs::CagraSearchParams, &mut cuvs::DeviceBuffer<i64>, &mut cuvs::DeviceBuffer<f32>) -> cuvs::Result<cuvs::KnnSearchOutput>
+impl<T: cuvs::CagraElement> core::fmt::Debug for cuvs::CagraIndex<'_, T>
+pub fn cuvs::CagraIndex<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cuvs::CagraElement> core::ops::drop::Drop for cuvs::CagraIndex<'_, T>
+pub fn cuvs::CagraIndex<'_, T>::drop(&mut self)
+pub struct cuvs::CagraIndexParams
+pub cuvs::CagraIndexParams::build_algo: cuvs::CagraBuildAlgo
+pub cuvs::CagraIndexParams::graph_degree: usize
+pub cuvs::CagraIndexParams::intermediate_graph_degree: usize
+pub cuvs::CagraIndexParams::metric: cuvs::DistanceMetric
+impl cuvs::CagraIndexParams
+pub fn cuvs::CagraIndexParams::new(cuvs::DistanceMetric) -> Self
+pub struct cuvs::CagraSearchParams
+pub cuvs::CagraSearchParams::itopk_size: usize
+pub cuvs::CagraSearchParams::max_iterations: usize
+pub cuvs::CagraSearchParams::search_algo: cuvs::CagraSearchAlgo
+pub cuvs::CagraSearchParams::search_width: usize
+impl core::default::Default for cuvs::CagraSearchParams
+pub fn cuvs::CagraSearchParams::default() -> Self
+pub struct cuvs::CuvsResources
+impl cuvs::CuvsResources
+pub fn cuvs::CuvsResources::activate_prepared_tensor<'export, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'export rapids_interop::prepared::PreparedColumnExport<'producer>, &[usize], core::option::Option<&[usize]>) -> cuvs::Result<cuvs::PreparedTensorLease<'export, 'producer, 'consumer, T>>
+pub fn cuvs::CuvsResources::activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'witness cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedFixedSizeListExport<'producer>) -> cuvs::Result<cuvs::PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>>
+pub fn cuvs::CuvsResources::activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer, T: cuvs::DeviceElement>(&'consumer self, &'witness cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedUniformListExport<'producer>) -> cuvs::Result<cuvs::PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>>
+pub fn cuvs::CuvsResources::pack_prepared_table<T: cuvs::DeviceElement>(&self, &rapids_interop::prepared::PreparedTableExport<'_>, cuvs::MatrixLayout) -> cuvs::Result<cuvs::OwnedMatrix<T>>
+pub fn cuvs::CuvsResources::pack_validated_fixed_size_list<T: cuvs::DeviceElement>(&self, &cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedFixedSizeListExport<'_>, cuvs::MatrixLayout) -> cuvs::Result<cuvs::OwnedMatrix<T>>
+pub fn cuvs::CuvsResources::pack_validated_uniform_list<T: cuvs::DeviceElement>(&self, &cudf::frame::dataframe::gpu_record_batch::list_export::ValidatedUniformListExport<'_>, cuvs::MatrixLayout) -> cuvs::Result<cuvs::OwnedMatrix<T>>
+impl cuvs::CuvsResources
+pub fn cuvs::CuvsResources::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::CuvsResources::device(&self) -> cudf::runtime::device::DeviceId
+pub fn cuvs::CuvsResources::for_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> cuvs::Result<Self>
+pub fn cuvs::CuvsResources::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
+pub fn cuvs::CuvsResources::stream_pool_coverage(&self, core::option::Option<&cudf::core::memory::domain::StreamReservationLease>) -> cuvs::Result<cuvs::StreamPoolCoverage>
+impl core::fmt::Debug for cuvs::CuvsResources
+pub fn cuvs::CuvsResources::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::DeviceBuffer<T: cuvs::DeviceElement>
+impl<T: cuvs::DeviceElement> cuvs::DeviceBuffer<T>
+pub fn cuvs::DeviceBuffer<T>::as_matrix(&self, &cuvs::CuvsResources, usize, usize) -> cuvs::Result<cuvs::DeviceTensor<'_, T>>
+pub fn cuvs::DeviceBuffer<T>::as_matrix_mut(&mut self, &cuvs::CuvsResources, usize, usize) -> cuvs::Result<cuvs::DeviceTensorMut<'_, T>>
+pub fn cuvs::DeviceBuffer<T>::as_tensor<'a>(&'a self, &cuvs::CuvsResources, &[usize], core::option::Option<&[usize]>, usize) -> cuvs::Result<cuvs::DeviceTensor<'a, T>>
+pub fn cuvs::DeviceBuffer<T>::as_tensor_mut<'a>(&'a mut self, &cuvs::CuvsResources, &[usize], core::option::Option<&[usize]>, usize) -> cuvs::Result<cuvs::DeviceTensorMut<'a, T>>
+pub fn cuvs::DeviceBuffer<T>::as_validated_matrix(&self, &cuvs::CuvsResources, usize, usize) -> cuvs::Result<cuvs::ValidatedDeviceTensor<'_, T>>
+pub fn cuvs::DeviceBuffer<T>::as_validated_tensor<'a>(&'a self, &cuvs::CuvsResources, &[usize], core::option::Option<&[usize]>, usize) -> cuvs::Result<cuvs::ValidatedDeviceTensor<'a, T>>
+pub fn cuvs::DeviceBuffer<T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::DeviceBuffer<T>::from_slice(&cuvs::CuvsResources, &[T]) -> cuvs::Result<Self>
+pub fn cuvs::DeviceBuffer<T>::inner(&self) -> &cudf::core::column::device_buffer::DeviceBuffer
+pub fn cuvs::DeviceBuffer<T>::into_column(self) -> cuvs::Result<cudf::core::column::owned::Column>
+pub fn cuvs::DeviceBuffer<T>::into_inner(self) -> cudf::core::column::device_buffer::DeviceBuffer
+pub fn cuvs::DeviceBuffer<T>::is_empty(&self) -> bool
+pub fn cuvs::DeviceBuffer<T>::len(&self) -> usize
+pub fn cuvs::DeviceBuffer<T>::new(&cuvs::CuvsResources, usize) -> cuvs::Result<Self>
+pub fn cuvs::DeviceBuffer<T>::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
+pub fn cuvs::DeviceBuffer<T>::size_bytes(&self) -> usize
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::DeviceBuffer<T>
+pub fn cuvs::DeviceBuffer<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::DeviceTensor<'a, T: cuvs::DeviceElement>
+impl<T: cuvs::DeviceElement> cuvs::DeviceTensor<'_, T>
+pub fn cuvs::DeviceTensor<'_, T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::DeviceTensor<'_, T>::byte_len(&self) -> usize
+pub fn cuvs::DeviceTensor<'_, T>::byte_offset(&self) -> usize
+pub fn cuvs::DeviceTensor<'_, T>::columns(&self) -> cuvs::Result<usize>
+pub fn cuvs::DeviceTensor<'_, T>::device(&self) -> i32
+pub fn cuvs::DeviceTensor<'_, T>::is_empty(&self) -> bool
+pub fn cuvs::DeviceTensor<'_, T>::len(&self) -> usize
+pub fn cuvs::DeviceTensor<'_, T>::rows(&self) -> cuvs::Result<usize>
+pub fn cuvs::DeviceTensor<'_, T>::shape(&self) -> &[i64]
+pub fn cuvs::DeviceTensor<'_, T>::strides(&self) -> core::option::Option<&[i64]>
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::DeviceTensor<'_, T>
+pub fn cuvs::DeviceTensor<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::DeviceTensorMut<'a, T: cuvs::DeviceElement>
+impl<T: cuvs::DeviceElement> cuvs::DeviceTensorMut<'_, T>
+pub fn cuvs::DeviceTensorMut<'_, T>::as_const(&self) -> cuvs::DeviceTensor<'_, T>
+pub fn cuvs::DeviceTensorMut<'_, T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::DeviceTensorMut<'_, T>::byte_len(&self) -> usize
+pub fn cuvs::DeviceTensorMut<'_, T>::byte_offset(&self) -> usize
+pub fn cuvs::DeviceTensorMut<'_, T>::columns(&self) -> cuvs::Result<usize>
+pub fn cuvs::DeviceTensorMut<'_, T>::device(&self) -> i32
+pub fn cuvs::DeviceTensorMut<'_, T>::is_empty(&self) -> bool
+pub fn cuvs::DeviceTensorMut<'_, T>::len(&self) -> usize
+pub fn cuvs::DeviceTensorMut<'_, T>::rows(&self) -> cuvs::Result<usize>
+pub fn cuvs::DeviceTensorMut<'_, T>::shape(&self) -> &[i64]
+pub fn cuvs::DeviceTensorMut<'_, T>::strides(&self) -> core::option::Option<&[i64]>
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::DeviceTensorMut<'_, T>
+pub fn cuvs::DeviceTensorMut<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::Error
+impl cuvs::Error
+pub fn cuvs::Error::context(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&'static str, &str)>
+pub fn cuvs::Error::context_value(&self, &str) -> core::option::Option<&str>
+pub fn cuvs::Error::is_temporary(&self) -> bool
+pub fn cuvs::Error::kind(&self) -> cuvs::ErrorKind
+pub fn cuvs::Error::message(&self) -> &str
+pub fn cuvs::Error::new(cuvs::ErrorKind, &'static str) -> Self
+pub fn cuvs::Error::operation(&self) -> &'static str
+pub fn cuvs::Error::set_permanent(self) -> Self
+pub fn cuvs::Error::set_persistent(self) -> Self
+pub fn cuvs::Error::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub fn cuvs::Error::set_temporary(self) -> Self
+pub fn cuvs::Error::status(&self) -> cuvs::ErrorStatus
+pub fn cuvs::Error::with_context(self, &'static str, impl alloc::string::ToString) -> Self
+pub fn cuvs::Error::with_message(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cuvs::Error::with_operation(self, &'static str) -> Self
+impl core::error::Error for cuvs::Error
+pub fn cuvs::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for cuvs::Error
+pub fn cuvs::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cuvs::Error
+pub fn cuvs::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::IvfFlatIndex<T: cuvs::IvfElement>
+impl<T: cuvs::IvfElement> cuvs::IvfFlatIndex<T>
+pub fn cuvs::IvfFlatIndex<T>::build(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, T>, cuvs::IvfFlatIndexParams) -> cuvs::Result<Self>
+pub fn cuvs::IvfFlatIndex<T>::close(self) -> cuvs::Result<()>
+pub fn cuvs::IvfFlatIndex<T>::columns(&self) -> usize
+pub fn cuvs::IvfFlatIndex<T>::rows(&self) -> usize
+pub fn cuvs::IvfFlatIndex<T>::search_into(&self, &cuvs::ValidatedDeviceTensor<'_, T>, usize, cuvs::IvfFlatSearchParams, &mut cuvs::DeviceBuffer<i64>, &mut cuvs::DeviceBuffer<f32>) -> cuvs::Result<cuvs::KnnSearchOutput>
+impl<T: cuvs::IvfElement> core::fmt::Debug for cuvs::IvfFlatIndex<T>
+pub fn cuvs::IvfFlatIndex<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cuvs::IvfElement> core::ops::drop::Drop for cuvs::IvfFlatIndex<T>
+pub fn cuvs::IvfFlatIndex<T>::drop(&mut self)
+pub struct cuvs::IvfFlatIndexParams
+pub cuvs::IvfFlatIndexParams::kmeans_n_iters: u32
+pub cuvs::IvfFlatIndexParams::kmeans_trainset_fraction: f64
+pub cuvs::IvfFlatIndexParams::metric: cuvs::DistanceMetric
+pub cuvs::IvfFlatIndexParams::n_lists: u32
+impl cuvs::IvfFlatIndexParams
+pub fn cuvs::IvfFlatIndexParams::new(cuvs::DistanceMetric, u32) -> Self
+pub struct cuvs::IvfFlatSearchParams
+pub cuvs::IvfFlatSearchParams::n_probes: u32
+impl core::default::Default for cuvs::IvfFlatSearchParams
+pub fn cuvs::IvfFlatSearchParams::default() -> Self
+pub struct cuvs::IvfPqIndex<T: cuvs::IvfElement>
+impl<T: cuvs::IvfElement> cuvs::IvfPqIndex<T>
+pub fn cuvs::IvfPqIndex<T>::build(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, T>, cuvs::IvfPqIndexParams) -> cuvs::Result<Self>
+pub fn cuvs::IvfPqIndex<T>::close(self) -> cuvs::Result<()>
+pub fn cuvs::IvfPqIndex<T>::columns(&self) -> usize
+pub fn cuvs::IvfPqIndex<T>::rows(&self) -> usize
+pub fn cuvs::IvfPqIndex<T>::search_into(&self, &cuvs::ValidatedDeviceTensor<'_, T>, usize, cuvs::IvfPqSearchParams, &mut cuvs::DeviceBuffer<i64>, &mut cuvs::DeviceBuffer<f32>) -> cuvs::Result<cuvs::KnnSearchOutput>
+impl<T: cuvs::IvfElement> core::fmt::Debug for cuvs::IvfPqIndex<T>
+pub fn cuvs::IvfPqIndex<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cuvs::IvfElement> core::ops::drop::Drop for cuvs::IvfPqIndex<T>
+pub fn cuvs::IvfPqIndex<T>::drop(&mut self)
+pub struct cuvs::IvfPqIndexParams
+pub cuvs::IvfPqIndexParams::codebook_kind: cuvs::IvfPqCodebookKind
+pub cuvs::IvfPqIndexParams::kmeans_n_iters: u32
+pub cuvs::IvfPqIndexParams::kmeans_trainset_fraction: f64
+pub cuvs::IvfPqIndexParams::metric: cuvs::DistanceMetric
+pub cuvs::IvfPqIndexParams::n_lists: u32
+pub cuvs::IvfPqIndexParams::pq_bits: u32
+pub cuvs::IvfPqIndexParams::pq_dim: u32
+impl cuvs::IvfPqIndexParams
+pub fn cuvs::IvfPqIndexParams::new(cuvs::DistanceMetric, u32) -> Self
+pub struct cuvs::IvfPqSearchParams
+pub cuvs::IvfPqSearchParams::n_probes: u32
+impl core::default::Default for cuvs::IvfPqSearchParams
+pub fn cuvs::IvfPqSearchParams::default() -> Self
+pub struct cuvs::KMeansFit
+pub cuvs::KMeansFit::inertia: f64
+pub cuvs::KMeansFit::n_iter: i32
+pub struct cuvs::KMeansModel<T: cuvs::KMeansElement>
+impl<T: cuvs::KMeansElement> cuvs::KMeansModel<T>
+pub fn cuvs::KMeansModel<T>::centroids(&self) -> &cuvs::OwnedMatrix<T>
+pub fn cuvs::KMeansModel<T>::fit(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, T>, cuvs::KMeansParams, core::option::Option<cuvs::DeviceBuffer<T>>) -> cuvs::Result<Self>
+pub fn cuvs::KMeansModel<T>::fit_result(&self) -> cuvs::KMeansFit
+pub fn cuvs::KMeansModel<T>::fit_with_initial_centroids(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, T>, cuvs::KMeansParams, core::option::Option<cuvs::OwnedMatrix<T>>) -> cuvs::Result<Self>
+pub fn cuvs::KMeansModel<T>::n_features(&self) -> usize
+pub fn cuvs::KMeansModel<T>::params(&self) -> &cuvs::KMeansParams
+pub fn cuvs::KMeansModel<T>::predict_into(&self, &cuvs::ValidatedDeviceTensor<'_, T>, &mut cuvs::DeviceBuffer<i32>) -> cuvs::Result<cuvs::KMeansPrediction>
+pub struct cuvs::KMeansParams
+pub cuvs::KMeansParams::init: cuvs::KMeansInit
+pub cuvs::KMeansParams::max_iter: i32
+pub cuvs::KMeansParams::metric: cuvs::KMeansMetric
+pub cuvs::KMeansParams::n_clusters: usize
+pub cuvs::KMeansParams::n_init: i32
+pub cuvs::KMeansParams::tol: f64
+impl cuvs::KMeansParams
+pub fn cuvs::KMeansParams::new(usize) -> Self
+pub struct cuvs::KMeansPrediction
+pub cuvs::KMeansPrediction::inertia: f64
+pub cuvs::KMeansPrediction::rows: usize
+pub struct cuvs::KnnSearchOutput
+pub cuvs::KnnSearchOutput::k: usize
+pub cuvs::KnnSearchOutput::n_queries: usize
+pub struct cuvs::OwnedMatrix<T: cuvs::DeviceElement>
+impl<T: cuvs::DeviceElement> cuvs::OwnedMatrix<T>
+pub fn cuvs::OwnedMatrix<T>::as_validated_tensor<'a>(&'a self, &cuvs::CuvsResources) -> cuvs::Result<cuvs::ValidatedDeviceTensor<'a, T>>
+pub fn cuvs::OwnedMatrix<T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::OwnedMatrix<T>::columns(&self) -> usize
+pub fn cuvs::OwnedMatrix<T>::from_packed(&cuvs::CuvsResources, cudf::runtime::matrix::PackedMatrix) -> cuvs::Result<Self>
+pub fn cuvs::OwnedMatrix<T>::is_input_validated(&self) -> bool
+pub fn cuvs::OwnedMatrix<T>::layout(&self) -> cuvs::MatrixLayout
+pub fn cuvs::OwnedMatrix<T>::new(&cuvs::CuvsResources, usize, usize, cuvs::MatrixLayout) -> cuvs::Result<Self>
+pub fn cuvs::OwnedMatrix<T>::rows(&self) -> usize
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::OwnedMatrix<T>
+pub fn cuvs::OwnedMatrix<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::PcaFitTransform
+impl cuvs::PcaFitTransform
+pub fn cuvs::PcaFitTransform::columns(&self) -> usize
+pub fn cuvs::PcaFitTransform::n_components(&self) -> usize
+pub fn cuvs::PcaFitTransform::rows(&self) -> usize
+pub struct cuvs::PcaOutputBuffers
+pub cuvs::PcaOutputBuffers::components: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::explained_variance: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::explained_variance_ratio: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::mean: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::noise_variance: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::singular_values: cuvs::DeviceBuffer<f32>
+pub cuvs::PcaOutputBuffers::transformed: cuvs::DeviceBuffer<f32>
+impl cuvs::PcaOutputBuffers
+pub fn cuvs::PcaOutputBuffers::into_transformed_columns(self, cuvs::PcaFitTransform) -> cuvs::Result<alloc::vec::Vec<cudf::frame::series::owned::Series>>
+pub fn cuvs::PcaOutputBuffers::into_transformed_dataframe(self, cuvs::PcaFitTransform) -> cuvs::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cuvs::PcaOutputBuffers::new(&cuvs::CuvsResources, usize, usize, usize) -> cuvs::Result<Self>
+pub struct cuvs::PcaParams
+pub cuvs::PcaParams::copy: bool
+pub cuvs::PcaParams::flip_signs_based_on_u: bool
+pub cuvs::PcaParams::iterations: i32
+pub cuvs::PcaParams::n_components: usize
+pub cuvs::PcaParams::solver: cuvs::PcaSolver
+pub cuvs::PcaParams::tolerance: f32
+pub cuvs::PcaParams::whiten: bool
+impl cuvs::PcaParams
+pub fn cuvs::PcaParams::new(usize) -> Self
+pub struct cuvs::PreparedTensorLease<'export, 'producer, 'consumer, T: cuvs::DeviceElement>
+impl<'export, T: cuvs::DeviceElement> cuvs::PreparedTensorLease<'export, '_, '_, T>
+pub fn cuvs::PreparedTensorLease<'export, '_, '_, T>::complete(self) -> cuvs::Result<rapids_interop::lease::LeaseCompletion>
+pub fn cuvs::PreparedTensorLease<'export, '_, '_, T>::tensor(&self) -> &cuvs::DeviceTensor<'export, T>
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::PreparedTensorLease<'_, '_, '_, T>
+pub fn cuvs::PreparedTensorLease<'_, '_, '_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::PreparedValidatedTensorLease<'export, 'producer, 'consumer, T: cuvs::DeviceElement>
+impl<'export, T: cuvs::DeviceElement> cuvs::PreparedValidatedTensorLease<'export, '_, '_, T>
+pub fn cuvs::PreparedValidatedTensorLease<'export, '_, '_, T>::complete(self) -> cuvs::Result<rapids_interop::lease::LeaseCompletion>
+pub fn cuvs::PreparedValidatedTensorLease<'export, '_, '_, T>::tensor(&self) -> &cuvs::ValidatedDeviceTensor<'export, T>
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::PreparedValidatedTensorLease<'_, '_, '_, T>
+pub fn cuvs::PreparedValidatedTensorLease<'_, '_, '_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuvs::StreamPoolCoverage
+impl cuvs::StreamPoolCoverage
+pub fn cuvs::StreamPoolCoverage::usage(&self) -> cuvs::Result<alloc::vec::Vec<cudf::core::memory::usage::ReservationUsage>>
+pub struct cuvs::ValidatedDeviceTensor<'a, T: cuvs::DeviceElement>
+impl<'a, T: cuvs::DeviceElement> cuvs::ValidatedDeviceTensor<'a, T>
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::columns(&self) -> cuvs::Result<usize>
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::device(&self) -> i32
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::from_packed(&cuvs::CuvsResources, &'a cudf::runtime::matrix::ValidatedPackedMatrix<'_>) -> cuvs::Result<Self>
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::rows(&self) -> cuvs::Result<usize>
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::shape(&self) -> &[i64]
+pub fn cuvs::ValidatedDeviceTensor<'a, T>::strides(&self) -> core::option::Option<&[i64]>
+impl<T: cuvs::DeviceElement> core::fmt::Debug for cuvs::ValidatedDeviceTensor<'_, T>
+pub fn cuvs::ValidatedDeviceTensor<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait cuvs::CagraElement: cuvs::DeviceElement + cuvs::elements::sealed::Cagra
+impl<T: cuvs::DeviceElement + cuvs::elements::sealed::Cagra> cuvs::CagraElement for T
+pub trait cuvs::DeviceElement: cudf::core::types::CudfType + core::marker::Copy + 'static
+pub const cuvs::DeviceElement::DLPACK_BITS: u8
+pub const cuvs::DeviceElement::DLPACK_CODE: u8
+pub const cuvs::DeviceElement::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn cuvs::DeviceElement::valid_native_input(&[Self]) -> bool
+pub fn cuvs::DeviceElement::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for f32
+pub const f32::DLPACK_BITS: u8
+pub const f32::DLPACK_CODE: u8
+pub const f32::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn f32::valid_native_input(&[Self]) -> bool
+pub fn f32::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for f64
+pub const f64::DLPACK_BITS: u8
+pub const f64::DLPACK_CODE: u8
+pub const f64::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn f64::valid_native_input(&[Self]) -> bool
+pub fn f64::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for i32
+pub const i32::DLPACK_BITS: u8
+pub const i32::DLPACK_CODE: u8
+pub const i32::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn i32::valid_native_input(&[Self]) -> bool
+pub fn i32::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for i64
+pub const i64::DLPACK_BITS: u8
+pub const i64::DLPACK_CODE: u8
+pub const i64::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn i64::valid_native_input(&[Self]) -> bool
+pub fn i64::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for i8
+pub const i8::DLPACK_BITS: u8
+pub const i8::DLPACK_CODE: u8
+pub const i8::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn i8::valid_native_input(&[Self]) -> bool
+pub fn i8::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+impl cuvs::DeviceElement for u8
+pub const u8::DLPACK_BITS: u8
+pub const u8::DLPACK_CODE: u8
+pub const u8::INTEROP_TYPE: rapids_interop::types::TypeId
+pub fn u8::valid_native_input(&[Self]) -> bool
+pub fn u8::validate_native_buffer(&cudf::core::column::device_buffer::DeviceBuffer, &'static str) -> cuvs::Result<()>
+pub trait cuvs::IvfElement: cuvs::DeviceElement + cuvs::elements::sealed::Ivf
+impl<T: cuvs::DeviceElement + cuvs::elements::sealed::Ivf> cuvs::IvfElement for T
+pub trait cuvs::KMeansElement: cuvs::DeviceElement + cuvs::elements::sealed::KMeans
+impl<T: cuvs::DeviceElement + cuvs::elements::sealed::KMeans> cuvs::KMeansElement for T
+pub trait cuvs::PairwiseElement: cuvs::DeviceElement + cuvs::elements::sealed::Pairwise
+pub type cuvs::PairwiseElement::Distance: cuvs::DeviceElement
+impl cuvs::PairwiseElement for f32
+pub type f32::Distance = f32
+impl cuvs::PairwiseElement for f64
+pub type f64::Distance = f64
+pub fn cuvs::fit_transform_owned(&cuvs::CuvsResources, &mut cuvs::OwnedMatrix<f32>, &cuvs::PcaParams, &mut cuvs::PcaOutputBuffers) -> cuvs::Result<cuvs::PcaFitTransform>
+pub fn cuvs::pairwise_distance_into<T: cuvs::PairwiseElement>(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, T>, &cuvs::ValidatedDeviceTensor<'_, T>, cuvs::DistanceMetric, &mut cuvs::DeviceBuffer<<T as cuvs::PairwiseElement>::Distance>) -> cuvs::Result<()>
+pub fn cuvs::select_k_into(&cuvs::CuvsResources, &cuvs::ValidatedDeviceTensor<'_, f32>, usize, bool, &mut cuvs::DeviceBuffer<f32>, &mut cuvs::DeviceBuffer<i64>) -> cuvs::Result<()>
+pub type cuvs::Result<T> = core::result::Result<T, cuvs::Error>

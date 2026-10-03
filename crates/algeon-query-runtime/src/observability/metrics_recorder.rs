@@ -10,18 +10,21 @@ use std::{collections::BTreeMap, time::Duration};
 
 use cudf::ExecutionBudgetReport;
 use query_planning::{
+    correlation::{PlanNodeId, QueryId, TraceId},
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
-    graph_observation::GraphMeasuredPeakProvenance,
     plan::{GraphAlgorithm, NodeId},
 };
 
 use super::{
     BudgetWindow, BudgetWindowPeaks, PlanExecutionId, QueryMetricsCheckpoint, RuntimeObservationConfig,
-    RuntimeObservationHandle, RuntimeObservationSession, RuntimeQueryId, RuntimeTraceId, SourceReadFact,
+    RuntimeObservationHandle, RuntimeObservationSession, SourceReadFact,
 };
-use crate::metrics::{
-    BoundaryMetrics, DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, OperatorMetrics, PlanNodeId,
-    QueryMetrics, SourceReadRuntimeMetrics,
+use crate::{
+    metrics::{
+        BoundaryMetrics, DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, OperatorMetrics, QueryMetrics,
+        SourceReadRuntimeMetrics,
+    },
+    observability::graph_observation::GraphMeasuredPeakProvenance,
 };
 
 /// Records one plan execution's metrics into its observation owner.
@@ -53,8 +56,8 @@ impl MetricsRecorder {
             observation.clone()
         } else {
             RuntimeObservationSession::new(
-                RuntimeQueryId::new(query_id),
-                trace_id.map(RuntimeTraceId::new),
+                QueryId::new(query_id),
+                trace_id.map(TraceId::new),
                 RuntimeObservationConfig::native_execution(),
             )
             .handle()

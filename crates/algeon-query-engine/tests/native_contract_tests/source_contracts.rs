@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::{ByteRangeDisposition, LocalParquetFile, LocalParquetSource, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
 

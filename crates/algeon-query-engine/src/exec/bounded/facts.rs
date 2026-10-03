@@ -1,10 +1,9 @@
+use query_planning::error::ResourceBoundary;
+
 use super::{ExecutionMetrics, NodeId, QueryError, RetryFacts, SourceChunk, SourceChunkBatch};
-use crate::{
-    error::ResourceBoundary,
-    exec::{
-        retry::{ResourceFailureRecovery, resource_failure_recovery},
-        source::{attach_row_group_facts_if_absent, parquet_chunk_path_fact},
-    },
+use crate::exec::{
+    retry::{ResourceFailureRecovery, resource_failure_recovery},
+    source::{attach_row_group_facts_if_absent, parquet_chunk_path_fact},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -109,14 +108,14 @@ mod tests {
     use std::path::PathBuf;
 
     use cudf::{CudfErrorDetail, CudfErrorFailureSource, testing::error as cudf_error};
-
-    use super::*;
-    use crate::{
+    use query_planning::{
         error::QueryErrorCode,
-        native_error::cudf_query_error,
-        runtime::SourceChunkPlanningMode,
+        execution_contracts::SourceChunkPlanningMode,
         source::{ParquetSourceLocation, ResolvedParquetSource},
     };
+    use query_runtime::native_error::cudf_query_error;
+
+    use super::*;
 
     fn test_chunk() -> SourceChunk {
         SourceChunk {

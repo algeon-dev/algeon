@@ -1,16 +1,16 @@
 use cudf::{Series, TypeId};
-
 #[cfg(test)]
-use crate::plan::VectorBruteForceKnnParams;
-use crate::{
-    exec::{
-        dense_relation::{
-            VECTOR_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_libcudf_row_count,
-            require_series_contract_for,
-        },
-        *,
+use query_planning::plan::VectorBruteForceKnnParams;
+use query_planning::plan::{
+    VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding, VectorTopKParams,
+};
+
+use crate::exec::{
+    dense_relation::{
+        VECTOR_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_libcudf_row_count,
+        require_series_contract_for,
     },
-    plan::{VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding, VectorTopKParams},
+    *,
 };
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
@@ -376,12 +376,12 @@ pub(in crate::exec) fn assemble_pca_output(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[cfg(feature = "cuvs")]
-    use crate::{
-        plan::{VectorDistanceMetric, VectorRowIdBinding},
-        runtime::StandaloneConfig,
-    };
+    use query_planning::{plan::VectorDistanceMetric, plan::VectorRowIdBinding};
+    #[cfg(feature = "cuvs")]
+    use query_runtime::runtime::StandaloneConfig;
+
+    use super::*;
 
     #[test]
     fn libcudf_row_count_contract_is_structured_without_gpu_work() {

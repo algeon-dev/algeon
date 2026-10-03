@@ -7,9 +7,9 @@ use std::{
 };
 
 use cudf::{DeviceId, DeviceMemoryManager, ErrorKind, diagnostics::memory::PhysicalMemoryPressureLease};
-use query_engine::{
+use query_planning::error::QueryErrorCode;
+use query_runtime::{
     attempt::{AttemptBegin, AttemptCompletion, AttemptOwner, BeginAttemptRequest},
-    error::QueryErrorCode,
     native_error::cudf_query_error,
     observability::{
         AttemptAllocatorEventSource, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition,

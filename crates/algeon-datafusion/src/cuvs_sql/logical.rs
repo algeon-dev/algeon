@@ -5,7 +5,7 @@ use datafusion::{
     common::{DFSchema, DFSchemaRef, DataFusionError, Result as DataFusionResult},
     logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
-use query_engine::plan::{
+use query_planning::plan::{
     RelationIdType, VectorAlgorithmParams, VectorDistanceMetric, VectorElementType, VectorIvfFlatParams,
     VectorIvfPqParams, vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
     vector_pca_output_schema, vector_top_k_output_schema,

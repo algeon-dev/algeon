@@ -1,23 +1,5 @@
-use query_engine::{
-    admission::{
-        CompiledBoundedPipelineSupport, JoinStrategy, compiled_bounded_pipeline_support,
-        compiled_bounded_query_plan_support,
-    },
-    capability::{
-        CapabilityDecision, EdgeConsumer, JoinForm, Reason,
-    },
-    dimension_pruning::local_dimension_pruning_resolver,
-    error::QueryErrorCode,
-    exec::admit_query_plan,
-    expr::Expr,
-    optimizer::{NativeOptimizerOptions, optimize_query_plan},
-    pipeline::{
-        AcceptedInputForm, CompiledPipeline, JoinPlan, OrderingScope, PipelineTask, PipelineTaskKind, ResidentDataForm,
-        ResourceSharing, SortStrategy, SourceOutput, SourceReadPlan, TaskPhysical, compile_pipeline,
-    },
-    plan::{EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphEdgeColumnBindings},
-    policy::PlanningPolicy,
-};
+use query_planning::{admission::CompiledBoundedPipelineSupport, admission::JoinStrategy, admission::compiled_bounded_pipeline_support, admission::compiled_bounded_query_plan_support, capability::CapabilityDecision, capability::EdgeConsumer, capability::JoinForm, capability::Reason, error::QueryErrorCode, expr::Expr, optimizer::NativeOptimizerOptions, optimizer::optimize_query_plan, pipeline::AcceptedInputForm, pipeline::CompiledPipeline, pipeline::JoinPlan, pipeline::OrderingScope, pipeline::PipelineTask, pipeline::PipelineTaskKind, pipeline::ResidentDataForm, pipeline::ResourceSharing, pipeline::SortStrategy, pipeline::SourceOutput, pipeline::SourceReadPlan, pipeline::TaskPhysical, pipeline::compile_pipeline, plan::EdgeDedupStrategy, plan::EdgeNormalizeSpec, plan::EdgeWeightCombiner, plan::GraphEdgeColumnBindings, policy::PlanningPolicy};
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, exec::admit_query_plan};
 
 fn assert_rejection_reason_is_family_free(reason: &str, label: &str) {
     for token in ["envelope", "_shape", "family", "topology", "recognizer", "catalogue", "whitelist"] {
@@ -274,7 +256,7 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
 
 #[test]
 fn bounded_aggregate_state_and_max_rows_are_node_facts() {
-    use query_engine::capability::AggregateStateContract;
+    use query_planning::capability::AggregateStateContract;
 
     let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();

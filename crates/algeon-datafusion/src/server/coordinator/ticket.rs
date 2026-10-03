@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use query_engine::observability::{RuntimeObservationConfig, RuntimeTerminalOutcome};
+use query_runtime::observability::{RuntimeObservationConfig, RuntimeTerminalOutcome};
 
 use super::{
     super::observability::CapturedError,

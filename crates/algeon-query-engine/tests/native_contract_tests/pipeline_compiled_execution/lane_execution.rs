@@ -8,10 +8,12 @@ use query_engine::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
         run_resident_lane_borrow,
     },
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

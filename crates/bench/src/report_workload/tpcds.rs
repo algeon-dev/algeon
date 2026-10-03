@@ -19,11 +19,10 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::{
-    mode::StatisticalAggregateExecutionMode,
-    plan::NativePlanCostOptions,
-    runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode},
+use query_planning::{
+    execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode, plan::NativePlanCostOptions,
 };
+use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::{
     TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadError, WorkloadResult, discover_tpcds_table_layout,
     registration::tpcds_table_schema,

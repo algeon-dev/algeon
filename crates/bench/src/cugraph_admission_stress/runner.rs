@@ -50,7 +50,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::{harness::StableFnv1a64, runtime::GpuMemoryFraction};
+use query_planning::util::StableFnv1a64;
+use query_runtime::runtime::GpuMemoryFraction;
 use tokio::{
     sync::Barrier,
     time::{sleep, timeout},

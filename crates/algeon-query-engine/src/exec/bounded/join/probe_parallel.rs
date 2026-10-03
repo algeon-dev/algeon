@@ -20,16 +20,15 @@ use std::{
     sync::Arc,
 };
 
+use query_planning::plan::{JoinNode, JoinSide, JoinType, NodeId};
+use query_runtime::runtime::resident::GpuHashJoinBuildHandle;
+
 use super::{
     BoundedExecutionAttempt, ResidentGpuFrame, Result,
     compiled::stateless_streaming_probe_supported,
     hash::{BoundedRootHashJoinBuildState, execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame},
 };
-use crate::{
-    exec::bounded::compiled::{ResidentFrameStreamPayload, lanes::AggregateLaneDispatch},
-    plan::{JoinNode, JoinSide, JoinType, NodeId},
-    runtime::resident::GpuHashJoinBuildHandle,
-};
+use crate::exec::bounded::compiled::{ResidentFrameStreamPayload, lanes::AggregateLaneDispatch};
 
 /// Whether a hash join probe may run chunks in parallel with concatenation.
 ///

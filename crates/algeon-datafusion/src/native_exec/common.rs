@@ -26,12 +26,14 @@ use datafusion::{
     },
 };
 use futures::{FutureExt, Stream, future::BoxFuture};
-use query_engine::{
+use query_planning::{
     error::QueryError,
-    observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope},
     plan::{PlanNode, QueryPlan},
-    runtime::{GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
     source::SourceNode,
+};
+use query_runtime::{
+    observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope},
+    runtime::{GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
 };
 
 use super::metrics::DeferredHostMetrics;
@@ -458,7 +460,7 @@ mod tests {
     };
 
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
-    use query_engine::error::{QueryError, QueryErrorCode};
+    use query_planning::error::{QueryError, QueryErrorCode};
 
     use super::{
         HostOutputReservation, NativeOutputPublication, conservative_properties, mark_native_runtime_error,

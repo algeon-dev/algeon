@@ -4,7 +4,7 @@
 //! selections without ever opening a file; this module supplies the local
 //! Parquet footer and row-batch reads those proofs ask for. The equivalent
 //! object-store reads live in the DataFusion adapter behind
-//! [`optimizer::LakehouseFooterPruningResolver`].
+//! [`query_planning::optimizer::LakehouseFooterPruningResolver`].
 
 use std::fs::File;
 

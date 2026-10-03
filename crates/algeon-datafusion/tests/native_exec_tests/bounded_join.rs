@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::array::{Int32Array, Int64Array};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::executor::block_on;
-use query_engine::{
+use query_planning::{
     optimizer::{
         JoinBuildSideSelectionBasis, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionOptions,
         JoinBuildSideSelectionRejectedReason, NativeOptimizerOptions,

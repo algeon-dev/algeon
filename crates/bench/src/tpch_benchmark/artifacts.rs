@@ -1,7 +1,7 @@
 use std::{fmt::Write, fs, path::Path, time::Duration};
 
 use datafusion::{common::DataFusionError, physical_plan::displayable};
-use query_engine::observability::{SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl};
+use query_runtime::observability::{SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl};
 
 use super::{
     DataFusionResult,

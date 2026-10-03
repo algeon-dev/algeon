@@ -7,13 +7,7 @@ use std::{
 };
 
 use cudf::runtime::event::CudaEvent;
-
-use super::{
-    BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, QueryError,
-    QueryErrorCode, Result, SourceChunk, attach_row_group_facts, cudf_query_error, observed_chunk_row_group_count,
-    parquet_chunk_path_fact, read_local_parquet_chunk,
-};
-use crate::{
+use query_runtime::{
     observability::{
         CleanupFailurePhase, CleanupFailureSummary, MetricsRecorder, RuntimeEventContext, RuntimeObservationHandle,
         RuntimeObservationPayload, RuntimeObservationRecordClass, RuntimePlanNodeId, RuntimeSourceReadObservation,
@@ -21,6 +15,12 @@ use crate::{
         TaskDefinitionRow, WorkerDefinitionRow,
     },
     runtime::{AttemptWorkLease, ExecutionCancellation, GpuExecutorLease, SupervisedWorker, SupervisedWorkerJoin},
+};
+
+use super::{
+    BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, QueryError,
+    QueryErrorCode, Result, SourceChunk, attach_row_group_facts, cudf_query_error, observed_chunk_row_group_count,
+    parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
@@ -566,12 +566,13 @@ mod observation_tests {
         time::Duration,
     };
 
-    use super::*;
-    use crate::observability::{
+    use query_runtime::observability::{
         DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
         RuntimeObservationRecordClass, RuntimeObservationSession, RuntimeTerminalOutcome, RuntimeTopologyRecord,
         TaskDefinitionRow, WorkerDefinitionRow, assert_live_topology_references_resolve,
     };
+
+    use super::*;
 
     fn test_observation(owner: &RuntimeObservationOwner) -> Arc<SourceReadObservation> {
         let plan_execution_id = PlanExecutionId::new("source-plan");

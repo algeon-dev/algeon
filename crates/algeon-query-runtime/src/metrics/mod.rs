@@ -5,7 +5,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use query_planning::graph_observation::GraphMeasuredPeakRow;
+use crate::observability::graph_observation::GraphMeasuredPeakRow;
 
 mod aggregate;
 mod backend_descriptor;
@@ -23,7 +23,7 @@ mod task;
 
 use correlation::inherited_query_id;
 pub(crate) use query_planning::correlation::CompiledTaskId;
-pub use query_planning::correlation::{PlanNodeId, QueryId, TraceId};
+use query_planning::correlation::{QueryId, TraceId};
 
 pub(crate) use self::{
     aggregate::AggregateStrategyDecisionMetrics,

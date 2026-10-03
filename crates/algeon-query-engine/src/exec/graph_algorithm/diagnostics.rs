@@ -8,21 +8,21 @@ use cugraph::AllocationSource as CugraphAllocationSource;
 use cugraph::ErrorKind;
 #[cfg(feature = "cugraph")]
 use cugraph::ErrorStatus;
+#[cfg(feature = "cugraph")]
+use query_planning::error::AllocationSource as QueryAllocationSource;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphAlgorithmParams;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphBetweennessSeeds;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphSsspSource;
+#[cfg(feature = "cugraph")]
+use query_runtime::metrics::BoundaryMetrics;
 
 use super::{
     DataFrame, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_unsupported_type_error,
 };
-#[cfg(feature = "cugraph")]
-use crate::error::AllocationSource as QueryAllocationSource;
-#[cfg(feature = "cugraph")]
-use crate::metrics::BoundaryMetrics;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphAlgorithmParams;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphBetweennessSeeds;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphSsspSource;
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_algorithm_metadata_with_null_drops(metadata: String, null_edge_rows_dropped: u64) -> String {

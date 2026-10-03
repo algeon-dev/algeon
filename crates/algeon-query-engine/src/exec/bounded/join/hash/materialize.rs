@@ -1,3 +1,5 @@
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
     CommittedPartial, Exec, GpuDataFrame, Instant, JoinNode, JoinSide, NodeId, ResidentFrameStreamPayload,
@@ -12,10 +14,7 @@ use super::{
     },
     sum_bounds,
 };
-use crate::{
-    exec::retry::backoff_before_retry,
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
-};
+use crate::exec::retry::backoff_before_retry;
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

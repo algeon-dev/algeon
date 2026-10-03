@@ -23,7 +23,7 @@ use datafusion::{
 };
 #[cfg(feature = "cuvs")]
 use futures::{StreamExt, stream::once};
-use query_engine::plan::{PlanNode, VectorAlgorithmParams, VectorRowIdBinding};
+use query_planning::plan::{PlanNode, VectorAlgorithmParams, VectorRowIdBinding};
 #[cfg(feature = "cuvs")]
 use tokio::{
     sync::{mpsc, oneshot},

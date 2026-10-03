@@ -26,7 +26,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
 };
 use futures::StreamExt;
-use query_engine::observability::{AttemptCapacityDisposition, AttemptCleanupDisposition, RuntimeTerminalOutcome};
+use query_runtime::observability::{AttemptCapacityDisposition, AttemptCleanupDisposition, RuntimeTerminalOutcome};
 use tokio::{
     sync::Barrier,
     task::yield_now,

@@ -13,19 +13,26 @@ use cudf::io::{
     },
 };
 use object_store::aws::AwsCredential;
-
-use super::{local::*, remote::*};
-use crate::{
-    chunk, error,
-    exec::source::{
-        ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk,
-        cudf_query_error_without_source,
-    },
+use query_planning::{
+    chunk::SourceChunkPlanningPolicy,
+    error,
+    execution_contracts::SourceChunkPlanningMode,
     expr,
     expr::{BinaryOp, Expr, LiteralValue},
     plan,
     policy::PlanningPolicy,
-    rapids_backend, runtime, source,
+    source,
+};
+use query_runtime::runtime;
+
+use super::{local::*, remote::*};
+use crate::{
+    chunk,
+    exec::source::{
+        ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk,
+        cudf_query_error_without_source,
+    },
+    rapids_backend,
 };
 
 fn remote_direct_test_source() -> LocalParquetSource {
@@ -290,7 +297,7 @@ fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode(
     let plan = chunk::plan_local_parquet_source_chunks(
         plan::NodeId::from_index_for_test(1),
         &source,
-        chunk::SourceChunkPlanningPolicy::new(None, 1),
+        SourceChunkPlanningPolicy::new(None, 1),
     )
     .expect("selected row groups split into a multi-chunk plan");
     assert_eq!(plan.chunks.len(), 2);
@@ -341,7 +348,7 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
     let plan = chunk::plan_local_parquet_source_chunks(
         plan::NodeId::from_index_for_test(1),
         &source,
-        chunk::SourceChunkPlanningPolicy::new(None, 1),
+        SourceChunkPlanningPolicy::new(None, 1),
     )
     .expect("one row group per chunk splits every file");
     assert_eq!(plan.chunks.iter().map(|chunk| chunk.file_index).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 2]);
@@ -375,7 +382,7 @@ fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() 
     let plan = chunk::plan_local_parquet_source_chunks(
         plan::NodeId::from_index_for_test(1),
         &source,
-        chunk::SourceChunkPlanningPolicy::new(None, 1),
+        SourceChunkPlanningPolicy::new(None, 1),
     )
     .expect("one row group per chunk splits the file");
     let expected = BTreeMap::from([("payload".to_string(), vec![Some(10), Some(4)])]);
@@ -487,7 +494,7 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
 
@@ -560,7 +567,7 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
 
@@ -611,7 +618,7 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
     chunk.location = source::ParquetSourceLocation::object_store_uri("s3://bucket/other.parquet").unwrap();

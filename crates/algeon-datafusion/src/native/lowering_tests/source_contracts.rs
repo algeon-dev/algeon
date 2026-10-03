@@ -1,7 +1,5 @@
-use query_engine::{
-    runtime::{S3SourceStorageProfile, SourceStorageProfile},
-    source::CredentialMode,
-};
+use query_planning::source::CredentialMode;
+use query_runtime::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 
 use super::*;
 use crate::{

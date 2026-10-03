@@ -4,15 +4,13 @@ use cudf::{
     ScalarValue, TimestampResolution,
     ops::ast::{AstExpression, AstOperator},
 };
+use query_planning::expr::{ColumnQualifier, interval_month_day_nano};
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinSide, LiteralValue, QueryError, QueryErrorCode,
     Result, cudf_query_error,
 };
-use crate::{
-    datatypes::{UnrepresentableLiteral, cudf_scalar_value},
-    expr::{ColumnQualifier, interval_month_day_nano},
-};
+use crate::datatypes::{UnrepresentableLiteral, cudf_scalar_value};
 
 #[derive(Debug, Clone)]
 struct ResidualColumnLayout {

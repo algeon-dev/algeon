@@ -5,15 +5,12 @@ use std::{
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::{PreparedDataFrameGroupBy, frame::factorization::Codebook};
+use query_planning::{capability::AggregateStrategyCapabilityDecision, naming::unique_alias_with_suffix};
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
 
 use super::{cudf_query_error, groupby::rename_groupby_key_columns, *};
-use crate::{
-    capability::AggregateStrategyCapabilityDecision,
-    naming::unique_alias_with_suffix,
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
-};
 
 pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_budget(
     context: &ExecutionContext,

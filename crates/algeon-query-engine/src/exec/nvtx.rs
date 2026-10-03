@@ -7,7 +7,7 @@ use std::{
     marker::PhantomData,
 };
 
-use crate::{observability::AttemptId, runtime::ExecutionContext};
+use query_runtime::{observability::AttemptId, runtime::ExecutionContext};
 
 unsafe extern "C" {
     fn nvtxRangePushA(message: *const c_char) -> c_int;

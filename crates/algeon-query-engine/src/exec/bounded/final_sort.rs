@@ -14,6 +14,9 @@ mod topk_candidate;
 mod topk_level;
 
 use limit::*;
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
 use retry::*;
 use sizing::{estimate_rows_bytes, estimated_bytes_per_row, final_sort_retained_bytes, final_sort_rows_per_chunk};
 use sort_lane::*;
@@ -21,12 +24,7 @@ use topk_candidate::*;
 use topk_level::*;
 
 use super::compiled::lanes::AggregateLaneDispatch;
-use crate::{
-    exec::retry::{ResourceFailureRecovery, RetryLimits, backoff_before_retry, resource_failure_recovery},
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
-};
+use crate::exec::retry::{ResourceFailureRecovery, RetryLimits, backoff_before_retry, resource_failure_recovery};
 
 pub(super) fn execute_final_sort_node_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,

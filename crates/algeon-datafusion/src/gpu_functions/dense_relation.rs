@@ -9,7 +9,7 @@ use datafusion::{
     logical_expr::{FetchType, LogicalPlan, LogicalPlanBuilder, SkipType, SortExpr, planner::RelationPlannerContext},
     sql::sqlparser::ast::{Expr as SqlExpr, TableAlias, TableFactor},
 };
-use query_engine::plan::{DenseVectorBinding, GpuOptionDefinition, GpuOptionKind};
+use query_planning::plan::{DenseVectorBinding, GpuOptionDefinition, GpuOptionKind};
 use serde_json::{Map, Value, json};
 
 use super::{

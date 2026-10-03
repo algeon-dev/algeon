@@ -5,21 +5,23 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 use cudf::{Error as CudfError, runtime::event::CudaEvent};
-
-use super::{LaneDispatchSupport, LaneWorkLease, OPERATION};
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::{
-        ExecutionMetrics,
-        bounded::{
-            BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
-            compiled::scheduler::record_cleanup_failure, execute_compiled_source_aggregate_chunk,
-        },
-    },
+    plan::{AggregateNode, NodeId},
+};
+use query_runtime::{
     native_error::cudf_query_error,
     observability::{CleanupFailurePhase, RuntimeExecutionObservationScope},
-    plan::{AggregateNode, NodeId},
     runtime::{ExecutionContext, GpuExecutionJobKind, PoolBlockingWork},
+};
+
+use super::{LaneDispatchSupport, LaneWorkLease, OPERATION};
+use crate::exec::{
+    ExecutionMetrics,
+    bounded::{
+        BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
+        compiled::scheduler::record_cleanup_failure, execute_compiled_source_aggregate_chunk,
+    },
 };
 
 /// Owns a share of the compiled run's lanes: expanded work never acquires

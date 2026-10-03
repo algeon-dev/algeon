@@ -5,6 +5,7 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::naming::unique_alias_with_suffix;
 
 use super::{
     cudf_query_error,
@@ -16,7 +17,6 @@ use super::{
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
 };
-use crate::naming::unique_alias_with_suffix;
 
 // Admission decision plus segmentation plan for filtered global aggregates.
 #[derive(Debug, Clone)]

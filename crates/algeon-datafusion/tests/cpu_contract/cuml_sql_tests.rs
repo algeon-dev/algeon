@@ -51,8 +51,8 @@ use datafusion::{
     },
 };
 #[cfg(feature = "cuml")]
-use query_engine::plan::MlForestModelDigest;
-use query_engine::plan::{
+use query_planning::plan::MlForestModelDigest;
+use query_planning::plan::{
     CumlOutputContract, MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract,
     MlForestPrecision, VectorElementType, ml_embedding_output_schema, ml_forest_output_schema,
     ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,

@@ -23,6 +23,7 @@ pub use logical::CumlLogicalNode;
 pub(crate) use logical::forest_model_digests;
 pub(crate) use model_store::CumlModelStore;
 pub use options::{CumlRelationBinding, CumlValidatedOptions};
+pub use query_planning::plan::MlForestModelSnapshot;
 pub use registry::{
     CUML_FOREST_PREDICT_FUNCTION, CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
     CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,

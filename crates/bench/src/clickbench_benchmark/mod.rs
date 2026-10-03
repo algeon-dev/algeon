@@ -967,7 +967,7 @@ fn invalid_env(message: String) -> WorkloadError {
 
 #[cfg(test)]
 mod tests {
-    use query_engine::runtime::SourceChunkPlanningMode;
+    use query_planning::execution_contracts::SourceChunkPlanningMode;
 
     use super::*;
 

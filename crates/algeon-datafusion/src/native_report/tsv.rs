@@ -8,7 +8,7 @@
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;
-use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
+use query_planning::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
 
 use super::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionRow, NativeDynamicFilterRuntimeMetricRow,

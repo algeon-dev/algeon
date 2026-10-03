@@ -1,8 +1,7 @@
 use std::time::Instant;
 
 use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
-
-use crate::{
+use query_planning::{
     admission::JoinStrategyChoice,
     capability::{
         JoinForm, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
@@ -10,11 +9,13 @@ use crate::{
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },
     error::{QueryError, QueryErrorCode, Result},
-    exec::{attach_budget_token_failure_facts, bounded::BoundedExecutionAttempt, execution_budget_token_for_boundary},
-    native_error::cudf_query_error,
     pipeline::{JoinPlan, PipelineTask, ResidentResourceId},
     plan::{JoinNode, JoinSide, LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
-    runtime::resident::GpuDataFrame,
+};
+use query_runtime::{native_error::cudf_query_error, runtime::resident::GpuDataFrame};
+
+use crate::exec::{
+    attach_budget_token_failure_facts, bounded::BoundedExecutionAttempt, execution_budget_token_for_boundary,
 };
 
 const OPERATION: &str = "query_engine.exec.bounded.compiled.tasks";

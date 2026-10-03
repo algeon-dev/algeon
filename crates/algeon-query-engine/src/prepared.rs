@@ -6,20 +6,22 @@ use cudf::{
         strings::StringSliceOptions, when,
     },
 };
-
-use crate::{
-    datatypes::{
-        UnrepresentableLiteral, cudf_dtype_from_arrow_type, cudf_scalar_value, timestamp_unit_to_cudf_resolution,
-    },
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue, UnaryMathOp,
         interval_month_day_nano,
     },
     expression_lowering_policy::ExpressionLoweringPolicy,
-    native_error::cudf_unsupported_type_error,
     plan::ProjectionOutput,
     validation::is_string_type,
+};
+
+use crate::{
+    datatypes::{
+        UnrepresentableLiteral, cudf_dtype_from_arrow_type, cudf_scalar_value, timestamp_unit_to_cudf_resolution,
+    },
+    native_error::cudf_unsupported_type_error,
 };
 
 mod aggregate;

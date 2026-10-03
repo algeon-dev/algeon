@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use datafusion::execution::context::TaskContext;
-use query_engine::{admission::AdmittedPlan, rapids_backend::rapids_analysis_context};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::admission::AdmittedPlan;
 
 use crate::{
     error::{Error, Result},

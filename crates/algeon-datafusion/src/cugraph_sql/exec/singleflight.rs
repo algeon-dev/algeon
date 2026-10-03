@@ -25,9 +25,9 @@ use std::{
 
 use arrow::record_batch::RecordBatch;
 use datafusion::execution::memory_pool::MemoryReservation;
-use query_engine::{
+use query_planning::plan::ResidentGraphKey;
+use query_runtime::{
     observability::AttemptId,
-    plan::ResidentGraphKey,
     runtime::{ExecutionCancellation, cache_observation_fingerprint, resident::GpuResultHandle},
 };
 #[cfg(test)]
@@ -815,14 +815,14 @@ mod tests {
             record_batch::RecordBatch,
         };
         use datafusion::execution::{TaskContext, memory_pool::MemoryConsumer};
-        use query_engine::{
+        use query_planning::{
             admission::AttemptCapabilityEvidence,
             plan::QueryPlanBuilder,
-            runtime::{
-                QueryAdmissionRequest,
-                resident::{GpuDataFrame, GpuResultHandle},
-            },
             source::{LiteralBatchSource, SourceNode},
+        };
+        use query_runtime::runtime::{
+            QueryAdmissionRequest,
+            resident::{GpuDataFrame, GpuResultHandle},
         };
         use tokio::{
             task::spawn_blocking,

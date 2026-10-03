@@ -1,4 +1,5 @@
-use query_engine::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use query_planning::policy::PlanningPolicy;
+use query_engine::rapids_backend::rapids_analysis_context;
 
 #[test]
 fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {

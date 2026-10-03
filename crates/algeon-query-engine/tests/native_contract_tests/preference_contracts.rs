@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::array::Int64Array;
-use query_engine::plan::{
+use query_planning::plan::{
     NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, QueryPlan, native_plan_cost_decision,
 };
 

@@ -1,11 +1,11 @@
 use cugraph::random::RngState;
+use query_planning::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     ecg_params, leiden_params, louvain_params, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
     run_with_cugraph_graph, spectral_clustering_params, table_graph_options,
 };
-use crate::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 pub(super) fn execute_louvain(
     context: &ExecutionContext,

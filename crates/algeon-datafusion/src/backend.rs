@@ -10,29 +10,31 @@ use std::sync::{Mutex, MutexGuard};
 use std::{collections::BTreeMap, time::Duration};
 
 use datafusion::execution::{SessionState, SessionStateBuilder};
+use query_planning::error::QueryError;
+#[cfg(all(test, feature = "cugraph"))]
+use query_planning::error::Result as QueryEngineResult;
 #[cfg(feature = "qualification")]
-pub use query_engine::runtime::DeviceQuarantineInjection;
-pub use query_engine::runtime::{DeviceCapabilities, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryOwnership};
+pub use query_runtime::runtime::DeviceQuarantineInjection;
+#[cfg(all(test, feature = "cugraph"))]
+use query_runtime::runtime::QueryHandle;
+pub use query_runtime::runtime::{
+    DeviceCapabilities, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+};
+use query_runtime::runtime::{
+    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, QueryExecutionConfig,
+    QueueBounds, probe_device_capacity,
+};
 /// Canonical device profile bound to an explicit process-scoped GPU memory
 /// ownership promise.
 ///
 /// These are the runtime-owned device construction types under application
 /// facing Algeon names: one shared type identity, no second defaults or
 /// validation source in this adapter.
-pub use query_engine::runtime::{
-    GpuBackendDeviceConfig as AlgeonGpuDeviceConfig,
-    GpuBackendDeviceInstallationBounds as AlgeonGpuDeviceInstallationBounds,
-    GpuBackendDeviceProfile as AlgeonGpuDeviceProfile,
+pub use query_runtime::{
+    runtime::GpuBackendDeviceConfig as AlgeonGpuDeviceConfig,
+    runtime::GpuBackendDeviceInstallationBounds as AlgeonGpuDeviceInstallationBounds,
+    runtime::GpuBackendDeviceProfile as AlgeonGpuDeviceProfile,
 };
-use query_engine::{
-    error::QueryError,
-    runtime::{
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, QueryExecutionConfig,
-        QueueBounds, probe_device_capacity,
-    },
-};
-#[cfg(all(test, feature = "cugraph"))]
-use query_engine::{error::Result as QueryEngineResult, runtime::QueryHandle};
 
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::GraphBfsSingleflightSnapshot;

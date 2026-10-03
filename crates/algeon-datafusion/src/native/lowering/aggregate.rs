@@ -6,7 +6,7 @@ use datafusion::{
     physical_expr::expressions::Column,
     physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec},
 };
-use query_engine::{
+use query_planning::{
     expr::{
         AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
         AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, GroupingSetsSpec as NativeGroupingSetsSpec,

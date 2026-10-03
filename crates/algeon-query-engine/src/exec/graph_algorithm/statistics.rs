@@ -1,5 +1,6 @@
+use query_planning::plan::GraphAlgorithmSpec;
+
 use super::{DataFrame, ExecutionContext, QueryError, QueryErrorCode, Result, cudf_query_error};
-use crate::plan::GraphAlgorithmSpec;
 
 /// Runs the runtime graph vertex-count probe on the attempt's own runtime.
 ///

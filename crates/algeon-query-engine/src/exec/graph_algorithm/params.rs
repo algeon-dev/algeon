@@ -12,16 +12,16 @@ use cugraph::{
     structure::KCoreParams,
     traversal::{BfsParams, SsspParams},
 };
-
-use super::{QueryError, QueryErrorCode, Result, map_cugraph_error};
 #[cfg(feature = "cugraph")]
-use crate::plan::GraphKCoreDegreeType;
-use crate::plan::{
+use query_planning::plan::GraphKCoreDegreeType;
+use query_planning::plan::{
     GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBfsParams, GraphEcgParams,
     GraphEdgeBetweennessCentralityParams, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
     GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphPageRankParams,
     GraphSpectralClusteringParams, GraphSsspParams,
 };
+
+use super::{QueryError, QueryErrorCode, Result, map_cugraph_error};
 
 pub(super) fn similarity_params(spec: &GraphAlgorithmSpec) -> SimilarityParams {
     SimilarityParams {

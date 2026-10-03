@@ -8,16 +8,16 @@ use cugraph::{
     traversal::{BfsPredicateParams, BfsResult, BfsTargetInfo},
     types::CugraphElement,
 };
+use query_planning::plan::{
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphEdgePredicateInput,
+    GraphPredicateInput, GraphSsspSource, planned_resident_graph_key,
+};
 
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
     QueryError, QueryErrorCode, Result, bfs_params, col, cudf_query_error, empty_graph_result_frame, map_cugraph_error,
     normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph,
     run_with_cugraph_graph, sssp_params, table_graph_options,
-};
-use crate::plan::{
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphEdgePredicateInput,
-    GraphPredicateInput, GraphSsspSource, planned_resident_graph_key,
 };
 
 pub(super) fn execute_bfs(

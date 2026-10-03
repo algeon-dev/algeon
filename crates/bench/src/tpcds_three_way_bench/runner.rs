@@ -31,7 +31,8 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
-use query_engine::{mode::StatisticalAggregateExecutionMode, runtime::GpuDeviceMemoryLimit};
+use query_planning::mode::StatisticalAggregateExecutionMode;
+use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 
 use crate::report_workload::{

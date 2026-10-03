@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::plan::{NodeId, QueryPlan};
+use query_planning::plan::{NodeId, QueryPlan};
 
 use super::*;
 

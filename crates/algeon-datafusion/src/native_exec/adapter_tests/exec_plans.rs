@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
-use query_engine::{
+use query_planning::{
     plan::{QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };

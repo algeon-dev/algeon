@@ -29,6 +29,8 @@ cuml = ["algeon-datafusion/cuml", "dep:cuml-sys"]
 algeon-datafusion = { workspace = true, features = ["bench-support", "nvml"] }
 workloads = { workspace = true }
 query-engine = { workspace = true }
+query-planning = { workspace = true }
+query-runtime = { workspace = true }
 datafusion = { workspace = true }
 arrow = { workspace = true }
 parquet = { workspace = true }

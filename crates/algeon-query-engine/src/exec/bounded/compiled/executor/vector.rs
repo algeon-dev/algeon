@@ -1,20 +1,22 @@
+#[cfg(not(feature = "cuvs"))]
+use query_planning::plan::PlanNode;
+#[cfg(feature = "cuvs")]
+use query_planning::plan::PlanNode;
+use query_planning::{
+    error::Result,
+    pipeline::{PipelineTask, ResidentResourceId},
+};
+
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 #[cfg(feature = "cuvs")]
 use crate::exec::bounded::compiled::helpers::attach_task_facts;
-use crate::{
-    error::Result,
-    exec::bounded::compiled::helpers::{invalid, plan_node, single_output_resource},
-    pipeline::{PipelineTask, ResidentResourceId},
-};
+use crate::exec::bounded::compiled::helpers::{invalid, plan_node, single_output_resource};
 #[cfg(not(feature = "cuvs"))]
-use crate::{exec::vector_algorithm_execution_unavailable, plan::PlanNode};
+use crate::exec::vector_algorithm_execution_unavailable;
 #[cfg(feature = "cuvs")]
 use crate::{
-    exec::{
-        bounded::ResidentGpuFrame, execute_vector_algorithm, observe_device_memory_bytes,
-        validate_vector_algorithm_execution,
-    },
-    plan::PlanNode,
+    exec::bounded::ResidentGpuFrame, exec::execute_vector_algorithm, exec::observe_device_memory_bytes,
+    exec::validate_vector_algorithm_execution,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

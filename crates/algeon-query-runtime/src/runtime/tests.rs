@@ -9,6 +9,7 @@ use ::object_store::{ObjectStoreExt, memory::InMemory, path::Path};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::SourceChunkPlanningMode,
 };
 use serde_json::Value;
 

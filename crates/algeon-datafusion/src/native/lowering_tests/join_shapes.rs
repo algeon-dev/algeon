@@ -1,4 +1,5 @@
-use query_engine::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::policy::PlanningPolicy;
 
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
@@ -47,7 +48,7 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
         common::stats::Precision,
         physical_plan::{StatisticsArgs, StatisticsContext, joins::HashJoinExec},
     };
-    use query_engine::plan::AdvisoryStatistic;
+    use query_planning::plan::AdvisoryStatistic;
 
     fn datafusion_join_row_estimates(plan: &dyn ExecutionPlan, rows: &mut Vec<u64>) {
         if plan.downcast_ref::<HashJoinExec>().is_some() {

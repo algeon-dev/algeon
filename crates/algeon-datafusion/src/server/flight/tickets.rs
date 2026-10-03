@@ -4,7 +4,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use query_engine::{attempt::AttemptCancellation, observability::RuntimeTerminalOutcome};
+use query_runtime::{attempt::AttemptCancellation, observability::RuntimeTerminalOutcome};
 
 use super::*;
 use crate::server::coordinator::QueryKey;

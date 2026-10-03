@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use arrow::datatypes::SchemaRef;
+use query_planning::{plan::EdgeNormalizeNode, source::LiteralBatchSource};
+#[cfg(feature = "cugraph")]
+use query_planning::{plan::GraphAlgorithmNode, plan::GraphAlgorithmSpec};
+use query_runtime::observability::SourceReadFact;
 
 use super::{
     BoundedExecutionAttempt, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame,
@@ -21,14 +25,9 @@ use super::{
 use super::{DataFrame, execute_graph_algorithm_sanitized};
 #[cfg(feature = "cugraph")]
 use crate::exec::graph_algorithm::{bounded_betweenness::*, graph_empty_input_prevalidated, statistics::*};
-#[cfg(feature = "cugraph")]
-use crate::plan::{GraphAlgorithmNode, GraphAlgorithmSpec};
 use crate::{
     exec::source::{read_local_parquet_source, record_bounded_parquet_source_metrics},
-    observability::SourceReadFact,
-    plan::EdgeNormalizeNode,
     rapids_backend::rapids_analysis_context,
-    source::LiteralBatchSource,
 };
 
 /// A union branch named like the union's declared output.

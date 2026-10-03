@@ -1,5 +1,4 @@
-use super::{CompiledGpuTaskExecutor, join_build_key_uniqueness_probe_can_fallback};
-use crate::{
+use query_planning::{
     admission::{JoinStrategy, JoinStrategyChoice},
     capability::{
         JoinStrategyEvidence, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
@@ -7,17 +6,19 @@ use crate::{
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },
     error::Result,
-    exec::bounded::{
-        BoundedExecutionAttempt, BoundedJoinBuildStreamObservation, PartitionedJoinBuildCommitment,
-        compiled::helpers::{
-            join_node, join_strategy_needs_build_key_uniqueness_probe, measure_join_build_key_unique,
-            refine_join_strategy, task_join_plan,
-        },
-        partitioned_join_build_commitment, stateless_streaming_probe_supported,
-    },
     pipeline::PipelineTask,
     plan::{JoinNode, JoinSide, NodeId, QueryPlan, estimated_output_bytes},
-    runtime::resident::GpuDataFrame,
+};
+use query_runtime::runtime::resident::GpuDataFrame;
+
+use super::{CompiledGpuTaskExecutor, join_build_key_uniqueness_probe_can_fallback};
+use crate::exec::bounded::{
+    BoundedExecutionAttempt, BoundedJoinBuildStreamObservation, PartitionedJoinBuildCommitment,
+    compiled::helpers::{
+        join_node, join_strategy_needs_build_key_uniqueness_probe, measure_join_build_key_unique, refine_join_strategy,
+        task_join_plan,
+    },
+    partitioned_join_build_commitment, stateless_streaming_probe_supported,
 };
 
 // Size hints the build input stream carries about itself (Parquet footer rows

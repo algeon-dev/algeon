@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use query_engine::runtime::{
+use query_runtime::runtime::{
     GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
     GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     QueryExecutionConfig, QueueBounds,

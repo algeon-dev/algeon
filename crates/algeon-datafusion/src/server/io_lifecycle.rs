@@ -8,10 +8,8 @@ use std::{
 };
 
 use cudf::io::drain_kvikio_bounce_buffer_pools;
-use query_engine::{
-    error::{QueryError, QueryErrorCode},
-    runtime::IoLifecycle,
-};
+use query_planning::error::{QueryError, QueryErrorCode};
+use query_runtime::runtime::IoLifecycle;
 use tokio::task::spawn_blocking;
 
 use crate::server::{

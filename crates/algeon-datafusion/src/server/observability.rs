@@ -11,7 +11,7 @@ use datafusion::{
     common::DataFusionError,
     physical_plan::{ExecutionPlan, displayable, metrics::MetricsSet},
 };
-use query_engine::observability::{AttemptDisposition, QueryAttemptReport, RuntimeTerminalOutcome};
+use query_runtime::observability::{AttemptDisposition, QueryAttemptReport, RuntimeTerminalOutcome};
 use tonic::metadata::MetadataMap;
 
 use crate::server::{
@@ -1230,12 +1230,12 @@ fn metadata_value<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'
 
 #[cfg(test)]
 mod tests {
-    use query_engine::observability::AttemptRetryAdvice;
+    use query_runtime::observability::AttemptRetryAdvice;
 
     use super::*;
 
     fn cancelled_attempt_report() -> QueryAttemptReport {
-        use query_engine::observability::{
+        use query_runtime::observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptTimestamps,
             QUERY_ATTEMPT_REPORT_SCHEMA,
         };

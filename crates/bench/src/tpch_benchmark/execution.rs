@@ -7,7 +7,7 @@ use std::{
 use algeon_datafusion::{attempt::AttemptOptions, native_exec::below_native_admission};
 use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
-use query_engine::observability::SealedRuntimeObservationSnapshot;
+use query_runtime::observability::SealedRuntimeObservationSnapshot;
 
 use super::*;
 use crate::report_workload::tpch::tpch_tuned_cpu_session_config;

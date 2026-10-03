@@ -2,7 +2,7 @@ use crate::exec::*;
 
 pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     node_id: NodeId,
-    node: &crate::plan::VectorAlgorithmNode,
+    node: &query_planning::plan::VectorAlgorithmNode,
 ) -> QueryError {
     QueryError::new(
         QueryErrorCode::UnsupportedOperator,
@@ -20,12 +20,12 @@ pub(in crate::exec) fn vector_algorithm_execution_unavailable(
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::DataType;
-
-    use super::*;
-    use crate::plan::{
+    use query_planning::plan::{
         VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec, VectorPcaParams, VectorRelationBinding,
         VectorRowIdBinding, vector_pca_output_schema,
     };
+
+    use super::*;
 
     #[test]
     fn unavailable_error_is_structured_without_constructing_gpu_inputs() {
@@ -36,7 +36,7 @@ mod tests {
             VectorAlgorithmParams::Pca(VectorPcaParams::new(binding, 1)),
             vector_pca_output_schema(DataType::Int64, 1),
         );
-        let node = crate::plan::VectorAlgorithmNode { inputs: vec![input], spec };
+        let node = query_planning::plan::VectorAlgorithmNode { inputs: vec![input], spec };
 
         let error = vector_algorithm_execution_unavailable(NodeId::from_index_for_test(1), &node);
 

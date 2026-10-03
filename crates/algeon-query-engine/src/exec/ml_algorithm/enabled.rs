@@ -13,22 +13,8 @@ use cuml::{
     PcaSolver, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion, TsvdModel,
     TsvdParams, UmapInit, UmapModel, UmapParams,
 };
-
-use super::assembly::{assemble_components, assemble_ml_output};
-use crate::{
-    datatypes::cudf_dtype_from_arrow_type,
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::{
-        GpuDataFrame,
-        dense_relation::{
-            DenseRelationInputs, ML_OPERATIONS, matrix_bytes_for, pack_dense_relation_for, relation_element_type_for,
-            relation_input_for,
-        },
-    },
-    native_error::{cudf_query_error, cudf_unsupported_type_error, cuml_query_error},
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
     plan::{
         MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver,
         MlForestModelFacts, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams,
@@ -36,7 +22,26 @@ use crate::{
         MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding, ml_embedding_output_schema,
         ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
+};
+use query_runtime::{
+    native_error::cudf_query_error,
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
     runtime::ExecutionContext,
+};
+
+use super::assembly::{assemble_components, assemble_ml_output};
+use crate::{
+    datatypes::cudf_dtype_from_arrow_type,
+    exec::{
+        GpuDataFrame,
+        dense_relation::{
+            DenseRelationInputs, ML_OPERATIONS, matrix_bytes_for, pack_dense_relation_for, relation_element_type_for,
+            relation_input_for,
+        },
+    },
+    native_error::{cudf_unsupported_type_error, cuml_query_error},
 };
 
 const EXECUTE: &str = "query_engine.ml_algorithm.execute";

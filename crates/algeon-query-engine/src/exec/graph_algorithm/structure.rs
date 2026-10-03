@@ -2,13 +2,13 @@ use cugraph::{
     community::TriangleCountParams, labeling::ConnectedComponentsParams, structure::CoreNumberParams,
     tree::MinimumSpanningTreeParams,
 };
+use query_planning::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     cudf_query_error, degree_type_to_cugraph, k_core_params, map_cugraph_error, normalize_graph_result_schema,
     project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
-use crate::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 pub(super) fn execute_degrees_all(
     context: &ExecutionContext,

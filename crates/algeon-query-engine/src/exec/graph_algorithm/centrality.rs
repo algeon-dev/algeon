@@ -4,6 +4,10 @@ use cugraph::{
     cudf_interop::device_array_view_from_slice,
     types::{CugraphElement, DataType as CugraphDataType},
 };
+use query_planning::plan::{
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessSeeds, GraphPageRankPersonalizationInput,
+    GraphPredicateInput, planned_resident_graph_key,
+};
 
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
@@ -11,10 +15,6 @@ use super::{
     edge_betweenness_centrality_params, eigenvector_centrality_params, hits_params, katz_centrality_params,
     map_cugraph_error, normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
     run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, table_graph_options,
-};
-use crate::plan::{
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessSeeds, GraphPageRankPersonalizationInput,
-    GraphPredicateInput, planned_resident_graph_key,
 };
 
 pub(super) fn execute_pagerank(

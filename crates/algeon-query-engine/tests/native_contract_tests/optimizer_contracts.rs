@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 
-use query_engine::{
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     capability::KeyedHashJoinStrategyOptions,
-    dimension_pruning::local_dimension_pruning_resolver,
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
         DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
     error::QueryErrorCode,
-    metrics::DynamicFilterSourceSnapshot,
     optimizer::{
         AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
         AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason, COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
@@ -40,9 +39,9 @@ use query_engine::{
         GraphEdgeColumnBindings, GraphPredicateInput, NodeId, QueryPlan,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::LocalParquetSource,
 };
+use query_runtime::metrics::DynamicFilterSourceSnapshot;
 
 use super::*;
 // Optimizer contract tests are split by optimizer pass while staying in this

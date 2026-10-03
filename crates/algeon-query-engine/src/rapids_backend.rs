@@ -10,15 +10,18 @@ use cudf::{
     interop::arrow_host::arrow_type_from_cudf_dtype,
     ops::binary::{BinaryOperator, infer_binary_output_dtype},
 };
-use query_planning::backend::{AggregateBinding, AnalysisContext, BackendCapabilities, ExpressionUse};
+use query_planning::{
+    backend::{AggregateBinding, AnalysisContext, BackendCapabilities, ExpressionUse},
+    error::{QueryError, QueryErrorCode, Result},
+    expr::{AggregateSpec, BinaryOp, Expr},
+    plan::ProjectionOutput,
+    policy::PlanningPolicy,
+};
+use query_runtime::native_error::cudf_query_error;
 
 use crate::{
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
-    error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateSpec, BinaryOp, Expr},
-    native_error::{cudf_query_error, cudf_unsupported_type_error},
-    plan::ProjectionOutput,
-    policy::PlanningPolicy,
+    native_error::cudf_unsupported_type_error,
     prepared::{
         lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_final_aggregate_spec,
         lower_projection_output_expr,

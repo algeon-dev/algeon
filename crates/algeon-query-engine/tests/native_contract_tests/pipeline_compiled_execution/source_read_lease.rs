@@ -4,17 +4,14 @@ use std::{
 };
 
 use ::cudf::Runtime as CudfRuntime;
-use query_engine::{
-    error::QueryErrorCode,
+use query_planning::{error::QueryErrorCode, execution_contracts::MemoryControlPolicy};
+use query_runtime::{
     observability::{
         DeterministicRuntimeObservationClock, RuntimeObservationOwner, RuntimeObservationPayload,
         RuntimeObservationSession, RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, SourceReadLifecycleState,
         StreamLeaseLifecycleState,
     },
-    runtime::{
-        ExecutionCancellation, MemoryControlPolicy, RuntimeObservedExecutionContext, ServiceStreamPool,
-        StandaloneConfig,
-    },
+    runtime::{ExecutionCancellation, RuntimeObservedExecutionContext, ServiceStreamPool, StandaloneConfig},
 };
 
 use super::*;

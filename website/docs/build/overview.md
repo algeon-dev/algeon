@@ -30,7 +30,7 @@ Follow the pages in this order:
 | DataFusion adapter | DataFusion lowering, execution wrappers, report projection, workload contracts, benchmarks, and Flight SQL server | Rust | `crates/algeon-datafusion/src/`, adapter-support crates |
 | `query-planning` | DataFusion-free IR, optimizer, capability, proof, admission contracts, and compiled pipeline | Rust | `crates/algeon-query-planning/` |
 | `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/algeon-query-runtime/` |
-| `query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/algeon-query-engine/` |
+| `query-engine` | Native execution composition over planning and runtime | Rust | `crates/algeon-query-engine/` |
 | `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
 | `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins the [`cuvs` fork](https://github.com/algeon-dev/cuvs) | Rust + C++/CUDA | one component + submodule |
 | `components/cuml` | Safe Rust API over libcuml (`cuml`, `cuml-sys`); pins the cuML submodule | Rust + C++/CUDA | one component + submodule |
@@ -66,8 +66,8 @@ libcudf ── produces ──> librmm.so
                             └──> libcugraph <── libcuvs
 
 query-runtime depends on query-planning.
-query-engine depends on both and preserves the public facade.
-algeon-datafusion depends on that facade and uses the enabled cuDF, cuVS, cuML, and cuGraph Rust bindings.
+query-engine depends on both.
+algeon-datafusion depends on all three and uses the enabled cuDF, cuVS, cuML, and cuGraph Rust bindings.
 ```
 
 The full-feature build follows those dependencies, and each step below is

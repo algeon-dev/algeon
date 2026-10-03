@@ -26,42 +26,36 @@ use arrow::{
 use cudf::DataFrame;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
-    attempt::{AttemptAdmissionBinding, AttemptOwner, BeginAttemptRequest},
-    chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
-    error::{QueryErrorCode, Result as QueryEngineResult},
+    chunk::plan_local_parquet_source_chunks,
     exec::{
         QueryExecutionRequest, admit_query_plan, execute_query_plan as execute_query_plan_direct,
         materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
         preflight_query_plan,
     },
+};
+use query_planning::{
+    admission::AttemptCapabilityEvidence,
+    chunk::SourceChunkPlanningPolicy,
+    error::{QueryErrorCode, Result as QueryEngineResult},
+    execution_contracts::MemoryControlPolicy,
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
         SortExpr, SortSpec,
     },
-    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeTerminalOutcome},
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     policy::PlanningPolicy,
-    runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        MemoryControlPolicy, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
-        SourceSchedulerPolicy,
-        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
-    },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
         MissingColumn, PartitionColumn, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
     },
 };
 #[cfg(feature = "cugraph")]
-use query_engine::{
+use query_planning::{
     plan::GraphAlgorithm, plan::GraphAlgorithmParams, plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams,
     plan::GraphBetweennessSeeds, plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs,
     plan::GraphConstructionOptions, plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings,
@@ -69,6 +63,17 @@ use query_engine::{
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
     plan::GraphSccParams, plan::GraphSimilarityParams, plan::GraphVertexPairInput, plan::GraphWccParams,
     plan::graph_residency_descriptor_for_edge_plan,
+};
+use query_runtime::{
+    attempt::{AttemptAdmissionBinding, AttemptOwner, BeginAttemptRequest},
+    metrics::QueryMetrics,
+    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeTerminalOutcome},
+    runtime::{
+        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, SourceSchedulerPolicy,
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    },
 };
 
 // Ordinary integration cases exercise real allocations under a bounded cap;

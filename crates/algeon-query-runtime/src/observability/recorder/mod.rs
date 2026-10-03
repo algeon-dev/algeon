@@ -2,12 +2,14 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
+use query_planning::correlation::{QueryId, TraceId};
+
 use super::{
     CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryAttemptReport, QueryBoundaryKind,
     RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter, RuntimeObservationLimits,
     RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss,
-    RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome,
-    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, SystemRuntimeObservationClock,
+    RuntimeObservationRecordClass, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome,
+    RuntimeTimelineEvent, RuntimeTopologyRecord, SystemRuntimeObservationClock,
     metrics_summary::{
         MetricsCaptureMode, MetricsCompleteness, QueryMetricsCheckpoint, QueryMetricsSummary, SourceReadFact,
     },

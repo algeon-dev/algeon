@@ -12,9 +12,9 @@ use std::{
 use super::{AttemptReportProvider, RuntimeObservationFooter};
 use super::{
     AttemptReportSealProvider, DeferredRuntimeObservationSeal, LiveRuntimeObservationSnapshot, QueryBoundaryKind,
-    QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationHandle,
-    RuntimeObservationPayload, RuntimeObservationSealObserver, RuntimeObservationSession, RuntimeQueryId,
-    RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
+    QueryCleanupSealDelivery, QueryId, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationHandle,
+    RuntimeObservationPayload, RuntimeObservationSealObserver, RuntimeObservationSession, RuntimeTerminalOutcome,
+    SealedRuntimeObservationSnapshot, TraceId,
 };
 
 /// Cloneable shared ownership of one query observation session.
@@ -144,7 +144,7 @@ impl fmt::Debug for RuntimeObservationOwner {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RuntimeObservationOwner")
-            .field("query_id", &self.query_id().map(RuntimeQueryId::as_str))
+            .field("query_id", &self.query_id().map(QueryId::as_str))
             .field("enabled", &self.handle().is_enabled())
             .finish_non_exhaustive()
     }
@@ -152,18 +152,14 @@ impl fmt::Debug for RuntimeObservationOwner {
 
 impl RuntimeObservationOwner {
     /// Creates shared owner authority for a new query observation session.
-    pub fn new(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
-        config: RuntimeObservationConfig,
-    ) -> Self {
+    pub fn new(query_id: impl Into<QueryId>, trace_id: Option<TraceId>, config: RuntimeObservationConfig) -> Self {
         Self::from_session(RuntimeObservationSession::new(query_id, trace_id, config))
     }
 
     /// Creates shared owner authority with an injected monotonic clock.
     pub fn with_clock(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> Self {
@@ -213,12 +209,12 @@ impl RuntimeObservationOwner {
     }
 
     /// Returns the immutable query identity.
-    pub fn query_id(&self) -> Option<&RuntimeQueryId> {
+    pub fn query_id(&self) -> Option<&QueryId> {
         self.session.query_id()
     }
 
     /// Returns the immutable optional trace identity.
-    pub fn trace_id(&self) -> Option<&RuntimeTraceId> {
+    pub fn trace_id(&self) -> Option<&TraceId> {
         self.session.trace_id()
     }
 

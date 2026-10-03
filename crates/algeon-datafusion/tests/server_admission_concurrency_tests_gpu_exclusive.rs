@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use arrow::record_batch::RecordBatch;
 use arrow_flight::{error::FlightError, sql::ActionCancelQueryRequest};
 use futures::TryStreamExt;
-use query_engine::observability::AttemptEvidenceProvenance;
+use query_runtime::observability::AttemptEvidenceProvenance;
 use support::{
     CONCURRENCY_SQL, ConcurrencyServer, GIB, MANAGED_CAPACITY_BYTES, MAX_ACTIVE_ATTEMPTS, QUERY_CAP_BYTES,
     SMALL_TABLE_ROWS, sealed_report_for,

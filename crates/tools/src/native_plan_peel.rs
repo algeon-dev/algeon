@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use algeon_datafusion::native_exec::AlgeonNativeExec;
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::admission::AdmittedPlan;
+use query_planning::admission::AdmittedPlan;
 
 /// Walks a DataFusion physical plan and returns the admitted artifact of the
 /// first host-materializing `AlgeonNativeExec` found.

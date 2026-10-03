@@ -7,17 +7,20 @@
 use std::sync::Arc;
 
 use datafusion::execution::context::TaskContext;
-use query_engine::{
+use query_planning::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
+    correlation::{QueryId, TraceId},
     dynamic_filter::DynamicFilterExecutionOptions,
-    metrics::{QueryId, TraceId},
+    execution_contracts::SourceChunkPlanningMode,
     mode::StatisticalAggregateExecutionMode,
-    observability::RuntimeObservationConfig,
     policy::PlanningPolicy,
+};
+use query_runtime::{
+    observability::RuntimeObservationConfig,
     runtime::{
         AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, S3SourceStorageProfile,
-        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        SourceSchedulerPolicy, SourceStorageProfile,
     },
 };
 

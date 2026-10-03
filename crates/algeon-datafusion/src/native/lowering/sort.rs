@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::physical_expr::{LexOrdering, expressions::Column};
-use query_engine::{
+use query_planning::{
     expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
     plan::QueryPlanBuilder as NativeQueryPlanBuilder,
 };

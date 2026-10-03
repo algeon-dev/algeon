@@ -5,7 +5,7 @@ use algeon_datafusion::native_report::{
         NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
     },
 };
-use query_engine::mode::StatisticalAggregateExecutionMode;
+use query_planning::mode::StatisticalAggregateExecutionMode;
 
 #[test]
 fn parity_tsv_header_pins_columns() {

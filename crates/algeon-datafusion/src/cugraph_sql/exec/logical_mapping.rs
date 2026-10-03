@@ -4,7 +4,7 @@ use arrow::{
     array::{ArrayRef, StringArray},
     datatypes::Field,
 };
-use query_engine::plan::NodeId;
+use query_planning::plan::NodeId;
 
 use super::{
     AggregateSpec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, ColumnRef, CugraphAlgorithmParams,

@@ -13,7 +13,7 @@ use datafusion::{
     physical_plan::filter::FilterExec,
 };
 use parquet::file::metadata::{KeyValue, ParquetMetaData};
-use query_engine::{
+use query_planning::{
     expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
     source::{
@@ -23,9 +23,9 @@ use query_engine::{
     },
 };
 #[cfg(feature = "cugraph")]
-use query_engine::{
-    plan::{GraphAlgorithmSpec, GraphResidencyDescriptor, graph_residency_descriptor_for_local_parquet_source},
-    source::LocalParquetSource as NativeLocalParquetSource,
+use query_planning::{
+    plan::GraphAlgorithmSpec, plan::GraphResidencyDescriptor,
+    plan::graph_residency_descriptor_for_local_parquet_source, source::LocalParquetSource as NativeLocalParquetSource,
 };
 use serde_json::Value;
 
@@ -575,7 +575,7 @@ mod tests {
         file::metadata::KeyValue,
         schema::{parser::parse_message_type, types::SchemaDescriptor},
     };
-    use query_engine::parquet_stats::single_leaf_primitive_root_column_index;
+    use query_planning::parquet_stats::single_leaf_primitive_root_column_index;
 
     use super::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,

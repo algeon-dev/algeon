@@ -15,12 +15,14 @@ use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
     physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, MetricsSet},
 };
-use query_engine::{
-    error::QueryError,
-    exec::output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
-    graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
+use query_engine::exec::output::{PlanMetrics, QueryExecutionOutcome, QueryOutput};
+use query_planning::error::QueryError;
+use query_runtime::{
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::{AttemptId, LakehouseCacheFillEventSnapshot, QueryAttemptReport, RuntimeObservationConfig},
+    observability::{
+        AttemptId, LakehouseCacheFillEventSnapshot, QueryAttemptReport, RuntimeObservationConfig,
+        graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
+    },
 };
 
 use super::{
@@ -1474,15 +1476,15 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
 #[cfg(test)]
 mod tests {
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-    use query_engine::{
-        graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphMeasuredPeakRow},
+    use query_planning::plan::GraphAlgorithm;
+    use query_runtime::{
         metrics::QueryMetrics,
         observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
             AttemptId, AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA,
             SealedAttemptLabels, SealedAttemptProjection,
+            graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphMeasuredPeakRow},
         },
-        plan::GraphAlgorithm,
     };
 
     use super::*;

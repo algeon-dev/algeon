@@ -19,7 +19,7 @@ use datafusion::{
     },
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
-use query_engine::expr::{
+use query_planning::expr::{
     AggregateFunction as NativeAggregateFunction, BinaryOp as NativeBinaryOp, Expr as NativeExpr, UnaryMathOp,
 };
 

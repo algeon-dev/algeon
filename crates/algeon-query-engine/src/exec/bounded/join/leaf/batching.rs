@@ -1,9 +1,11 @@
+use query_planning::{policy::PlanningPolicy, source::ParquetReadStrategy};
+
 use super::{
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamDynamicFilterStage,
     BoundedSourceBatchingPolicy, ExecutionContext, LocalParquetSource, MemoryControlPolicy, SourceChunk,
     SourceChunkBatch, annotate_source_chunk_batching_reasons, plan_source_chunk_batches,
 };
-use crate::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context, source::ParquetReadStrategy};
+use crate::rapids_backend::rapids_analysis_context;
 
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
@@ -132,14 +134,14 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
+    use query_planning::{
         chunk::SourceChunkPlanningPolicy,
+        execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
-        runtime::SourceChunkPlanningMode,
         source::{CredentialMode, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
+
+    use super::*;
 
     #[test]
     fn join_leaf_batches_cap_large_non_predicate_source_reads() {

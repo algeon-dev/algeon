@@ -1,6 +1,15 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use arrow::datatypes::{DataType, Field, Schema};
+use query_planning::{
+    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
+    error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode},
+    execution_contracts::MemoryControlPolicy,
+};
+use query_runtime::{
+    observability::{PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession},
+    runtime::StandaloneConfig,
+};
 
 use super::{
     filtered_global::{
@@ -15,12 +24,6 @@ use super::{
         source_adjacent_prepared_sort_groupby_runtime_candidate,
     },
     *,
-};
-use crate::{
-    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
-    error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode},
-    observability::{PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession},
-    runtime::{MemoryControlPolicy, StandaloneConfig},
 };
 
 include!("tests/support.rs");

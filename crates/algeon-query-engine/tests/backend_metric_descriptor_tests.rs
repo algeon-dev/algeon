@@ -1,4 +1,4 @@
-use query_engine::metrics::{
+use query_runtime::metrics::{
     BackendDurationProjectionError, BackendMetricDescriptor, BackendMetricUnit, backend_metric_descriptors,
     project_backend_duration_histogram,
 };

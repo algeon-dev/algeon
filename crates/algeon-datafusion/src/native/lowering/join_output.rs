@@ -4,7 +4,7 @@ use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     common::JoinSide as DataFusionJoinSide, logical_expr::JoinType as DataFusionJoinType, physical_plan::ExecutionPlan,
 };
-use query_engine::{
+use query_planning::{
     expr::ColumnRef as NativeColumnRef,
     plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide},
 };

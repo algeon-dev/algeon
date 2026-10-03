@@ -10,12 +10,11 @@ use std::{
 use arrow::array::new_empty_array;
 use cudf::DataFrame;
 use futures::{StreamExt, stream::iter};
-use query_engine::{
+use query_planning::{
     error::{QueryError, QueryErrorCode},
-    native_error::cudf_query_error,
     plan::QueryPlan,
-    runtime::ExecutionCancellation,
 };
+use query_runtime::{native_error::cudf_query_error, runtime::ExecutionCancellation};
 
 use super::{
     AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode, CugraphAlgorithmSpec, DataFusionError,

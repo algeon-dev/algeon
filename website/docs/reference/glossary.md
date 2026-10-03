@@ -33,7 +33,8 @@ defined here.
   decisions. See [Native Lowering & Final Plans](../design/native-lowering.mdx).
 - `IR (`QueryPlan`)`: planning's closed, DataFusion-free intermediate
   representation. Unlike DataFusion's open `ExecutionPlan` trait, it is an
-  owned type the native stack fully controls and the engine facade re-exports.
+  owned type the native stack fully controls, and the adapter's public API
+  does not expose it.
   See [Crates and ownership](../design/index.mdx#crates-and-ownership).
 - `Scan facts`: the format-neutral description of a source scan (files,
   schema, pruning facts) that lowering hands to the engine in place of
