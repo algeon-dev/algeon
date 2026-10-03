@@ -6,7 +6,7 @@ use std::{
 
 use futures::stream::once;
 use query_engine::{
-    admission::{AdmittedPlan, AttemptCapabilityEvidence},
+    admission::AttemptCapabilityEvidence,
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
     runtime::cache_observation_fingerprint,
 };
@@ -27,10 +27,10 @@ use super::{
     attach_graph_residency, check_host_staging_cancellation, collect_cugraph_inputs, counted_cudf_runtime,
     cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted, cugraph_execution_capability_evidence,
     cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor, cugraph_schema_query_plan,
-    edge_source_graph_vertex_estimate, exact_native_edge_source_gpu_plan, execute_cugraph_query_to_gpu_with_options,
-    graph_uses_logical_mapping, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan,
-    planned_resident_graph_key, preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
-    run_gpu_execution_task, task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
+    edge_source_graph_vertex_estimate, execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping,
+    materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan, planned_resident_graph_key,
+    preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu, run_gpu_execution_task,
+    task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
     validate_standalone_bounded_cugraph_sources,
 };
 use crate::{
@@ -299,7 +299,6 @@ impl CugraphAlgoExec {
         mut self,
         input_row_bounds: CugraphInputRowBounds,
         task_context: &TaskContext,
-        exact_edge_source_gpu_plan: Option<&QueryPlan>,
     ) -> Result<(Self, QueryPlan)> {
         let (execution_config, graph_execution_plan) = cugraph_execution_config_after_staging(
             &self.spec,
@@ -310,7 +309,6 @@ impl CugraphAlgoExec {
             self.edge_normalize_inserted(),
             &self.native_execution_config,
             task_context,
-            exact_edge_source_gpu_plan,
         )?;
         self.native_execution_config = execution_config;
         self.input_row_bounds = input_row_bounds;
@@ -340,9 +338,6 @@ impl CugraphAlgoExec {
         .await?;
         let prelogical_row_bounds = collected_inputs.row_bounds()?;
         check_host_staging_cancellation(&cancellation)?;
-        let exact_edge_source_gpu_plan =
-            exact_native_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
-        check_host_staging_cancellation(&cancellation)?;
         validate_cugraph_graph_owner_preflight(
             &prepared.spec,
             prepared.edge_source.as_ref(),
@@ -356,13 +351,9 @@ impl CugraphAlgoExec {
         let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
         check_host_staging_cancellation(&cancellation)?;
         let input_row_bounds = staged_inputs.row_bounds()?;
-        let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
-            input_row_bounds,
-            task_context.as_ref(),
-            exact_edge_source_gpu_plan.as_deref().map(AdmittedPlan::plan),
-        )?;
+        let (prepared, admission_graph_plan) =
+            prepared.issue_graph_aware_ticket_after_staging(input_row_bounds, task_context.as_ref())?;
         staged_inputs.admitted_graph_plan = Some(admission_graph_plan);
-        staged_inputs.admitted_edge_source_gpu_plan = exact_edge_source_gpu_plan;
         check_host_staging_cancellation(&cancellation)?;
         Ok((prepared, staged_inputs))
     }
@@ -825,7 +816,7 @@ impl CugraphAlgoExec {
                 predicate_frames,
                 host_evidence,
                 reservation: _input_reservation,
-            } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
+            } = staged_inputs.upload(native_context, Arc::clone(&task_context)).await?;
             let edge_frame =
                 attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
             let handle = execute_cugraph_query_to_gpu_with_options(
@@ -928,7 +919,7 @@ impl CugraphAlgoExec {
                 predicate_frames,
                 host_evidence: _,
                 reservation: _input_reservation,
-            } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
+            } = staged_inputs.upload(native_context, Arc::clone(&task_context)).await?;
             let edge_frame =
                 attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
             let handle = execute_cugraph_query_to_gpu_with_options(

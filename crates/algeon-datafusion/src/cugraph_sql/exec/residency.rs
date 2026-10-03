@@ -3,11 +3,11 @@ use std::sync::Arc;
 use datafusion::datasource::source::DataSourceExec;
 
 use super::{
-    AlgeonNativeGpuProducerExec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,
-    CUGRAPH_EDGE_WEIGHT_COLUMN, CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec,
-    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
-    GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Result, Schema, as_algeon_native_composed_exec,
-    as_algeon_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
+    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
+    CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
+    GraphSourceFingerprintBypassReason, Result, Schema, graph_residency_descriptor_for_edge_plan,
+    is_logical_vertex_type, lowered_native_edge_plan, native_algorithm,
 };
 use crate::native::{
     FooterScope, graph_residency_descriptor_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
@@ -39,14 +39,9 @@ pub(super) fn cugraph_graph_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
 ) -> Result<GraphResidencyPlanAnalysis> {
-    Ok(if let Some(native) = as_algeon_native_exec(edge_source.as_ref()) {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
-    } else if let Some(native) = as_algeon_native_composed_exec(edge_source.as_ref()) {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
-    } else if let Some(native) = edge_source.as_ref().downcast_ref::<AlgeonNativeGpuProducerExec>() {
-        graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
-    } else {
-        cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)?
+    Ok(match lowered_native_edge_plan(edge_source.as_ref()) {
+        Some(plan) => graph_residency_descriptor_for_edge_plan(plan, native_spec),
+        None => cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)?,
     })
 }
 

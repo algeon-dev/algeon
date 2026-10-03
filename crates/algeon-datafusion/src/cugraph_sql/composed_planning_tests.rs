@@ -22,8 +22,7 @@ use super::{CugraphAlgoExec, CugraphSqlConfig};
 use crate::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        below_native_admission,
+        AlgeonNativeComposedExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, below_native_admission,
     },
     session::AlgeonSessionStateBuilderExt,
 };
@@ -304,8 +303,8 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
         .map(|producer| {
             assert_eq!(producer.children().len(), 1, "each graph producer must have one shared edge relation input");
             let edge_input = producer.children()[0]
-                .downcast_ref::<AlgeonNativeExec>()
-                .expect("graph edge input must be lowered through the native source boundary");
+                .downcast_ref::<AlgeonNativeGpuProducerExec>()
+                .expect("graph edge input must be planned as a GPU-resident native producer");
             assert_eq!(
                 edge_input.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>(),
                 vec!["src".to_string(), "dst".to_string(), "weight".to_string()]

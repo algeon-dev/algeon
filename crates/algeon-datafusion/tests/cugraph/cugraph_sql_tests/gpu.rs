@@ -72,17 +72,6 @@ const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
     FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
     WHERE p.pagerank_value > 0";
 
-fn cugraph_input_is_runtime_native(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<AlgeonNativeExec>().is_some() {
-        return true;
-    }
-    let children = plan.children();
-    matches!(
-        children.as_slice(),
-        [child] if plan.name() == "CooperativeExec" && child.downcast_ref::<AlgeonNativeExec>().is_some()
-    )
-}
-
 fn identity_value(array: &dyn Array, row: usize) -> i64 {
     if array.is_null(row) {
         return i64::MIN;
@@ -322,7 +311,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     let cugraph_children = cugraph.children();
     assert_eq!(cugraph_children.len(), 1, "BFS should retain its edge child");
     assert!(
-        cugraph_children.iter().all(|child| cugraph_input_is_runtime_native(child.as_ref())),
+        cugraph_children.iter().all(|child| cugraph_input_is_native_gpu_producer(child.as_ref())),
         "backend-managed edge and side inputs should remain native or transparently cooperative:\n{cugraph_display}"
     );
 
@@ -2380,9 +2369,9 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let string_batches = collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
     let algo = find_cugraph_algo_exec(string_plan.as_ref()).expect("string PageRank runs a cuGraph producer");
     assert_eq!(
-        metric_usize(&algo.metrics().expect("cuGraph producer metrics"), "compiled_pipeline_attempts"),
+        plan_metric_usize(algo, "compiled_pipeline_attempts"),
         2,
-        "the edge source and the logical-mapping graph plan must each run as one compiled pipeline",
+        "the edge-source producer and the logical-mapping graph plan must each run as one compiled pipeline",
     );
 
     let numeric_batches = ctx

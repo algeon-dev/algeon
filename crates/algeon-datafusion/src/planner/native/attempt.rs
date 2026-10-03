@@ -85,17 +85,19 @@ pub(super) fn optimize_count_only_native_plan(
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
+    root_sink: &NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = lower_count_only_physical_plan_to_native(lowering_input)?;
-    replace_lowered_root_or_keep_plan(
+    replace_lowered_root_or_keep_plan_for_sink(
         plan,
         None,
         lowering,
         native_execution_config,
         native_optimizer_options,
         cost_selection,
+        root_sink.clone(),
     )
 }
 
@@ -104,6 +106,7 @@ pub(super) fn optimize_final_native_plan(
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
+    root_sink: &NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let mut relation_inputs = LoweredRelationInputs::default();
@@ -115,7 +118,7 @@ pub(super) fn optimize_final_native_plan(
         &mut relation_inputs,
     )?;
     let mut attempt =
-        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, cost_selection)?;
+        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, cost_selection, root_sink)?;
     // The root attempt selects at most one whole-plan candidate, so relation
     // input outcomes are appended only after it has consumed its own report.
     attempt.report.append(relation_inputs.report);
@@ -198,6 +201,7 @@ fn optimize_final_native_root(
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
+    root_sink: &NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan))?;
     if whole_plan_has_unsupported_expression_miss(&lowering)
@@ -224,19 +228,20 @@ fn optimize_final_native_root(
             }
         }
     }
-    replace_lowered_root_or_keep_plan(
+    replace_lowered_root_or_keep_plan_for_sink(
         plan,
         None,
         lowering,
         native_execution_config,
         native_optimizer_options,
         cost_selection,
+        root_sink.clone(),
     )
 }
 
 /// Result boundary of a lowered native replacement.
 #[derive(Debug, Clone)]
-enum NativeReplacementSink {
+pub(super) enum NativeReplacementSink {
     /// The replacement streams Arrow batches to its DataFusion parent.
     HostArrow,
     /// The replacement stays on the device and binds into its parent relation

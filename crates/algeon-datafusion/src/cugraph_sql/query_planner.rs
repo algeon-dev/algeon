@@ -53,17 +53,27 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
                 DataFusionError::Plan("cuGraph extension planning requires a DataFusion SessionState".to_string())
             })?;
             let native_execution_config = planning_native_execution_config(session);
-            let planning_state =
-                session_state_with_native_execution_config(session_state, native_execution_config.clone())
-                    .unwrap_or_else(|| session_state.clone());
+            // Each input is planned on its own state because a native input
+            // root becomes a GPU-resident producer named for its role.
+            let planning_state = |role: &str| {
+                session_state_with_native_execution_config(
+                    session_state,
+                    native_execution_config.clone(),
+                    format!("{}.{role}", node.gpu_result_input_name()),
+                )
+                .unwrap_or_else(|| session_state.clone())
+            };
             let mut children = Vec::with_capacity(logical_inputs.len());
-            for input in logical_inputs {
-                children.push(planner.create_physical_plan(input, &planning_state).await?);
+            for (index, input) in logical_inputs.iter().enumerate() {
+                let role = if index == 0 { "edge".to_string() } else { format!("predicate_{index}") };
+                children.push(planner.create_physical_plan(input, &planning_state(&role)).await?);
             }
             let edge_source = children.remove(0);
             let vertex_domain = validate_edge_source_schema(node.spec(), &edge_source.schema())?;
             let mut predicate_sources = Vec::with_capacity(children.len() + 1);
-            if let Some(source) = literal_bfs_source_plan(&planning_state, node.spec(), &vertex_domain).await? {
+            if let Some(source) =
+                literal_bfs_source_plan(&planning_state("bfs_source"), node.spec(), &vertex_domain).await?
+            {
                 predicate_sources.push(source);
             }
             predicate_sources.extend(children);

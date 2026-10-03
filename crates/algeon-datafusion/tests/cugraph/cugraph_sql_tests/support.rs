@@ -66,7 +66,26 @@ pub(super) fn find_cugraph_algo_exec(plan: &dyn ExecutionPlan) -> Option<&dyn Ex
 pub(super) fn plan_contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_exec(child.as_ref()))
+}
+
+/// Whether a graph input was planned as a native GPU-resident producer that
+/// holds the artifact the graph executes, possibly under the scheduling
+/// wrappers DataFusion adds above a leaf.
+pub(super) fn cugraph_input_is_native_gpu_producer(plan: &dyn ExecutionPlan) -> bool {
+    if plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
+    {
+        return true;
+    }
+    let children = plan.children();
+    matches!(
+        children.as_slice(),
+        [child] if matches!(plan.name(), "CooperativeExec" | "RepartitionExec")
+            && cugraph_input_is_native_gpu_producer(child.as_ref())
+    )
 }
 
 pub(super) fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {

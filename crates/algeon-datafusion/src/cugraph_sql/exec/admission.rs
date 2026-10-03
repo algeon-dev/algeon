@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use datafusion::datasource::source::DataSourceExec;
 use query_engine::{
-    admission::{AdmittedPlan, AttemptCapabilityEvidence},
-    exec::admit_query_plan,
+    admission::AttemptCapabilityEvidence,
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
 };
 
@@ -11,8 +10,8 @@ use super::{
     AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, CooperativeExec, CugraphAlgoExec,
     CugraphAlgorithmSpec, CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionResult,
     Error, ErrorCode, ExecutionPlan, PlanNode, Precision, RepartitionExec, Result, StatisticsArgs, StatisticsContext,
-    TaskContext, cugraph_execution_capability_evidence, gpu_resident_producer_hard_output_row_upper_bound,
-    task_context_with_query_admission_ticket,
+    TaskContext, cugraph_execution_capability_evidence, gpu_resident_producer,
+    gpu_resident_producer_hard_output_row_upper_bound, task_context_with_query_admission_ticket,
 };
 use crate::{
     native::{
@@ -21,8 +20,7 @@ use crate::{
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec,
         admission::{attempt_execution_required_error, invocation_admission_ticket},
-        composed_admission_capability_evidence, gpu_resident_producer_input_name,
-        lakehouse::resolve_admitted_plan,
+        composed_admission_capability_evidence,
     },
     planner::native::Invocation,
 };
@@ -31,56 +29,9 @@ pub(super) fn edge_execution_config(
     plan: &dyn ExecutionPlan,
     default_execution_config: &AlgeonNativeExecutionConfig,
 ) -> AlgeonNativeExecutionConfig {
-    if let Some(native) = as_algeon_native_exec(plan) {
-        return native.execution_config().clone();
-    }
-    if let Some(native) = as_algeon_native_composed_exec(plan) {
-        return native.execution_config().clone();
-    }
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>() {
-        return native.execution_config().clone();
-    }
-    default_execution_config.clone()
-}
-
-pub(super) async fn exact_native_edge_source_gpu_plan(
-    edge_source: &dyn ExecutionPlan,
-    task_context: &TaskContext,
-) -> Result<Option<Arc<AdmittedPlan>>> {
-    let (execution_config, admitted) = if let Some(native) = as_algeon_native_exec(edge_source) {
-        (native.execution_config(), native.admitted())
-    } else if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
-        (composed.execution_config(), composed.admitted())
-    } else {
-        return Ok(None);
-    };
-    resolve_native_edge_source_gpu_plan(execution_config, admitted, task_context).await.map(Some)
-}
-
-/// The artifact a native edge source executes for cuGraph. Footer pruning
-/// refines the node's admitted plan through the same checked re-admission
-/// every native node uses; the GPU-resident form cuGraph reads is a plan built
-/// here, so it is decided here, under the node's mode and policy.
-pub(super) async fn resolve_native_edge_source_gpu_plan(
-    execution_config: &AlgeonNativeExecutionConfig,
-    admitted: &Arc<AdmittedPlan>,
-    task_context: &TaskContext,
-) -> Result<Arc<AdmittedPlan>> {
-    let refined = resolve_admitted_plan(
-        execution_config.lakehouse_footer_pruning(),
-        execution_config.source_storage_profiles(),
-        admitted,
-        task_context,
-    )
-    .await?;
-    let plan = refined.plan().clone_with_gpu_resident_sink();
-    admit_query_plan(&plan, refined.statistical_aggregate_execution_mode(), refined.policy()).map_err(|error| {
-        Error::from_native(
-            "algeon_datafusion.cugraph_sql.edge_source",
-            "the GPU-resident cuGraph edge source is not admitted",
-            error,
-        )
-    })
+    native_graph_input_execution_plan(plan)
+        .and_then(|native| native.downcast_ref::<AlgeonNativeComposedGpuProducerExec>())
+        .map_or_else(|| default_execution_config.clone(), |native| native.execution_config().clone())
 }
 
 #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
@@ -93,7 +44,6 @@ pub(super) fn cugraph_execution_config_after_staging(
     edge_normalize_inserted: bool,
     default_execution_config: &AlgeonNativeExecutionConfig,
     task_context: &TaskContext,
-    exact_edge_source_gpu_plan: Option<&QueryPlan>,
 ) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
     let execution_config =
         edge_execution_config(edge_source, default_execution_config).without_query_admission_ticket();
@@ -117,7 +67,6 @@ pub(super) fn cugraph_execution_config_after_staging(
         result_options,
         edge_normalize_inserted,
         execution_config,
-        exact_edge_source_gpu_plan,
         task_context,
     )
 }
@@ -131,7 +80,6 @@ fn compile_cugraph_admission_ticket(
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
     execution_config: AlgeonNativeExecutionConfig,
-    exact_edge_source_gpu_plan: Option<&QueryPlan>,
     task_context: &TaskContext,
 ) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
     let edge_row_upper_bound = if execution_config.query_admission_source().is_none() {
@@ -151,25 +99,7 @@ fn compile_cugraph_admission_ticket(
     };
     let (graph_execution_plan, graph_execution_evidence) = cugraph_execution_capability_evidence(&definition)?;
     let mut fragment_evidence_items = vec![graph_execution_evidence];
-    if let Some(composed_plan) = exact_edge_source_gpu_plan {
-        if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
-            let composed_evidence = composed_admission_capability_evidence(composed_plan, composed.gpu_inputs())
-                .map_err(|error| {
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        "algeon_datafusion.cugraph_sql.graph_ticket_ask",
-                        "failed to derive the complete composed edge-source admission evidence",
-                    )
-                    .with_source(error)
-                })?;
-            fragment_evidence_items.push(composed_evidence);
-        } else {
-            let edge_evidence = AttemptCapabilityEvidence::for_query_plan(composed_plan);
-            fragment_evidence_items.push(edge_evidence);
-        }
-    } else {
-        collect_native_fragment_capability_evidences(edge_source, &mut fragment_evidence_items)?;
-    }
+    collect_native_fragment_capability_evidences(edge_source, &mut fragment_evidence_items)?;
     for predicate_source in predicate_sources {
         collect_native_fragment_capability_evidences(predicate_source.as_ref(), &mut fragment_evidence_items)?;
     }
@@ -211,26 +141,10 @@ fn compile_cugraph_admission_ticket(
             )
             .with_log_safe_fact("reason", "graph_occurrence_admission_backend_mismatch"));
         }
-        let existing_evidence = ticket.attempt_capability_evidence_for_rebind();
-        let graph_is_covered = existing_evidence
-            .as_ref()
+        let graph_is_covered = ticket
+            .attempt_capability_evidence_for_rebind()
             .is_some_and(|evidence| evidence.validate_covers_plan(&graph_execution_plan).is_ok());
-        let edge_is_covered = exact_edge_source_gpu_plan.is_none_or(|edge_plan| {
-            existing_evidence.as_ref().is_some_and(|evidence| {
-                if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
-                    let occurrence_ids = composed
-                        .gpu_inputs()
-                        .iter()
-                        .filter_map(|input| gpu_resident_producer_input_name(input.as_ref()))
-                        .collect::<Vec<_>>();
-                    occurrence_ids.len() == composed.gpu_inputs().len()
-                        && evidence.validate_composed_occurrences(edge_plan, &occurrence_ids).is_ok()
-                } else {
-                    evidence.validate_covers_plan(edge_plan).is_ok()
-                }
-            })
-        });
-        if !graph_is_covered || !edge_is_covered {
+        if !graph_is_covered {
             ticket.bind_fragment_evidence(fragment_evidence_items).map_err(|error| {
                 Error::from_native(
                     "algeon_datafusion.cugraph_sql.graph_ticket_ask",
@@ -273,65 +187,51 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     Ok(())
 }
 
+/// Collects the evidence of every native fragment a graph input executes, in
+/// the form planning admitted it: a GPU-resident producer the graph reads on
+/// the device, or a host-sink fragment inside a DataFusion input the graph
+/// stages on the host.
 fn collect_native_fragment_capability_evidences(
     plan: &dyn ExecutionPlan,
     evidence_items: &mut Vec<AttemptCapabilityEvidence>,
 ) -> Result<()> {
-    if let Some(composed) = as_algeon_native_composed_exec(plan) {
-        let native_plan = composed.native_plan().clone_with_gpu_resident_sink();
-        let composed_evidence =
-            composed_admission_capability_evidence(&native_plan, composed.gpu_inputs()).map_err(|error| {
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.cugraph_sql.graph_ticket_ask",
-                    "failed to derive complete composed side-input admission evidence",
-                )
-                .with_source(error)
-            })?;
+    if let Some(producer) = gpu_resident_producer(plan) {
+        evidence_items.push(producer.gpu_result_capability_evidence()?);
+        return Ok(());
+    }
+    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+        let composed_evidence = composed_admission_capability_evidence(composed.native_plan(), composed.gpu_inputs())
+            .map_err(|error| {
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.cugraph_sql.graph_ticket_ask",
+                "failed to derive complete composed side-input admission evidence",
+            )
+            .with_source(error)
+        })?;
         evidence_items.push(composed_evidence);
         return Ok(());
     }
-
-    let native_plan = lowered_native_edge_plan(plan);
-
-    // DataFusion's scheduling-only CooperativeExec is transparently unwrapped
-    // by `lowered_native_edge_plan` and by the execution path. Descending
-    // through it would issue a second evidence for the same native edge frame:
-    // only the outer evidence is the graph input's exact owner. Other wrappers
-    // retain their children because composed GPU producers execute those
-    // distinct fragments themselves.
-    if !(plan.name() == "CooperativeExec" && native_plan.is_some()) {
-        for child in plan.children() {
-            collect_native_fragment_capability_evidences(child.as_ref(), evidence_items)?;
-        }
+    if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
+        evidence_items.push(AttemptCapabilityEvidence::for_query_plan(native.native_plan()));
+        return Ok(());
     }
-
-    // `execute_edge_source_to_gpu` converts every native edge fragment to a
-    // GPU-resident sink before submitting it to the engine. Derive the evidence
-    // from that exact execution shape: a host-sink evidence is intentionally not
-    // broad enough to authorize the additional GPU-output contract.
-    if let Some(native_plan) = native_plan {
-        let native_plan = native_plan.clone_with_gpu_resident_sink();
-        evidence_items.push(AttemptCapabilityEvidence::for_query_plan(&native_plan));
+    for child in plan.children() {
+        collect_native_fragment_capability_evidences(child.as_ref(), evidence_items)?;
     }
     Ok(())
 }
 
-/// Returns the lowered plan carried by every native edge-wrapper shape.  Keep
-/// graph admission's row, vertex, capability, and native-boundary checks on
-/// this one wrapper set so a new producer form cannot silently lose pricing
-/// evidence while retaining graph execution authority.
+/// Returns the lowered plan of a native graph input. Keep graph admission's
+/// row, vertex, capability, and native-boundary checks on this one lookup so
+/// a new producer form cannot silently lose pricing evidence while retaining
+/// graph execution authority.
 pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
-    if let Some(native) = as_algeon_native_exec(plan) {
+    let native = native_graph_input_execution_plan(plan)?;
+    if let Some(native) = native.downcast_ref::<AlgeonNativeGpuProducerExec>() {
         return Some(native.native_plan());
     }
-    if let Some(native) = as_algeon_native_composed_exec(plan) {
-        return Some(native.native_plan());
-    }
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeGpuProducerExec>() {
-        return Some(native.native_plan());
-    }
-    plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
+    native.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
 }
 
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> DataFusionResult<Option<u64>> {
@@ -340,12 +240,9 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> DataFu
     {
         return Ok(Some(rows));
     }
-    if let Some(composed) = as_algeon_native_composed_exec(edge_source)
-        && let Some(rows) = composed.hard_output_row_upper_bound()
-    {
-        return Ok(Some(rows));
-    }
-    if let Some(rows) = gpu_resident_producer_hard_output_row_upper_bound(edge_source) {
+    if let Some(rows) = gpu_resident_producer_hard_output_row_upper_bound(
+        native_graph_input_execution_plan(edge_source).unwrap_or(edge_source),
+    ) {
         return Ok(Some(rows));
     }
     if let Some(rows) = native_edge_source_output_rows(edge_source) {
@@ -470,29 +367,32 @@ pub(super) fn plan_contains_algeon_native(plan: &dyn ExecutionPlan) -> bool {
         || plan.children().iter().any(|child| plan_contains_algeon_native(child.as_ref()))
 }
 
-pub(super) fn as_algeon_native_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeExec> {
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
-        return Some(native);
+/// The native GPU producer a graph input runs. The graph reads each input as
+/// one whole relation, so the cooperative-yield and repartition wrappers
+/// DataFusion places above a producer change neither its rows nor where it
+/// runs, and the graph executes the producer itself.
+pub(super) fn graph_input_native_producer(plan: &Arc<dyn ExecutionPlan>) -> Option<&Arc<dyn ExecutionPlan>> {
+    if is_native_gpu_producer(plan.as_ref()) {
+        return Some(plan);
     }
-    graph_input_scheduling_child(plan).and_then(as_algeon_native_exec)
-}
-
-pub(super) fn as_algeon_native_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeComposedExec> {
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
-        return Some(native);
-    }
-    graph_input_scheduling_child(plan).and_then(as_algeon_native_composed_exec)
-}
-
-fn graph_input_scheduling_child(plan: &dyn ExecutionPlan) -> Option<&dyn ExecutionPlan> {
-    if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
-        return Some(cooperative.input().as_ref());
-    }
-    plan.downcast_ref::<RepartitionExec>().map(|repartition| repartition.input().as_ref())
+    graph_input_scheduling_child(plan.as_ref()).and_then(graph_input_native_producer)
 }
 
 pub(crate) fn native_graph_input_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn ExecutionPlan> {
-    as_algeon_native_exec(plan)
-        .map(|native| native as &dyn ExecutionPlan)
-        .or_else(|| as_algeon_native_composed_exec(plan).map(|native| native as &dyn ExecutionPlan))
+    if is_native_gpu_producer(plan) {
+        return Some(plan);
+    }
+    graph_input_scheduling_child(plan).and_then(|child| native_graph_input_execution_plan(child.as_ref()))
+}
+
+fn is_native_gpu_producer(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
+        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
+}
+
+fn graph_input_scheduling_child(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
+    if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
+        return Some(cooperative.input());
+    }
+    plan.downcast_ref::<RepartitionExec>().map(RepartitionExec::input)
 }
