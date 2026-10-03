@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[tokio::test]
 async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
@@ -7,7 +8,7 @@ async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_AVG_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -30,7 +31,7 @@ async fn direct_friendly_sql_global_avg_lowers_to_native_avg() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AVG_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -53,7 +54,7 @@ async fn direct_friendly_sql_global_median_lowers_to_native_median() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_MEDIAN_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -82,7 +83,7 @@ async fn direct_friendly_sql_empty_global_mixed_median_and_statistical_aggregate
     .await;
     let plan = replace_parquet_scans_with_empty_file_groups(plan);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedOperator);
 
@@ -101,7 +102,7 @@ async fn direct_friendly_sql_decimal_median_is_rejected_before_cudf_quantile() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
@@ -115,7 +116,7 @@ async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AGGREGATE_PARITY_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -144,7 +145,7 @@ async fn direct_friendly_sql_discounted_revenue_global_decimal_sum_lowers() {
     write_discounted_revenue_lineitem_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -184,7 +185,7 @@ async fn direct_friendly_sql_filtered_avg_lowers() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_FILTERED_AVG_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -204,7 +205,7 @@ async fn direct_friendly_sql_distinct_avg_lowers_as_explicit_aggregate_stack() {
     write_float_measure_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DISTINCT_AVG_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

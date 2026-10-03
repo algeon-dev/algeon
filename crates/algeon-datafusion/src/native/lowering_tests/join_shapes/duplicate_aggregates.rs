@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[test]
 fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_host_sink_schema() {
@@ -7,7 +8,7 @@ fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_hos
     write_numeric_parquet_file(&path);
     let plan = duplicate_named_root_aggregate_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -56,7 +57,7 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
     write_numeric_parquet_file(&path);
     let plan = duplicate_group_alias_root_aggregate_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -139,7 +140,7 @@ fn duplicate_group_alias_recursive_aggregate_input_renames_aggregate_spec_output
     write_numeric_parquet_file(&path);
     let plan = aggregate_over_duplicate_group_alias_input_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

@@ -62,7 +62,7 @@ use crate::{
     },
     error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
     native::{
-        exact_row_count_for_datafusion_local_parquet_scan,
+        ParquetReadStrategyConfig, exact_row_count_for_datafusion_local_parquet_scan,
         graph_residency_descriptor_for_datafusion_local_parquet_scan,
         graph_vertex_upper_bound_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
     },
@@ -410,7 +410,7 @@ fn edge_source_output_rows_rejects_inexact_datafusion_statistics() {
         binary(col("src", &schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(500))), &schema).unwrap();
     let filter = FilterExec::try_new(predicate, edge_source).unwrap();
 
-    assert_eq!(edge_source_output_rows(&filter).unwrap(), None);
+    assert_eq!(edge_source_output_rows(&filter, &ParquetReadStrategyConfig::default()).unwrap(), None);
 }
 
 fn native_edge_source(row_group_rows: Vec<u64>, config: &AlgeonNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
@@ -1166,7 +1166,7 @@ async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
         .expect("host staging should derive the exact filtered row count before admission");
 
     assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(staged.row_bounds().unwrap().edge_row_upper_bound(), Some(499));
+    assert_eq!(staged.row_bounds(&ParquetReadStrategyConfig::default()).unwrap().edge_row_upper_bound(), Some(499));
     assert_eq!(prepared.input_row_bounds.edge_row_upper_bound(), Some(499));
     assert!(
         prepared.native_execution_config.query_admission_ticket().is_some(),
@@ -1212,7 +1212,7 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
         .prepare_staged_attempt(Arc::clone(&task_context))
         .await
         .expect("host edge and source relation should stage before the graph ticket");
-    let bounds = staged.row_bounds().unwrap();
+    let bounds = staged.row_bounds(&ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(bounds.edge_row_upper_bound(), Some(3));
     assert_eq!(bounds.predicate_row_upper_bounds(), &[Some(3)]);
@@ -1248,7 +1248,7 @@ async fn cugraph_native_staging_retains_hard_rows_and_never_executes_a_wrapped_c
     .await
     .expect("a native edge source remains a native staging owner");
     assert!(matches!(&staged.edge, StagedCugraphSource::Native { .. }));
-    assert_eq!(staged.row_bounds().unwrap().edge_row_upper_bound(), Some(300));
+    assert_eq!(staged.row_bounds(&ParquetReadStrategyConfig::default()).unwrap().edge_row_upper_bound(), Some(300));
     drop(staged);
 
     let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1726,7 +1726,7 @@ async fn cugraph_producer_preparation_keeps_utf8_literal_sources_out_of_host_sta
         .await
         .expect("UTF-8 literal source should be constructed inside the native GPU plan");
 
-    assert_eq!(staged.row_bounds().unwrap().predicate_row_upper_bounds(), &[]);
+    assert_eq!(staged.row_bounds(&ParquetReadStrategyConfig::default()).unwrap().predicate_row_upper_bounds(), &[]);
     assert_eq!(runtime.memory_pool.reserved(), 0);
 }
 
@@ -1996,14 +1996,18 @@ async fn graph_residency_translates_parallel_datafusion_parquet_scan_without_ord
         .expect("parallel Parquet fixture should remain a direct DataFusion scan");
     let native_spec = native_graph_spec_for_residency(&pagerank_spec(), false);
 
-    let descriptor = graph_residency_descriptor_for_datafusion_local_parquet_scan(source, &native_spec)
-        .expect("parallel local-Parquet scan should retain a stable graph rowset descriptor");
+    let descriptor = graph_residency_descriptor_for_datafusion_local_parquet_scan(
+        source,
+        &native_spec,
+        &ParquetReadStrategyConfig::default(),
+    )
+    .expect("parallel local-Parquet scan should retain a stable graph rowset descriptor");
 
     assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
     assert_eq!(descriptor.vertex_data_type, DataType::Int64);
     assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
     assert_eq!(
-        exact_row_count_for_datafusion_local_parquet_scan(source),
+        exact_row_count_for_datafusion_local_parquet_scan(source, &ParquetReadStrategyConfig::default()),
         Some(3),
         "the cacheable local-Parquet bridge must retain the exact footer row count for graph admission"
     );
@@ -2021,7 +2025,7 @@ async fn graph_vertex_footer_bound_is_read_from_the_complete_datafusion_parquet_
         .expect("single-file fixture should remain a direct DataFusion scan");
 
     assert_eq!(
-        graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source),
+        graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source, &ParquetReadStrategyConfig::default()),
         Some(3),
         "graph admission must consume the footer fact bound to the exact local-Parquet edge rowset"
     );
@@ -2117,7 +2121,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
         .create_physical_plan()
         .await
         .unwrap();
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan)).unwrap();
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(lowering.selected_count(), 1, "grouped BFS result should lower: {:#?}", lowering.report);
     let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
     let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();

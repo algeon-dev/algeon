@@ -16,7 +16,7 @@ use query_engine::{
 };
 
 use super::*;
-use crate::{planner::DataFusionCpuExecutionPolicy, session::installed_algeon_native_optimizer_config};
+use crate::{planner::AlgeonGpuExecutionMode, session::installed_algeon_native_optimizer_config};
 
 fn backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder {
     let devices = device_ordinals.iter().copied().map(|ordinal| {
@@ -257,7 +257,7 @@ fn backend_builder_preserves_full_optimizer_config_and_policy() {
         .with_native_execution_config(native_execution_config.clone())
         .with_native_optimizer_options(optimizer_options.clone())
         .with_native_plan_cost_options(cost_options)
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        .with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
 
     let device = AlgeonGpuDeviceConfig::new(
         AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
@@ -270,7 +270,7 @@ fn backend_builder_preserves_full_optimizer_config_and_policy() {
         backend.optimizer_config.native_execution_config().source_chunking(),
         native_execution_config.source_chunking()
     );
-    assert_eq!(backend.optimizer_config.datafusion_cpu_execution_policy(), DataFusionCpuExecutionPolicy::Reject);
+    assert_eq!(backend.optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
     assert_eq!(backend.optimizer_config.native_optimizer_options(), &optimizer_options);
     assert_eq!(backend.optimizer_config.native_plan_cost_options(), &cost_options);
 }
@@ -281,7 +281,7 @@ fn backend_install_installs_optimizer_rule_matching_backend_config() {
     let state =
         super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap().build();
     let installed = installed_algeon_native_optimizer_config(&state).unwrap();
-    assert_eq!(installed.datafusion_cpu_execution_policy(), backend.optimizer_config.datafusion_cpu_execution_policy());
+    assert_eq!(installed.execution_mode(), backend.optimizer_config.execution_mode());
     assert_eq!(installed.native_optimizer_options(), backend.optimizer_config.native_optimizer_options());
     assert_eq!(installed.native_plan_cost_options(), backend.optimizer_config.native_plan_cost_options());
     assert_eq!(
@@ -305,16 +305,14 @@ fn backend_install_installs_optimizer_rule_matching_backend_config() {
 
 #[test]
 fn backend_installs_configured_datafusion_cpu_policy() {
-    let backend = validated(
-        bounded_backend_builder(&[0]).with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
-    )
-    .unwrap();
-    assert_eq!(backend.optimizer_config.datafusion_cpu_execution_policy(), DataFusionCpuExecutionPolicy::Reject);
+    let backend =
+        validated(bounded_backend_builder(&[0]).with_execution_mode(AlgeonGpuExecutionMode::NativeRequired)).unwrap();
+    assert_eq!(backend.optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
 
     let state =
         super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap().build();
     let installed = installed_algeon_native_optimizer_config(&state).unwrap();
-    assert_eq!(installed.datafusion_cpu_execution_policy(), DataFusionCpuExecutionPolicy::Reject);
+    assert_eq!(installed.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
 }
 
 #[test]

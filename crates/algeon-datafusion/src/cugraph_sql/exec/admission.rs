@@ -15,7 +15,8 @@ use super::{
 };
 use crate::{
     native::{
-        exact_row_count_for_datafusion_local_parquet_scan, graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
+        ParquetReadStrategyConfig, exact_row_count_for_datafusion_local_parquet_scan,
+        graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
     },
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec,
@@ -95,7 +96,10 @@ fn compile_cugraph_admission_ticket(
         result_options: result_options.clone(),
         edge_normalize_inserted,
         edge_row_upper_bound,
-        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(edge_source),
+        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
+            edge_source,
+            &execution_config.source_read_strategy(),
+        ),
     };
     let (graph_execution_plan, graph_execution_evidence) = cugraph_execution_capability_evidence(&definition)?;
     let mut fragment_evidence_items = vec![graph_execution_evidence];
@@ -181,7 +185,10 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
         result_options: result_options.clone(),
         edge_normalize_inserted,
         edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
-        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(edge_source),
+        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
+            edge_source,
+            &execution_config.source_read_strategy(),
+        ),
     };
     let _ = cugraph_execution_capability_evidence(&definition)?;
     Ok(())
@@ -234,9 +241,12 @@ pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&Quer
     native.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
 }
 
-pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> DataFusionResult<Option<u64>> {
+pub(super) fn edge_source_output_rows(
+    edge_source: &dyn ExecutionPlan,
+    source_reads: &ParquetReadStrategyConfig,
+) -> DataFusionResult<Option<u64>> {
     if let Some(source) = edge_source.downcast_ref::<DataSourceExec>()
-        && let Some(rows) = exact_row_count_for_datafusion_local_parquet_scan(source)
+        && let Some(rows) = exact_row_count_for_datafusion_local_parquet_scan(source, source_reads)
     {
         return Ok(Some(rows));
     }
@@ -305,8 +315,13 @@ pub(super) fn native_edge_source_allows_graph_aware_ticket(edge_source: &dyn Exe
     lowered_native_edge_plan(edge_source).is_none_or(native_plan_is_graph_ticket_light_edge_source)
 }
 
-pub(super) fn edge_source_graph_vertex_estimate(edge_source: &dyn ExecutionPlan) -> Option<u64> {
-    edge_source.downcast_ref::<DataSourceExec>().and_then(graph_vertex_upper_bound_for_datafusion_local_parquet_scan)
+pub(super) fn edge_source_graph_vertex_estimate(
+    edge_source: &dyn ExecutionPlan,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Option<u64> {
+    edge_source
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|source| graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source, source_reads))
 }
 
 pub(super) fn native_plan_is_graph_ticket_light_edge_source(native_plan: &QueryPlan) -> bool {

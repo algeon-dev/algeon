@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[tokio::test]
 async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_grouping() {
@@ -10,7 +11,7 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
         panic!("q22 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

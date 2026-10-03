@@ -30,6 +30,7 @@ mod file;
 mod models;
 mod native;
 mod observability;
+mod s3;
 mod workspace;
 
 pub use admission::{
@@ -50,11 +51,12 @@ use file::{ServerFileOverlay, load_overlay};
 use models::models_config;
 use native::native_optimizer_config;
 pub use native::{
-    ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
-    ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
-    AlgeonServerNativeConfigOption, ServerNativeConfigScope,
+    ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
+    ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV, ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+    ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, AlgeonServerNativeConfigOption,
+    ServerNativeConfigScope,
 };
 use observability::server_observability_config;
 pub use observability::{
@@ -63,6 +65,11 @@ pub use observability::{
     ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
     ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
     ServerObservabilityConfig,
+};
+use s3::s3_storage;
+pub use s3::{
+    ALGEON_SERVER_S3_ENDPOINT_ENV, ALGEON_SERVER_S3_PATH_STYLE_ENV, ALGEON_SERVER_S3_REGION_ENV,
+    ALGEON_SERVER_S3_UNSIGNED_ENV,
 };
 use workspace::workspace_overlay_config;
 pub use workspace::{
@@ -98,6 +105,10 @@ const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "ALGEON_SERVER_DEVICE_BUDGET_FRACTION",
 ];
 
+// `native_required` replaced the separate completed-plan requirement; a
+// deployment that still sets it would otherwise allow DataFusion CPU plans.
+const REMOVED_EXECUTION_POLICY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &["ALGEON_SERVER_FINAL_PLAN_REQUIREMENT"];
+
 // The Iceberg catalog integration was deleted from the server. Its settings
 // fail closed for the same reason as the legacy switches: a deployment that
 // still sets them would otherwise start without the tables it expects.
@@ -119,6 +130,7 @@ const REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "ALGEON_ICEBERG_S3_PATH_STYLE",
     "ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE",
     "ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS",
+    "ALGEON_ICEBERG_FOOTER_PRUNING",
     "ALGEON_LAKEHOUSE_CACHE_ROOT",
     "ALGEON_LAKEHOUSE_CACHE_READ",
     "ALGEON_LAKEHOUSE_CACHE_POLICY",
@@ -194,7 +206,19 @@ impl ServerConfig {
             values.positive_u64(ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         )?;
         let observability = server_observability_config(&mut values, &overlay.observability)?;
+        reject_removed_server_environment(
+            &mut values,
+            REMOVED_EXECUTION_POLICY_SERVER_ENVIRONMENT_VARIABLES,
+            "replaced by ALGEON_SERVER_EXECUTION_MODE=native_required; remove it",
+        )?;
         let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
+        let native_optimizer_config = match s3_storage(&mut values, overlay.s3.as_ref())? {
+            Some(storage) => {
+                let execution = native_optimizer_config.native_execution_config().clone().with_s3_storage(storage);
+                native_optimizer_config.with_native_execution_config(execution)
+            },
+            None => native_optimizer_config,
+        };
         let gpu_device_profiles = server_device_profiles(&overlay.admission, &gpu_devices)?;
         reject_removed_server_environment(
             &mut values,

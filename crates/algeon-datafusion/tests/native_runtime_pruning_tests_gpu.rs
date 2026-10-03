@@ -6,7 +6,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
     report::PlanningReport,
 };
 use arrow::{

@@ -115,7 +115,6 @@ pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::devices(self, impl c
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::queue_policy(self, algeon_datafusion::backend::AlgeonGpuQueuePolicy) -> Self
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::validate(self) -> algeon_datafusion::error::Result<()>
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::with_attempt_completion_queue_capacity(self, usize) -> Self
-pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::with_datafusion_cpu_execution_policy(self, algeon_datafusion::planner::DataFusionCpuExecutionPolicy) -> Self
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::with_execution_mode(self, algeon_datafusion::planner::AlgeonGpuExecutionMode) -> Self
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::with_native_execution_config(self, algeon_datafusion::native_exec::AlgeonNativeExecutionConfig) -> Self
 pub fn algeon_datafusion::backend::AlgeonGpuBackendBuilder::with_optimizer_config(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
@@ -921,10 +920,10 @@ pub use algeon_datafusion::native_exec::LakehouseCacheFillConfig
 pub use algeon_datafusion::native_exec::QueryId
 pub use algeon_datafusion::native_exec::RuntimeObservationConfig
 pub use algeon_datafusion::native_exec::RuntimeObservationLimits
+pub use algeon_datafusion::native_exec::S3SourceStorageProfile
 pub use algeon_datafusion::native_exec::SourceChunkPlanningMode
 pub use algeon_datafusion::native_exec::SourceChunkPlanningOptions
 pub use algeon_datafusion::native_exec::SourceSchedulerPolicy
-pub use algeon_datafusion::native_exec::SourceStorageProfile
 pub use algeon_datafusion::native_exec::StatisticalAggregateExecutionMode
 pub use algeon_datafusion::native_exec::TraceId
 pub enum algeon_datafusion::native_exec::GraphClaimCalibrationExecution
@@ -933,6 +932,10 @@ pub algeon_datafusion::native_exec::GraphClaimCalibrationExecution::Physical
 pub enum algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason
 pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
 pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<query_planning::schedule_projection::AttemptId>
+#[non_exhaustive] pub enum algeon_datafusion::native_exec::LakehouseByteCacheFill
+pub algeon_datafusion::native_exec::LakehouseByteCacheFill::Disabled
+pub algeon_datafusion::native_exec::LakehouseByteCacheFill::FillBeforeRead
+pub algeon_datafusion::native_exec::LakehouseByteCacheFill::ReadThrough
 pub struct algeon_datafusion::native_exec::AlgeonNativeComposedExec
 impl datafusion_physical_plan::display::DisplayAs for algeon_datafusion::native_exec::AlgeonNativeComposedExec
 pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -974,29 +977,31 @@ pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::AUTO_SIZE
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::lakehouse_footer_pruning(&self) -> bool
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_source_reads_in_flight(&self) -> usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::new(algeon_datafusion::native_exec::SourceChunking) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::planning_policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::runtime_observation_config(&self) -> query_runtime::observability::recorder::RuntimeObservationConfig
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::s3_storage(&self) -> core::option::Option<&query_runtime::runtime::object_store::S3SourceStorageProfile>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunking(&self) -> algeon_datafusion::native_exec::SourceChunking
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_storage_profiles(&self) -> &[query_runtime::runtime::object_store::SourceStorageProfile]
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_aggregate_strategy_execution_options(self, query_planning::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_dynamic_filter_execution_options(self, query_planning::dynamic_filter::DynamicFilterExecutionOptions) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_host_output_memory_pool_accounting(self, bool) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, query_planning::capability::join::KeyedHashJoinStrategyOptions) -> Self
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_lakehouse_byte_cache(self, algeon_datafusion::native_exec::LakehouseByteCache) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_lakehouse_cache_fill_config(self, query_runtime::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning(self, bool) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_s3_storage(self, query_runtime::runtime::object_store::S3SourceStorageProfile) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_mode(self, query_planning::execution_contracts::SourceChunkPlanningMode) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_options(self, query_planning::chunk::policy::SourceChunkPlanningOptions) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_scheduler_policy(self, query_planning::execution_contracts::SourceSchedulerPolicy) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_storage_profile(self, query_runtime::runtime::object_store::SourceStorageProfile) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_storage_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = query_runtime::runtime::object_store::SourceStorageProfile>) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_statistical_aggregate_execution_mode(self, query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
 impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
@@ -1033,6 +1038,12 @@ pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::leader_failure
 pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::overflow_groups: u64
 pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::peak_width: usize
 pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::physical_traversals: u64
+pub struct algeon_datafusion::native_exec::LakehouseByteCache
+impl algeon_datafusion::native_exec::LakehouseByteCache
+pub fn algeon_datafusion::native_exec::LakehouseByteCache::ignoring_hits(self) -> Self
+pub fn algeon_datafusion::native_exec::LakehouseByteCache::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn algeon_datafusion::native_exec::LakehouseByteCache::with_fill(self, algeon_datafusion::native_exec::LakehouseByteCacheFill) -> Self
+pub fn algeon_datafusion::native_exec::LakehouseByteCache::with_max_retained_bytes(self, core::num::nonzero::NonZeroU64) -> Self
 pub struct algeon_datafusion::native_exec::SealedAttemptGraphClaimCalibrationSnapshot
 impl algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
@@ -1788,9 +1799,9 @@ pub use algeon_datafusion::planner::StatisticalAggregateExecutionMode
 pub algeon_datafusion::planner::AlgeonGpuExecutionMode::FunctionsOnly
 pub algeon_datafusion::planner::AlgeonGpuExecutionMode::NativePreferred
 pub algeon_datafusion::planner::AlgeonGpuExecutionMode::NativeRequired
-#[non_exhaustive] pub enum algeon_datafusion::planner::DataFusionCpuExecutionPolicy
-pub algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Allow
-pub algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Reject
+impl algeon_datafusion::planner::AlgeonGpuExecutionMode
+pub const fn algeon_datafusion::planner::AlgeonGpuExecutionMode::rejects_datafusion_cpu(self) -> bool
+pub const fn algeon_datafusion::planner::AlgeonGpuExecutionMode::rewrites_relational_plans(self) -> bool
 #[non_exhaustive] pub enum algeon_datafusion::planner::FinalPlanDisposition
 pub algeon_datafusion::planner::FinalPlanDisposition::DataFusion
 pub algeon_datafusion::planner::FinalPlanDisposition::Mixed
@@ -1799,25 +1810,17 @@ impl algeon_datafusion::planner::FinalPlanDisposition
 pub const fn algeon_datafusion::planner::FinalPlanDisposition::as_str(self) -> &'static str
 impl core::fmt::Display for algeon_datafusion::planner::FinalPlanDisposition
 pub fn algeon_datafusion::planner::FinalPlanDisposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-#[non_exhaustive] pub enum algeon_datafusion::planner::RelationalNativeRewritePolicy
-pub algeon_datafusion::planner::RelationalNativeRewritePolicy::Disabled
-pub algeon_datafusion::planner::RelationalNativeRewritePolicy::Enabled
 pub struct algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 impl algeon_datafusion::planner::AlgeonNativeOptimizerConfig
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::datafusion_cpu_execution_policy(&self) -> algeon_datafusion::planner::DataFusionCpuExecutionPolicy
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::execution_mode(&self) -> algeon_datafusion::error::Result<algeon_datafusion::planner::AlgeonGpuExecutionMode>
+pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::execution_mode(&self) -> algeon_datafusion::planner::AlgeonGpuExecutionMode
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_execution_config(&self) -> &algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_optimizer_options(&self) -> &query_planning::optimizer::NativeOptimizerOptions
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::native_plan_cost_options(&self) -> &query_planning::plan::preference::NativePlanCostOptions
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::relational_native_rewrite_policy(&self) -> algeon_datafusion::planner::RelationalNativeRewritePolicy
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::validate(&self) -> algeon_datafusion::error::Result<()>
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_datafusion_cpu_execution_policy(self, algeon_datafusion::planner::DataFusionCpuExecutionPolicy) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_execution_mode(self, algeon_datafusion::planner::AlgeonGpuExecutionMode) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_execution_config(self, algeon_datafusion::native_exec::AlgeonNativeExecutionConfig) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_optimizer_options(self, query_planning::optimizer::NativeOptimizerOptions) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_native_plan_cost_options(self, query_planning::plan::preference::NativePlanCostOptions) -> Self
-pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_relational_native_rewrite_policy(self, algeon_datafusion::planner::RelationalNativeRewritePolicy) -> Self
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 impl core::default::Default for algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::default() -> Self
@@ -2069,10 +2072,10 @@ pub const algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_CUGRAPH_ENABLED_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_EXECUTION_MODE_ENV: &str
-pub const algeon_datafusion::server::ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_GPU_DEVICES_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_LOG_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_CONFIG_OPTIONS: &[algeon_datafusion::server::AlgeonServerNativeConfigOption]
+pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
@@ -2086,6 +2089,10 @@ pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_B
 pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_S3_ENDPOINT_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_S3_PATH_STYLE_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_S3_REGION_ENV: &str
+pub const algeon_datafusion::server::ALGEON_SERVER_S3_UNSIGNED_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_ALIASES_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV: &str

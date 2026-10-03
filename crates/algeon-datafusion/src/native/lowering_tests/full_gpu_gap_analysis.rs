@@ -1,6 +1,7 @@
 use query_engine::plan::{ShiftDirection, WindowFunction};
 
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum GpuGapFeature {
@@ -331,7 +332,7 @@ async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
 
     for case in gpu_gap_cases() {
         let plan = sql_plan(&path, direct_friendly_sql_session_config(), case.sql).await;
-        let lowering = lower_physical_plan_to_native(Arc::clone(&plan)).unwrap();
+        let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &ParquetReadStrategyConfig::default()).unwrap();
         assert_planning_report(&case, &lowering);
         assert_native_ir_details(&case, &lowering);
 

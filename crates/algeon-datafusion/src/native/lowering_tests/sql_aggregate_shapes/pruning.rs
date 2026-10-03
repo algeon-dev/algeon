@@ -1,4 +1,5 @@
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[tokio::test]
 async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
@@ -8,7 +9,7 @@ async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
     let total_row_groups = parquet_row_group_count(&path);
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(total_row_groups, 4);
     assert_eq!(result.selected_count(), 1);
@@ -36,8 +37,8 @@ async fn one_footer_scope_parses_each_file_once_across_lowerings() {
     let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
 
     let footers = FooterScope::enter();
-    let whole_plan = lower_physical_plan_to_native(Arc::clone(&plan)).unwrap();
-    let mixed_leaf_plan = lower_physical_plan_to_native(plan).unwrap();
+    let whole_plan = lower_physical_plan_to_native(Arc::clone(&plan), &ParquetReadStrategyConfig::default()).unwrap();
+    let mixed_leaf_plan = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(whole_plan.selected_count(), 1);
     assert_eq!(mixed_leaf_plan.selected_count(), 1);
@@ -59,7 +60,7 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
     let plan = sql_plan_without_scan_predicate(plan);
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(total_row_groups, 4);
     assert_eq!(result.selected_count(), 1);
@@ -85,7 +86,7 @@ async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_meta
     let total_row_groups = parquet_row_group_count(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(total_row_groups, 4);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -120,7 +121,7 @@ async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadat
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -150,7 +151,7 @@ async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -177,7 +178,7 @@ async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -208,7 +209,7 @@ async fn direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(total_row_groups, 2);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());

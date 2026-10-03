@@ -10,13 +10,14 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    native::{LoweringFailure, normalize::NormalizedNativeUnion, validate::validate_schema},
+    native::{LoweringFailure, ParquetReadStrategyConfig, normalize::NormalizedNativeUnion, validate::validate_schema},
 };
 
 pub(super) fn lower_union_input(
     union: &NormalizedNativeUnion<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     if union.inputs.is_empty() {
         return Err(CapabilityReason::UnsupportedOperator.into());
@@ -29,7 +30,7 @@ pub(super) fn lower_union_input(
         .inputs
         .iter()
         .map(|input| {
-            let lowered = lower_native_input(input, builder, required_output_fields)?;
+            let lowered = lower_native_input(input, builder, required_output_fields, source_reads)?;
             project_union_child_to_output_schema(builder, lowered, Arc::clone(&schema), &bindings)
         })
         .collect::<Result<Vec<_>, _>>()?;

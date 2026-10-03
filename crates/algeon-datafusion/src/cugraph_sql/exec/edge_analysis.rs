@@ -8,7 +8,7 @@ use super::{
     CUGRAPH_EDGE_WEIGHT_COLUMN, Column, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, DataSourceExec,
     ExecutionPlan, FileScanConfig, MemorySourceConfig, ProjectionExec, RepartitionExec, Schema, SortExec, UnionExec,
 };
-use crate::native::datafusion_local_parquet_scan_has_simple_directed_edge_topology;
+use crate::native::{ParquetReadStrategyConfig, datafusion_local_parquet_scan_has_simple_directed_edge_topology};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct CugraphEdgeCanonicalFacts {
@@ -30,15 +30,16 @@ pub(super) fn cugraph_edge_normalize_inserted(spec: &CugraphAlgorithmSpec, facts
 pub(super) fn cugraph_edge_canonical_facts(
     plan: &dyn ExecutionPlan,
     spec: &CugraphAlgorithmSpec,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> CugraphEdgeCanonicalFacts {
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
-        let input_facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
+        let input_facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec, source_reads);
         return aggregate_edge_dedup_facts(aggregate, spec, input_facts);
     }
 
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
         if projection_edge_orientation(projection, spec).is_some() {
-            return cugraph_edge_canonical_facts(projection.input().as_ref(), spec);
+            return cugraph_edge_canonical_facts(projection.input().as_ref(), spec, source_reads);
         }
         return CugraphEdgeCanonicalFacts::default();
     }
@@ -52,7 +53,7 @@ pub(super) fn cugraph_edge_canonical_facts(
     if preserves_edge_list_canonical_facts(plan) {
         let children = plan.children();
         if let [child] = children.as_slice() {
-            return cugraph_edge_canonical_facts(child.as_ref(), spec);
+            return cugraph_edge_canonical_facts(child.as_ref(), spec, source_reads);
         }
     }
 
@@ -61,6 +62,7 @@ pub(super) fn cugraph_edge_canonical_facts(
             source,
             CUGRAPH_EDGE_SOURCE_COLUMN,
             CUGRAPH_EDGE_DESTINATION_COLUMN,
+            source_reads,
         )
     {
         return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };

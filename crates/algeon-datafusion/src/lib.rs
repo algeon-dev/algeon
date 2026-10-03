@@ -6,8 +6,7 @@
 //! caller-owned session builder, and each attempt plans and executes one
 //! invocation before publishing one terminal report. Strict production policy
 //! can enforce that no DataFusion CPU execution remains in the final physical
-//! plan by configuring
-//! [`planner::AlgeonNativeOptimizerConfig::with_datafusion_cpu_execution_policy`].
+//! plan with [`planner::AlgeonGpuExecutionMode::NativeRequired`].
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -82,6 +81,7 @@ pub mod observability;
 mod physical_plan;
 pub mod planner;
 pub mod report;
+mod s3_storage;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod session;

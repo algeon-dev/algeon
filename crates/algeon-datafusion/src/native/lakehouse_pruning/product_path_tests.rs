@@ -20,7 +20,7 @@ use arrow::{
 };
 use bytes::Bytes;
 use datafusion::{
-    execution::{TaskContext, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
+    execution::{SessionStateBuilder, TaskContext, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     object_store::{
         CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
         PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, memory::InMemory,
@@ -37,7 +37,7 @@ use query_engine::{
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
     policy::PlanningPolicy,
-    runtime::{S3SourceStorageProfile, SourceStorageProfile},
+    runtime::S3SourceStorageProfile,
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 use tokio::{task::yield_now, time::timeout};
@@ -47,10 +47,12 @@ use crate::{
     attempt::{AlgeonAttempt, attempt_ticket_for_test},
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::DataFusionErrorExt,
+    native::S3_STORAGE_PROFILE_ID,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
         SourceChunking,
     },
+    s3_storage::install_s3_storage,
 };
 
 #[derive(Debug)]
@@ -233,21 +235,16 @@ fn prunable_object_store_source(
     ))
 }
 
-const UNREACHABLE_ENGINE_PROFILE_ID: &str = "unreachable-engine-profile";
-
 // Engine-side S3 access for these fixtures must stay on loopback. Without a
 // profile the engine falls back to the default AWS chain and public endpoint,
 // and a host that reaches S3 turns the fixture's footer fetch into a
 // `NoSuchBucket` failure before the chunk read these tests assert.
-fn unreachable_storage_profile(id: &str) -> SourceStorageProfile {
-    SourceStorageProfile::s3(
-        id,
-        S3SourceStorageProfile::default_chain()
-            .with_region("us-east-1")
-            .with_endpoint("http://127.0.0.1:9")
-            .with_path_style_access(true)
-            .with_unsigned_requests(),
-    )
+fn unreachable_s3_storage() -> S3SourceStorageProfile {
+    S3SourceStorageProfile::default_chain()
+        .with_region("us-east-1")
+        .with_endpoint("http://127.0.0.1:9")
+        .with_path_style_access(true)
+        .with_unsigned_requests()
 }
 
 fn hermetic_backend() -> InstalledTestGpuBackend {
@@ -255,7 +252,7 @@ fn hermetic_backend() -> InstalledTestGpuBackend {
         AlgeonNativeExecutionConfig::new(
             SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
         )
-        .with_source_storage_profile(unreachable_storage_profile(UNREACHABLE_ENGINE_PROFILE_ID)),
+        .with_s3_storage(unreachable_s3_storage()),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
         AlgeonGpuQueuePolicy::default(),
@@ -267,7 +264,7 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     let source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(
         uri,
         file_size_bytes,
-        Some(UNREACHABLE_ENGINE_PROFILE_ID),
+        Some(S3_STORAGE_PROFILE_ID),
     )));
     let plan = if gpu_resident_sink {
         builder.finish_gpu_resident(source).unwrap()
@@ -351,12 +348,12 @@ async fn product_pruning_uses_runtime_object_store_and_noops_when_store_is_missi
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id).unwrap();
 
-    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[], PlanningPolicy::default()).await.unwrap();
+    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, PlanningPolicy::default()).await.unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
 
     let unchanged =
-        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[], PlanningPolicy::default()).await.unwrap();
+        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), PlanningPolicy::default()).await.unwrap();
     let unchanged_source =
         local_parquet_source(&unchanged, source_node_id).expect("unpruned source should remain present");
     assert_eq!(unchanged_source.files[0].row_groups, None);
@@ -364,54 +361,54 @@ async fn product_pruning_uses_runtime_object_store_and_noops_when_store_is_missi
 }
 
 #[tokio::test]
-async fn product_pruning_prefers_runtime_object_store_over_source_storage_profile() {
+async fn product_pruning_prefers_a_registered_store_over_the_s3_storage() {
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-runtime-store-precedence");
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     store
         .put(&ObjectStorePath::from("table/data.parquet"), bytes.clone().into())
         .await
         .expect("test object-store payload should be writable");
-    let runtime_env = Arc::new(RuntimeEnv::default());
+    let state = install_s3_storage(SessionStateBuilder::new(), &unreachable_s3_storage())
+        .expect("the S3 storage registry should install")
+        .build();
+    let runtime_env = Arc::clone(state.runtime_env());
     let store_url = ObjectStoreUrl::parse("s3://lakehouse").expect("test object-store URL should parse");
     runtime_env.register_object_store(store_url.as_ref(), store);
 
     let source =
-        prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("unreachable-profile"));
+        prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some(S3_STORAGE_PROFILE_ID));
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id).unwrap();
-    let unreachable_profile = unreachable_storage_profile("unreachable-profile");
 
-    let pruned =
-        prune_native_query_plan(plan, &runtime_env, &[unreachable_profile], PlanningPolicy::default()).await.unwrap();
+    let pruned = prune_native_query_plan(plan, &runtime_env, PlanningPolicy::default()).await.unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
     remove_fixture(dir);
 }
 
 #[tokio::test]
-async fn product_pruning_falls_back_to_source_storage_profile() {
-    let (dir, bytes) = prunable_parquet_fixture("lakehouse-profile-store-fallback");
+async fn product_pruning_reads_footers_through_the_installed_s3_storage() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-s3-storage-footers");
     let server = TestS3Server::start(bytes.clone());
-    let profile = SourceStorageProfile::s3(
-        "local-profile",
-        S3SourceStorageProfile::default_chain()
-            .with_region("us-east-1")
-            .with_endpoint(server.endpoint.clone())
-            .with_path_style_access(true)
-            .with_unsigned_requests(),
-    );
-    let source = prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("local-profile"));
+    let storage = S3SourceStorageProfile::default_chain()
+        .with_region("us-east-1")
+        .with_endpoint(server.endpoint.clone())
+        .with_path_style_access(true)
+        .with_unsigned_requests();
+    let state = install_s3_storage(SessionStateBuilder::new(), &storage)
+        .expect("the S3 storage registry should install")
+        .build();
+    let source =
+        prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some(S3_STORAGE_PROFILE_ID));
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id).unwrap();
 
-    let pruned = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile], PlanningPolicy::default())
-        .await
-        .unwrap();
+    let pruned = prune_native_query_plan(plan, state.runtime_env(), PlanningPolicy::default()).await.unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
-    assert!(server.request_count.load(Ordering::Relaxed) > 0, "storage-profile fallback should reach S3");
+    assert!(server.request_count.load(Ordering::Relaxed) > 0, "footer reads should reach the configured endpoint");
     remove_fixture(dir);
 }
 
@@ -603,7 +600,6 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
         None,
         None,
         true,
-        Vec::new(),
     )
     .expect("test native producer should build");
 
@@ -612,7 +608,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let consumer_source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(
         "s3://consumer-source/table/data.parquet",
         bytes.len(),
-        Some(UNREACHABLE_ENGINE_PROFILE_ID),
+        Some(S3_STORAGE_PROFILE_ID),
     )));
     let producer_source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));

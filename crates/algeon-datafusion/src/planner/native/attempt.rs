@@ -89,7 +89,8 @@ pub(super) fn optimize_count_only_native_plan(
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
-    let lowering = lower_count_only_physical_plan_to_native(lowering_input)?;
+    let lowering =
+        lower_count_only_physical_plan_to_native(lowering_input, &native_execution_config.source_read_strategy())?;
     replace_lowered_root_or_keep_plan_for_sink(
         plan,
         None,
@@ -170,7 +171,8 @@ fn lower_gpu_resident_producer_relation_inputs(
         if let Some(input_name) = relation_input_names.as_ref().and_then(|names| names.get(index))
             && gpu_resident_producer(rewritten.as_ref()).is_none()
         {
-            let lowering = lower_physical_plan_to_native(Arc::clone(&rewritten))?;
+            let lowering =
+                lower_physical_plan_to_native(Arc::clone(&rewritten), &native_execution_config.source_read_strategy())?;
             let mut attempt = replace_lowered_root_or_keep_plan_for_sink(
                 Arc::clone(&rewritten),
                 None,
@@ -203,11 +205,12 @@ fn optimize_final_native_root(
     cost_selection: NativeCostSelection,
     root_sink: &NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan))?;
+    let source_reads = native_execution_config.source_read_strategy();
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan), &source_reads)?;
     if whole_plan_has_unsupported_expression_miss(&lowering)
         && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
     {
-        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()))?;
+        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()), &source_reads)?;
         if native_leaf_lowering.plans.len() == 1
             && native_leaf_lowering.selected_count() == 1
             && boundary.accepts_native_leaf(&native_leaf_lowering.plans[0])

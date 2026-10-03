@@ -147,7 +147,6 @@ impl AlgeonNativeExec {
         let mut prepared = self.clone();
         prepared.admitted = super::lakehouse::resolve_admitted_plan(
             self.execution_config.lakehouse_footer_pruning(),
-            self.execution_config.source_storage_profiles(),
             &self.admitted,
             task_context,
         )
@@ -256,7 +255,6 @@ impl ExecutionPlan for AlgeonNativeExec {
                 let unresolved_capability_evidence = AttemptCapabilityEvidence::for_query_plan(admitted.plan());
                 let admitted = super::lakehouse::resolve_admitted_plan(
                     execution_config.lakehouse_footer_pruning(),
-                    execution_config.source_storage_profiles(),
                     &admitted,
                     task_context.as_ref(),
                 )

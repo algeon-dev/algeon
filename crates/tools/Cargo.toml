@@ -58,6 +58,9 @@ cugraph-oracle = [
 # to validate retained artifacts.
 server-runtime-observability-e2e = ["dep:query-engine"]
 embedded-backend-e2e = ["dep:reqwest"]
+# One S3 configuration serving DataFusion and native reads, for a library and a
+# server-configured backend, against an external S3-compatible service.
+s3-parquet-e2e = ["dep:cudf-sys", "dep:datafusion", "dep:algeon-datafusion", "algeon-datafusion/server"]
 # The production-validation runner is intentionally opt-in. The base feature
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.

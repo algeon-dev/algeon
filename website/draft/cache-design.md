@@ -9,7 +9,7 @@ frames and cuGraph graphs in device memory across query attempts.
 
 | Cache | Storage | Enabled by | Lifetime |
 | --- | --- | --- | --- |
-| Lakehouse byte cache | Local filesystem | `ALGEON_LAKEHOUSE_CACHE_ROOT` | Across queries and server restarts |
+| Lakehouse byte cache | Local filesystem | `AlgeonNativeExecutionConfig::with_lakehouse_byte_cache` | Across queries and server restarts |
 | Decoded source cache | GPU memory | A nonzero device `cache_cap_bytes` | Across attempts, until query-service shutdown |
 | Resident graph cache | GPU memory | A nonzero device `cache_cap_bytes` and a stable graph key | Across attempts, until query-service shutdown |
 
@@ -18,21 +18,20 @@ cross-query caches.
 
 ## Lakehouse byte cache
 
-The cache root, read policy, and miss policy are independent controls. The root
-defines where entries live. `ALGEON_LAKEHOUSE_CACHE_READ` controls whether an
-existing hit may be used, and `ALGEON_LAKEHOUSE_CACHE_POLICY` controls whether a
-miss populates the cache:
+`LakehouseByteCache` holds three independent controls. The root defines where
+entries live, `ignoring_hits` stops an existing hit from serving a read, and
+`with_fill` selects whether a miss populates the cache:
 
-| `ALGEON_LAKEHOUSE_CACHE_POLICY` | Complete local hit | Miss |
+| `LakehouseByteCacheFill` | Complete local hit | Miss |
 | --- | --- | --- |
-| `disabled` (default) | Read through the local KvikIO path | Read remotely; no fill |
-| `read_through` | Read through the local KvikIO path | Read remotely; fill in the background |
-| `fill_before_read` | Read through the local KvikIO path | Publish the complete local object first, then read it locally |
+| `Disabled` (default) | Read through the local KvikIO path | Read remotely; no fill |
+| `ReadThrough` | Read through the local KvikIO path | Read remotely; fill in the background |
+| `FillBeforeRead` | Read through the local KvikIO path | Publish the complete local object first, then read it locally |
 
-`ALGEON_LAKEHOUSE_CACHE_READ=disabled` ignores hits and always reads remotely;
-combined with `read_through` it still warms the cache in the background.
-Setting only the cache root therefore uses existing hits without filling
-misses.
+`ignoring_hits` always reads remotely; combined with `ReadThrough` it still
+warms the cache in the background. A cache with only a root therefore uses
+existing hits without filling misses. The server does not configure this
+cache.
 
 Cache entries are scoped by the storage domain, content identity, and source
 location. A planned hit must still exist with the expected size at execution
@@ -40,7 +39,7 @@ time, otherwise the plan is rejected as stale.
 
 Fills use a filesystem lock, write a temporary file, validate the byte count,
 and publish with an atomic rename. Readers hold sidecar pins so retention
-cleanup cannot remove an active file. `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES` is a
+cleanup cannot remove an active file. `with_max_retained_bytes` is a
 best-effort LRU target, not a reservation or hard quota, but it is required
 whenever a cache root is configured with a filling policy (`read_through` or
 `fill_before_read`). Blocking and background fills share service-wide

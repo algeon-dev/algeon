@@ -35,7 +35,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
@@ -56,6 +56,7 @@ use crate::{
 pub(super) fn lower_slice1_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeQueryPlan, LoweringFailure> {
     let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
     let source_exec = source.scan;
@@ -95,16 +96,29 @@ pub(super) fn lower_slice1_plan(
         post_aggregate_projection,
     })?;
     if local_parquet_scan_is_empty(file_scan) {
-        return lower_joined_aggregate_plan(normalized, root);
+        return lower_joined_aggregate_plan(normalized, root, source_reads);
     }
-    validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    validate_slice1_parquet_scan(
+        file_scan,
+        parquet_source,
+        filter,
+        Arc::clone(&table_schema),
+        &column_requirements,
+        source_reads,
+    )?;
     validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
     if let Some(sort) = sort {
         validate_sort_ordering(sort.ordering(), sort.input_schema())?;
     }
 
-    let native_files =
-        local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
+    let native_files = local_parquet_files(
+        file_scan,
+        parquet_source,
+        filter,
+        Arc::clone(&table_schema),
+        &column_requirements,
+        source_reads,
+    )?;
     let mut source = if zero_column_count_safe && column_requirements.read_columns.is_empty() {
         NativeLocalParquetSource::zero_column_count(native_files)
     } else {
@@ -279,6 +293,7 @@ pub(super) fn lower_slice1_plan(
 pub(super) fn lower_joined_aggregate_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeQueryPlan, LoweringFailure> {
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
@@ -294,7 +309,7 @@ pub(super) fn lower_joined_aggregate_plan(
 
     let required_input_fields = required_aggregate_input_fields(aggregate, pre_aggregate_projection)?;
     let mut builder = NativeQueryPlanBuilder::new();
-    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_fields)?;
+    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_fields, source_reads)?;
     let (aggregate_output_schema, aggregate_output_bindings) =
         executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
     let aggregate_output = if aggregate.group_expr().has_grouping_set() {
@@ -349,6 +364,7 @@ pub(super) fn lower_joined_aggregate_plan(
 pub(super) fn lower_input_root_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeInputRoot<'_>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeQueryPlan, LoweringFailure> {
     if let Some(projection) = root.projection {
         validate_schema(projection.schema())?;
@@ -369,8 +385,13 @@ pub(super) fn lower_input_root_plan(
     };
     let pushed_scan_limit =
         if normalized.sort.is_none() { source_scan_limit_from_limit_spec(normalized.limit) } else { None };
-    let lowered_input =
-        lower_native_input_with_scan_limit(&root.input, &mut builder, &required_input_fields, pushed_scan_limit)?;
+    let lowered_input = lower_native_input_with_scan_limit(
+        &root.input,
+        &mut builder,
+        &required_input_fields,
+        pushed_scan_limit,
+        source_reads,
+    )?;
     finish_with_post_projection_sort_limit(
         builder,
         lowered_input,

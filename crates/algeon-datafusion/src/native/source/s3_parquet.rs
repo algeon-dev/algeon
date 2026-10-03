@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+};
 
 use cudf::io::parquet::{RemoteParquetBackendBuildStatus, remote_parquet_backend_build_status};
 use query_engine::{
@@ -9,44 +12,26 @@ use query_engine::{
     util::fnv1a64,
 };
 
-use crate::error::{Error, ErrorCode, Result};
+use crate::{
+    error::{Error, ErrorCode, Result},
+    native_exec::{LakehouseByteCache, LakehouseByteCacheFill, S3SourceStorageProfile},
+};
 
-const DEFAULT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
+/// The id under which the configured S3 storage is registered as a runtime
+/// storage profile and referenced by every resolved `s3://` source.
+pub(crate) const S3_STORAGE_PROFILE_ID: &str = "s3";
 
-/// Env var selecting whether complete local lakehouse cache hits may be used
-/// for foreground reads. `disabled` ignores cache hits; any other value keeps
-/// them enabled.
-const ALGEON_LAKEHOUSE_CACHE_READ_ENV: &str = "ALGEON_LAKEHOUSE_CACHE_READ";
-/// Env var pointing at the local lakehouse byte-cache root.
-const ALGEON_LAKEHOUSE_CACHE_ROOT_ENV: &str = "ALGEON_LAKEHOUSE_CACHE_ROOT";
-/// Env var selecting lakehouse byte-cache miss behavior: `read_through` or
-/// `fill_before_read`; any other value disables cache fills.
-const ALGEON_LAKEHOUSE_CACHE_POLICY_ENV: &str = "ALGEON_LAKEHOUSE_CACHE_POLICY";
-/// Env var selecting the best-effort retained byte target for the lakehouse
-/// cache. Values are bytes; zero or invalid values are ignored.
-const ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV: &str = "ALGEON_LAKEHOUSE_CACHE_MAX_BYTES";
 /// Standard AWS SDK S3 endpoint override env var.
 const AWS_ENDPOINT_URL_S3_ENV: &str = "AWS_ENDPOINT_URL_S3";
 /// Standard AWS SDK endpoint override env var.
 const AWS_ENDPOINT_URL_ENV: &str = "AWS_ENDPOINT_URL";
 
-/// Lakehouse byte-cache behavior for remote Parquet files.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-enum LakehouseCachePolicy {
-    /// Do not fill missing local cache entries.
-    #[default]
-    Disabled,
-    /// Read the foreground source now and fill missing complete-object entries in the background.
-    ReadThrough,
-    /// Require a completed local cache file before the path-based cuDF read starts.
-    FillBeforeRead,
-}
-
-impl LakehouseCachePolicy {
-    /// Whether a cache miss should be materialized before execution opens the cache path.
-    const fn fills_before_read(self) -> bool {
-        matches!(self, Self::FillBeforeRead)
-    }
+/// The endpoint the ambient AWS configuration selects, which the default
+/// credential chain and process-wide KvikIO reads use.
+pub(crate) fn ambient_s3_endpoint() -> Option<String> {
+    [AWS_ENDPOINT_URL_S3_ENV, AWS_ENDPOINT_URL_ENV].into_iter().find_map(|name| {
+        std::env::var(name).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    })
 }
 
 /// Foreground lakehouse cache read behavior for complete local cache entries.
@@ -68,20 +53,19 @@ impl LakehouseCacheReadPolicy {
 
 /// Remote Parquet read-strategy resolver configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ParquetReadStrategyConfig {
+pub(crate) struct ParquetReadStrategyConfig {
     /// Optional lakehouse byte-cache root.
     lakehouse_cache_root: Option<PathBuf>,
     /// Whether complete cache hits may be used for foreground reads.
     lakehouse_cache_read_policy: LakehouseCacheReadPolicy,
     /// Cache-miss policy for local lakehouse byte-cache entries.
-    lakehouse_cache_policy: LakehouseCachePolicy,
+    lakehouse_cache_policy: LakehouseByteCacheFill,
     /// Best-effort retained byte target for the lakehouse byte-cache root.
     lakehouse_cache_max_bytes: Option<u64>,
-    /// Optional catalog-native S3 endpoint identity used to scope local-cache entries.
+    /// Optional S3 endpoint identity used to scope local-cache entries.
     ///
-    /// This is endpoint metadata only. It must not include credentials; when
-    /// resolved from environment variables, userinfo, query strings, and
-    /// fragments are stripped before the value is exposed in diagnostics.
+    /// This is endpoint metadata only. Userinfo, query strings, and fragments
+    /// are stripped before the value is stored or exposed in diagnostics.
     storage_endpoint: Option<String>,
     /// Execution-time native source storage profile id.
     ///
@@ -94,77 +78,42 @@ pub(super) struct ParquetReadStrategyConfig {
 
 impl Default for ParquetReadStrategyConfig {
     fn default() -> Self {
-        Self {
-            lakehouse_cache_root: None,
-            lakehouse_cache_read_policy: LakehouseCacheReadPolicy::Enabled,
-            lakehouse_cache_policy: LakehouseCachePolicy::Disabled,
-            lakehouse_cache_max_bytes: None,
-            storage_endpoint: None,
-            storage_profile_id: None,
-            credential_mode: CredentialMode::SharedProcessEnv,
-        }
+        Self::new(None, None, None)
     }
 }
 
 impl ParquetReadStrategyConfig {
-    /// Builds a resolver config from the `ALGEON_LAKEHOUSE_CACHE_*`, `ALGEON_ICEBERG_S3_*`, and AWS endpoint
-    /// environment variables.
-    pub(super) fn from_env() -> Self {
-        parquet_read_strategy_config_from_env(|name| std::env::var(name).ok())
-    }
-}
-
-fn parquet_read_strategy_config_from_env(mut get: impl FnMut(&str) -> Option<String>) -> ParquetReadStrategyConfig {
-    let env_nonempty = |get: &mut dyn FnMut(&str) -> Option<String>, name: &str| {
-        get(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
-    };
-    let lakehouse_cache_root = env_nonempty(&mut get, ALGEON_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
-    let lakehouse_cache_read_policy = match get(ALGEON_LAKEHOUSE_CACHE_READ_ENV)
-        .unwrap_or_else(|| "enabled".to_string())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "disabled" => LakehouseCacheReadPolicy::Disabled,
-        _ => LakehouseCacheReadPolicy::Enabled,
-    };
-    let lakehouse_cache_policy = match get(ALGEON_LAKEHOUSE_CACHE_POLICY_ENV)
-        .unwrap_or_else(|| "disabled".to_string())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "read_through" => LakehouseCachePolicy::ReadThrough,
-        "fill_before_read" => LakehouseCachePolicy::FillBeforeRead,
-        _ => LakehouseCachePolicy::Disabled,
-    };
-    let lakehouse_cache_max_bytes = get(ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0);
-    let storage_endpoint = env_nonempty(&mut get, "ALGEON_ICEBERG_S3_ENDPOINT")
-        .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_S3_ENV))
-        .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_ENV))
-        .map(|endpoint| credential_free_endpoint_identity(&endpoint));
-    let has_storage_region = env_nonempty(&mut get, "ALGEON_ICEBERG_S3_REGION").is_some();
-    let has_explicit_s3_credentials = env_nonempty(&mut get, "ALGEON_ICEBERG_S3_ACCESS_KEY_ID").is_some()
-        || env_nonempty(&mut get, "ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
-        || env_nonempty(&mut get, "ALGEON_ICEBERG_S3_SESSION_TOKEN").is_some();
-    let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
-        CredentialMode::ScopedResolved
-    } else {
-        CredentialMode::SharedProcessEnv
-    };
-    let storage_profile_id = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
-        Some(DEFAULT_S3_SOURCE_STORAGE_PROFILE_ID.to_string())
-    } else {
-        None
-    };
-    ParquetReadStrategyConfig {
-        lakehouse_cache_root,
-        lakehouse_cache_read_policy,
-        lakehouse_cache_policy,
-        lakehouse_cache_max_bytes,
-        storage_endpoint,
-        storage_profile_id,
-        credential_mode,
+    /// The read strategy for one execution config: the optional byte cache,
+    /// the optional S3 storage, and the ambient endpoint that scopes cache
+    /// entries when the storage names none.
+    pub(crate) fn new(
+        byte_cache: Option<&LakehouseByteCache>,
+        s3_storage: Option<&S3SourceStorageProfile>,
+        ambient_endpoint: Option<&str>,
+    ) -> Self {
+        let storage_endpoint = s3_storage
+            .and_then(|profile| profile.endpoint.as_deref())
+            .filter(|endpoint| !endpoint.trim().is_empty())
+            .or(ambient_endpoint)
+            .map(credential_free_endpoint_identity);
+        let credential_mode = if s3_storage.is_some_and(S3SourceStorageProfile::requires_scoped_remote_direct_profile) {
+            CredentialMode::ScopedResolved
+        } else {
+            CredentialMode::SharedProcessEnv
+        };
+        Self {
+            lakehouse_cache_root: byte_cache.map(|cache| cache.root().to_path_buf()),
+            lakehouse_cache_read_policy: if byte_cache.is_none_or(LakehouseByteCache::serves_hits) {
+                LakehouseCacheReadPolicy::Enabled
+            } else {
+                LakehouseCacheReadPolicy::Disabled
+            },
+            lakehouse_cache_policy: byte_cache.map_or(LakehouseByteCacheFill::Disabled, LakehouseByteCache::fill),
+            lakehouse_cache_max_bytes: byte_cache.and_then(LakehouseByteCache::max_retained_bytes).map(NonZeroU64::get),
+            storage_endpoint,
+            storage_profile_id: s3_storage.map(|_| S3_STORAGE_PROFILE_ID.to_string()),
+            credential_mode,
+        }
     }
 }
 
@@ -242,7 +191,7 @@ fn resolve_s3_parquet_source_with_cache_root(
         .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
         .with_lakehouse_cache_path(cache_path.display().to_string()));
     }
-    if cache_identity_allowed && config.lakehouse_cache_policy.fills_before_read() {
+    if cache_identity_allowed && config.lakehouse_cache_policy == LakehouseByteCacheFill::FillBeforeRead {
         return Ok(ResolvedParquetSource::local_cache_kvikio(
             location,
             cache_path.display().to_string(),
@@ -289,8 +238,8 @@ fn reject_remote_kvikio_source(unavailable_reason: &'static str) -> Result<Resol
 
 fn background_fill_mode(config: &ParquetReadStrategyConfig) -> LakehouseCacheFillMode {
     match config.lakehouse_cache_policy {
-        LakehouseCachePolicy::ReadThrough => LakehouseCacheFillMode::Background,
-        LakehouseCachePolicy::Disabled | LakehouseCachePolicy::FillBeforeRead => LakehouseCacheFillMode::Disabled,
+        LakehouseByteCacheFill::ReadThrough => LakehouseCacheFillMode::Background,
+        LakehouseByteCacheFill::Disabled | LakehouseByteCacheFill::FillBeforeRead => LakehouseCacheFillMode::Disabled,
     }
 }
 
@@ -388,51 +337,52 @@ fn location_fingerprint(location: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use query_engine::source::ResolvedParquetInput;
 
     use super::*;
 
     #[test]
-    fn parquet_read_strategy_config_from_env_uses_catalog_endpoint_identity() {
-        let env = BTreeMap::from([
-            ("ALGEON_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
-            ("AWS_ENDPOINT_URL_S3", "https://aws.example.invalid"),
-        ]);
-        let config = parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+    fn s3_storage_endpoint_scopes_the_cache_without_credentials() {
+        let storage = S3SourceStorageProfile::default_chain()
+            .with_endpoint("http://user:secret@rustfs.local:9000/minio?sig=secret");
+        let config = ParquetReadStrategyConfig::new(None, Some(&storage), Some("https://aws.example.invalid"));
 
         assert_eq!(config.storage_endpoint.as_deref(), Some("http://rustfs.local:9000/minio"));
-        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(config.storage_profile_id.as_deref(), Some(S3_STORAGE_PROFILE_ID));
         assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
     }
 
     #[test]
-    fn parquet_read_strategy_config_marks_explicit_s3_credentials_as_scoped() {
-        let env = BTreeMap::from([
-            ("ALGEON_ICEBERG_S3_ACCESS_KEY_ID", "access"),
-            ("ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY", "secret"),
-        ]);
-        let config = parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+    fn s3_storage_credentials_and_region_are_scoped_to_the_profile() {
+        let credentials = S3SourceStorageProfile::default_chain().with_static_credentials("access", "secret", None);
+        let region = S3SourceStorageProfile::default_chain().with_region("us-west-2");
+        for storage in [credentials, region] {
+            let config = ParquetReadStrategyConfig::new(None, Some(&storage), None);
 
-        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
+            assert_eq!(config.storage_profile_id.as_deref(), Some(S3_STORAGE_PROFILE_ID));
+            assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
+            let result = resolve_parquet_source_with_metadata(
+                "s3://bucket/table/part-0.parquet",
+                &config,
+                &ParquetSourceMetadata::default(),
+            );
+            if let Some(source) = assert_expected_remote_foreground_source(result) {
+                assert_eq!(source.storage_profile_id(), Some(S3_STORAGE_PROFILE_ID));
+            }
+        }
     }
 
     #[test]
-    fn parquet_read_strategy_config_marks_s3_region_as_scoped() {
-        let env = BTreeMap::from([("ALGEON_ICEBERG_S3_REGION", "us-west-2")]);
-        let config = parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+    fn default_chain_storage_keeps_the_ambient_endpoint_and_process_credentials() {
+        let storage = S3SourceStorageProfile::default_chain();
+        let config = ParquetReadStrategyConfig::new(None, Some(&storage), Some("https://aws.example.invalid/"));
 
-        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
-
-        let result = resolve_parquet_source_with_metadata(
-            "s3://bucket/table/part-0.parquet",
-            &config,
-            &ParquetSourceMetadata::default(),
-        );
-        let _ = assert_expected_remote_foreground_source(result);
+        assert_eq!(config.storage_endpoint.as_deref(), Some("https://aws.example.invalid"));
+        assert_eq!(config.storage_profile_id.as_deref(), Some(S3_STORAGE_PROFILE_ID));
+        assert_eq!(config.credential_mode, CredentialMode::SharedProcessEnv);
+        assert_eq!(ParquetReadStrategyConfig::new(None, None, None).storage_profile_id, None);
     }
 
     #[test]
@@ -586,7 +536,7 @@ mod tests {
         let config = ParquetReadStrategyConfig {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             lakehouse_cache_read_policy: LakehouseCacheReadPolicy::Disabled,
-            lakehouse_cache_policy: LakehouseCachePolicy::ReadThrough,
+            lakehouse_cache_policy: LakehouseByteCacheFill::ReadThrough,
             ..Default::default()
         };
         let metadata = metadata_with_identity("etag:abc123");
@@ -611,7 +561,7 @@ mod tests {
         let config = ParquetReadStrategyConfig {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             lakehouse_cache_read_policy: LakehouseCacheReadPolicy::Disabled,
-            lakehouse_cache_policy: LakehouseCachePolicy::ReadThrough,
+            lakehouse_cache_policy: LakehouseByteCacheFill::ReadThrough,
             ..Default::default()
         };
         let metadata = metadata_with_identity("etag:abc123");
@@ -635,7 +585,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = ParquetReadStrategyConfig {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
-            lakehouse_cache_policy: LakehouseCachePolicy::ReadThrough,
+            lakehouse_cache_policy: LakehouseByteCacheFill::ReadThrough,
             ..Default::default()
         };
         let metadata = metadata_with_identity("etag:abc123");
@@ -681,7 +631,7 @@ mod tests {
 
     #[test]
     fn s3_without_content_identity_neither_serves_nor_fills() {
-        for policy in [LakehouseCachePolicy::ReadThrough, LakehouseCachePolicy::FillBeforeRead] {
+        for policy in [LakehouseByteCacheFill::ReadThrough, LakehouseByteCacheFill::FillBeforeRead] {
             let root = tempfile::tempdir().unwrap();
             let config = ParquetReadStrategyConfig {
                 lakehouse_cache_root: Some(root.path().to_path_buf()),

@@ -15,7 +15,7 @@ use query_engine::{
     source::SourceDiagnostics,
 };
 
-use super::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan};
+use super::{AlgeonNativeOptimizerConfig, FinalPlanDisposition, classify_final_plan};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::composed_admission_capability_evidence;
 use crate::{
@@ -23,7 +23,6 @@ use crate::{
     capability::CapabilityReason,
     cugraph_sql::is_feature_disabled_execution_plan,
     error::{ClientDetail, Error, ErrorCode, Result},
-    native::lakehouse_pruning,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
         AlgeonNativeGpuProducerExec, GpuFunctionHostOccurrenceExec,
@@ -295,9 +294,7 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         // rewrite. `crate::session` installs this stage after every other rule
         // already in the pipeline and immediately before DataFusion's sanity
         // check.
-        if self.ends_planning_pass()
-            && self.config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject
-        {
+        if self.ends_planning_pass() && self.config.execution_mode().rejects_datafusion_cpu() {
             // A plan this rule already selected recorded its report in the
             // earlier stage that selected it.
             let prior = || invocation.and_then(Invocation::planning_diagnostics).map(|diagnostics| diagnostics.report);
@@ -326,7 +323,6 @@ impl AlgeonNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         invocation: Option<&Invocation>,
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<PlanningReport>)> {
-        self.config.validate()?;
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok((plan, None));
         }
@@ -358,40 +354,32 @@ impl AlgeonNativePhysicalOptimizerRule {
                 .and_then(InvocationAttempt::query_id)
                 .map(|query_id| QueryId::new(query_id.as_str()))
                 .unwrap_or_else(QueryId::mint),
-        )
-        .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env()?);
+        );
         let effective_config = self.config.clone().with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
         let cost_selection = NativeCostSelection {
             options: *effective_config.native_plan_cost_options(),
-            datafusion_cpu_allowed: self.config.datafusion_cpu_execution_policy()
-                == DataFusionCpuExecutionPolicy::Allow,
+            datafusion_cpu_allowed: !self.config.execution_mode().rejects_datafusion_cpu(),
         };
 
-        let optimized = match (already_selected, self.config.relational_native_rewrite_policy(), self.stage) {
+        let optimized = match (already_selected, self.config.execution_mode().rewrites_relational_plans(), self.stage) {
             (Some(plan), _, _) => NativeOptimizationAttempt::retained(plan),
-            (None, super::RelationalNativeRewritePolicy::Disabled, _) => {
-                NativeOptimizationAttempt::retained(Arc::clone(&plan))
-            },
-            (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::CountOnlyProbe) => {
-                optimize_count_only_native_plan(
-                    Arc::clone(&plan),
-                    native_execution_config,
-                    native_optimizer_options,
-                    cost_selection,
-                    &self.root_sink,
-                )?
-            },
-            (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::Final) => {
-                optimize_final_native_plan(
-                    Arc::clone(&plan),
-                    native_execution_config,
-                    native_optimizer_options,
-                    cost_selection,
-                    &self.root_sink,
-                )?
-            },
+            (None, false, _) => NativeOptimizationAttempt::retained(Arc::clone(&plan)),
+            (None, true, NativeOptimizerStage::CountOnlyProbe) => optimize_count_only_native_plan(
+                Arc::clone(&plan),
+                native_execution_config,
+                native_optimizer_options,
+                cost_selection,
+                &self.root_sink,
+            )?,
+            (None, true, NativeOptimizerStage::Final) => optimize_final_native_plan(
+                Arc::clone(&plan),
+                native_execution_config,
+                native_optimizer_options,
+                cost_selection,
+                &self.root_sink,
+            )?,
         };
         let mut optimized = optimized;
         let binds_final_plan = self.ends_planning_pass();
@@ -718,6 +706,7 @@ mod tests {
         backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
         native_exec::SourceChunking,
+        planner::AlgeonGpuExecutionMode,
         report::{NotSupportedDetail, UnsupportedColumnDetail},
     };
 
@@ -759,8 +748,7 @@ mod tests {
     fn reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan() {
         let plan = union_over_empty_with_unsupported_field("unsupported");
         let rule = AlgeonNativePhysicalOptimizerRule::new(
-            AlgeonNativeOptimizerConfig::default()
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         );
 
         let error = rule
@@ -974,8 +962,7 @@ mod tests {
     #[test]
     fn native_required_errors_and_records_name_only_their_own_plan() {
         let rule = AlgeonNativePhysicalOptimizerRule::new(
-            AlgeonNativeOptimizerConfig::default()
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         );
         let rejected_column = |plan, options: &ConfigOptions| {
             let failure = rule.optimize(plan, options).expect_err("NativeRequired rejects the CPU plan");

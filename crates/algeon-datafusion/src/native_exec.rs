@@ -21,7 +21,7 @@ pub use query_engine::{
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationLimits},
-    runtime::{LakehouseCacheFillConfig, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile},
+    runtime::{LakehouseCacheFillConfig, S3SourceStorageProfile, SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 
 #[cfg(test)]
@@ -77,7 +77,7 @@ pub(crate) use self::{
 };
 pub use self::{
     composed::{AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec},
-    config::{AlgeonNativeExecutionConfig, SourceChunking},
+    config::{AlgeonNativeExecutionConfig, LakehouseByteCache, LakehouseByteCacheFill, SourceChunking},
     graph::{GraphBfsSingleflightEventSnapshot, GraphBfsSingleflightSnapshot},
     host::AlgeonNativeExec,
     metrics::{

@@ -14,7 +14,7 @@ use crate::server::{
         AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -75,16 +75,16 @@ fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
 }
 
 fn runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
-    runtime_backend_with_policy(max_active_attempts_per_device, DataFusionCpuExecutionPolicy::Allow)
+    runtime_backend_with_policy(max_active_attempts_per_device, AlgeonGpuExecutionMode::NativePreferred)
 }
 
 fn strict_runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
-    runtime_backend_with_policy(max_active_attempts_per_device, DataFusionCpuExecutionPolicy::Reject)
+    runtime_backend_with_policy(max_active_attempts_per_device, AlgeonGpuExecutionMode::NativeRequired)
 }
 
 fn runtime_backend_with_policy(
     max_active_attempts_per_device: usize,
-    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
+    execution_mode: AlgeonGpuExecutionMode,
 ) -> AlgeonGpuBackend {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
@@ -100,7 +100,7 @@ fn runtime_backend_with_policy(
             )
             .expect("valid source chunking"),
         ))
-        .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
+        .with_execution_mode(execution_mode)
         .build()
         .expect("runtime backend should build")
 }

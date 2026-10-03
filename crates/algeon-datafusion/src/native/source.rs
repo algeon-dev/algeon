@@ -50,7 +50,8 @@ pub(super) use columns::{
     required_parquet_column_requirements_for_scan_columns,
 };
 pub(super) use diagnostics::{local_parquet_source_diagnostics, source_diagnostics_for_normalized_plan};
-use s3_parquet::{ParquetReadStrategyConfig, ParquetSourceMetadata, resolve_parquet_source_with_metadata};
+pub(crate) use s3_parquet::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
+use s3_parquet::{ParquetSourceMetadata, resolve_parquet_source_with_metadata};
 
 pub(super) fn validate_slice1_parquet_scan(
     file_scan: &FileScanConfig,
@@ -58,6 +59,7 @@ pub(super) fn validate_slice1_parquet_scan(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<(), CapabilityReason> {
     if !native_parquet_object_store_scan_is_supported(file_scan) {
         return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
@@ -81,7 +83,7 @@ pub(super) fn validate_slice1_parquet_scan(
     {
         validate_pruning_only_parquet_predicate(parquet_source, filter, &source_schema)?;
     }
-    local_parquet_files(file_scan, parquet_source, filter, source_schema, column_requirements)?;
+    local_parquet_files(file_scan, parquet_source, filter, source_schema, column_requirements, source_reads)?;
     Ok(())
 }
 
@@ -153,8 +155,9 @@ pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &P
 pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
     graph_spec: &GraphAlgorithmSpec,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Option<GraphResidencyDescriptor> {
-    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec, source_reads)?;
     graph_residency_descriptor_for_local_parquet_source(&source, graph_spec).descriptor().cloned()
 }
 
@@ -167,10 +170,11 @@ pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
 #[cfg(feature = "cugraph")]
 pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Option<NativeLocalParquetSource> {
     let _footers = FooterScope::enter();
     let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
-    graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()
+    graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source, source_reads).ok()
 }
 
 /// Returns the exact row count for the same narrow local-Parquet rowset that
@@ -181,8 +185,11 @@ pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(
 /// This lets graph admission use a real construction model when DataFusion's
 /// generic scan statistics are merely inexact.
 #[cfg(feature = "cugraph")]
-pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(source_exec: &DataSourceExec) -> Option<u64> {
-    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
+pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(
+    source_exec: &DataSourceExec,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Option<u64> {
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec, source_reads)?;
     source.exact_selected_row_count()
 }
 
@@ -193,8 +200,11 @@ pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(source_exec: &Da
 /// [`exact_row_count_for_datafusion_local_parquet_scan`]: a detached fixture
 /// manifest or a query/session setting must never price a different scan.
 #[cfg(feature = "cugraph")]
-pub(crate) fn graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source_exec: &DataSourceExec) -> Option<u64> {
-    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
+pub(crate) fn graph_vertex_upper_bound_for_datafusion_local_parquet_scan(
+    source_exec: &DataSourceExec,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Option<u64> {
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec, source_reads)?;
     source.graph_vertex_upper_bound()
 }
 
@@ -210,8 +220,9 @@ pub(crate) fn datafusion_local_parquet_scan_has_simple_directed_edge_topology(
     source_exec: &DataSourceExec,
     source_column: &str,
     destination_column: &str,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> bool {
-    graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)
+    graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec, source_reads)
         .is_some_and(|source| source.has_simple_directed_edge_topology(source_column, destination_column))
 }
 
@@ -220,6 +231,7 @@ fn graph_residency_local_parquet_scan_source(
     source_exec: &DataSourceExec,
     file_scan: &FileScanConfig,
     parquet_source: &ParquetSource,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeLocalParquetSource, CapabilityReason> {
     // Cache identity must describe the exact graph rowset. The general native
     // lowerer can model these features for execution, but this source-only
@@ -247,7 +259,8 @@ fn graph_residency_local_parquet_scan_source(
     )?;
     validate_partition_columns(file_scan, &requirements.partition_column_indices)?;
     let source_schema = native_source_output_schema(file_scan, &requirements)?;
-    let files = local_parquet_files(file_scan, parquet_source, None, Arc::clone(&source_schema), &requirements)?;
+    let files =
+        local_parquet_files(file_scan, parquet_source, None, Arc::clone(&source_schema), &requirements, source_reads)?;
 
     Ok(NativeLocalParquetSource::from_files(files, source_schema, requirements.read_columns)
         .with_column_roles(requirements.projected_output_columns, requirements.pure_filter_columns)
@@ -272,6 +285,7 @@ pub(super) fn local_parquet_files(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<Vec<NativeLocalParquetFile>, CapabilityReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if local_parquet_scan_is_empty(file_scan) {
@@ -283,7 +297,7 @@ pub(super) fn local_parquet_files(
     let mut native_files = Vec::with_capacity(scan_files.len());
     for (file_index, scan_file) in scan_files.iter().enumerate() {
         let file = scan_file.file;
-        let mut native_file = native_parquet_file_for_scan(file_scan, file)?;
+        let mut native_file = native_parquet_file_for_scan(file_scan, file, source_reads)?;
         if !column_requirements.partition_column_indices.is_empty() {
             native_file = native_file
                 .with_partition_values(native_partition_values(file, &column_requirements.partition_column_indices)?);
@@ -310,6 +324,7 @@ pub(super) fn local_parquet_scan_is_empty(file_scan: &FileScanConfig) -> bool {
 fn native_parquet_file_for_scan(
     file_scan: &FileScanConfig,
     file: &PartitionedFile,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeLocalParquetFile, CapabilityReason> {
     if file_scan.object_store_url.as_str().starts_with("file://") {
         let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
@@ -333,9 +348,8 @@ fn native_parquet_file_for_scan(
         size_bytes: Some(file.object_meta.size),
         content_identity: file.object_meta.e_tag.as_ref().or(file.object_meta.version.as_ref()).cloned(),
     };
-    let resolved =
-        resolve_parquet_source_with_metadata(uri.as_str(), &ParquetReadStrategyConfig::from_env(), &metadata)
-            .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)?;
+    let resolved = resolve_parquet_source_with_metadata(uri.as_str(), source_reads, &metadata)
+        .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)?;
     NativeLocalParquetFile::from_resolved_parquet_source(resolved)
         .map(|native_file| native_file.with_file_size_bytes(file.object_meta.size))
         .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)

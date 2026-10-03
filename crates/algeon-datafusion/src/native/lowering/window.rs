@@ -39,7 +39,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure,
+        LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeInput, NormalizedNativeSort, NormalizedNativeWindow},
@@ -51,8 +51,9 @@ pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    let sorted = lower_unprojected_sort_input(sort, builder, required_output_fields)?;
+    let sorted = lower_unprojected_sort_input(sort, builder, required_output_fields, source_reads)?;
     project_sort_output(builder, sort.sort.output_schema(), sorted.input, required_output_fields)
 }
 
@@ -60,6 +61,7 @@ fn lower_unprojected_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<SortedNativeInput, LoweringFailure> {
     validate_schema(Arc::clone(sort.sort.output_schema()))?;
     validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
@@ -68,7 +70,7 @@ fn lower_unprojected_sort_input(
         collect_required_field_indices(&sort_expr.expr, sort.sort.input_schema(), &mut child_required)?;
     }
     child_required.extend(required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
-    let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required))?;
+    let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required), source_reads)?;
     let sorted =
         lower_sort_ordering_unprojected_with_input(builder, sort.sort.ordering(), sort.sort.input_schema(), input)?;
     Ok(SortedNativeInput {
@@ -93,6 +95,7 @@ pub(super) fn lower_window_input(
     window: &NormalizedNativeWindow<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let window_schema = window.window.schema();
     let window_input_schema = window.window.input_schema();
@@ -104,7 +107,7 @@ pub(super) fn lower_window_input(
     // sort yields a new column that carries none of the sort's ordering.
     let (input, sorted_keys) = match window.input.as_ref() {
         NormalizedNativeInput::Sort(sort) => {
-            let sorted = lower_unprojected_sort_input(sort, builder, &RequiredFields::all())?;
+            let sorted = lower_unprojected_sort_input(sort, builder, &RequiredFields::all(), source_reads)?;
             let keys = sort
                 .sort
                 .ordering()
@@ -114,7 +117,7 @@ pub(super) fn lower_window_input(
                 .collect::<Vec<_>>();
             (sorted.input, keys)
         },
-        input => (lower_native_input(input, builder, &RequiredFields::all())?, Vec::new()),
+        input => (lower_native_input(input, builder, &RequiredFields::all(), source_reads)?, Vec::new()),
     };
     let prepared = materialize_window_key_expressions(
         builder,

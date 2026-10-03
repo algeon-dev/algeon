@@ -1018,20 +1018,20 @@ mod tests {
         cugraph_sql::CugraphSqlConfig,
         error::ErrorCode,
         native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
-        planner::DataFusionCpuExecutionPolicy,
+        planner::AlgeonGpuExecutionMode,
         session::AlgeonSessionStateBuilderExt,
     };
 
     #[tokio::test]
     async fn feature_disabled_cugraph_rejection_stays_typed_through_an_attempt_stream() {
-        let backend = InstalledTestGpuBackend::with_config_and_datafusion_cpu_policy(
+        let backend = InstalledTestGpuBackend::with_config_and_execution_mode(
             AlgeonNativeExecutionConfig::new(
                 SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
             ),
             AlgeonGpuDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
             AlgeonGpuQueuePolicy::default(),
-            DataFusionCpuExecutionPolicy::Reject,
+            AlgeonGpuExecutionMode::NativeRequired,
         );
         let builder = backend
             .backend()

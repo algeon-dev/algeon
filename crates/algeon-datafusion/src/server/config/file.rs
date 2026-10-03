@@ -12,6 +12,17 @@ pub(super) struct ServerFileOverlay {
     pub(super) native: ServerNativeFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
     pub(super) models: ServerModelsFileConfig,
+    pub(super) s3: Option<ServerS3FileConfig>,
+}
+
+/// `[s3]`: the S3 storage every `s3://` source reads through.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerS3FileConfig {
+    pub(super) endpoint: Option<String>,
+    pub(super) region: Option<String>,
+    pub(super) path_style: Option<bool>,
+    pub(super) unsigned: Option<bool>,
 }
 
 /// `[models]`: the directory `cuml_forest_predict` reads model files from.
@@ -73,8 +84,8 @@ pub(super) struct ServerNativeFileConfig {
     pub(super) max_source_reads_in_flight: Option<usize>,
     pub(super) source_chunk_planning_mode: Option<String>,
     pub(super) statistical_aggregate_execution_mode: Option<String>,
-    pub(super) final_plan_requirement: Option<String>,
     pub(super) execution_mode: Option<String>,
+    pub(super) lakehouse_footer_pruning: Option<bool>,
 }
 pub(super) fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
     let raw = fs::read_to_string(path).map_err(|error| {

@@ -15,9 +15,9 @@ use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuBackend, GpuDeviceMemoryLimit, GpuMemoryOwnership},
     native_exec::AlgeonNativeExecutionConfig,
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, ERROR_CODE_METADATA_KEY,
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ERROR_CODE_METADATA_KEY,
         ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, REASON_METADATA_KEY, ServerConfig,
         ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
         UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, backend_from_server_config, build_session_context_with_backend,

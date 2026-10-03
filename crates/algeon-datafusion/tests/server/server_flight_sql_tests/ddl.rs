@@ -39,8 +39,8 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-            ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        "no_datafusion_cpu".to_string(),
+            ALGEON_SERVER_EXECUTION_MODE_ENV,
+        "native_required".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);
@@ -96,8 +96,8 @@ async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
 async fn strict_flight_sql_executes_grouped_aggregate_topk_then_left_join() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
-        "no_datafusion_cpu".to_string(),
+        ALGEON_SERVER_EXECUTION_MODE_ENV,
+        "native_required".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
     declare_test_gpu_ownership(&mut config);

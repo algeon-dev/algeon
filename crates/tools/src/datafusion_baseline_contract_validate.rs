@@ -28,7 +28,7 @@ use algeon_datafusion::{
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
-    planner::{DataFusionCpuExecutionPolicy, NativePlanningDiagnostics, plan_with_native_diagnostics},
+    planner::{AlgeonGpuExecutionMode, NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::{CandidateOutcome, PlanningReport},
     session::{ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, AlgeonSessionStateBuilderExt},
 };
@@ -1021,10 +1021,7 @@ fn relational_ctx(selection: RelationalExecution, backend: &AlgeonGpuBackend) ->
         RelationalExecution::NativeDefault => backend.install_on(builder)?.build(),
         RelationalExecution::RequireNoDataFusionCpu => builder
             .with_algeon_native(
-                backend
-                    .optimizer_config()
-                    .clone()
-                    .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+                backend.optimizer_config().clone().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
             )
             .build(),
     };

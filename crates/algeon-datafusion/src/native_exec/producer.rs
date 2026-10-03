@@ -21,7 +21,7 @@ use query_engine::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
-    runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
+    runtime::{ExecutionContext, resident::GpuResultHandle},
 };
 #[cfg(test)]
 use query_engine::{exec::admit_query_plan, mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
@@ -187,7 +187,6 @@ pub struct AlgeonNativeGpuProducerExec {
     metrics_capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
     lakehouse_footer_pruning: bool,
-    source_storage_profiles: Vec<SourceStorageProfile>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -207,7 +206,7 @@ impl AlgeonNativeGpuProducerExec {
         plan: QueryPlan,
         metrics_capture: Option<NativeMetricsCapture>,
     ) -> Result<Self> {
-        Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None, false, Vec::new())
+        Self::try_new_with_metrics_capture_and_shape(input_name, plan, metrics_capture, None, false)
     }
 
     #[cfg(test)]
@@ -217,7 +216,6 @@ impl AlgeonNativeGpuProducerExec {
         metrics_capture: Option<NativeMetricsCapture>,
         plan_task_mapping_datafusion_shape: Option<&str>,
         lakehouse_footer_pruning: bool,
-        source_storage_profiles: Vec<SourceStorageProfile>,
     ) -> Result<Self> {
         let metrics_capture = Some(metrics_capture.unwrap_or_else(NativeMetricsCapture::standalone).new_execution());
         let admitted = admit_query_plan(&plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
@@ -230,7 +228,6 @@ impl AlgeonNativeGpuProducerExec {
             metrics_capture,
             plan_task_mapping_datafusion_shape,
             lakehouse_footer_pruning,
-            source_storage_profiles,
             None,
         )
     }
@@ -249,7 +246,6 @@ impl AlgeonNativeGpuProducerExec {
             execution_config.new_metrics_capture(),
             execution_config.plan_task_mapping_datafusion_shape(),
             execution_config.lakehouse_footer_pruning(),
-            execution_config.source_storage_profiles().to_vec(),
             eq_properties,
         )
     }
@@ -260,7 +256,6 @@ impl AlgeonNativeGpuProducerExec {
         metrics_capture: Option<NativeExecutionMetricsCapture>,
         plan_task_mapping_datafusion_shape: Option<&str>,
         lakehouse_footer_pruning: bool,
-        source_storage_profiles: Vec<SourceStorageProfile>,
         eq_properties: Option<EquivalenceProperties>,
     ) -> Result<Self> {
         let input_name = input_name.into();
@@ -302,7 +297,6 @@ impl AlgeonNativeGpuProducerExec {
             metrics_capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             lakehouse_footer_pruning,
-            source_storage_profiles,
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
@@ -316,13 +310,7 @@ impl AlgeonNativeGpuProducerExec {
     }
 
     async fn resolved_admitted_plan(&self, task_context: &TaskContext) -> Result<Arc<AdmittedPlan>> {
-        super::lakehouse::resolve_admitted_plan(
-            self.lakehouse_footer_pruning,
-            &self.source_storage_profiles,
-            &self.admitted,
-            task_context,
-        )
-        .await
+        super::lakehouse::resolve_admitted_plan(self.lakehouse_footer_pruning, &self.admitted, task_context).await
     }
 
     pub(crate) fn with_metrics_capture(mut self, metrics_capture: Option<NativeExecutionMetricsCapture>) -> Self {

@@ -45,7 +45,8 @@ use crate::{
         GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
         QueryServiceDeviceAdmissionSnapshot,
     },
-    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
+    s3_storage::install_s3_storage,
     session::{AlgeonSessionStateBuilderExt, installed_algeon_native_optimizer_config},
 };
 
@@ -137,7 +138,11 @@ impl AlgeonGpuBackend {
     ///
     /// The installation binds the native optimizer to this backend's admission
     /// authority, and installs the GPU coverage UDTF. The resulting session
-    /// plans and admits native execution through this backend's ledger.
+    /// plans and admits native execution through this backend's ledger. With
+    /// [`AlgeonNativeExecutionConfig::with_s3_storage`], the session also
+    /// resolves `s3://` URLs that have no registered object store from that
+    /// storage, so DataFusion scans read with the native reader's endpoint,
+    /// region, and credentials.
     ///
     /// This method does not install optional SQL families such as cuVS or
     /// cuGraph. Call [`AlgeonSessionStateBuilderExt::try_with_cuvs_sql`] or
@@ -448,6 +453,10 @@ fn install_backend_optimizer_config(
     builder: SessionStateBuilder,
     optimizer_config: &AlgeonNativeOptimizerConfig,
 ) -> Result<SessionStateBuilder> {
+    let builder = match optimizer_config.native_execution_config().s3_storage() {
+        Some(storage) => install_s3_storage(builder, storage)?,
+        None => builder,
+    };
     Ok(builder.with_algeon_native(optimizer_config.clone()))
 }
 
@@ -471,7 +480,6 @@ fn validated_backend_construction(
     configured_devices: Vec<AlgeonGpuDeviceConfig>,
     queue_policy: AlgeonGpuQueuePolicy,
 ) -> Result<ValidatedBackendConstruction> {
-    optimizer_config.validate()?;
     let devices = resolve_device_configs(configured_devices)?;
     validate_queue_policy(&queue_policy)?;
     let execution_config = optimizer_config.native_execution_config().clone();
@@ -521,22 +529,22 @@ impl InstalledTestGpuBackend {
         device_profile: AlgeonGpuDeviceProfile,
         queue_policy: AlgeonGpuQueuePolicy,
     ) -> Self {
-        Self::with_config_and_datafusion_cpu_policy(
+        Self::with_config_and_execution_mode(
             native_execution_config,
             device_profile,
             queue_policy,
-            DataFusionCpuExecutionPolicy::Allow,
+            AlgeonGpuExecutionMode::NativePreferred,
         )
     }
 
-    /// Builds a serialized real backend with an explicit completed-plan
-    /// DataFusion CPU policy. This keeps integration tests on the same frozen
-    /// backend-installation path as production cells that add a final-plan gate.
-    pub(crate) fn with_config_and_datafusion_cpu_policy(
+    /// Builds a serialized real backend with an explicit execution mode. This
+    /// keeps integration tests on the same frozen backend-installation path as
+    /// production cells that require native execution.
+    pub(crate) fn with_config_and_execution_mode(
         native_execution_config: AlgeonNativeExecutionConfig,
         device_profile: AlgeonGpuDeviceProfile,
         queue_policy: AlgeonGpuQueuePolicy,
-        datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
+        execution_mode: AlgeonGpuExecutionMode,
     ) -> Self {
         static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -546,7 +554,7 @@ impl InstalledTestGpuBackend {
         // a plain `collect`, queue here for tests to inspect.
         let backend = AlgeonGpuBackend::builder()
             .with_native_execution_config(native_execution_config)
-            .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
+            .with_execution_mode(execution_mode)
             .devices([device])
             .queue_policy(queue_policy)
             .with_attempt_completion_queue_capacity(64)
@@ -605,13 +613,6 @@ impl AlgeonGpuBackendBuilder {
     /// Retain bounded reports whose completion receivers were abandoned.
     pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
         self.attempt_completion_queue_capacity = Some(capacity);
-        self
-    }
-
-    /// Set the completed-plan DataFusion CPU policy enforced after native
-    /// rewriting for every backend-installed physical plan.
-    pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
-        self.optimizer_config = self.optimizer_config.with_datafusion_cpu_execution_policy(policy);
         self
     }
 

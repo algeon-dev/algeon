@@ -31,10 +31,6 @@ use datafusion::{
     physical_planner::ExtensionPlanner,
 };
 
-#[cfg(all(test, feature = "cugraph"))]
-use crate::planner::AlgeonGpuExecutionMode;
-#[cfg(feature = "cugraph")]
-use crate::planner::RelationalNativeRewritePolicy;
 use crate::{
     cugraph_sql::{CugraphExtensionPlanner, CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_relation_planner},
     cuml_sql::{
@@ -236,8 +232,7 @@ pub(crate) fn session_state_with_native_execution_config(
 ) -> Option<SessionState> {
     let optimizer_config =
         installed_algeon_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
-    let relational_rewrite_enabled =
-        optimizer_config.relational_native_rewrite_policy() == RelationalNativeRewritePolicy::Enabled;
+    let relational_rewrite_enabled = optimizer_config.execution_mode().rewrites_relational_plans();
     let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config, input_name));
     let mut rules = state.physical_optimizers().to_vec();
     // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
@@ -365,7 +360,7 @@ mod tests {
     use super::*;
     use crate::{
         backend::InstalledTestGpuBackend, error::DataFusionErrorExt, native_exec::QueryAdmissionSource,
-        planner::DataFusionCpuExecutionPolicy,
+        planner::AlgeonGpuExecutionMode,
     };
 
     /// Native lowering rejects struct columns, so this plan stays on DataFusion.
@@ -417,8 +412,8 @@ mod tests {
     /// rewrite leaves the DataFusion CPU policy to the outer run.
     #[test]
     fn cugraph_subplanning_leaves_the_cpu_policy_to_the_outer_run() {
-        let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let optimizer_config =
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
         let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
         let nested = session_state_with_native_execution_config(
             &state,
@@ -471,8 +466,7 @@ mod tests {
         let state = SessionStateBuilder::new_with_default_features()
             .with_physical_optimizer_rule(Arc::new(ReplaceWithCpuUnion))
             .with_algeon_native(
-                AlgeonNativeOptimizerConfig::default()
-                    .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+                AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
             )
             .build();
         let rule_names = state.physical_optimizers().iter().map(|rule| rule.name()).collect::<Vec<_>>();
@@ -499,8 +493,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_leaves_dynamic_filter_pushdown_to_the_outer_run() {
-        let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let optimizer_config =
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
         let state =
             SessionStateBuilder::new_with_default_features().with_algeon_native(optimizer_config.clone()).build();
         let nested = session_state_with_native_execution_config(
@@ -519,8 +513,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_plans_single_group_scans_for_declared_orderings() {
-        let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let optimizer_config =
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
         let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
         let nested = session_state_with_native_execution_config(
             &state,
@@ -553,8 +547,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_preserves_parent_catalog_relations() {
-        let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let optimizer_config =
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired);
         let state =
             SessionStateBuilder::new_with_default_features().with_algeon_native(optimizer_config.clone()).build();
         let ctx = SessionContext::new_with_state(state);

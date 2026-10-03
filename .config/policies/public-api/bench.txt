@@ -185,11 +185,11 @@ pub fn bench::report_workload::tpch::tpch_tuned_cpu_session_config() -> datafusi
 pub enum bench::report_workload::RelationalExecutionSelection
 pub bench::report_workload::RelationalExecutionSelection::CpuBaseline
 pub bench::report_workload::RelationalExecutionSelection::Native
-pub bench::report_workload::RelationalExecutionSelection::Native::datafusion_cpu_execution_policy: algeon_datafusion::planner::DataFusionCpuExecutionPolicy
+pub bench::report_workload::RelationalExecutionSelection::Native::execution_mode: algeon_datafusion::planner::AlgeonGpuExecutionMode
 impl bench::report_workload::RelationalExecutionSelection
 pub const fn bench::report_workload::RelationalExecutionSelection::as_str(self) -> &'static str
 pub fn bench::report_workload::RelationalExecutionSelection::configure_native_optimizer(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> core::option::Option<algeon_datafusion::planner::AlgeonNativeOptimizerConfig>
-pub const fn bench::report_workload::RelationalExecutionSelection::datafusion_cpu_execution_policy(self) -> core::option::Option<algeon_datafusion::planner::DataFusionCpuExecutionPolicy>
+pub const fn bench::report_workload::RelationalExecutionSelection::execution_mode(self) -> core::option::Option<algeon_datafusion::planner::AlgeonGpuExecutionMode>
 pub const fn bench::report_workload::RelationalExecutionSelection::installs_native_rule(self) -> bool
 pub const fn bench::report_workload::RelationalExecutionSelection::native() -> Self
 pub const fn bench::report_workload::RelationalExecutionSelection::strict_native() -> Self

@@ -10,19 +10,21 @@ use super::{
     is_logical_vertex_type, lowered_native_edge_plan, native_algorithm,
 };
 use crate::native::{
-    FooterScope, graph_residency_descriptor_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
+    FooterScope, ParquetReadStrategyConfig, graph_residency_descriptor_for_datafusion_local_parquet_scan,
+    lower_physical_plan_to_native,
 };
 
 pub(super) fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
     edge_source: Arc<dyn ExecutionPlan>,
     edge_normalize_inserted: bool,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<Option<GraphResidencyDescriptor>> {
     if cugraph_spec_uses_logical_vertex_mapping(spec, edge_source.schema().as_ref()) {
         return Ok(None);
     }
     let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
-    Ok(cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec)?.descriptor().cloned())
+    Ok(cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec, source_reads)?.descriptor().cloned())
 }
 
 pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
@@ -38,23 +40,24 @@ pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmS
 pub(super) fn cugraph_graph_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<GraphResidencyPlanAnalysis> {
     Ok(match lowered_native_edge_plan(edge_source.as_ref()) {
         Some(plan) => graph_residency_descriptor_for_edge_plan(plan, native_spec),
-        None => cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)?,
+        None => cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec, source_reads)?,
     })
 }
 
 pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<GraphResidencyPlanAnalysis> {
     let _footers = FooterScope::enter();
-    let direct_parquet_descriptor = edge_source
-        .as_ref()
-        .downcast_ref::<DataSourceExec>()
-        .and_then(|source| graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec));
-    let lowering = lower_physical_plan_to_native(edge_source)?;
+    let direct_parquet_descriptor = edge_source.as_ref().downcast_ref::<DataSourceExec>().and_then(|source| {
+        graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec, source_reads)
+    });
+    let lowering = lower_physical_plan_to_native(edge_source, source_reads)?;
     if lowering.plans.len() == 1 && lowering.selected_count() == 1 {
         return Ok(graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec));
     }

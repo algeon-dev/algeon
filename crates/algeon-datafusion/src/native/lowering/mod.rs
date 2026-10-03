@@ -33,7 +33,10 @@ use query_engine::{
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
-use crate::{capability::CapabilityReason, native::LoweringFailure};
+use crate::{
+    capability::CapabilityReason,
+    native::{LoweringFailure, ParquetReadStrategyConfig},
+};
 
 /// Lowers a normalized native tree into the DataFusion-free query IR.
 ///
@@ -41,13 +44,16 @@ use crate::{capability::CapabilityReason, native::LoweringFailure};
 /// pruning, filter pushdown, zero-column count, aggregate, sort, and limit can
 /// be planned together. All other aggregate roots lower their input tree first,
 /// which covers joins and recursive unary/aggregate inputs.
-pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, LoweringFailure> {
+pub(super) fn lower_normalized_plan(
+    normalized: &NormalizedNativePlan<'_>,
+    source_reads: &ParquetReadStrategyConfig,
+) -> Result<NativeQueryPlan, LoweringFailure> {
     match &normalized.root {
         NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
-            root::lower_slice1_plan(normalized, root)
+            root::lower_slice1_plan(normalized, root, source_reads)
         },
-        NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root),
-        NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root),
+        NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root, source_reads),
+        NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root, source_reads),
     }
 }
 
@@ -94,8 +100,9 @@ fn lower_native_input(
     input: &NormalizedNativeInput<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    lower_native_input_with_scan_limit(input, builder, required_output_fields, None)
+    lower_native_input_with_scan_limit(input, builder, required_output_fields, None, source_reads)
 }
 
 fn lower_native_input_with_scan_limit(
@@ -103,10 +110,11 @@ fn lower_native_input_with_scan_limit(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     source_scan_limit: Option<usize>,
+    source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let output = match input {
         NormalizedNativeInput::Source(source) => {
-            source::lower_source_input(source, builder, required_output_fields, source_scan_limit)
+            source::lower_source_input(source, builder, required_output_fields, source_scan_limit, source_reads)
         },
         NormalizedNativeInput::GpuResidentSource(source) => {
             lower_gpu_resident_source_input(source, builder, required_output_fields)
@@ -114,28 +122,45 @@ fn lower_native_input_with_scan_limit(
         NormalizedNativeInput::LiteralSource(source) => {
             lower_literal_source_input(source, builder, required_output_fields)
         },
-        NormalizedNativeInput::Filter(filter) => unary::lower_filter_input(filter, builder, required_output_fields),
+        NormalizedNativeInput::Filter(filter) => {
+            unary::lower_filter_input(filter, builder, required_output_fields, source_reads)
+        },
         NormalizedNativeInput::Projection(projection) => {
-            unary::lower_projection_input(projection, builder, required_output_fields)
+            unary::lower_projection_input(projection, builder, required_output_fields, source_reads)
         },
         NormalizedNativeInput::Limit(limit) => {
             let pushed_scan_limit = source_scan_limit_through_limit(limit.spec, source_scan_limit);
-            let input =
-                lower_native_input_with_scan_limit(&limit.input, builder, required_output_fields, pushed_scan_limit)?;
+            let input = lower_native_input_with_scan_limit(
+                &limit.input,
+                builder,
+                required_output_fields,
+                pushed_scan_limit,
+                source_reads,
+            )?;
             let node = builder.add_limit(input.node, limit.spec)?;
             Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
         },
         NormalizedNativeInput::Aggregate(aggregate) => {
-            aggregate::lower_aggregate_input(aggregate, builder, required_output_fields)
+            aggregate::lower_aggregate_input(aggregate, builder, required_output_fields, source_reads)
         },
-        NormalizedNativeInput::Sort(sort) => window::lower_sort_input(sort, builder, required_output_fields),
-        NormalizedNativeInput::Window(window) => window::lower_window_input(window, builder, required_output_fields),
-        NormalizedNativeInput::HashJoin(join) => join::lower_hash_join_input(join, builder, required_output_fields),
-        NormalizedNativeInput::CrossJoin(join) => join::lower_cross_join_input(join, builder, required_output_fields),
+        NormalizedNativeInput::Sort(sort) => {
+            window::lower_sort_input(sort, builder, required_output_fields, source_reads)
+        },
+        NormalizedNativeInput::Window(window) => {
+            window::lower_window_input(window, builder, required_output_fields, source_reads)
+        },
+        NormalizedNativeInput::HashJoin(join) => {
+            join::lower_hash_join_input(join, builder, required_output_fields, source_reads)
+        },
+        NormalizedNativeInput::CrossJoin(join) => {
+            join::lower_cross_join_input(join, builder, required_output_fields, source_reads)
+        },
         NormalizedNativeInput::NestedLoopJoin(join) => {
-            join::lower_nested_loop_join_input(join, builder, required_output_fields)
+            join::lower_nested_loop_join_input(join, builder, required_output_fields, source_reads)
         },
-        NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
+        NormalizedNativeInput::Union(union) => {
+            union::lower_union_input(union, builder, required_output_fields, source_reads)
+        },
     }?;
     advisory::attach_input(builder, input, &output)?;
     Ok(output)

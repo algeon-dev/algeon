@@ -12,6 +12,7 @@ use query_engine::{
 };
 
 use super::*;
+use crate::native::ParquetReadStrategyConfig;
 
 #[path = "tpch_shapes/q22.rs"]
 mod q22;
@@ -31,7 +32,7 @@ async fn tpch_native_optimizer_rule_rows_match_golden() {
         let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
             panic!("{} should produce a physical plan", item.query_id);
         };
-        let lowered = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+        let lowered = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
         for (fragment, native_plan) in lowered.plans.iter().enumerate() {
             let optimized = optimize_query_plan(
                 native_plan.clone(),
@@ -92,7 +93,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q2.input else {
         panic!("q02 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+    let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let optimized_q2 = optimize_query_plan(
@@ -137,7 +138,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q15.input else {
         panic!("q15 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+    let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let optimized_q15 = optimize_query_plan(
@@ -175,7 +176,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q18.input else {
         panic!("q18 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+    let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let decision = admit(
@@ -193,7 +194,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q20.input else {
         panic!("q20 should produce a physical plan");
     };
-    let result = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+    let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let decision = admit(
@@ -220,7 +221,7 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
         panic!("q18 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -269,7 +270,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
         panic!("q18 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let optimized = optimize_query_plan(
         result.plans[0].clone(),
@@ -316,7 +317,7 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
         panic!("q18 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     // On SF100 the bounded admission gate refuses the orders-side semijoin
     // rewrite (`root_topk_join_aggregate_requires_source_reduction_evidence`),
@@ -373,7 +374,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         panic!("q21 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -543,7 +544,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
         panic!("q7 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -613,7 +614,7 @@ async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
         panic!("DataFusion should declare q8 mkt_share as Decimal128: {datafusion_mkt_share_field:?}");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -649,7 +650,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         panic!("q11 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -856,7 +857,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
         panic!("q13 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -988,7 +989,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         panic!("q16 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan).unwrap();
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

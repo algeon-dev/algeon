@@ -9,7 +9,7 @@ use algeon_datafusion::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -139,8 +139,7 @@ fn feature_off_context(scans: Arc<AtomicUsize>) -> SessionContext {
 fn feature_off_no_cpu_context(scans: Arc<AtomicUsize>) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
         .with_algeon_native(
-            AlgeonNativeOptimizerConfig::default()
-                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
         )
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()

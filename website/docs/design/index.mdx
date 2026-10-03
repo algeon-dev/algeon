@@ -359,9 +359,10 @@ Source data and the interactive workspace stay separate:
 - The Flight SQL server can expose a workspace overlay so users get short names
   without teaching a read-only source catalog to accept views.
 
-Set `ALGEON_ICEBERG_FOOTER_PRUNING=true` to let native object-store scans use
-Parquet footers for safe static and dimension-derived row-group pruning before
-execution. The variable name predates the removal of the Iceberg integration.
+Enable footer pruning (`native.lakehouse_footer_pruning`, or
+`AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning` in the library) to
+let native object-store scans use Parquet footers for safe static and
+dimension-derived row-group pruning before execution.
 
 Iceberg sources are not supported; see
 [Iceberg support](../integration/overview.mdx#iceberg-support).

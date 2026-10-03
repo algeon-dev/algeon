@@ -163,7 +163,11 @@ impl CugraphAlgoExec {
         host_boundary_config: GpuIslandHostBoundaryConfig,
         gpu_result_input_name: String,
     ) -> DataFusionResult<Self> {
-        let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
+        let input_row_bounds = CugraphInputRowBounds::from_execution_plans(
+            edge_source.as_ref(),
+            &predicate_sources,
+            &native_execution_config.source_read_strategy(),
+        )?;
         Self::with_input_row_bounds(
             spec,
             edge_source,
@@ -192,9 +196,10 @@ impl CugraphAlgoExec {
         gpu_result_input_name: String,
     ) -> Result<Self> {
         let schema = projected_schema(&spec.output_schema, result_options.projection.as_ref())?;
-        let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
+        let source_reads = native_execution_config.source_read_strategy();
+        let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec, &source_reads);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
-        let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source.as_ref());
+        let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source.as_ref(), &source_reads);
         preflight_cugraph_query_plan(&CugraphPlanDefinition {
             spec: spec.clone(),
             edge_schema: edge_source.schema(),
@@ -205,8 +210,12 @@ impl CugraphAlgoExec {
             edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
         })?;
-        let graph_residency =
-            cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted)?;
+        let graph_residency = cugraph_graph_residency_descriptor(
+            &spec,
+            Arc::clone(&edge_source),
+            edge_normalize_inserted,
+            &source_reads,
+        )?;
         // Footer pruning is async and can change the exact graph cardinality.
         // Do not let this pre-hydration plan carry an admission ticket; the
         // one immutable ticket is minted after metadata preparation.
@@ -291,6 +300,7 @@ impl CugraphAlgoExec {
             &self.spec,
             Arc::clone(&self.edge_source),
             self.edge_normalize_inserted(),
+            &self.native_execution_config.source_read_strategy(),
         )?;
         Ok(self)
     }
@@ -336,7 +346,8 @@ impl CugraphAlgoExec {
             max_output_staging_bytes,
         )
         .await?;
-        let prelogical_row_bounds = collected_inputs.row_bounds()?;
+        let source_reads = prepared.native_execution_config.source_read_strategy();
+        let prelogical_row_bounds = collected_inputs.row_bounds(&source_reads)?;
         check_host_staging_cancellation(&cancellation)?;
         validate_cugraph_graph_owner_preflight(
             &prepared.spec,
@@ -350,7 +361,7 @@ impl CugraphAlgoExec {
         check_host_staging_cancellation(&cancellation)?;
         let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
         check_host_staging_cancellation(&cancellation)?;
-        let input_row_bounds = staged_inputs.row_bounds()?;
+        let input_row_bounds = staged_inputs.row_bounds(&source_reads)?;
         let (prepared, admission_graph_plan) =
             prepared.issue_graph_aware_ticket_after_staging(input_row_bounds, task_context.as_ref())?;
         staged_inputs.admitted_graph_plan = Some(admission_graph_plan);
@@ -1102,7 +1113,10 @@ impl CugraphAlgoExec {
             result_options: self.result_options.clone(),
             edge_normalize_inserted: self.edge_normalize_inserted(),
             edge_row_upper_bound: self.input_row_bounds.edge_row_upper_bound(),
-            edge_vertex_upper_bound: edge_source_graph_vertex_estimate(self.edge_source.as_ref()),
+            edge_vertex_upper_bound: edge_source_graph_vertex_estimate(
+                self.edge_source.as_ref(),
+                &self.native_execution_config.source_read_strategy(),
+            ),
         }
     }
 }

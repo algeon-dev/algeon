@@ -8,7 +8,7 @@ fn server_native_config_option_descriptors_cover_toml_and_env_keys() {
         ("native.max_source_reads_in_flight", ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV),
         ("native.source_chunk_planning_mode", ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
         ("native.statistical_aggregate_execution_mode", ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
-        ("native.final_plan_requirement", ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV),
+        ("native.lakehouse_footer_pruning", ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV),
     ];
 
     assert_eq!(ALGEON_SERVER_NATIVE_CONFIG_OPTIONS.len(), expected.len());
@@ -140,63 +140,68 @@ fn server_config_rejects_zero_extended_native_query_knobs() {
 }
 
 #[test]
-fn server_config_leaves_final_plan_unconstrained_by_default() {
+fn server_config_defaults_to_native_preferred() {
     let config = server_config_with_default_device_profile(BTreeMap::new()).unwrap();
-    assert_eq!(
-        config.native_optimizer_config.datafusion_cpu_execution_policy(),
-        DataFusionCpuExecutionPolicy::Allow
-    );
+    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativePreferred);
 }
 
 #[test]
 fn server_config_maps_execution_mode_from_env_and_toml() {
     let env = BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
-    assert_eq!(config.native_optimizer_config.execution_mode().unwrap(), AlgeonGpuExecutionMode::FunctionsOnly);
+    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::FunctionsOnly);
 
     let (_dir, env) = env_with_server_toml("[native]\nexecution_mode = \"native_required\"\n");
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    assert_eq!(config.native_optimizer_config.execution_mode().unwrap(), AlgeonGpuExecutionMode::NativeRequired);
+    assert_eq!(config.native_optimizer_config.execution_mode(), AlgeonGpuExecutionMode::NativeRequired);
 }
 
 #[test]
-fn server_config_rejects_conflicting_execution_mode_and_legacy_requirement() {
-    let env = BTreeMap::from([
-        (ALGEON_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string()),
-        (ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "no_datafusion_cpu".to_string()),
-    ]);
-    let error = server_config_with_default_device_profile(env).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
-}
+fn server_config_sets_footer_pruning_from_env_or_toml() {
+    let config = server_config_with_default_device_profile(BTreeMap::new()).unwrap();
+    assert!(!config.native_optimizer_config.native_execution_config().lakehouse_footer_pruning());
 
-#[test]
-fn server_config_accepts_no_datafusion_cpu_final_plan_requirement_env() {
-    let env = BTreeMap::from([(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "no_datafusion_cpu".to_string())]);
+    let env = BTreeMap::from([(ALGEON_SERVER_NATIVE_LAKEHOUSE_FOOTER_PRUNING_ENV, "true".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
-    assert_eq!(
-        config.native_optimizer_config.datafusion_cpu_execution_policy(),
-        DataFusionCpuExecutionPolicy::Reject
-    );
-}
+    assert!(config.native_optimizer_config.native_execution_config().lakehouse_footer_pruning());
 
-#[test]
-fn server_config_accepts_no_datafusion_cpu_final_plan_requirement_toml() {
-    let (_dir, env) = env_with_server_toml("[native]\nfinal_plan_requirement = \"no_datafusion_cpu\"\n");
+    let (_dir, env) = env_with_server_toml("[native]\nlakehouse_footer_pruning = true\n");
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    assert_eq!(
-        config.native_optimizer_config.datafusion_cpu_execution_policy(),
-        DataFusionCpuExecutionPolicy::Reject
-    );
+    assert!(config.native_optimizer_config.native_execution_config().lakehouse_footer_pruning());
 }
 
 #[test]
-fn server_config_rejects_unknown_final_plan_requirement() {
-    let env = BTreeMap::from([(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "native_only".to_string())]);
+fn server_config_builds_one_s3_storage_from_toml_and_env() {
+    let config = server_config_with_default_device_profile(BTreeMap::new()).unwrap();
+    assert!(config.native_optimizer_config.native_execution_config().s3_storage().is_none());
+
+    let (_dir, mut env) = env_with_server_toml("[s3]\nendpoint = \"http://127.0.0.1:9000\"\npath_style = true\n");
+    env.insert(ALGEON_SERVER_S3_REGION_ENV, "us-west-2".to_string());
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let storage = config.native_optimizer_config.native_execution_config().s3_storage().expect("S3 storage").clone();
+    assert_eq!(storage.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
+    assert_eq!(storage.region.as_deref(), Some("us-west-2"));
+    assert_eq!(storage.virtual_hosted_style_request, Some(false));
+    assert_eq!(storage.credential, S3SourceStorageCredential::DefaultChain);
+
+    let env = BTreeMap::from([
+        (ALGEON_SERVER_S3_ENDPOINT_ENV, "http://127.0.0.1:9001".to_string()),
+        (ALGEON_SERVER_S3_UNSIGNED_ENV, "true".to_string()),
+    ]);
+    let config = server_config_with_default_device_profile(env).unwrap();
+    let storage = config.native_optimizer_config.native_execution_config().s3_storage().expect("S3 storage").clone();
+    assert_eq!(storage.endpoint.as_deref(), Some("http://127.0.0.1:9001"));
+    assert_eq!(storage.credential, S3SourceStorageCredential::Unsigned);
+}
+
+#[test]
+fn server_config_rejects_removed_final_plan_requirement_env() {
+    let name = "ALGEON_SERVER_FINAL_PLAN_REQUIREMENT";
+    let env = BTreeMap::from([(name, "no_datafusion_cpu".to_string())]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
-    assert!(error.message().contains("no_datafusion_cpu"), "{error}");
+    assert_eq!(error.fact_value("config_field"), Some(name));
+    assert!(error.message().contains("ALGEON_SERVER_EXECUTION_MODE=native_required"), "{error}");
 }
 
 #[test]
