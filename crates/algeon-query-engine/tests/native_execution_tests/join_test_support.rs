@@ -78,16 +78,18 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
     let left = builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(right_path, right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-            .with_build_side(build_side),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+                .with_build_side(build_side),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
@@ -108,15 +110,17 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
         builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(right_path, right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![join_order_id_key()])
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![join_order_id_key()])
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
@@ -147,55 +151,64 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
         threshold_schema,
         &["order_id"],
     )));
-    let anti_join = builder.add_join(
-        lineitem,
-        anti_orders,
-        JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&left_subplan_schema),
-    );
-    let anti_projection = builder.add_projection(
-        anti_join,
-        projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&left_subplan_schema)),
-    );
-    let threshold = builder.add_aggregate(
-        threshold_source,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
-        ),
-        threshold_aggregate_schema,
-    );
-    let root = builder.add_join(
-        anti_projection,
-        threshold,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "qty", "qty"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "threshold", "threshold"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
-            ])
-            .with_build_side(JoinSide::Left),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        root,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("order_id"), false, false),
-            SortExpr::new(Expr::column("qty"), false, false),
-        ]),
-        output_schema,
-    );
-    if gpu_sink { builder.finish_gpu_resident(sort) } else { builder.finish_with_host_sink(sort) }
+    let anti_join = builder
+        .add_join(
+            lineitem,
+            anti_orders,
+            JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&left_subplan_schema),
+        )
+        .unwrap();
+    let anti_projection = builder
+        .add_projection(
+            anti_join,
+            projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&left_subplan_schema)),
+        )
+        .unwrap();
+    let threshold = builder
+        .add_aggregate(
+            threshold_source,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
+            ),
+            threshold_aggregate_schema,
+        )
+        .unwrap();
+    let root = builder
+        .add_join(
+            anti_projection,
+            threshold,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "qty", "qty"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "threshold", "threshold"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
+                ])
+                .with_build_side(JoinSide::Left),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            root,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("order_id"), false, false),
+                SortExpr::new(Expr::column("qty"), false, false),
+            ]),
+        )
+        .unwrap();
+    if gpu_sink { builder.finish_gpu_resident(sort).unwrap() } else { builder.finish_with_host_sink(sort).unwrap() }
 }
 
 pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
@@ -226,85 +239,101 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         .add_source(SourceNode::LocalParquet(supplier_cost_partsupp_source(grouped_fact_path, grouped_fact_schema)));
     let grouped_supplier =
         builder.add_source(SourceNode::LocalParquet(supplier_cost_supplier_source(supplier_path, supplier_schema)));
-    let grouped_join = builder.add_join(
-        grouped_partsupp,
-        grouped_supplier,
-        JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let grouped_aggregate = builder.add_aggregate(
-        grouped_join,
-        AggregateSpec::new(
-            vec![Expr::column("ps_partkey")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "value")],
-        ),
-        Arc::clone(&grouped_aggregate_schema),
-    );
-    let grouped_projection = builder.add_projection(
-        grouped_aggregate,
-        projection_outputs(
-            vec![Expr::column("ps_partkey"), Expr::column("value")],
+    let grouped_join = builder
+        .add_join(
+            grouped_partsupp,
+            grouped_supplier,
+            JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
+        )
+        .unwrap();
+    let grouped_aggregate = builder
+        .add_aggregate(
+            grouped_join,
+            AggregateSpec::new(
+                vec![Expr::column("ps_partkey")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "value")],
+            ),
             Arc::clone(&grouped_aggregate_schema),
-        ),
-    );
+        )
+        .unwrap();
+    let grouped_projection = builder
+        .add_projection(
+            grouped_aggregate,
+            projection_outputs(
+                vec![Expr::column("ps_partkey"), Expr::column("value")],
+                Arc::clone(&grouped_aggregate_schema),
+            ),
+        )
+        .unwrap();
 
     let scalar_partsupp = builder
         .add_source(SourceNode::LocalParquet(supplier_cost_partsupp_source(scalar_fact_path, scalar_fact_schema)));
     let scalar_supplier =
         builder.add_source(SourceNode::LocalParquet(supplier_cost_supplier_source(supplier_path, supplier_schema)));
-    let scalar_join = builder.add_join(
-        scalar_partsupp,
-        scalar_supplier,
-        JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-            .with_build_side(JoinSide::Right),
-        scalar_join_schema,
-    );
-    let scalar_aggregate = builder.add_aggregate(
-        scalar_join,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "threshold")],
-        ),
-        Arc::clone(&scalar_aggregate_schema),
-    );
+    let scalar_join = builder
+        .add_join(
+            scalar_partsupp,
+            scalar_supplier,
+            JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+                .with_build_side(JoinSide::Right),
+            scalar_join_schema,
+        )
+        .unwrap();
+    let scalar_aggregate = builder
+        .add_aggregate(
+            scalar_join,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "threshold")],
+            ),
+            Arc::clone(&scalar_aggregate_schema),
+        )
+        .unwrap();
     let scalar_projection = builder
-        .add_projection(scalar_aggregate, projection_outputs(vec![Expr::column("threshold")], scalar_aggregate_schema));
+        .add_projection(scalar_aggregate, projection_outputs(vec![Expr::column("threshold")], scalar_aggregate_schema))
+        .unwrap();
 
-    let root = builder.add_join(
-        grouped_projection,
-        scalar_projection,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "value", "value"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "threshold", "threshold"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-                JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
-            ])
-            .with_build_side(JoinSide::Left),
-        Arc::clone(&output_schema),
-    );
-    let final_projection = builder.add_projection(
-        root,
-        projection_outputs(vec![Expr::column("ps_partkey"), Expr::column("value")], Arc::clone(&output_schema)),
-    );
-    let sort = builder.add_sort(
-        final_projection,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("value"), true, false),
-            SortExpr::new(Expr::column("ps_partkey"), false, false),
-        ]),
-        output_schema,
-    );
-    builder.finish_with_host_sink(sort)
+    let root = builder
+        .add_join(
+            grouped_projection,
+            scalar_projection,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "value", "value"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "threshold", "threshold"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+                ])
+                .with_build_side(JoinSide::Left),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let final_projection = builder
+        .add_projection(
+            root,
+            projection_outputs(vec![Expr::column("ps_partkey"), Expr::column("value")], Arc::clone(&output_schema)),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            final_projection,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("value"), true, false),
+                SortExpr::new(Expr::column("ps_partkey"), false, false),
+            ]),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn supplier_cost_partsupp_source(path: &Path, schema: &Arc<Schema>) -> NativeLocalParquetSource {
@@ -365,21 +394,19 @@ pub(super) fn execute_left_only_residual_join(
         builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(right_path, right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![join_order_id_key()])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![join_order_id_key()])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let context = backend_context();
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -399,16 +426,18 @@ pub(super) fn execute_bounded_left_only_residual_join(
         builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(right_path, right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![join_order_id_key()])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![join_order_id_key()])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
@@ -445,16 +474,18 @@ pub(super) fn residual_validation_error_with_schema(
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, keys).with_residual_predicate(residual).with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
-        ]),
-        output_schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, keys).with_residual_predicate(residual).with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
+            ]),
+            output_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context();
 
     match execute_query_plan(&context, &plan) {

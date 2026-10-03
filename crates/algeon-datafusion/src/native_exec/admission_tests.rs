@@ -193,7 +193,7 @@ fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
     AttemptCapabilityEvidence::for_query_plan(&plan)
 }
 
@@ -201,7 +201,7 @@ fn resident_host_plan(input_name: &str) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
-    builder.finish_with_host_sink(source)
+    builder.finish_with_host_sink(source).unwrap()
 }
 
 #[test]

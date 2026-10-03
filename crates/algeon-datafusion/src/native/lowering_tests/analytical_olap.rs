@@ -24,7 +24,7 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
         let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
             panic!("{} should produce a physical plan", query.id);
         };
-        let result = lower_physical_plan_to_native(Arc::clone(plan));
+        let result = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
         assert_eq!(result.candidate_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
         assert_eq!(result.selected_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
         assert_eq!(result.not_selected_count(), 0, "{} outcomes={:?}", query.id, result.report.outcomes());

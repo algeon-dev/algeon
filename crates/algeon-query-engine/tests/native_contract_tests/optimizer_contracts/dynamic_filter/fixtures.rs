@@ -20,7 +20,7 @@ fn build_subtree_source_reuse_dynamic_filter_cycle_plan() -> QueryPlan {
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&build_subtree_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         shared_probe,
         build_subtree,
@@ -37,8 +37,8 @@ fn build_subtree_source_reuse_dynamic_filter_cycle_plan() -> QueryPlan {
         )])
         .with_build_side(JoinSide::Right),
         schema(&["shared_key"]),
-    );
-    builder.finish_gpu_resident(root)
+    ).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_consumer_file_set_dynamic_filter_plan() -> QueryPlan {
@@ -72,9 +72,9 @@ fn repeated_consumer_file_set_dynamic_filter_plan() -> QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let union = builder.add_union(vec![join, repeated_fact], output_schema);
-    builder.finish_gpu_resident(union)
+    ).unwrap();
+    let union = builder.add_union(vec![join, repeated_fact], output_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn shared_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeId) {
@@ -91,7 +91,7 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeI
             ProjectionOutput::new(Expr::column("sold_date_sk"), Field::new("sold_date_sk", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("item_sk"), Field::new("item_sk", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let first_date = builder.add_source(estimated_local_source("date_1999", "date_sk", 16 * 1024 * 1024, 366));
     let second_date = builder.add_source(estimated_local_source("date_2000", "date_sk", 16 * 1024 * 1024, 366));
     let branch_schema = schema(&["item_sk"]);
@@ -108,7 +108,7 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeI
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let second_branch_join = builder.add_join(
         shared_prefix,
         second_date,
@@ -122,7 +122,7 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeI
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let final_join = builder.add_join(
         first_branch_join,
         second_branch_join,
@@ -133,13 +133,12 @@ fn shared_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeI
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         branch_schema,
-    );
-    (builder.finish_gpu_resident(final_join), first_branch_join, second_branch_join)
+    ).unwrap();
+    (builder.finish_gpu_resident(final_join).unwrap(), first_branch_join, second_branch_join)
 }
 
 fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, NodeId, NodeId, NodeId) {
     let mut builder = QueryPlanBuilder::new();
-    let fact_schema = schema(&["sold_date_sk", "item_sk"]);
     let fact = builder.add_source(estimated_local_source_with_fields(
         "store_sales",
         &["sold_date_sk", "item_sk"],
@@ -148,16 +147,14 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, Node
     ));
     let shared_filter = builder.add_filter(
         fact,
-        Expr::binary(Expr::column("item_sk"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&fact_schema),
-    );
+        Expr::binary(Expr::column("item_sk"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let shared_prefix = builder.add_projection(
         shared_filter,
         vec![
             ProjectionOutput::new(Expr::column("sold_date_sk"), Field::new("sold_date_sk", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("item_sk"), Field::new("item_sk", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let first_date = builder.add_source(estimated_local_source("date_1999", "date_sk", 16 * 1024 * 1024, 366));
     let second_date = builder.add_source(estimated_local_source("date_2000", "date_sk", 16 * 1024 * 1024, 366));
     let branch_schema = schema(&["item_sk"]);
@@ -174,7 +171,7 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, Node
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let second_branch_join = builder.add_join(
         shared_prefix,
         second_date,
@@ -188,7 +185,7 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, Node
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let final_join = builder.add_join(
         first_branch_join,
         second_branch_join,
@@ -199,8 +196,8 @@ fn shared_filtered_prefix_branch_local_dynamic_filter_plan() -> (QueryPlan, Node
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         branch_schema,
-    );
-    (builder.finish_gpu_resident(final_join), shared_filter, first_branch_join, second_branch_join)
+    ).unwrap();
+    (builder.finish_gpu_resident(final_join).unwrap(), shared_filter, first_branch_join, second_branch_join)
 }
 
 struct SharedPartsuppDynamicFilterPlan {
@@ -243,9 +240,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
     let part_build_input = if options.filter_part_build_keyset {
         builder.add_filter(
             part,
-            Expr::binary(Expr::column("p_partkey"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-            schema(&["p_partkey"]),
-        )
+            Expr::binary(Expr::column("p_partkey"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap()
     } else {
         part
     };
@@ -271,7 +266,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&result_schema),
-    );
+    ).unwrap();
     let (aggregate_key_expr, aggregate_key_name) = if options.derived_aggregate_group_key {
         (
             Expr::binary(Expr::column("ps_partkey"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0)))
@@ -298,7 +293,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&result_schema),
-    );
+    ).unwrap();
     let partsupp_min = builder.add_aggregate(
         supplier_partsupp,
         AggregateSpec::new(
@@ -306,7 +301,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
             vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("ps_supplycost"), "min_supplycost")],
         ),
         schema(&[aggregate_key_name, "min_supplycost"]),
-    );
+    ).unwrap();
     let final_join_left = if options.final_join_uses_unfiltered_part_keyset {
         builder.add_projection(
             part,
@@ -317,7 +312,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
                     Field::new("ps_supplycost", DataType::Int32, false),
                 ),
             ],
-        )
+        ).unwrap()
     } else {
         part_partsupp_join
     };
@@ -344,7 +339,7 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&result_schema),
-    );
+    ).unwrap();
     let mut root_inputs = vec![final_join];
     if options.final_join_uses_unfiltered_part_keyset {
         root_inputs.push(part_partsupp_join);
@@ -359,15 +354,14 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
                     Field::new("ps_supplycost", DataType::Int32, false),
                 ),
             ],
-        );
+        ).unwrap();
         root_inputs.push(extra_consumer);
     }
     if options.limited_constrained_partsupp_consumer {
         // Extra shared-partsupp consumer whose key is constrained by the SAME `part` keyset, but
         // only AFTER an intervening `Limit`. Filtering the shared source in place would change the
         // rows the `Limit` selects, so this branch must NOT be treated as keyset-constrained.
-        let partsupp_schema = schema(&["ps_partkey", "ps_suppkey", "ps_supplycost"]);
-        let limited_partsupp = builder.add_limit(partsupp, LimitSpec::fetch(10), Arc::clone(&partsupp_schema));
+        let limited_partsupp = builder.add_limit(partsupp, LimitSpec::fetch(10)).unwrap();
         let limited_constrained_join = builder.add_join(
             limited_partsupp,
             part,
@@ -384,18 +378,18 @@ fn q02_like_shared_partsupp_dynamic_filter_plan(
             ])
             .with_build_side(JoinSide::Right),
             Arc::clone(&result_schema),
-        );
+        ).unwrap();
         root_inputs.push(limited_constrained_join);
     }
     let root =
-        if root_inputs.len() == 1 { final_join } else { builder.add_union(root_inputs, Arc::clone(&result_schema)) };
+        if root_inputs.len() == 1 { final_join } else { builder.add_union(root_inputs, Arc::clone(&result_schema)).unwrap() };
 
-    SharedPartsuppDynamicFilterPlan { plan: builder.finish_gpu_resident(root), partsupp, part_partsupp_join }
+    SharedPartsuppDynamicFilterPlan { plan: builder.finish_gpu_resident(root).unwrap(), partsupp, part_partsupp_join }
 }
 
 fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> NodeId {
     let source = builder.add_source(gpu_source(name, &[key_name]));
-    builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()), schema(&[key_name]))
+    builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()), schema(&[key_name])).unwrap()
 }
 
 fn expr_contains_int32_equality(expr: &Expr, column: &str, value: i32) -> bool {

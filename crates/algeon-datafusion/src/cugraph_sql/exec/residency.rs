@@ -6,7 +6,7 @@ use super::{
     AlgeonNativeGpuProducerExec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,
     CUGRAPH_EDGE_WEIGHT_COLUMN, CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec,
     GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
-    GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Schema, as_algeon_native_composed_exec,
+    GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Result, Schema, as_algeon_native_composed_exec,
     as_algeon_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
 };
 use crate::native::{
@@ -17,12 +17,12 @@ pub(super) fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
     edge_source: Arc<dyn ExecutionPlan>,
     edge_normalize_inserted: bool,
-) -> Option<GraphResidencyDescriptor> {
+) -> Result<Option<GraphResidencyDescriptor>> {
     if cugraph_spec_uses_logical_vertex_mapping(spec, edge_source.schema().as_ref()) {
-        return None;
+        return Ok(None);
     }
     let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
-    cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec).descriptor().cloned()
+    Ok(cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec)?.descriptor().cloned())
 }
 
 pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
@@ -38,35 +38,35 @@ pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmS
 pub(super) fn cugraph_graph_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
-) -> GraphResidencyPlanAnalysis {
-    if let Some(native) = as_algeon_native_exec(edge_source.as_ref()) {
+) -> Result<GraphResidencyPlanAnalysis> {
+    Ok(if let Some(native) = as_algeon_native_exec(edge_source.as_ref()) {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
     } else if let Some(native) = as_algeon_native_composed_exec(edge_source.as_ref()) {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
     } else if let Some(native) = edge_source.as_ref().downcast_ref::<AlgeonNativeGpuProducerExec>() {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
     } else {
-        cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)
-    }
+        cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)?
+    })
 }
 
 pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
-) -> GraphResidencyPlanAnalysis {
+) -> Result<GraphResidencyPlanAnalysis> {
     let _footers = FooterScope::enter();
     let direct_parquet_descriptor = edge_source
         .as_ref()
         .downcast_ref::<DataSourceExec>()
         .and_then(|source| graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec));
-    let lowering = lower_physical_plan_to_native(edge_source);
+    let lowering = lower_physical_plan_to_native(edge_source)?;
     if lowering.plans.len() == 1 && lowering.selected_count() == 1 {
-        return graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec);
+        return Ok(graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec));
     }
-    direct_parquet_descriptor.map_or_else(
+    Ok(direct_parquet_descriptor.map_or_else(
         || GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource),
         GraphResidencyPlanAnalysis::Keyable,
-    )
+    ))
 }
 
 pub(super) fn native_graph_spec_for_residency(

@@ -426,7 +426,7 @@ fn native_edge_source_with_root(
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let root = root(&mut builder, source);
-    let plan = builder.finish_with_host_sink(root);
+    let plan = builder.finish_with_host_sink(root).unwrap();
     Arc::new(AlgeonNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
 }
 
@@ -448,15 +448,17 @@ fn native_graph_residency_edge_source_with_stable_id(
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projected = builder.add_projection(
-        source,
-        vec![
-            ProjectionOutput::new(Expr::column("src"), Field::new("src", DataType::Int64, false)),
-            ProjectionOutput::new(Expr::column("dst"), Field::new("dst", DataType::Int64, false)),
-            ProjectionOutput::new(Expr::column("weight"), Field::new("weight", DataType::Float64, false)),
-        ],
-    );
-    let plan = builder.finish_with_host_sink(projected);
+    let projected = builder
+        .add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(Expr::column("src"), Field::new("src", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("dst"), Field::new("dst", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("weight"), Field::new("weight", DataType::Float64, false)),
+            ],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projected).unwrap();
     Arc::new(AlgeonNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
 }
 
@@ -851,8 +853,8 @@ fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
                 PlanNode::Window(window)
                     if window.spec.functions.iter().any(|function| matches!(
                         function,
-                        WindowFunction::RowNumber { alias, output_type }
-                            if alias == "__vertex_id" && output_type == &DataType::Int64
+                        WindowFunction::RowNumber { output }
+                            if output.name() == "__vertex_id" && output.data_type() == &DataType::Int64
                     ))
             )
         })
@@ -977,7 +979,7 @@ fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_o
             })
             .expect("logical selector plan must contain a native graph node");
 
-        assert_eq!(graph.spec.params.side_input_node_ids().count(), 1, "{}", algorithm.function_name());
+        assert_eq!(graph.spec.params.side_input_ordinals().count(), 1, "{}", algorithm.function_name());
         for (column, nullable) in decoded_columns {
             assert_eq!(
                 plan.output_schema().field_with_name(column).unwrap(),
@@ -1006,13 +1008,10 @@ fn string_pagerank_subsumes_only_bounded_sorts() {
             &producer.gpu_result_input_name,
             producer.schema(),
         )));
-        let sort = builder.add_sort(
-            source,
-            SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-            producer.schema(),
-        );
-        let root = if with_limit { builder.add_limit(sort, LimitSpec::fetch(2), producer.schema()) } else { sort };
-        builder.finish_gpu_resident(root)
+        let sort =
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)])).unwrap();
+        let root = if with_limit { builder.add_limit(sort, LimitSpec::fetch(2)).unwrap() } else { sort };
+        builder.finish_gpu_resident(root).unwrap()
     };
 
     assert!(
@@ -1505,9 +1504,9 @@ fn direct_composed_consumer_plan(input_names: &[&str], schema: Arc<Schema>) -> Q
         .collect::<Vec<_>>();
     let root = match inputs.as_slice() {
         [input] => *input,
-        _ => builder.add_union(inputs, Arc::clone(&schema)),
+        _ => builder.add_union(inputs, Arc::clone(&schema)).unwrap(),
     };
-    builder.finish_with_host_sink(root)
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn direct_composed_graph_evidence() -> (Arc<Schema>, AttemptCapabilityEvidence) {
@@ -1534,8 +1533,8 @@ fn direct_composed_graph_evidence() -> (Arc<Schema>, AttemptCapabilityEvidence) 
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("direct graph fixture must lower");
-    let graph_plan = builder.finish_gpu_resident(graph);
+    let graph = builder.add_graph_algorithm(source, Vec::new(), spec.clone()).expect("direct graph fixture must lower");
+    let graph_plan = builder.finish_gpu_resident(graph).unwrap();
     let mut evidence = AttemptCapabilityEvidence::for_query_plan(&graph_plan);
     evidence.attest_cugraph_graph_execution_scope(&graph_plan);
     (spec.output_schema, evidence)
@@ -2130,7 +2129,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
         .create_physical_plan()
         .await
         .unwrap();
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan)).unwrap();
     assert_eq!(lowering.selected_count(), 1, "grouped BFS result should lower: {:#?}", lowering.report);
     let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
     let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
@@ -2337,7 +2336,7 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-    let native_plan = builder.finish_with_host_sink(source);
+    let native_plan = builder.finish_with_host_sink(source).unwrap();
     let native_exec =
         Arc::new(AlgeonNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
 
@@ -2367,7 +2366,7 @@ fn admission_backed_cugraph_allows_native_child_execution() {
     let schema = Arc::new(Schema::empty());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-    let native_plan = builder.finish_with_host_sink(source);
+    let native_plan = builder.finish_with_host_sink(source).unwrap();
     let native_exec =
         Arc::new(AlgeonNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
     let repartitioned =

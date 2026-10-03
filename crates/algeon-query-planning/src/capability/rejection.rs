@@ -49,7 +49,6 @@ pub enum Reason {
     UnsupportedLimitNodeCapability,
     UnsupportedProjectionNodeCapability,
     UnsupportedSortNodeCapability,
-    UnsupportedUnionNodeCapability,
     UnsupportedWindowNodeCapability,
     PostJoinResidualFilterRequiresOneShotEquiJoin,
     LargeKeyedHashJoinStrategyUnsupported,
@@ -73,15 +72,12 @@ pub enum Reason {
     LeftAntiBuildRequiresDedupAggregate,
     LeftAntiProbeRequiresDedupProvenInput,
     MissingEdgeProducer,
-    MissingEdgeRequiredProperty,
     AggregateSharedProducerConsumerNotAggregate,
     AggregateSharedProducerInputLineageUnresolved,
     AggregateSharedProducerMissingAggregate,
     AggregateSharedProducerMissingNode,
     AggregateSharedProducerRequiresDataflowIdentity,
     AggregateSharedProducerRequiresInputLineage,
-    AggregateSharedProducerRequiresResidentFrame,
-    BuildBeforeProbeCycle,
     ExpressionLineageRequiresResolvedInputColumn,
     OutputLineageAggregateFieldIndexOutOfRange,
     OutputLineageFieldIndexOutOfRange,
@@ -94,25 +90,14 @@ pub enum Reason {
     ProjectionTransparentResidencyConsumerNotProjection,
     ProjectionTransparentResidencyMissingProducer,
     ProjectionTransparentResidencyMissingProjection,
-    ProjectionTransparentResidencyRequiresResidentFrames,
-    ReachableSubgraphCycle,
-    ReachableSubgraphMissingNode,
     ResidentLifetimeEdgeRejected,
-    ResidentLifetimeMissingNode,
-    ResidentLifetimeRequiresResidentFrame,
     ResidentUnaryChainMissingNode,
     ResidentUnaryChainMissingProducer,
     ResidentUnaryChainRequiresConnectedNodes,
     ResidentUnaryChainRequiresFilterProjectionNodes,
-    ResidentUnaryChainRequiresResidentNodes,
-    ResidentUnaryChainRequiresResidentProducer,
     ResidualDoesNotReferenceBothInputs,
     SharedResidentSubplanEdgeRejected,
     SharedResidentSubplanMissingEdge,
-    SharedResidentSubplanMissingNode,
-    SharedResidentSubplanRequiresResidentFrame,
-    TopologicalScheduleCycle,
-    TopologicalScheduleMissingNode,
     CompiledPipelineRequiresJoinTaskGroup,
     CompiledPipelineJoinTaskGroupIncomplete,
     CompiledPipelineSharedProducerTaskKindUnsupported,
@@ -156,7 +141,6 @@ impl Reason {
             Self::UnsupportedLimitNodeCapability => "unsupported_limit_node_capability",
             Self::UnsupportedProjectionNodeCapability => "unsupported_projection_node_capability",
             Self::UnsupportedSortNodeCapability => "unsupported_sort_node_capability",
-            Self::UnsupportedUnionNodeCapability => "unsupported_union_node_capability",
             Self::UnsupportedWindowNodeCapability => "unsupported_window_node_capability",
             Self::PostJoinResidualFilterRequiresOneShotEquiJoin => {
                 "post_join_residual_filter_requires_one_shot_equi_join"
@@ -186,7 +170,6 @@ impl Reason {
             Self::LeftAntiBuildRequiresDedupAggregate => "left_anti_build_requires_dedup_aggregate",
             Self::LeftAntiProbeRequiresDedupProvenInput => "left_anti_probe_requires_dedup_proven_input",
             Self::MissingEdgeProducer => "missing_edge_producer",
-            Self::MissingEdgeRequiredProperty => "missing_edge_required_property",
             Self::AggregateSharedProducerConsumerNotAggregate => "aggregate_shared_producer_consumer_not_aggregate",
             Self::AggregateSharedProducerInputLineageUnresolved => "aggregate_shared_producer_input_lineage_unresolved",
             Self::AggregateSharedProducerMissingAggregate => "aggregate_shared_producer_missing_aggregate",
@@ -195,8 +178,6 @@ impl Reason {
                 "aggregate_shared_producer_requires_dataflow_identity"
             },
             Self::AggregateSharedProducerRequiresInputLineage => "aggregate_shared_producer_requires_input_lineage",
-            Self::AggregateSharedProducerRequiresResidentFrame => "aggregate_shared_producer_requires_resident_frame",
-            Self::BuildBeforeProbeCycle => "build_before_probe_cycle",
             Self::ExpressionLineageRequiresResolvedInputColumn => "expression_lineage_requires_resolved_input_column",
             Self::OutputLineageAggregateFieldIndexOutOfRange => "output_lineage_aggregate_field_index_out_of_range",
             Self::OutputLineageFieldIndexOutOfRange => "output_lineage_field_index_out_of_range",
@@ -213,29 +194,16 @@ impl Reason {
             Self::ProjectionTransparentResidencyMissingProjection => {
                 "projection_transparent_residency_missing_projection"
             },
-            Self::ProjectionTransparentResidencyRequiresResidentFrames => {
-                "projection_transparent_residency_requires_resident_frames"
-            },
-            Self::ReachableSubgraphCycle => "reachable_subgraph_cycle",
-            Self::ReachableSubgraphMissingNode => "reachable_subgraph_missing_node",
             Self::ResidentLifetimeEdgeRejected => "resident_lifetime_edge_rejected",
-            Self::ResidentLifetimeMissingNode => "resident_lifetime_missing_node",
-            Self::ResidentLifetimeRequiresResidentFrame => "resident_lifetime_requires_resident_frame",
             Self::ResidentUnaryChainMissingNode => "resident_unary_chain_missing_node",
             Self::ResidentUnaryChainMissingProducer => "resident_unary_chain_missing_producer",
             Self::ResidentUnaryChainRequiresConnectedNodes => "resident_unary_chain_requires_connected_nodes",
             Self::ResidentUnaryChainRequiresFilterProjectionNodes => {
                 "resident_unary_chain_requires_filter_projection_nodes"
             },
-            Self::ResidentUnaryChainRequiresResidentNodes => "resident_unary_chain_requires_resident_nodes",
-            Self::ResidentUnaryChainRequiresResidentProducer => "resident_unary_chain_requires_resident_producer",
             Self::ResidualDoesNotReferenceBothInputs => "residual_does_not_reference_both_inputs",
             Self::SharedResidentSubplanEdgeRejected => "shared_resident_subplan_edge_rejected",
             Self::SharedResidentSubplanMissingEdge => "shared_resident_subplan_missing_edge",
-            Self::SharedResidentSubplanMissingNode => "shared_resident_subplan_missing_node",
-            Self::SharedResidentSubplanRequiresResidentFrame => "shared_resident_subplan_requires_resident_frame",
-            Self::TopologicalScheduleCycle => "topological_schedule_cycle",
-            Self::TopologicalScheduleMissingNode => "topological_schedule_missing_node",
             Self::CompiledPipelineRequiresJoinTaskGroup => "compiled_pipeline_requires_join_task_group",
             Self::CompiledPipelineJoinTaskGroupIncomplete => "compiled_pipeline_join_task_group_incomplete",
             Self::CompiledPipelineSharedProducerTaskKindUnsupported => {
@@ -287,7 +255,6 @@ impl Reason {
             Self::UnsupportedLimitNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedProjectionNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedSortNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedUnionNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedWindowNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::PostJoinResidualFilterRequiresOneShotEquiJoin => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::LargeKeyedHashJoinStrategyUnsupported => CapabilityRejectionCategory::UnsupportedNodeOperator,
@@ -323,7 +290,6 @@ impl Reason {
             Self::LeftAntiBuildRequiresDedupAggregate => CapabilityRejectionCategory::MissingEdgeContract,
             Self::LeftAntiProbeRequiresDedupProvenInput => CapabilityRejectionCategory::MissingEdgeContract,
             Self::MissingEdgeProducer => CapabilityRejectionCategory::MissingEdgeContract,
-            Self::MissingEdgeRequiredProperty => CapabilityRejectionCategory::MissingEdgeContract,
             Self::AggregateSharedProducerConsumerNotAggregate => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::AggregateSharedProducerInputLineageUnresolved => {
                 CapabilityRejectionCategory::MissingSubgraphInvariant
@@ -334,8 +300,6 @@ impl Reason {
                 CapabilityRejectionCategory::MissingSubgraphInvariant
             },
             Self::AggregateSharedProducerRequiresInputLineage => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::AggregateSharedProducerRequiresResidentFrame => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::BuildBeforeProbeCycle => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ExpressionLineageRequiresResolvedInputColumn => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::OutputLineageAggregateFieldIndexOutOfRange => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::OutputLineageFieldIndexOutOfRange => CapabilityRejectionCategory::MissingSubgraphInvariant,
@@ -354,29 +318,16 @@ impl Reason {
             Self::ProjectionTransparentResidencyMissingProjection => {
                 CapabilityRejectionCategory::MissingSubgraphInvariant
             },
-            Self::ProjectionTransparentResidencyRequiresResidentFrames => {
-                CapabilityRejectionCategory::MissingSubgraphInvariant
-            },
-            Self::ReachableSubgraphCycle => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::ReachableSubgraphMissingNode => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidentLifetimeEdgeRejected => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::ResidentLifetimeMissingNode => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::ResidentLifetimeRequiresResidentFrame => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidentUnaryChainMissingNode => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidentUnaryChainMissingProducer => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidentUnaryChainRequiresConnectedNodes => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidentUnaryChainRequiresFilterProjectionNodes => {
                 CapabilityRejectionCategory::MissingSubgraphInvariant
             },
-            Self::ResidentUnaryChainRequiresResidentNodes => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::ResidentUnaryChainRequiresResidentProducer => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::ResidualDoesNotReferenceBothInputs => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::SharedResidentSubplanEdgeRejected => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::SharedResidentSubplanMissingEdge => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::SharedResidentSubplanMissingNode => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::SharedResidentSubplanRequiresResidentFrame => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::TopologicalScheduleCycle => CapabilityRejectionCategory::MissingSubgraphInvariant,
-            Self::TopologicalScheduleMissingNode => CapabilityRejectionCategory::MissingSubgraphInvariant,
             Self::CompiledPipelineRequiresJoinTaskGroup => {
                 CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
             },

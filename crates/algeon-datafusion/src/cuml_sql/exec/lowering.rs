@@ -29,6 +29,7 @@ pub(super) fn lower_cuml_query_plan(
         ));
     }
     let mut builder = QueryPlanBuilder::new();
+    let mut inputs = Vec::with_capacity(children.len());
     let mut relations = Vec::with_capacity(children.len());
     for (child, binding) in children.iter().zip(options.bindings()) {
         if child.role != binding.relation_role().as_str() {
@@ -38,13 +39,17 @@ pub(super) fn lower_cuml_query_plan(
                 "cuML physical child order does not match semantic relation order",
             ));
         }
-        let input = add_projected_relation_source(&mut builder, child);
+        let input = add_projected_relation_source(&mut builder, child).map_err(|error| {
+            Error::from_native("algeon_datafusion.cuml_sql.lower", "failed to lower cuML SQL into native ML IR", error)
+        })?;
+        let ordinal = inputs.len();
+        inputs.push(input);
         let relation = match binding.features() {
             DenseVectorBinding::Columns(columns) => {
-                MlRelationBinding::new(input, VectorRowIdBinding::column(binding.id()), columns.iter().cloned())
+                MlRelationBinding::new(ordinal, VectorRowIdBinding::column(binding.id()), columns.iter().cloned())
             },
             DenseVectorBinding::VectorColumn(column) => {
-                MlRelationBinding::new_vector_column(input, VectorRowIdBinding::column(binding.id()), column.clone())
+                MlRelationBinding::new_vector_column(ordinal, VectorRowIdBinding::column(binding.id()), column.clone())
             },
         };
         let mut relation = relation;
@@ -166,9 +171,11 @@ pub(super) fn lower_cuml_query_plan(
         },
     };
     let root = builder
-        .try_add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, Arc::clone(&output_schema)))
+        .add_ml_algorithm(inputs, MlAlgorithmSpec::new(algorithm, params, Arc::clone(&output_schema)))
         .map_err(|error| {
             Error::from_native("algeon_datafusion.cuml_sql.lower", "failed to lower cuML SQL into native ML IR", error)
         })?;
-    Ok(builder.finish_with_host_sink_schema(root, output_schema))
+    builder.finish_with_host_sink_schema(root, output_schema).map_err(|error| {
+        Error::from_native("algeon_datafusion.cuml_sql.lower", "failed to lower cuML SQL into native ML IR", error)
+    })
 }

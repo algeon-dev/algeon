@@ -237,11 +237,7 @@ fn list_string_columns_are_rejected_as_native_operator_operands() {
 
     let sort_error = native_validation_error_for_plan(|builder| {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-        builder.add_sort(
-            source,
-            SortSpec::new(vec![SortExpr::new(Expr::column("tags"), false, false)]),
-            Arc::clone(&schema),
-        )
+        builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("tags"), false, false)])).unwrap()
     });
     assert_eq!(sort_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(sort_error.fact_value("context"), Some("sort key"));
@@ -250,14 +246,14 @@ fn list_string_columns_are_rejected_as_native_operator_operands() {
     let filter_error = native_validation_error_for_plan(|builder| {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
         let predicate = Expr::binary(Expr::column("tags"), BinaryOp::Eq, Expr::column("tags"));
-        builder.add_filter(source, predicate, Arc::clone(&schema))
+        builder.add_filter(source, predicate).unwrap()
     });
     assert_eq!(filter_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(filter_error.fact_value("reason"), Some("list_operator_unsupported"));
 
     let is_null_error = native_validation_error_for_plan(|builder| {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-        builder.add_filter(source, Expr::is_null(Expr::column("tags")), Arc::clone(&schema))
+        builder.add_filter(source, Expr::is_null(Expr::column("tags"))).unwrap()
     });
     assert_eq!(is_null_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(is_null_error.fact_value("context"), Some("IS NULL input"));
@@ -265,7 +261,7 @@ fn list_string_columns_are_rejected_as_native_operator_operands() {
 
     let is_not_null_error = native_validation_error_for_plan(|builder| {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-        builder.add_filter(source, Expr::is_not_null(Expr::column("tags")), Arc::clone(&schema))
+        builder.add_filter(source, Expr::is_not_null(Expr::column("tags"))).unwrap()
     });
     assert_eq!(is_not_null_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(is_not_null_error.fact_value("context"), Some("IS NULL input"));
@@ -287,11 +283,9 @@ fn numeric_list_columns_are_rejected_as_native_operator_values_and_keys() {
         let filter_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_filter(
-                source,
-                Expr::binary(Expr::column("values"), BinaryOp::Eq, Expr::column("values")),
-                Arc::clone(&schema),
-            )
+            builder
+                .add_filter(source, Expr::binary(Expr::column("values"), BinaryOp::Eq, Expr::column("values")))
+                .unwrap()
         });
         assert_eq!(filter_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(filter_error.fact_value("reason"), Some("list_operator_unsupported"));
@@ -299,11 +293,7 @@ fn numeric_list_columns_are_rejected_as_native_operator_values_and_keys() {
         let sort_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_sort(
-                source,
-                SortSpec::new(vec![SortExpr::new(Expr::column("values"), false, false)]),
-                Arc::clone(&schema),
-            )
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("values"), false, false)])).unwrap()
         });
         assert_eq!(sort_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(sort_error.fact_value("context"), Some("sort key"));
@@ -328,16 +318,18 @@ fn carry_only_columns_are_rejected_as_native_join_group_and_window_keys() {
             let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
             let right =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-            builder.add_join(
-                left,
-                right,
-                JoinSpec::new(
-                    JoinType::Inner,
-                    vec![JoinKey::new(ColumnRef::input(0, "tags", "tags"), ColumnRef::input(1, "tags", "tags"))],
+            builder
+                .add_join(
+                    left,
+                    right,
+                    JoinSpec::new(
+                        JoinType::Inner,
+                        vec![JoinKey::new(ColumnRef::input(0, "tags", "tags"), ColumnRef::input(1, "tags", "tags"))],
+                    )
+                    .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
+                    Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
                 )
-                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
-                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
-            )
+                .unwrap()
         });
         assert_eq!(join_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(join_error.fact_value("context"), Some("join left key"));
@@ -345,11 +337,13 @@ fn carry_only_columns_are_rejected_as_native_join_group_and_window_keys() {
         let group_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_aggregate(
-                source,
-                AggregateSpec::new(vec![Expr::column("tags")], Vec::new()),
-                Arc::new(Schema::new(vec![Field::new("tags", carry_type.clone(), true)])),
-            )
+            builder
+                .add_aggregate(
+                    source,
+                    AggregateSpec::new(vec![Expr::column("tags")], Vec::new()),
+                    Arc::new(Schema::new(vec![Field::new("tags", carry_type.clone(), true)])),
+                )
+                .unwrap()
         });
         assert_eq!(group_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(group_error.fact_value("context"), Some("aggregate group key"));
@@ -361,19 +355,20 @@ fn carry_only_columns_are_rejected_as_native_join_group_and_window_keys() {
             let window_error = native_validation_error_for_plan(|builder| {
                 let source =
                     builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-                builder.add_window(
-                    source,
-                    WindowSpec::new(
-                        partition_by.clone(),
-                        order_by.clone(),
-                        vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("id"), "row_count")],
-                    ),
-                    Arc::new(Schema::new(vec![
-                        Field::new("id", DataType::Int32, false),
-                        Field::new("tags", carry_type.clone(), true),
-                        Field::new("row_count", DataType::Int64, false),
-                    ])),
-                )
+                builder
+                    .add_window(
+                        source,
+                        WindowSpec::new(
+                            partition_by.clone(),
+                            order_by.clone(),
+                            vec![WindowFunction::aggregate(
+                                AggregateFunction::Count,
+                                Expr::column("id"),
+                                Field::new("row_count", DataType::Int64, false),
+                            )],
+                        ),
+                    )
+                    .unwrap()
             });
             assert_eq!(window_error.code(), QueryErrorCode::UnsupportedType);
             assert_eq!(window_error.fact_value("context"), Some(expected_context));
@@ -396,14 +391,16 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
         let aggregate_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-            builder.add_aggregate(
-                source,
-                AggregateSpec::new(
-                    Vec::new(),
-                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
-                ),
-                Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)])),
-            )
+            builder
+                .add_aggregate(
+                    source,
+                    AggregateSpec::new(
+                        Vec::new(),
+                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
+                    ),
+                    Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)])),
+                )
+                .unwrap()
         });
         assert_eq!(aggregate_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(aggregate_error.fact_value("context"), Some("aggregate input"));
@@ -412,19 +409,20 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
         let window_aggregate_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-            builder.add_window(
-                source,
-                WindowSpec::new(
-                    vec![Expr::column("key")],
-                    Vec::new(),
-                    vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
-                ),
-                Arc::new(Schema::new(vec![
-                    Field::new("key", DataType::Int32, false),
-                    Field::new("tags", carry_type.clone(), true),
-                    Field::new("tag_count", DataType::Int64, false),
-                ])),
-            )
+            builder
+                .add_window(
+                    source,
+                    WindowSpec::new(
+                        vec![Expr::column("key")],
+                        Vec::new(),
+                        vec![WindowFunction::aggregate(
+                            AggregateFunction::Count,
+                            Expr::column("tags"),
+                            Field::new("tag_count", DataType::Int64, false),
+                        )],
+                    ),
+                )
+                .unwrap()
         });
         assert_eq!(window_aggregate_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(window_aggregate_error.fact_value("context"), Some("window aggregate input"));
@@ -433,19 +431,21 @@ fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
         let lag_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-            builder.add_window(
-                source,
-                WindowSpec::new(
-                    vec![Expr::column("key")],
-                    vec![SortExpr::new(Expr::column("key"), false, false)],
-                    vec![WindowFunction::lag(Expr::column("tags"), 1, None, "prev_tags")],
-                ),
-                Arc::new(Schema::new(vec![
-                    Field::new("key", DataType::Int32, false),
-                    Field::new("tags", carry_type.clone(), true),
-                    Field::new("prev_tags", carry_type.clone(), true),
-                ])),
-            )
+            builder
+                .add_window(
+                    source,
+                    WindowSpec::new(
+                        vec![Expr::column("key")],
+                        vec![SortExpr::new(Expr::column("key"), false, false)],
+                        vec![WindowFunction::lag(
+                            Expr::column("tags"),
+                            1,
+                            None,
+                            Field::new("prev_tags", carry_type.clone(), true),
+                        )],
+                    ),
+                )
+                .unwrap()
         });
         assert_eq!(lag_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(lag_error.fact_value("context"), Some("window LAG / LEAD input"));
@@ -475,7 +475,7 @@ fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
             Expr::is_not_null(Expr::input_column(1, "tags", "tags")),
         ))
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]);
-        builder.add_join(left, right, spec, output_schema)
+        builder.add_join(left, right, spec, output_schema).unwrap()
     });
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
@@ -496,11 +496,9 @@ fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_loc
         let comparison_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_filter(
-                source,
-                Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::column("amount")),
-                Arc::clone(&schema),
-            )
+            builder
+                .add_filter(source, Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::column("amount")))
+                .unwrap()
         });
         assert_eq!(comparison_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(comparison_error.fact_value("reason"), Some("narrow_decimal_comparison_unsupported"));
@@ -511,13 +509,15 @@ fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_loc
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
             let output_schema = Arc::new(Schema::new(vec![Field::new("amount", amount_type.clone(), true)]));
-            builder.add_projection(
-                source,
-                projection_outputs(
-                    vec![Expr::cast(Expr::column("amount"), amount_type.clone())],
-                    Arc::clone(&output_schema),
-                ),
-            )
+            builder
+                .add_projection(
+                    source,
+                    projection_outputs(
+                        vec![Expr::cast(Expr::column("amount"), amount_type.clone())],
+                        Arc::clone(&output_schema),
+                    ),
+                )
+                .unwrap()
         });
         assert_eq!(cast_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(cast_error.fact_value("source_type"), Some(amount_type_debug.as_str()));
@@ -526,11 +526,7 @@ fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_loc
         let sort_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_sort(
-                source,
-                SortSpec::new(vec![SortExpr::new(Expr::column("amount"), false, false)]),
-                Arc::clone(&schema),
-            )
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("amount"), false, false)])).unwrap()
         });
         assert_eq!(sort_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(sort_error.fact_value("context"), Some("sort key"));
@@ -540,7 +536,7 @@ fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_loc
         let null_predicate_error = native_validation_error_for_plan(|builder| {
             let source =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_filter(source, Expr::is_null(Expr::column("amount")), Arc::clone(&schema))
+            builder.add_filter(source, Expr::is_null(Expr::column("amount"))).unwrap()
         });
         assert_eq!(null_predicate_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(null_predicate_error.fact_value("context"), Some("IS NULL input"));
@@ -551,19 +547,21 @@ fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_loc
             let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
             let right =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-            builder.add_join(
-                left,
-                right,
-                JoinSpec::new(
-                    JoinType::Inner,
-                    vec![JoinKey::new(
-                        ColumnRef::input(0, "amount", "amount"),
-                        ColumnRef::input(1, "amount", "amount"),
-                    )],
+            builder
+                .add_join(
+                    left,
+                    right,
+                    JoinSpec::new(
+                        JoinType::Inner,
+                        vec![JoinKey::new(
+                            ColumnRef::input(0, "amount", "amount"),
+                            ColumnRef::input(1, "amount", "amount"),
+                        )],
+                    )
+                    .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
+                    Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
                 )
-                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
-                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
-            )
+                .unwrap()
         });
         assert_eq!(join_error.code(), QueryErrorCode::UnsupportedType);
         assert_eq!(join_error.fact_value("context"), Some("join left key"));
@@ -580,7 +578,9 @@ fn projection_preflight_rejects_unsupported_implicit_output_cast() {
     let error = native_validation_error_for_plan(|builder| {
         let source =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-        builder.add_projection(source, projection_outputs(vec![Expr::column("key").alias("bad_key")], output_schema))
+        builder
+            .add_projection(source, projection_outputs(vec![Expr::column("key").alias("bad_key")], output_schema))
+            .unwrap()
     });
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
@@ -600,16 +600,17 @@ fn projection_preflight_accepts_equivalent_list_child_names() {
     let output_schema = Arc::new(Schema::new(vec![Field::new("tags", output_list, true)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
-    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("tags")], output_schema));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![Expr::column("tags")], output_schema)).unwrap();
 
-    preflight_query_plan(&builder.finish_with_host_sink(projection))
+    preflight_query_plan(&builder.finish_with_host_sink(projection).unwrap())
         .expect("list child field names do not require a native cast");
 }
 
 fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilder) -> NodeId) -> QueryError {
     let mut builder = QueryPlanBuilder::new();
     let root = build_root(&mut builder);
-    let plan = builder.finish_with_host_sink(root);
+    let plan = builder.finish_with_host_sink(root).unwrap();
     preflight_query_plan(&plan).unwrap_err()
 }
 

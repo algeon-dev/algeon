@@ -10,7 +10,7 @@ use cugraph::{
 };
 
 use super::{
-    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
+    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
     QueryError, QueryErrorCode, Result, bfs_params, col, cudf_query_error, empty_graph_result_frame,
     execution_overrides, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
     run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, sssp_params, table_graph_options,
@@ -437,7 +437,7 @@ impl BfsPredicateColumns {
     fn from_side_inputs(
         context: &ExecutionContext,
         params: &GraphBfsParams,
-        side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+        side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
         vertex_type: cudf::TypeId,
         graph_has_edge_id_binding: bool,
         spec: &GraphAlgorithmSpec,
@@ -546,7 +546,7 @@ fn align_include_edges(
     edges: &mut DataFrame,
     spec: &GraphAlgorithmSpec,
     input: Option<&GraphEdgePredicateInput>,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     vertex_type: cudf::TypeId,
 ) -> Result<EdgePredicateAlignment> {
     let Some(input) = input else {
@@ -677,7 +677,7 @@ fn align_include_edges(
 /// axis is the actual `null_count`, not schema nullability.
 fn drop_null_include_edge_rows(
     context: &ExecutionContext,
-    input: NodeId,
+    input: usize,
     frame: &DataFrame,
     right_keys: &[String],
 ) -> Result<(DataFrame, usize)> {
@@ -878,7 +878,7 @@ pub(super) fn resolve_empty_bfs_edge_input(
     context: &ExecutionContext,
     spec: &GraphAlgorithmSpec,
     sanitized_edges: &DataFrame,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let params = empty_bfs_params(spec)?;
     let (edges, predicate_columns) = project_bfs_inputs(context, spec, params, sanitized_edges, side_inputs)?;
@@ -908,7 +908,7 @@ pub(super) fn resolve_empty_bfs_source_input(
     context: &ExecutionContext,
     spec: &GraphAlgorithmSpec,
     sanitized_edges: &DataFrame,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<Option<GraphAlgorithmExecutionResult>> {
     let params = empty_bfs_params(spec)?;
     let (edges, predicate_columns) = project_bfs_inputs(context, spec, params, sanitized_edges, side_inputs)?;
@@ -935,7 +935,7 @@ fn project_bfs_inputs(
     spec: &GraphAlgorithmSpec,
     params: &GraphBfsParams,
     sanitized_edges: &DataFrame,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<(DataFrame, BfsPredicateColumns)> {
     let (mut edges, vertex_type) = project_edge_list(sanitized_edges, spec)?;
     let predicate_columns = BfsPredicateColumns::from_side_inputs(
@@ -1207,7 +1207,7 @@ fn empty_bfs_result(
 }
 
 fn predicate_series(
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     input: Option<&GraphPredicateInput>,
     role: &'static str,
     vertex_type: cudf::TypeId,
@@ -1231,7 +1231,7 @@ fn predicate_series(
 }
 
 fn source_vertex_series(
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     input: Option<&GraphPredicateInput>,
     vertex_type: cudf::TypeId,
     endpoint_policy: GraphBfsEndpointPolicy,
@@ -1248,7 +1248,7 @@ fn source_vertex_series(
             "BFS source-vertices side input must contain at least one row",
         )
         .with_fact("input_role", "source_vertices")
-        .with_fact("side_input_node", input.input)
+        .with_fact("side_input_ordinal", input.input)
         .with_fact("column", &input.column)
         .with_fact("side_input_rows", series.len())
         .with_fact("reason", "required_side_input_empty"));
@@ -1266,7 +1266,7 @@ fn source_vertex_series(
 /// is materialized.
 fn validate_predicate_series(
     frame: &DataFrame,
-    input: NodeId,
+    input: usize,
     column: &str,
     role: &'static str,
     vertex_type: cudf::TypeId,
@@ -1290,7 +1290,7 @@ fn validate_predicate_series(
 
 fn predicate_series_for_column(
     frame: &DataFrame,
-    input: NodeId,
+    input: usize,
     column: &str,
     role: &'static str,
 ) -> Result<cudf::Series> {
@@ -1304,7 +1304,7 @@ fn predicate_series_for_column(
 
 fn validate_predicate_series_dtype(
     series: &cudf::Series,
-    input: NodeId,
+    input: usize,
     column: &str,
     role: &'static str,
     vertex_type: cudf::TypeId,
@@ -1522,7 +1522,7 @@ pub(super) fn execute_sssp(
 
 fn sssp_source_vertex(
     source: &GraphSsspSource,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     vertex_type: cudf::TypeId,
 ) -> Result<i64> {
     let GraphSsspSource::Input(input) = source else {
@@ -1535,7 +1535,7 @@ fn sssp_source_vertex(
             "query_engine.graph_algorithm.sssp_source",
             "SSSP source side input was not executed",
         )
-        .with_fact("side_input_node", input.input)
+        .with_fact("side_input_ordinal", input.input)
         .with_fact("column", &input.column)
     })?;
     let series = frame.frame().series(&input.column).map_err(|error| {
@@ -1544,7 +1544,7 @@ fn sssp_source_vertex(
             "failed to resolve the SSSP source side-input column",
             error,
         )
-        .with_fact("side_input_node", input.input)
+        .with_fact("side_input_ordinal", input.input)
         .with_fact("column", &input.column)
     })?;
     if series.len() != 1 || series.null_count() != 0 {

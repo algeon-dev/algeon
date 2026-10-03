@@ -43,10 +43,6 @@ pub(crate) fn validate_ml_algorithm_node(
     if !ml.spec.params.supports_algorithm(ml.spec.algorithm) {
         return Err(invalid("ML algorithm and parameters differ", "algorithm_parameter_mismatch", node_id));
     }
-    let expected_inputs = ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
-    if ml.inputs != expected_inputs {
-        return Err(invalid("ML node inputs must match relation bindings", "relation_input_mismatch", node_id));
-    }
     let input = ml.spec.params.relation_bindings().next().expect("ML input");
     let (operation, integers, numbers, n_components) = match &ml.spec.params {
         MlAlgorithmParams::Tsvd(p) => (
@@ -173,7 +169,7 @@ pub(crate) fn validate_ml_algorithm_node(
     }
     let relation = validate_dense_relation_binding(
         (&input.features, &input.row_id),
-        input.input,
+        ml.inputs[input.input],
         node_id,
         if supervised { "training" } else { "input" },
         plan,
@@ -240,7 +236,7 @@ pub(crate) fn validate_ml_algorithm_node(
             return Err(invalid("training label must use the canonical name", "missing_label", node_id));
         }
         let field = plan
-            .node(training.input)
+            .node(ml.inputs[training.input])
             .expect("validated input")
             .output_schema()
             .field_with_name(label)
@@ -257,7 +253,7 @@ pub(crate) fn validate_ml_algorithm_node(
         }
         if predict_binding.label.is_some()
             || plan
-                .node(predict_binding.input)
+                .node(ml.inputs[predict_binding.input])
                 .expect("validated input")
                 .output_schema()
                 .field_with_name("label")
@@ -267,7 +263,7 @@ pub(crate) fn validate_ml_algorithm_node(
         }
         let predict = validate_dense_relation_binding(
             (&predict_binding.features, &predict_binding.row_id),
-            predict_binding.input,
+            ml.inputs[predict_binding.input],
             node_id,
             "predict",
             plan,

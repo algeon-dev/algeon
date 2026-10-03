@@ -368,8 +368,8 @@ fn keyed_residual_semi_anti_join_strategy_plan(
         ])
         .with_build_side(build_side),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 #[test]
@@ -445,8 +445,8 @@ pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> QueryPlan {
@@ -500,8 +500,8 @@ fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> Qu
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn medium_single_use_keyed_build_join_strategy_plan() -> QueryPlan {
@@ -555,8 +555,8 @@ fn medium_single_use_keyed_build_join_strategy_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn small_keyed_join_strategy_plan(
@@ -629,8 +629,8 @@ fn sized_keyed_join_strategy_plan(
     if let Some(id) = build_artifact_id {
         spec = spec.with_build_artifact_id(id);
     }
-    let join = builder.add_join(left, right, spec, output_schema);
-    builder.finish_with_host_sink(join)
+    let join = builder.add_join(left, right, spec, output_schema).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn unknown_probe_small_left_build_join_strategy_plan() -> QueryPlan {
@@ -677,8 +677,8 @@ fn unknown_probe_small_left_build_join_strategy_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Left),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn string_keyed_join_strategy_plan() -> QueryPlan {
@@ -741,8 +741,8 @@ fn string_keyed_join_strategy_plan_with_probe(
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn large_keyed_residual_join_strategy_plan() -> QueryPlan {
@@ -801,8 +801,8 @@ fn large_keyed_residual_join_strategy_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn large_keyed_residual_or_join_strategy_plan() -> QueryPlan {
@@ -865,8 +865,8 @@ fn large_keyed_residual_or_join_strategy_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn decimal_division_residual_join_strategy_plan() -> QueryPlan {
@@ -934,6 +934,6 @@ fn decimal_division_residual_join_strategy_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }

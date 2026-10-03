@@ -554,7 +554,7 @@ mod tests {
     fn remote_direct_chunk(chunk_index: usize, estimated_source_read_bytes: u64) -> SourceChunk {
         let resolved_source = remote_direct_resolved_source();
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             chunk_index,
             file_index: 0,
             location: ParquetSourceLocation::object_store_uri("s3://bucket/table.parquet").unwrap(),

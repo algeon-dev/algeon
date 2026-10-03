@@ -44,6 +44,7 @@ use query_engine::{datatypes::is_supported_arrow_type, source::SourceDiagnostics
 use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
+    error::Result,
     native::lower_physical_plan_to_native,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
@@ -177,7 +178,17 @@ fn report_rows_for_item(
 ) -> Vec<NativeFallbackPressureRow> {
     match item.input {
         NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) => {
-            report_rows_for_plan(item.query_id, plan, execution_config)
+            match report_rows_for_plan(item.query_id.clone(), plan, execution_config) {
+                Ok(rows) => rows,
+                Err(error) => vec![report_row_for_planning_failure(
+                    item.query_id,
+                    NativePlanningFailure {
+                        stage: "native_lowering".to_string(),
+                        reason_code: error.code().as_str().to_string(),
+                        message: error.message().to_string(),
+                    },
+                )],
+            }
         },
         NativeFallbackPressureWorkloadInput::PlanningFailure(failure) => {
             vec![report_row_for_planning_failure(item.query_id, failure)]
@@ -189,15 +200,15 @@ fn report_rows_for_plan(
     query_id: String,
     plan: Arc<dyn ExecutionPlan>,
     _execution_config: &AlgeonNativeExecutionConfig,
-) -> Vec<NativeFallbackPressureRow> {
+) -> Result<Vec<NativeFallbackPressureRow>> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
     let join_diagnostics = physical_join_diagnostics(plan.as_ref());
     let source_diagnostics_plan = Arc::clone(&plan);
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan)?;
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
-    result
+    Ok(result
         .report
         .outcomes()
         .iter()
@@ -247,7 +258,7 @@ fn report_rows_for_plan(
                 rejected_before_execution: false,
             },
         })
-        .collect()
+        .collect())
 }
 
 fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFailure) -> NativeFallbackPressureRow {

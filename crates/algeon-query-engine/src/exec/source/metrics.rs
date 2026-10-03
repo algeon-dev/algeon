@@ -110,7 +110,7 @@ mod tests {
         let chunk = estimated_only_chunk(0);
         let plan = SourceChunkPlan {
             chunks: vec![chunk],
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             row_group_metadata_available: true,
             size_estimate_based: true,
             metadata_unavailable_files: 0,
@@ -138,7 +138,7 @@ mod tests {
                 SourceChunk { known_file_bytes: Some(100), ..first_file_chunk },
                 SourceChunk { known_file_bytes: Some(100), ..second_file_chunk },
             ],
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             row_group_metadata_available: true,
             size_estimate_based: true,
             metadata_unavailable_files: 0,
@@ -171,7 +171,7 @@ mod tests {
                     ..estimated_only_chunk_for(1, 1, "/tmp/row-group-known.parquet")
                 },
             ],
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             row_group_metadata_available: true,
             size_estimate_based: true,
             metadata_unavailable_files: 0,
@@ -192,7 +192,7 @@ mod tests {
 
     fn estimated_only_chunk_for(file_index: usize, chunk_index: usize, path: &'static str) -> SourceChunk {
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             chunk_index,
             file_index,
             location: ParquetSourceLocation::local_path(path),

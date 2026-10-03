@@ -3,8 +3,8 @@
 use arrow::datatypes::SchemaRef;
 
 use super::{
-    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode,
-    Result, cudf_query_error, cudf_unsupported_type_error, traversal,
+    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
+    cudf_query_error, cudf_unsupported_type_error, traversal,
 };
 use crate::{
     datatypes::cudf_dtype_from_arrow_type,
@@ -18,7 +18,7 @@ pub(super) fn resolve_empty_graph_input(
     context: &ExecutionContext,
     node: &GraphAlgorithmNode,
     sanitized_edges: &DataFrame,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     input_rows: u64,
     sanitized_input_rows: u64,
 ) -> Result<Option<GraphAlgorithmExecutionResult>> {
@@ -68,7 +68,7 @@ pub(super) fn resolve_empty_graph_input(
                 input_rows,
                 sanitized_input_rows,
             )
-            .with_fact("vertex_pairs_node", similarity_vertex_pairs_params(&node.spec)?.vertex_pairs.input)
+            .with_fact("vertex_pairs_input", similarity_vertex_pairs_params(&node.spec)?.vertex_pairs.input)
             .with_fact("vertex_pair_rows", pairs.num_rows()))
         },
     }
@@ -76,7 +76,7 @@ pub(super) fn resolve_empty_graph_input(
 
 fn validate_required_side_inputs(
     spec: &GraphAlgorithmSpec,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     policy: EmptyGraphSideInputPolicy,
 ) -> Result<()> {
     match policy {
@@ -99,7 +99,7 @@ fn validate_required_side_inputs(
                 )
                 .with_fact("algorithm", spec.algorithm.as_str())
                 .with_fact("input_role", "personalization")
-                .with_fact("side_input_node", params.personalization.input)
+                .with_fact("side_input_ordinal", params.personalization.input)
             })?;
             let rows = input.num_rows();
             if rows != 0 {
@@ -112,7 +112,7 @@ fn validate_required_side_inputs(
             )
             .with_fact("algorithm", spec.algorithm.as_str())
             .with_fact("input_role", "personalization")
-            .with_fact("side_input_node", params.personalization.input)
+            .with_fact("side_input_ordinal", params.personalization.input)
             .with_fact("side_input_rows", rows)
             .with_fact("reason", "required_side_input_empty")
             .with_fact("empty_input_policy", policy.as_str()))
@@ -134,7 +134,7 @@ fn similarity_vertex_pairs_params(spec: &GraphAlgorithmSpec) -> Result<&GraphSim
 
 fn similarity_vertex_pairs<'a>(
     spec: &GraphAlgorithmSpec,
-    side_inputs: &'a std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &'a std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<&'a GpuDataFrame> {
     let params = similarity_vertex_pairs_params(spec)?;
     side_inputs.get(&params.vertex_pairs.input).ok_or_else(|| {
@@ -145,7 +145,7 @@ fn similarity_vertex_pairs<'a>(
         )
         .with_fact("algorithm", spec.algorithm.as_str())
         .with_fact("input_role", "vertex_pairs")
-        .with_fact("side_input_node", params.vertex_pairs.input)
+        .with_fact("side_input_ordinal", params.vertex_pairs.input)
     })
 }
 

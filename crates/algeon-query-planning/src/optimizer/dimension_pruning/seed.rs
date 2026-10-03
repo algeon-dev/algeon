@@ -3,11 +3,12 @@ use super::{
     NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, SourceColumnRef, SourceNode,
     mutable_local_parquet_source, predicate_columns, rewrite,
 };
+use crate::error::Result;
 
 pub(super) fn seed_reader_predicates_from_group_key_filters(
     plan: QueryPlan,
     ctx: AnalysisContext<'_>,
-) -> (QueryPlan, bool) {
+) -> Result<(QueryPlan, bool)> {
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut changed = false;
@@ -31,10 +32,10 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(
     }
 
     if !changed {
-        return (plan, false);
+        return Ok((plan, false));
     }
     let root = plan.root_id();
-    (plan.rewrite(RewrittenNodes::refined_sources(nodes, root)), true)
+    Ok((plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?, true))
 }
 
 /// Returns a copy of `plan` with eligible post-aggregate group-key filters
@@ -44,8 +45,8 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(
 /// by adapter-side object-store pruning, where row-group statistics are not
 /// available inside `query-engine` but the seeded dimension predicate is
 /// still needed to derive a key range.
-pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan, ctx: AnalysisContext<'_>) -> QueryPlan {
-    seed_reader_predicates_from_group_key_filters(plan, ctx).0
+pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan, ctx: AnalysisContext<'_>) -> Result<QueryPlan> {
+    Ok(seed_reader_predicates_from_group_key_filters(plan, ctx)?.0)
 }
 
 fn predicate_conjuncts(expr: &Expr) -> Vec<&Expr> {

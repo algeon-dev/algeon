@@ -40,7 +40,7 @@ pub(super) fn execute_similarity(
         )
         .with_fact("algorithm", spec.algorithm.as_str())
         .with_fact("input_role", "vertex_pairs")
-        .with_fact("side_input_node", params.vertex_pairs.input)
+        .with_fact("side_input_ordinal", params.vertex_pairs.input)
     })?;
     let pair_frame = pair_input.into_frame();
     let pair_rows = pair_frame.num_rows();

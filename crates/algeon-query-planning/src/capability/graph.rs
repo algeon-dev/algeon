@@ -1,151 +1,18 @@
 //! Plan-graph traversal helpers used by capability analysis.
 //!
-//! Provides reachability and topological-walk utilities over [`QueryPlan`]
-//! nodes that admission and invariant analyses share.
+//! Provides reachability utilities over [`QueryPlan`] nodes that admission
+//! and invariant analyses share. Plan construction already guarantees that
+//! every node is reachable from the sink and that inputs precede consumers.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{JoinSide, NodeId, PlanNode, QueryPlan, model::CapabilityDecision, rejection::Reason};
+use super::{JoinSide, NodeId, PlanNode, QueryPlan};
 
-// Proves a dependency walk can be scheduled without cycles or missing nodes.
-pub(super) struct GraphScheduleProof<'a> {
-    plan: &'a QueryPlan,
-    state: Vec<VisitState>,
-}
-
-impl<'a> GraphScheduleProof<'a> {
-    pub(super) fn new(plan: &'a QueryPlan) -> Self {
-        Self { plan, state: vec![VisitState::Unvisited; plan.nodes().len()] }
-    }
-
-    pub(super) fn schedule_from(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
-        let Some(node) = self.plan.node(node_id) else {
-            return Err(CapabilityDecision::rejected(
-                Reason::TopologicalScheduleMissingNode,
-                [("node_id", node_id.to_string())],
-            ));
-        };
-        match self.state.get(node_id.index()).copied() {
-            Some(VisitState::Done) => return Ok(()),
-            Some(VisitState::Visiting) => {
-                return Err(CapabilityDecision::rejected(
-                    Reason::TopologicalScheduleCycle,
-                    [("node_id", node_id.to_string())],
-                ));
-            },
-            Some(VisitState::Unvisited) => {},
-            None => {
-                return Err(CapabilityDecision::rejected(
-                    Reason::TopologicalScheduleMissingNode,
-                    [("node_id", node_id.to_string())],
-                ));
-            },
-        }
-        self.state[node_id.index()] = VisitState::Visiting;
-        match &node.kind {
-            PlanNode::Join(join) => {
-                let build_input = join.inputs[if join.spec.build_side == JoinSide::Left { 0 } else { 1 }];
-                let probe_input = join.inputs[if join.spec.build_side == JoinSide::Left { 1 } else { 0 }];
-                self.schedule_from(build_input)?;
-                self.schedule_from(probe_input)?;
-            },
-            _ => {
-                for input in node.input_ids() {
-                    self.schedule_from(*input)?;
-                }
-            },
-        }
-        self.state[node_id.index()] = VisitState::Done;
-        Ok(())
-    }
-}
-
-// Three-color DFS marker shared by graph proofs and reachability collection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum VisitState {
-    Unvisited,
-    Visiting,
-    Done,
-}
-
-pub(super) fn collect_reachable_node_ids(plan: &QueryPlan) -> Result<BTreeSet<NodeId>, CapabilityDecision> {
-    collect_reachable_node_ids_from(plan, plan.sink().input())
-}
-
-pub(super) fn collect_reachable_node_ids_from(
-    plan: &QueryPlan,
-    root: NodeId,
-) -> Result<BTreeSet<NodeId>, CapabilityDecision> {
-    let mut collector = ReachableCollector::new(plan);
-    collector.collect(root)?;
-    Ok(collector.reachable)
-}
-
-// Collects the sink-reachable subgraph while rejecting malformed cycles.
-pub(super) struct ReachableCollector<'a> {
-    plan: &'a QueryPlan,
-    state: Vec<VisitState>,
-    reachable: BTreeSet<NodeId>,
-}
-
-impl<'a> ReachableCollector<'a> {
-    fn new(plan: &'a QueryPlan) -> Self {
-        Self { plan, state: vec![VisitState::Unvisited; plan.nodes().len()], reachable: BTreeSet::new() }
-    }
-
-    fn collect(&mut self, node_id: NodeId) -> Result<(), CapabilityDecision> {
-        let Some(node) = self.plan.node(node_id) else {
-            return Err(CapabilityDecision::rejected(
-                Reason::ReachableSubgraphMissingNode,
-                [("node_id", node_id.to_string())],
-            ));
-        };
-        match self.state.get(node_id.index()).copied() {
-            Some(VisitState::Done) => return Ok(()),
-            Some(VisitState::Visiting) => {
-                return Err(CapabilityDecision::rejected(
-                    Reason::ReachableSubgraphCycle,
-                    [("node_id", node_id.to_string())],
-                ));
-            },
-            Some(VisitState::Unvisited) => {},
-            None => {
-                return Err(CapabilityDecision::rejected(
-                    Reason::ReachableSubgraphMissingNode,
-                    [("node_id", node_id.to_string())],
-                ));
-            },
-        }
-        self.state[node_id.index()] = VisitState::Visiting;
-        self.reachable.insert(node_id);
-        for input in node.input_ids() {
-            self.collect(*input)?;
-        }
-        self.state[node_id.index()] = VisitState::Done;
-        Ok(())
-    }
-}
-
-pub(super) fn reachable_join_count_from_sink(plan: &QueryPlan) -> Result<usize, CapabilityDecision> {
-    let reachable = collect_reachable_node_ids(plan)?;
-    Ok(reachable
-        .into_iter()
-        .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
-        .count())
-}
-
-pub(super) fn consumer_nodes_for_reachable(
-    plan: &QueryPlan,
-    reachable: &BTreeSet<NodeId>,
-) -> BTreeMap<NodeId, Vec<NodeId>> {
+/// Each node's consumers, in node order.
+pub(super) fn consumer_nodes(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
     let mut consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
-    for node_id in reachable {
-        let Some(node) = plan.node(*node_id) else {
-            continue;
-        };
+    for node in plan.nodes() {
         for input in node.input_ids() {
-            if reachable.contains(input) {
-                consumers.entry(*input).or_default().push(*node_id);
-            }
+            consumers.entry(*input).or_default().push(node.id);
         }
     }
     consumers

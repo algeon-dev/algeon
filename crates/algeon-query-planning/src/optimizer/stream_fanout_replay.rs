@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes};
+use crate::{
+    error::Result,
+    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes},
+};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const STREAM_FANOUT_REPLAY_RULE_NAME: &str = "stream_fanout_replay";
@@ -77,22 +80,22 @@ pub(crate) struct StreamFanoutReplayResult {
 pub(crate) fn optimize_stream_fanout_replay(
     plan: QueryPlan,
     options: &StreamFanoutReplayOptions,
-) -> StreamFanoutReplayResult {
+) -> Result<StreamFanoutReplayResult> {
     if !options.enabled {
-        return StreamFanoutReplayResult {
+        return Ok(StreamFanoutReplayResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: StreamFanoutReplayDiagnostics::default(),
-        };
+        });
     }
 
     let candidates = replay_candidates(&plan);
     if candidates.is_empty() {
-        return StreamFanoutReplayResult {
+        return Ok(StreamFanoutReplayResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: StreamFanoutReplayDiagnostics::default(),
-        };
+        });
     }
 
     let fanout_nodes = candidates.keys().copied().collect::<BTreeSet<_>>();
@@ -100,7 +103,7 @@ pub(crate) fn optimize_stream_fanout_replay(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let applied_fanouts = rewriter.applied_fanouts;
     let changed = rewriter.changed;
-    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
     let direct_consumers = consumers_by_node(&plan);
@@ -120,7 +123,7 @@ pub(crate) fn optimize_stream_fanout_replay(
     }
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
-    StreamFanoutReplayResult { plan: rewritten_plan, change, diagnostics }
+    Ok(StreamFanoutReplayResult { plan: rewritten_plan, change, diagnostics })
 }
 
 struct StreamFanoutReplayRewriter<'a> {
@@ -187,7 +190,7 @@ impl<'a> StreamFanoutReplayRewriter<'a> {
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

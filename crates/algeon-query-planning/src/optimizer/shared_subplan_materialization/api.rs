@@ -30,28 +30,28 @@ pub(crate) struct SharedSubplanMaterializationResult {
 pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
-) -> SharedSubplanMaterializationResult {
+) -> Result<SharedSubplanMaterializationResult, QueryError> {
     if options.enabled {
         optimize_scalar_aggregate_from_grouped_aggregate(plan)
     } else {
-        SharedSubplanMaterializationResult {
+        Ok(SharedSubplanMaterializationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: SharedSubplanMaterializationDiagnostics::default(),
-        }
+        })
     }
 }
 
 pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
-) -> SharedSubplanMaterializationResult {
+) -> Result<SharedSubplanMaterializationResult, QueryError> {
     if !options.enabled {
-        return SharedSubplanMaterializationResult {
+        return Ok(SharedSubplanMaterializationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: SharedSubplanMaterializationDiagnostics::default(),
-        };
+        });
     }
 
     let scalar_derivation = SharedSubplanMaterializationResult {
@@ -62,13 +62,13 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan);
     if discovery.families.is_empty() {
         if scalar_derivation.change.changed() || !scalar_derivation.diagnostics.is_empty() {
-            return scalar_derivation;
+            return Ok(scalar_derivation);
         }
-        return SharedSubplanMaterializationResult {
+        return Ok(SharedSubplanMaterializationResult {
             plan: scalar_derivation.plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: discovery.diagnostics,
-        };
+        });
     }
 
     let root_id = scalar_derivation.plan.root_id();
@@ -79,12 +79,12 @@ pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     diagnostics.merge(rewriter.diagnostics);
     let changed = rewriter.changed;
     let rewritten_plan =
-        scalar_derivation.plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
+        scalar_derivation.plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
     let change = if changed || scalar_derivation.change.changed() {
         super::NativeOptimizerChange::Changed
     } else {
         super::NativeOptimizerChange::Unchanged
     };
     diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
-    SharedSubplanMaterializationResult { plan: rewritten_plan, change, diagnostics }
+    Ok(SharedSubplanMaterializationResult { plan: rewritten_plan, change, diagnostics })
 }

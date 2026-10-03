@@ -8,7 +8,7 @@ use cugraph::{
 
 use super::{
     DataFrame, ExecutionContext, ExecutionOverrides, GpuDataFrame, GraphAlgorithmExecutionInputs,
-    GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params,
+    GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params,
     map_cugraph_error, normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
 use crate::plan::{
@@ -114,7 +114,7 @@ struct ForceAtlas2InitialPositionSeries {
 
 fn force_atlas2_vertex_attribute_series(
     binding: &GraphForceAtlas2VertexAttributesInput,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<ForceAtlas2VertexAttributeSeries> {
     let frame = force_atlas2_side_input_frame(side_inputs, binding.input, "vertex_attributes")?;
     Ok(ForceAtlas2VertexAttributeSeries {
@@ -145,7 +145,7 @@ fn force_atlas2_vertex_attribute_series(
 
 fn force_atlas2_initial_position_series(
     binding: &GraphForceAtlas2InitialPositionsInput,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<ForceAtlas2InitialPositionSeries> {
     let frame = force_atlas2_side_input_frame(side_inputs, binding.input, "initial_positions")?;
     Ok(ForceAtlas2InitialPositionSeries {
@@ -156,8 +156,8 @@ fn force_atlas2_initial_position_series(
 }
 
 fn force_atlas2_side_input_frame<'a>(
-    side_inputs: &'a std::collections::BTreeMap<NodeId, GpuDataFrame>,
-    input: NodeId,
+    side_inputs: &'a std::collections::BTreeMap<usize, GpuDataFrame>,
+    input: usize,
     role: &'static str,
 ) -> Result<&'a DataFrame> {
     side_inputs.get(&input).map(GpuDataFrame::frame).ok_or_else(|| {
@@ -167,7 +167,7 @@ fn force_atlas2_side_input_frame<'a>(
             "ForceAtlas2 side input was not executed",
         )
         .with_fact("side_input_role", role)
-        .with_fact("side_input_node", input)
+        .with_fact("side_input_ordinal", input)
     })
 }
 

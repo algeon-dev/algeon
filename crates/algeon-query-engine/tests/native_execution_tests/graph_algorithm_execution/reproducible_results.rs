@@ -23,8 +23,8 @@ fn run_vertex_keyed_algorithm(
         GraphConstructionOptions { directed, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         params,
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(algorithm));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(algorithm)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();

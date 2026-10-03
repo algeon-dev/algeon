@@ -18,7 +18,7 @@ impl fmt::Display for QueryPlan {
         writeln!(
             f,
             "QueryPlan root={} sink={} dynamic_filter_routes={}",
-            self.root,
+            self.root_id(),
             self.sink.kind_name(),
             self.annotations.dynamic_filter_routes.len()
         )?;
@@ -88,7 +88,7 @@ impl QueryNode {
                     );
                     writeln!(
                         f,
-                        "{padding}{} LocalParquetSource files={} path={} format=Parquet direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} max_rows={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
+                        "{padding}{} LocalParquetSource files={} path={} format=Parquet direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} max_rows={} schema_mapping={} rejected_features={}",
                         self.id,
                         source.diagnostics.file_count,
                         source
@@ -119,48 +119,38 @@ impl QueryNode {
                             .map(|feature| feature.as_str())
                             .collect::<Vec<_>>()
                             .join(","),
-                        self.facts.placement,
-                        self.facts.schema_behavior
                     )
                 },
                 SourceNode::GpuResident(source) => writeln!(
                     f,
-                    "{padding}{} GpuResidentSource input_name={} schema_fields={} placement={} schema_behavior={}",
+                    "{padding}{} GpuResidentSource input_name={} schema_fields={}",
                     self.id,
                     source.input_name,
                     source.schema.fields().len(),
-                    self.facts.placement,
-                    self.facts.schema_behavior
                 ),
                 SourceNode::LiteralBatch(source) => writeln!(
                     f,
-                    "{padding}{} LiteralBatchSource batches={} rows={} schema_fields={} placement={} schema_behavior={}",
+                    "{padding}{} LiteralBatchSource batches={} rows={} schema_fields={}",
                     self.id,
                     source.batches.len(),
                     source.row_count(),
                     source.schema.fields().len(),
-                    self.facts.placement,
-                    self.facts.schema_behavior
                 ),
             },
-            PlanNode::Filter(node) => writeln!(
-                f,
-                "{padding}{} Filter input={} predicate={} placement={} schema_behavior={}",
-                self.id, node.input, node.predicate, self.facts.placement, self.facts.schema_behavior
-            ),
+            PlanNode::Filter(node) => {
+                writeln!(f, "{padding}{} Filter input={} predicate={}", self.id, node.input, node.predicate)
+            },
             PlanNode::Projection(node) => writeln!(
                 f,
-                "{padding}{} Projection input={} output_count={} expressions={} placement={} schema_behavior={}",
+                "{padding}{} Projection input={} output_count={} expressions={}",
                 self.id,
                 node.input,
                 node.outputs.len(),
                 format_exprs(&node.expressions().cloned().collect::<Vec<_>>()),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Aggregate(node) => writeln!(
                 f,
-                "{padding}{} Aggregate input={} group_count={} aggr_count={} grouping_set_count={} grouping_id_alias={} grouping_sets={} groups={} aggrs={} placement={} schema_behavior={}",
+                "{padding}{} Aggregate input={} group_count={} aggr_count={} grouping_set_count={} grouping_id_alias={} grouping_sets={} groups={} aggrs={}",
                 self.id,
                 node.input,
                 node.spec.group_exprs.len(),
@@ -173,12 +163,10 @@ impl QueryNode {
                 format_grouping_sets(node.spec.grouping_sets.as_ref()),
                 format_exprs(&node.spec.group_exprs),
                 format_aggregate_exprs(&node.spec.aggr_exprs),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Window(node) => writeln!(
                 f,
-                "{padding}{} Window input={} partition_count={} order_count={} function_count={} partitions={} order={} functions={} placement={} schema_behavior={}",
+                "{padding}{} Window input={} partition_count={} order_count={} function_count={} partitions={} order={} functions={}",
                 self.id,
                 node.input,
                 node.spec.partition_by.len(),
@@ -187,32 +175,26 @@ impl QueryNode {
                 format_exprs(&node.spec.partition_by),
                 format_sort_exprs(&node.spec.order_by),
                 format_window_functions(&node.spec.functions),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Sort(node) => writeln!(
                 f,
-                "{padding}{} Sort input={} expr_count={} expressions={} placement={} schema_behavior={}",
+                "{padding}{} Sort input={} expr_count={} expressions={}",
                 self.id,
                 node.input,
                 node.spec.expressions.len(),
                 format_sort_exprs(&node.spec.expressions),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Limit(node) => writeln!(
                 f,
-                "{padding}{} Limit input={} skip={} fetch={} placement={} schema_behavior={}",
+                "{padding}{} Limit input={} skip={} fetch={}",
                 self.id,
                 node.input,
                 node.spec.skip,
                 node.spec.fetch.map_or_else(|| "none".to_string(), |fetch| fetch.to_string()),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Join(node) => writeln!(
                 f,
-                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} build_artifact={} output_projection={} placement={} schema_behavior={}",
+                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} build_artifact={} output_projection={}",
                 self.id,
                 node.inputs[0],
                 node.inputs[1],
@@ -223,21 +205,17 @@ impl QueryNode {
                 node.spec.build_side,
                 node.spec.build_artifact_id.as_ref().map_or("none", HashJoinBuildArtifactId::as_str),
                 format_join_output_projection(&node.spec.output_projection),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::Union(node) => writeln!(
                 f,
-                "{padding}{} Union inputs={} input_count={} placement={} schema_behavior={}",
+                "{padding}{} Union inputs={} input_count={}",
                 self.id,
                 format_node_ids(&node.inputs),
                 node.inputs.len(),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::EdgeNormalize(node) => writeln!(
                 f,
-                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} edge_id_col={} add_reverse={} dedup={} weight_combiner={} placement={} schema_behavior={}",
+                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} edge_id_col={} add_reverse={} dedup={} weight_combiner={}",
                 self.id,
                 node.input,
                 node.spec.edge_columns.source,
@@ -247,14 +225,12 @@ impl QueryNode {
                 node.spec.add_reverse,
                 node.spec.dedup,
                 node.spec.weight_combiner,
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::GraphAlgorithm(node) => writeln!(
                 f,
-                "{padding}{} GraphAlgorithm input={} side_inputs={} algorithm={} src_col={} dst_col={} weight_col={} edge_id_col={} directed={} renumber={} construction_policy={} params={} predicates={} output_schema_fields={} placement={} schema_behavior={}",
+                "{padding}{} GraphAlgorithm input={} side_inputs={} algorithm={} src_col={} dst_col={} weight_col={} edge_id_col={} directed={} renumber={} construction_policy={} params={} predicates={} output_schema_fields={}",
                 self.id,
-                node.input,
+                node.edge_input(),
                 format_node_ids(&node.inputs[1..]),
                 node.spec.algorithm,
                 node.spec.edge_columns.source,
@@ -267,30 +243,24 @@ impl QueryNode {
                 format_graph_algorithm_params(&node.spec.params),
                 format_graph_algorithm_predicates(&node.spec.params),
                 node.output_schema().fields().len(),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::VectorAlgorithm(node) => writeln!(
                 f,
-                "{padding}{} VectorAlgorithm inputs={} algorithm={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                "{padding}{} VectorAlgorithm inputs={} algorithm={} params={} output_schema_fields={}",
                 self.id,
                 format_node_ids(&node.inputs),
                 node.spec.algorithm,
                 format_vector_algorithm_params(&node.spec.params),
                 node.output_schema().fields().len(),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
             PlanNode::MlAlgorithm(node) => writeln!(
                 f,
-                "{padding}{} MlAlgorithm inputs={} algorithm={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                "{padding}{} MlAlgorithm inputs={} algorithm={} params={} output_schema_fields={}",
                 self.id,
                 format_node_ids(&node.inputs),
                 node.spec.algorithm,
                 format_ml_algorithm_params(&node.spec.params),
                 node.output_schema().fields().len(),
-                self.facts.placement,
-                self.facts.schema_behavior
             ),
         }
     }
@@ -527,14 +497,15 @@ fn format_window_functions(functions: &[super::WindowFunction]) -> String {
         functions
             .iter()
             .map(|function| match function {
-                super::WindowFunction::Aggregate { function, expr, alias, frame } => {
-                    format!("{function:?}({expr}) {frame:?} AS {alias}")
+                super::WindowFunction::Aggregate { function, expr, output, frame } => {
+                    format!("{function:?}({expr}) {frame:?} AS {}", output.name())
                 },
-                super::WindowFunction::Rank { alias } => format!("RANK() AS {alias}"),
-                super::WindowFunction::RowNumber { alias, output_type } => {
-                    format!("ROW_NUMBER()::{output_type:?} AS {alias}")
+                super::WindowFunction::Rank { output } => format!("RANK() AS {}", output.name()),
+                super::WindowFunction::RowNumber { output } => {
+                    format!("ROW_NUMBER()::{:?} AS {}", output.data_type(), output.name())
                 },
-                super::WindowFunction::LagLead { expr, offset, default, alias, direction } => {
+                super::WindowFunction::LagLead { expr, offset, default, output, direction } => {
+                    let alias = output.name();
                     let name = match direction {
                         super::ShiftDirection::Lag => "LAG",
                         super::ShiftDirection::Lead => "LEAD",
@@ -575,7 +546,7 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
         super::GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
-            "alpha={}:epsilon={}:max_iterations={}:personalization_node={}:personalization_vertex_col={}:personalization_value_col={}",
+            "alpha={}:epsilon={}:max_iterations={}:personalization_input={}:personalization_vertex_col={}:personalization_value_col={}",
             params.pagerank.alpha,
             params.pagerank.epsilon,
             params.pagerank.max_iterations,
@@ -679,7 +650,7 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.seed,
         ),
         super::GraphAlgorithmParams::Similarity(params) => format!(
-            "vertex_pairs_node={}:first_column={}:second_column={}",
+            "vertex_pairs_input={}:first_column={}:second_column={}",
             params.vertex_pairs.input, params.vertex_pairs.first_column, params.vertex_pairs.second_column,
         ),
     }

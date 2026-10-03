@@ -24,18 +24,20 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = backend_context_with_grant(1024 * 1024);
@@ -88,19 +90,21 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Left, vec![])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Left, vec![])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
@@ -157,20 +161,22 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Full, vec![])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
-                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Full, vec![])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
@@ -377,11 +383,9 @@ fn keyless_outer_cross_join_plan(
     let left =
         builder.add_source(SourceNode::LocalParquet(join_left_source(left_path, left_schema, &["order_id", "qty"])));
     let left = if empty_left {
-        builder.add_filter(
-            left,
-            Expr::binary(Expr::column("qty"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(0))),
-            Arc::clone(left_schema),
-        )
+        builder
+            .add_filter(left, Expr::binary(Expr::column("qty"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(0))))
+            .unwrap()
     } else {
         left
     };
@@ -391,28 +395,31 @@ fn keyless_outer_cross_join_plan(
         &["order_id", "category"],
     )));
     let right = if empty_right {
-        builder.add_filter(
-            right,
-            Expr::binary(Expr::column("order_id"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(0))),
-            Arc::clone(right_schema),
-        )
+        builder
+            .add_filter(
+                right,
+                Expr::binary(Expr::column("order_id"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(0))),
+            )
+            .unwrap()
     } else {
         right
     };
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(match join_type {
-                JoinType::Left => JoinSide::Right,
-                JoinType::Full => JoinSide::Left,
-                _ => unreachable!("test helper only builds left/full joins"),
-            }),
-        Arc::clone(&output_schema),
-    );
-    builder.finish_with_host_sink(join)
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(match join_type {
+                    JoinType::Left => JoinSide::Right,
+                    JoinType::Full => JoinSide::Left,
+                    _ => unreachable!("test helper only builds left/full joins"),
+                }),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }

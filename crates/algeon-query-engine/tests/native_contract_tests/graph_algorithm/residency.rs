@@ -101,8 +101,7 @@ fn graph_residency_descriptor_carries_a_footer_vertex_bound_only_for_the_complet
 
 #[test]
 fn simple_directed_topology_proof_survives_only_column_preserving_native_projections() {
-    let topology = GraphSimpleDirectedEdgeTopology::new(0, 1)
-        .expect("source and destination columns differ");
+    let topology = GraphSimpleDirectedEdgeTopology::new(0, 1).expect("source and destination columns differ");
     let source = graph_local_parquet_source_with_file(
         &["src", "dst"],
         LocalParquetFile::new("/tmp/graph-residency-simple-directed.parquet")
@@ -118,15 +117,16 @@ fn simple_directed_topology_proof_survives_only_column_preserving_native_project
     let source = graph_local_parquet_source_with_file(
         &["src", "dst"],
         LocalParquetFile::new("/tmp/graph-residency-simple-directed-filtered.parquet")
-            .with_stable_id("local:/tmp/graph-residency-simple-directed-filtered.parquet:1024:mtime=2026-08-06T00:00:00Z")
+            .with_stable_id(
+                "local:/tmp/graph-residency-simple-directed-filtered.parquet:1024:mtime=2026-08-06T00:00:00Z",
+            )
             .with_file_size_bytes(1024)
             .with_graph_simple_directed_edge_topology(topology),
     );
-    let output_schema = Arc::clone(source.output_schema());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filtered = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), output_schema);
-    let filtered_plan = builder.finish_gpu_resident(filtered);
+    let filtered = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true))).unwrap();
+    let filtered_plan = builder.finish_gpu_resident(filtered).unwrap();
 
     assert!(
         !edge_plan_has_simple_directed_edge_topology(&filtered_plan, "src", "dst"),
@@ -201,12 +201,8 @@ fn planned_resident_graph_key_matches_cached_execution_or_bypasses() {
         Some(bfs_descriptor.resident_key(&bfs, GraphResidencyOrientation::Forward))
     );
 
-    let mut builder = QueryPlanBuilder::new();
-    let include_edges =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("include_edges", Arc::new(Schema::empty()))));
     let mut include_edges_params = GraphBfsParams::new(7, None);
-    include_edges_params.predicates.include_edges =
-        Some(GraphEdgePredicateInput::new(include_edges, "src", "dst", None::<String>));
+    include_edges_params.predicates.include_edges = Some(GraphEdgePredicateInput::new(1, "src", "dst", None::<String>));
     let bfs_include_edges = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<String>),
@@ -353,11 +349,10 @@ fn graph_residency_descriptor_bypasses_transforms_and_gpu_inputs() {
     let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
 
     let local_source = graph_local_parquet_source(&["src", "dst"]);
-    let output_schema = Arc::clone(local_source.output_schema());
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(local_source));
-    let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), output_schema);
-    let filtered_plan = builder.finish_gpu_resident(filter);
+    let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true))).unwrap();
+    let filtered_plan = builder.finish_gpu_resident(filter).unwrap();
     assert_eq!(
         graph_residency_descriptor_for_edge_plan(&filtered_plan, &spec).bypass_reason(),
         Some(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
@@ -365,7 +360,7 @@ fn graph_residency_descriptor_bypasses_transforms_and_gpu_inputs() {
 
     let mut builder = QueryPlanBuilder::new();
     let gpu = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema_no_weight())));
-    let gpu_plan = builder.finish_gpu_resident(gpu);
+    let gpu_plan = builder.finish_gpu_resident(gpu).unwrap();
     assert_eq!(
         graph_residency_descriptor_for_edge_plan(&gpu_plan, &spec).bypass_reason(),
         Some(GraphSourceFingerprintBypassReason::NonLocalParquetSource),

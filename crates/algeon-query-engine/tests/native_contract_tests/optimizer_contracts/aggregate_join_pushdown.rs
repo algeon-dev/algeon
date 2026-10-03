@@ -25,22 +25,22 @@ fn aggregate_join_pushdown_reuses_physical_group_identity_and_preserves_output_a
                 ColumnRef::input(0, "physical_key", "display_key"),
                 ColumnRef::input(1, "physical_key", "display_key"),
             )],
-        ).with_output_projection(outputs).with_build_side(JoinSide::Right), schema(&output_names));
+        ).with_output_projection(outputs).with_build_side(JoinSide::Right), schema(&output_names)).unwrap();
         let mut projected_names = group_aliases.clone();
         projected_names.push("measure");
         let mut expressions = group_aliases.iter().map(|alias| Expr::column(*alias)).collect::<Vec<_>>();
         expressions.push(Expr::binary(
             Expr::column("value"), BinaryOp::Add, Expr::column("value"),
         ).alias("measure"));
-        let projection = builder.add_projection(join, projection_outputs(expressions, schema(&projected_names)));
+        let projection = builder.add_projection(join, projection_outputs(expressions, schema(&projected_names))).unwrap();
         let mut final_names = group_aliases.clone();
         final_names.push("sum_value");
         let aggregate = builder.add_aggregate(projection, AggregateSpec::new(
             group_aliases.iter().map(|alias| Expr::column(*alias)).collect(),
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "sum_value")],
-        ), schema(&final_names));
-        let plan = builder.finish_with_host_sink(aggregate);
-        let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        ), schema(&final_names)).unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
+        let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
         assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
         assert_eq!(optimized.plan.root_node().output_schema(), &schema(&final_names));
         let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else { panic!("final aggregate") };
@@ -105,14 +105,14 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let projection = builder.add_projection(
         join,
         projection_outputs(
             vec![Expr::column("s_store_name"), Expr::column("ss_net_profit").alias("__algeon_native_aggregate_arg_0")],
             aggregate_input_schema,
         ),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projection,
         AggregateSpec::new(
@@ -124,10 +124,10 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
             )],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(optimized.changed(), "plain q08-class aggregate-over-join should be pre-aggregated");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -198,7 +198,7 @@ fn aggregate_join_pushdown_rejects_large_fixed_width_detail_key_preaggregate_wit
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -206,12 +206,12 @@ fn aggregate_join_pushdown_rejects_large_fixed_width_detail_key_preaggregate_wit
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -253,7 +253,7 @@ fn aggregate_join_pushdown_rejects_large_single_join_key_detail_preaggregate_wit
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -261,12 +261,12 @@ fn aggregate_join_pushdown_rejects_large_single_join_key_detail_preaggregate_wit
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -308,7 +308,7 @@ fn aggregate_join_pushdown_admits_fixed_width_detail_key_below_reduction_evidenc
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -316,12 +316,12 @@ fn aggregate_join_pushdown_admits_fixed_width_detail_key_below_reduction_evidenc
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -369,7 +369,7 @@ fn aggregate_join_pushdown_admits_large_variable_width_group_key_preaggregate() 
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -377,12 +377,12 @@ fn aggregate_join_pushdown_admits_large_variable_width_group_key_preaggregate() 
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -422,7 +422,7 @@ fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -434,10 +434,10 @@ fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets
             "__grouping_id",
         )),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(optimized.changed(), "grouping-set aggregate-over-join should still be eligible for pre-aggregation");
     assert_all_node_inputs_exist(&optimized.plan);
@@ -488,7 +488,7 @@ fn aggregate_join_pushdown_avg_grouping_sets_final_projection_facts_match_typed_
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -500,10 +500,10 @@ fn aggregate_join_pushdown_avg_grouping_sets_final_projection_facts_match_typed_
             "__grouping_id",
         )),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(optimized.changed(), "AVG grouping-set aggregate-over-join should be pre-aggregated");
     let root = optimized.plan.root_node();
@@ -568,7 +568,7 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -576,10 +576,10 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(optimized.changed(), "left count-over-join aggregate should be pre-aggregated");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -668,7 +668,7 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -676,10 +676,10 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(optimized.changed(), "AVG aggregate-over-join should be pre-aggregated as sum/count state");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -751,7 +751,7 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
         512 * 1024 * 1024,
         10_000_000,
     ));
-    let sales_union = builder.add_union(vec![sales_a, sales_b], Arc::clone(&branch_schema));
+    let sales_union = builder.add_union(vec![sales_a, sales_b], Arc::clone(&branch_schema)).unwrap();
     let date_dim = builder.add_source(estimated_local_source_with_fields("date_dim", &["date_sk"], 1024 * 1024, 365));
     let date_join = builder.add_join(
         sales_union,
@@ -766,7 +766,7 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
         ])
         .with_build_side(JoinSide::Right),
         date_join_schema,
-    );
+    ).unwrap();
     let store =
         builder.add_source(estimated_local_source_with_fields("store", &["store_sk", "store_id"], 16 * 1024, 1_000));
     let store_join = builder.add_join(
@@ -785,7 +785,7 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
         ])
         .with_build_side(JoinSide::Right),
         store_join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         store_join,
         AggregateSpec::new(
@@ -793,12 +793,12 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -880,7 +880,7 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
     ));
     let unknown_sales = builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("unknown_sales", Arc::clone(&branch_schema))));
-    let sales_union = builder.add_union(vec![known_sales, unknown_sales], Arc::clone(&branch_schema));
+    let sales_union = builder.add_union(vec![known_sales, unknown_sales], Arc::clone(&branch_schema)).unwrap();
     let date_dim = builder.add_source(estimated_local_source_with_fields(
         "date_dim_unknown_branch",
         &["date_sk"],
@@ -900,7 +900,7 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
         ])
         .with_build_side(JoinSide::Right),
         date_join_schema,
-    );
+    ).unwrap();
     let store = builder.add_source(estimated_local_source_with_fields(
         "store_unknown_branch",
         &["store_sk", "store_id"],
@@ -923,7 +923,7 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
         ])
         .with_build_side(JoinSide::Right),
         store_join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         store_join,
         AggregateSpec::new(
@@ -931,12 +931,12 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -1006,7 +1006,7 @@ fn left_semi_keyset_aggregate_plan(
         ])
         .with_build_side(JoinSide::Right),
         semi_schema,
-    );
+    ).unwrap();
     let mut spec = AggregateSpec::new(
         group_columns.iter().map(|column| Expr::column(*column)).collect(),
         vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
@@ -1014,8 +1014,8 @@ fn left_semi_keyset_aggregate_plan(
     if let Some(grouping_sets) = grouping_sets {
         spec = spec.with_grouping_sets(grouping_sets);
     }
-    let aggregate = builder.add_aggregate(semi, spec, aggregate_schema);
-    builder.finish_with_host_sink(aggregate)
+    let aggregate = builder.add_aggregate(semi, spec, aggregate_schema).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn aggregate_join_pushdown_only_options() -> NativeOptimizerOptions {
@@ -1028,7 +1028,7 @@ fn aggregate_join_pushdown_only_options() -> NativeOptimizerOptions {
 fn aggregate_join_pushdown_keeps_left_semi_on_final_group_keys_below_the_aggregate() {
     let plan = left_semi_keyset_aggregate_plan(&["order_key", "category"], None);
 
-    let optimized = optimize_query_plan(plan.clone(), &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan.clone(), &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -1044,7 +1044,7 @@ fn aggregate_join_pushdown_keeps_left_semi_on_final_group_keys_below_the_aggrega
 fn aggregate_join_pushdown_still_preaggregates_below_left_semi_whose_key_is_not_a_group_key() {
     let plan = left_semi_keyset_aggregate_plan(&["category"], None);
 
-    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
@@ -1076,7 +1076,7 @@ fn aggregate_join_pushdown_still_preaggregates_grouping_sets_below_left_semi_on_
         )),
     );
 
-    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);

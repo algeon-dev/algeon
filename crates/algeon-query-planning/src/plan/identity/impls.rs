@@ -8,8 +8,8 @@ use crate::{
         GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec, UnaryMathOp,
     },
     plan::{
-        AggregateNode, DataPlacement, DenseVectorBinding, EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec,
-        EdgeWeightCombiner, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
+        AggregateNode, DenseVectorBinding, EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner,
+        FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
         GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
         GraphBfsPathOutput, GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
         GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
@@ -24,12 +24,12 @@ use crate::{
         MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver, MlForestModelSnapshot,
         MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding,
         MlSplitCriterion, MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, SchemaBehavior, ShiftDirection, SortNode, UnionNode, VectorAlgorithm,
-        VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams,
-        VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfFlatParams,
-        VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding,
-        VectorTopKParams, WindowFrame, WindowFunction, WindowNode, WindowSpec,
+        ProjectionOutput, QueryNode, ShiftDirection, SortNode, UnionNode, VectorAlgorithm, VectorAlgorithmNode,
+        VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams,
+        VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams,
+        VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams,
+        VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams, WindowFrame, WindowFunction,
+        WindowNode, WindowSpec,
     },
     source::{
         GpuResidentSource, GraphSimpleDirectedEdgeTopology, LiteralBatchSource, LocalParquetFile, LocalParquetSource,
@@ -38,11 +38,11 @@ use crate::{
     },
 };
 
-stable_hash_via_hash!(NodeId, DataPlacement, SchemaBehavior);
+stable_hash_via_hash!(NodeId);
 
 stable_hash_fields! {
     QueryNode { id, kind, facts }
-    PlanFacts { output_schema, output_ordering, placement, schema_behavior }
+    PlanFacts { output_schema, output_ordering }
 }
 
 impl StableHash for PlanNode {
@@ -128,28 +128,27 @@ impl StableHash for ProjectionNode {
 impl StableHash for WindowFunction {
     fn stable_hash(&self, hasher: &mut PlanHasher) {
         match self {
-            Self::Aggregate { function, expr, alias, frame } => {
+            Self::Aggregate { function, expr, output, frame } => {
                 hasher.tag("aggregate");
                 function.stable_hash(hasher);
                 expr.stable_hash(hasher);
-                alias.stable_hash(hasher);
+                output.stable_hash(hasher);
                 frame.stable_hash(hasher);
             },
-            Self::Rank { alias } => {
+            Self::Rank { output } => {
                 hasher.tag("rank");
-                alias.stable_hash(hasher);
+                output.stable_hash(hasher);
             },
-            Self::RowNumber { alias, output_type } => {
+            Self::RowNumber { output } => {
                 hasher.tag("row_number");
-                alias.stable_hash(hasher);
-                output_type.stable_hash(hasher);
+                output.stable_hash(hasher);
             },
-            Self::LagLead { expr, offset, default, alias, direction } => {
+            Self::LagLead { expr, offset, default, output, direction } => {
                 hasher.tag("lag_lead");
                 expr.stable_hash(hasher);
                 offset.stable_hash(hasher);
                 default.stable_hash(hasher);
-                alias.stable_hash(hasher);
+                output.stable_hash(hasher);
                 direction.stable_hash(hasher);
             },
         }
@@ -594,7 +593,7 @@ stable_hash_via_hash!(
 );
 
 stable_hash_fields! {
-    GraphAlgorithmNode { input, inputs, spec }
+    GraphAlgorithmNode { inputs, spec }
     GraphAlgorithmSpec { algorithm, edge_columns, graph_options, edge_normalize_inserted, params, output_schema }
     GraphEdgeColumnBindings { source, destination, weight, edge_id }
     GraphConstructionOptions { directed, renumber, policy }

@@ -75,9 +75,9 @@ mod enabled {
         let mut builder = QueryPlanBuilder::new();
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
         let binding = match shape {
-            Shape::Wide => MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x0", "x1", "x2"]),
+            Shape::Wide => MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1", "x2"]),
             Shape::Fixed | Shape::List => {
-                MlRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "vector")
+                MlRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "vector")
             },
         };
         let params = match algorithm {
@@ -109,8 +109,9 @@ mod enabled {
             | MlAlgorithm::RandomForestRegressor
             | MlAlgorithm::ForestPredict => unreachable!("unsupervised plan helper"),
         };
-        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, output_schema));
-        builder.finish_with_host_sink(root)
+        let root =
+            builder.add_ml_algorithm(vec![input], MlAlgorithmSpec::new(algorithm, params, output_schema)).unwrap();
+        builder.finish_with_host_sink(root).unwrap()
     }
 
     fn batch(shape: Shape, rows: usize) -> RecordBatch {
@@ -259,9 +260,9 @@ mod enabled {
             .add_source(SourceNode::GpuResident(GpuResidentSource::new("training", Arc::clone(&training_schema))));
         let predict =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("predict", Arc::clone(&predict_schema))));
-        let mut training_binding = MlRelationBinding::new(training, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+        let mut training_binding = MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]);
         training_binding.label = Some("label".to_owned());
-        let predict_binding = MlRelationBinding::new(predict, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+        let predict_binding = MlRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x0", "x1"]);
         let params = match algorithm {
             MlAlgorithm::LogisticRegression => MlAlgorithmParams::LogisticRegression(MlLogisticRegressionParams::new(
                 training_binding,
@@ -282,12 +283,13 @@ mod enabled {
         };
         let output_type =
             if algorithm == MlAlgorithm::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 };
-        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-            algorithm,
-            params,
-            ml_predictions_output_schema(DataType::Utf8, output_type),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_ml_algorithm(
+                vec![training, predict],
+                MlAlgorithmSpec::new(algorithm, params, ml_predictions_output_schema(DataType::Utf8, output_type)),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let context = backend_context();
         let attempt =
             context.begin_native_attempt("ml-supervised", RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
@@ -766,17 +768,22 @@ mod enabled {
             .add_source(SourceNode::GpuResident(GpuResidentSource::new("training", Arc::clone(&training_schema))));
         let predict =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("predict", Arc::clone(&predict_schema))));
-        let mut training_binding = MlRelationBinding::new(training, VectorRowIdBinding::column("id"), ["x0"]);
+        let mut training_binding = MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0"]);
         training_binding.label = Some("label".to_owned());
-        let predict_binding = MlRelationBinding::new(predict, VectorRowIdBinding::column("id"), ["x0"]);
+        let predict_binding = MlRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x0"]);
         let mut params = MlRandomForestParams::new(training_binding, predict_binding);
         params.n_trees = 16;
-        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-            MlAlgorithm::RandomForestClassifier,
-            MlAlgorithmParams::RandomForestClassifier(params),
-            ml_predictions_output_schema(DataType::Int64, DataType::Int32),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_ml_algorithm(
+                vec![training, predict],
+                MlAlgorithmSpec::new(
+                    MlAlgorithm::RandomForestClassifier,
+                    MlAlgorithmParams::RandomForestClassifier(params),
+                    ml_predictions_output_schema(DataType::Int64, DataType::Int32),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let training_batch = RecordBatch::try_new(
             Arc::clone(&training_schema),
             vec![
@@ -933,13 +940,18 @@ mod enabled {
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
         let output_schema = ml_forest_output_schema(DataType::Int64, model.output());
         let binding =
-            MlRelationBinding::new(input, VectorRowIdBinding::column("id"), (0..features).map(|i| format!("x{i}")));
-        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-            MlAlgorithm::ForestPredict,
-            MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
-            output_schema,
-        ));
-        let plan = builder.finish_with_host_sink(root);
+            MlRelationBinding::new(0, VectorRowIdBinding::column("id"), (0..features).map(|i| format!("x{i}")));
+        let root = builder
+            .add_ml_algorithm(
+                vec![input],
+                MlAlgorithmSpec::new(
+                    MlAlgorithm::ForestPredict,
+                    MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
+                    output_schema,
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let context = backend_context();
         let attempt =
             context.begin_native_attempt("ml-forest", RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
@@ -1219,15 +1231,20 @@ fn cuml_disabled_rejects_before_local_source_staging() {
         Arc::clone(&schema),
         vec!["id".into(), "x".into(), "y".into()],
     )));
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Tsvd,
-        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-            MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    let plan = builder.finish_with_host_sink(root);
+    let root = builder
+        .add_ml_algorithm(
+            vec![input],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::Tsvd,
+                MlAlgorithmParams::Tsvd(MlTsvdParams::new(
+                    MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     let context = backend_context();
     let admitted = context.admit_plan(&plan).expect("admission without cuML");
     let admitted_plan =

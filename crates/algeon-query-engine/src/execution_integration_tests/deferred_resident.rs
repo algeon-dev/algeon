@@ -21,10 +21,8 @@ fn shared_roles_fixture() -> (plan::QueryPlan, Arc<ArrowSchema>) {
     )));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(Expr::column("vertexId"), BinaryOp::NotEq, Expr::literal(LiteralValue::Utf8(String::new()))),
-        Arc::clone(&schema),
-    );
-    let plan = builder.finish_gpu_resident(filtered);
+        Expr::binary(Expr::column("vertexId"), BinaryOp::NotEq, Expr::literal(LiteralValue::Utf8(String::new())))).unwrap();
+    let plan = builder.finish_gpu_resident(filtered).unwrap();
     (plan, schema)
 }
 
@@ -61,10 +59,8 @@ fn shared_two_join_fixture() -> (
     )));
     let similarity = producer_builder.add_filter(
         similarity,
-        Expr::binary(Expr::column("similarity"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0))),
-        Arc::clone(&similarity_schema),
-    );
-    let similarity_plan = producer_builder.finish_gpu_resident(similarity);
+        Expr::binary(Expr::column("similarity"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0)))).unwrap();
+    let similarity_plan = producer_builder.finish_gpu_resident(similarity).unwrap();
 
     let first_join_schema = Arc::new(ArrowSchema::new(vec![
         ArrowField::new("first", ArrowDataType::Utf8, false),
@@ -101,7 +97,7 @@ fn shared_two_join_fixture() -> (
             JoinOutputColumn::right(ColumnRef::input(1, "roleName", "roleName"), "first_role"),
         ]),
         Arc::clone(&first_join_schema),
-    );
+    ).unwrap();
     let second_join = consumer_builder.add_join(
         first_join,
         roles,
@@ -118,8 +114,8 @@ fn shared_two_join_fixture() -> (
             JoinOutputColumn::right(ColumnRef::input(1, "roleName", "roleName"), "second_role"),
         ]),
         Arc::clone(&output_schema),
-    );
-    let consumer_plan = consumer_builder.finish_with_host_sink(second_join);
+    ).unwrap();
+    let consumer_plan = consumer_builder.finish_with_host_sink(second_join).unwrap();
     let evidence =
         composed_provenance_evidence(&consumer_plan, &[("similarity", &similarity_plan), ("roles", &roles_plan)]);
     (consumer_plan, similarity_plan, roles_plan, evidence, similarity_schema, roles_schema)
@@ -166,7 +162,7 @@ fn same_schema_provenance_fixture()
             Arc::clone(&schema),
             vec!["value".to_string()],
         )));
-        builder.finish_gpu_resident(source)
+        builder.finish_gpu_resident(source).unwrap()
     };
     let producer_a = producer("/tmp/deferred-producer-a.parquet");
     let producer_b = producer("/tmp/deferred-producer-b.parquet");
@@ -175,8 +171,8 @@ fn same_schema_provenance_fixture()
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
     let right =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let consumer = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let consumer = builder.finish_with_host_sink(union).unwrap();
     (consumer, producer_a, producer_b, schema)
 }
 

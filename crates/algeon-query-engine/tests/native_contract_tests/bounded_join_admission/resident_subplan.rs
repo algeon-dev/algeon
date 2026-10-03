@@ -189,7 +189,6 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
     )));
     // The deduplicated join fragment: two downstream keyed joins below consume this
     // single node, making it the shared producer under test.
-    let shared_join_schema_for_sort = Arc::clone(&shared_join_schema);
     let shared_join = builder.add_join(
         fact,
         dim,
@@ -203,15 +202,13 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
         ])
         .with_build_side(JoinSide::Right),
         shared_join_schema,
-    );
+    ).unwrap();
     // With the sort interposed it becomes the two-consumer frontier node, moving the
     // shared producer out of every admitted class while leaving the joins untouched.
     let shared_producer = if interpose_shared_sort {
         builder.add_sort(
             shared_join,
-            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-            Arc::clone(&shared_join_schema_for_sort),
-        )
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap()
     } else {
         shared_join
     };
@@ -233,7 +230,7 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_join_schema),
-    );
+    ).unwrap();
     let dim_b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         "/tmp/root-full-sort-shared-join-dim-b.parquet",
         branch_dim_schema,
@@ -252,7 +249,7 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
         ])
         .with_build_side(JoinSide::Right),
         branch_join_schema,
-    );
+    ).unwrap();
     let aggregate_a = builder.add_aggregate(
         join_a,
         AggregateSpec::new(
@@ -260,7 +257,7 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let root_join = builder.add_join(
         aggregate_a,
         join_b,
@@ -275,13 +272,11 @@ fn root_full_sort_shared_keyed_join_fanout_plan(
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&root_join_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         root_join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        root_join_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 #[test]

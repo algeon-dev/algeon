@@ -86,39 +86,6 @@ impl VectorAlgorithmParams {
             Self::Pca(params) => Box::new(std::iter::once(&params.input)),
         }
     }
-
-    pub(crate) fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
-        match self {
-            Self::BruteForceKnn(params) => {
-                params.dataset.input = remap(params.dataset.input);
-                params.queries.input = remap(params.queries.input);
-            },
-            Self::IvfFlat(params) => {
-                params.dataset.input = remap(params.dataset.input);
-                params.queries.input = remap(params.queries.input);
-            },
-            Self::IvfPq(params) => {
-                params.dataset.input = remap(params.dataset.input);
-                params.queries.input = remap(params.queries.input);
-            },
-            Self::Cagra(params) => {
-                params.dataset.input = remap(params.dataset.input);
-                params.queries.input = remap(params.queries.input);
-            },
-            Self::PairwiseDistance(params) => {
-                params.x.input = remap(params.x.input);
-                params.y.input = remap(params.y.input);
-            },
-            Self::TopK(params) => params.input.input = remap(params.input.input),
-            Self::KMeans(params) => {
-                params.input.input = remap(params.input.input);
-                if let Some(centroids) = &mut params.initial_centroids {
-                    centroids.input = remap(centroids.input);
-                }
-            },
-            Self::Pca(params) => params.input.input = remap(params.input.input),
-        }
-    }
 }
 
 /// Native vector algorithm specification.
@@ -143,8 +110,8 @@ impl VectorAlgorithmSpec {
 /// Native vector algorithm operation over one or more relation inputs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorAlgorithmNode {
-    /// All semantic inputs in the order returned by
-    /// [`VectorAlgorithmParams::relation_bindings`].
+    /// Relation inputs; each relation binding names its relation by its
+    /// position here.
     pub inputs: Vec<NodeId>,
     /// Typed algorithm specification.
     pub spec: VectorAlgorithmSpec,

@@ -15,7 +15,7 @@ fn adapter_validation_rejects_like_over_non_string_input() {
     ));
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -45,7 +45,7 @@ fn adapter_validation_lowers_date64_projection() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -63,7 +63,7 @@ async fn adapter_validation_rejects_extract_over_date64_until_expression_semanti
     write_date64_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DATE64_EXTRACT_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -83,7 +83,7 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
     let scan = parquet_scan_with_projection_indices(&path, vec![0, 1, 2, 3]);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -103,7 +103,7 @@ async fn scalar_expression_filter_predicate_required_source_columns_are_exact() 
     let plan =
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_FILTER_REQUIRED_COLUMNS_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -129,7 +129,7 @@ async fn scalar_expression_pre_aggregate_projection_required_source_columns_are_
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY)
             .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -155,7 +155,7 @@ async fn scalar_expression_aggregate_argument_required_source_columns_are_exact(
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -181,7 +181,7 @@ async fn nullif_aggregate_argument_reads_both_operand_columns() {
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_NULLIF_ARGUMENT_REQUIRED_COLUMNS_QUERY)
             .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -200,7 +200,7 @@ async fn scalar_expression_group_expression_required_source_columns_are_exact() 
     let plan =
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_GROUP_REQUIRED_COLUMNS_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -225,7 +225,7 @@ async fn pushed_scan_projection_prunes_payload_for_nested_scalar_expression_scal
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

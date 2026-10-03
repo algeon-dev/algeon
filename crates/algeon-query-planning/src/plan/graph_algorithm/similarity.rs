@@ -1,7 +1,5 @@
 //! Explicit vertex-pair similarity parameter contracts.
 
-use super::NodeId;
-
 /// Relation-backed aligned vertex pairs consumed by a similarity algorithm.
 ///
 /// The relation remains a normal native-plan input.  It is neither a catalog
@@ -9,8 +7,8 @@ use super::NodeId;
 /// explicit dependency alongside its edge-list input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphVertexPairInput {
-    /// Native plan node producing the candidate-pair relation.
-    pub input: NodeId,
+    /// Position of the relation among the algorithm node inputs.
+    pub input: usize,
     /// First vertex-id column in the candidate-pair relation.
     pub first_column: String,
     /// Second vertex-id column in the candidate-pair relation.
@@ -19,7 +17,7 @@ pub struct GraphVertexPairInput {
 
 impl GraphVertexPairInput {
     /// Creates an explicit candidate-pair relation binding.
-    pub fn new(input: NodeId, first_column: impl Into<String>, second_column: impl Into<String>) -> Self {
+    pub fn new(input: usize, first_column: impl Into<String>, second_column: impl Into<String>) -> Self {
         Self { input, first_column: first_column.into(), second_column: second_column.into() }
     }
 }
@@ -43,13 +41,8 @@ impl GraphSimilarityParams {
     }
 
     /// Visits the required pair-relation input in stable execution order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         std::iter::once(self.vertex_pairs.input)
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        self.vertex_pairs.input = remap(self.vertex_pairs.input);
     }
 }
 
@@ -57,6 +50,6 @@ impl Default for GraphSimilarityParams {
     fn default() -> Self {
         // This placeholder is used only by registry metadata projections. A
         // real graph plan must bind an existing pair-relation node.
-        Self::new(GraphVertexPairInput::new(NodeId::from_index_for_internal_use(0), "first", "second"))
+        Self::new(GraphVertexPairInput::new(1, "first", "second"))
     }
 }

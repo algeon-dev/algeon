@@ -40,9 +40,9 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -110,9 +110,13 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source.clone()));
         let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
-        let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-        let aggregate = builder.add_aggregate(filter, aggregate.clone(), Arc::clone(&aggregated_schema));
-        if host_sink { builder.finish_with_host_sink(aggregate) } else { builder.finish_gpu_resident(aggregate) }
+        let filter = builder.add_filter(source, filter).unwrap();
+        let aggregate = builder.add_aggregate(filter, aggregate.clone(), Arc::clone(&aggregated_schema)).unwrap();
+        if host_sink {
+            builder.finish_with_host_sink(aggregate).unwrap()
+        } else {
+            builder.finish_gpu_resident(aggregate).unwrap()
+        }
     };
 
     let host_plan = build_plan(true);
@@ -188,8 +192,8 @@ fn native_query_rejects_global_valid_count_reserved_state_alias_collision_before
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("global valid-count reserved state alias collision should be rejected before source read"),

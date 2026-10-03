@@ -1,7 +1,13 @@
 #[test]
 fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     let plan = compatible_small_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -13,7 +19,8 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     assert_eq!(candidate.superset_read_columns, vec!["id", "state", "zip"]);
     let sources = local_parquet_sources_for_stable_id(&result.plan, "customer_address");
     assert_eq!(sources.len(), 1);
-    validate_local_parquet_source(sources[0], rapids_analysis_context(PlanningPolicy::default())).expect("shared source must retain a valid schema mapping contract");
+    validate_local_parquet_source(sources[0], rapids_analysis_context(PlanningPolicy::default()))
+        .expect("shared source must retain a valid schema mapping contract");
     assert_eq!(sources[0].diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
     assert!(sources[0].diagnostics.rejected_features.is_empty());
     assert!(sources[0].unique_key_columns.is_empty(), "source reuse must not leak branch-local proof");
@@ -53,35 +60,47 @@ fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_rou
     ));
     let date_dim = builder.add_source(estimated_local_source("date_dim", "d_date_sk", 16 * 1024 * 1024, 100_000));
     let branch_schema = schema(&["date_sk"]);
-    let sales_dates = builder.add_projection(
-        sales_for_date_join,
-        vec![ProjectionOutput::new(Expr::column("ws_sold_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
-    let date_join = builder.add_join(
-        sales_dates,
-        date_dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "date_sk", "date_sk"),
-                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+    let sales_dates = builder
+        .add_projection(
+            sales_for_date_join,
+            vec![ProjectionOutput::new(Expr::column("ws_sold_date_sk"), Field::new("date_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let date_join = builder
+        .add_join(
+            sales_dates,
+            date_dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "date_sk", "date_sk"),
+                    ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&branch_schema),
+        )
+        .unwrap();
+    let other_branch = builder
+        .add_projection(
+            sales_for_other_branch,
+            vec![ProjectionOutput::new(
+                Expr::column("ws_item_sk").alias("date_sk"),
+                Field::new("date_sk", DataType::Int32, false),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&branch_schema),
-    );
-    let other_branch = builder.add_projection(
-        sales_for_other_branch,
-        vec![ProjectionOutput::new(
-            Expr::column("ws_item_sk").alias("date_sk"),
-            Field::new("date_sk", DataType::Int32, false),
-        )],
-    );
-    let union = builder.add_union(vec![date_join, other_branch], branch_schema);
-    let plan = builder.finish_gpu_resident(union);
+        .unwrap();
+    let union = builder.add_union(vec![date_join, other_branch], branch_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
@@ -105,7 +124,13 @@ fn native_optimizer_keeps_local_parquet_source_reuse_contract_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -125,7 +150,13 @@ fn native_optimizer_local_parquet_source_reuse_diagnostics_redact_stable_file_id
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
     let stable_file_ids = &result.diagnostics.local_parquet_source_reuse.candidates[0].stable_file_ids;
@@ -148,7 +179,13 @@ fn native_optimizer_keeps_decimal_contract_source_reuse_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -167,7 +204,13 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -188,7 +231,13 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -209,7 +258,13 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -230,7 +285,13 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -252,7 +313,13 @@ fn native_optimizer_rejects_renaming_output_schema_override_source_reuse_contrac
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -268,7 +335,13 @@ fn native_optimizer_rejects_renaming_output_schema_override_source_reuse_contrac
 #[test]
 fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_source() {
     let plan = compatible_small_local_parquet_source_variants_with_max_rows_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -286,7 +359,13 @@ fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_sourc
 #[test]
 fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_source_reuse() {
     let plan = graph_bfs_local_source_reuse_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -301,11 +380,10 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
     };
     let target_vertices = params.predicates.target_vertices.as_ref().expect("BFS target side input should exist");
 
-    assert_eq!(graph.inputs.first().copied(), Some(graph.input));
-    assert_eq!(graph.inputs.get(1).copied(), Some(target_vertices.input));
+    assert_eq!(target_vertices.input, 1);
     assert!(
-        result.plan.node(target_vertices.input).is_some(),
-        "BFS target side-input binding must be remapped to an existing rewritten node"
+        result.plan.node(graph.inputs[target_vertices.input]).is_some(),
+        "BFS target side-input binding must name an existing rewritten node"
     );
     assert_eq!(result.plan.root_node().input_ids(), graph.inputs.as_slice());
 }
@@ -313,7 +391,13 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 #[test]
 fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants() {
     let plan = large_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -329,7 +413,13 @@ fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants()
 #[test]
 fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_source_variant() {
     let plan = large_superset_with_smaller_local_parquet_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -344,17 +434,20 @@ fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_so
 #[test]
 fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggregate() {
     let plan = large_superset_with_grouped_aggregate_source_variant_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
     assert_eq!(diagnostics.applied_count, 0);
-    assert_eq!(
-        diagnostics.candidates[0].rejected_reason,
-        Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
-    );
+    assert_eq!(diagnostics.candidates[0].rejected_reason, Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge));
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
 
@@ -368,7 +461,13 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
         },
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -382,7 +481,13 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
 #[test]
 fn native_optimizer_reuses_large_superset_when_grouped_aggregate_variant_is_not_widened() {
     let plan = large_grouped_aggregate_superset_with_smaller_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -399,7 +504,13 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -445,16 +556,17 @@ fn compatible_small_local_parquet_source_variants_plan() -> QueryPlan {
         &[0, 2],
         Some(Expr::binary(Expr::column("zip"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(30301)))),
     ));
-    let full_id = builder.add_projection(
-        full,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let filtered_id = builder.add_projection(
-        filtered,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let full_id = builder
+        .add_projection(full, vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))])
+        .unwrap();
+    let filtered_id = builder
+        .add_projection(
+            filtered,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan {
@@ -465,16 +577,20 @@ fn contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan {
     let cache_policy = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         cache_policy_customer_address_contract(),
     )));
-    let direct_id = builder.add_projection(
-        direct,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let cache_policy_id = builder.add_projection(
-        cache_policy,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![direct_id, cache_policy_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let direct_id = builder
+        .add_projection(
+            direct,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let cache_policy_id = builder
+        .add_projection(
+            cache_policy,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![direct_id, cache_policy_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn count_star_probe_source_reuse_plan() -> QueryPlan {
@@ -482,24 +598,25 @@ fn count_star_probe_source_reuse_plan() -> QueryPlan {
     let left = builder.add_source(count_star_probe_customer_address_source("id", 0));
     let right = builder.add_source(count_star_probe_customer_address_source("zip", 2));
     let output_schema = Arc::new(Schema::new(vec![Field::new(ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]));
-    let union = builder.add_union(vec![left, right], output_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(vec![left, right], output_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn renaming_output_schema_override_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(renaming_output_schema_override_source(&[("old_id", "id")]));
     let right = builder.add_source(renaming_output_schema_override_source(&[("old_id", "id"), ("old_state", "state")]));
-    let left_id = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let right_id = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left_id, right_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let left_id = builder
+        .add_projection(left, vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))])
+        .unwrap();
+    let right_id = builder
+        .add_projection(
+            right,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left_id, right_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> QueryPlan {
@@ -510,16 +627,17 @@ fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> QueryP
         &[0, 2],
         Some(Expr::binary(Expr::column("zip"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(30301)))),
     ));
-    let full_id = builder.add_projection(
-        full,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let filtered_id = builder.add_projection(
-        filtered,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let full_id = builder
+        .add_projection(full, vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))])
+        .unwrap();
+    let filtered_id = builder
+        .add_projection(
+            filtered,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan {
@@ -531,32 +649,40 @@ fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan
         contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
             .with_reader_decimal_contract("id", ParquetReaderDecimalTypeId::Decimal64, -2),
     ));
-    let plain_id = builder.add_projection(
-        plain,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let decimal_id = builder.add_projection(
-        decimal,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![plain_id, decimal_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let plain_id = builder
+        .add_projection(
+            plain,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let decimal_id = builder
+        .add_projection(
+            decimal,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![plain_id, decimal_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_two_file_source(&["id", "state"], &[0, 1], false));
     let second = builder.add_source(customer_address_two_file_source(&["id", "zip"], &[0, 2], true));
-    let first_id = builder.add_projection(
-        first,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let second_id = builder.add_projection(
-        second,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![first_id, second_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let first_id = builder
+        .add_projection(
+            first,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let second_id = builder
+        .add_projection(
+            second,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![first_id, second_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> QueryPlan {
@@ -568,48 +694,57 @@ fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> QueryP
         Some(Expr::binary(Expr::column("zip"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(30301)))),
         Some(1),
     ));
-    let full_id = builder.add_projection(
-        full,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let filtered_id = builder.add_projection(
-        filtered,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let full_id = builder
+        .add_projection(full, vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))])
+        .unwrap();
+    let filtered_id = builder
+        .add_projection(
+            filtered,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn conflicting_file_index_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let id_source = builder.add_source(customer_address_source(&["id"], &[0], None));
     let zip_source = builder.add_source(customer_address_source(&["zip"], &[0], None));
-    let id = builder.add_projection(
-        id_source,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let zip_as_id = builder.add_projection(
-        zip_source,
-        vec![ProjectionOutput::new(Expr::column("zip").alias("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![id, zip_as_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let id = builder
+        .add_projection(
+            id_source,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let zip_as_id = builder
+        .add_projection(
+            zip_source,
+            vec![ProjectionOutput::new(Expr::column("zip").alias("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![id, zip_as_id], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn conflicting_column_name_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_source(&["id"], &[0], None));
     let second = builder.add_source(customer_address_source(&["id"], &[1], None));
-    let first = builder.add_projection(
-        first,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let second = builder.add_projection(
-        second,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![first, second], schema(&["id"]));
-    builder.finish_gpu_resident(union)
+    let first = builder
+        .add_projection(
+            first,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let second = builder
+        .add_projection(
+            second,
+            vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![first, second], schema(&["id"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn graph_bfs_local_source_reuse_plan() -> QueryPlan {
@@ -621,7 +756,7 @@ fn graph_bfs_local_source_reuse_plan() -> QueryPlan {
         source_vertices: None,
         depth_limit: None,
         predicates: GraphBfsPredicateInputs {
-            target_vertices: Some(GraphPredicateInput::new(target_vertices, "vertex_id")),
+            target_vertices: Some(GraphPredicateInput::new(1, "vertex_id")),
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
@@ -634,8 +769,8 @@ fn graph_bfs_local_source_reuse_plan() -> QueryPlan {
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    builder.finish_gpu_resident(graph)
+    let graph = builder.add_graph_algorithm(edges, vec![target_vertices], spec).unwrap();
+    builder.finish_gpu_resident(graph).unwrap()
 }
 
 fn graph_reuse_source(columns: &[&str], file_indices: &[usize]) -> SourceNode {
@@ -670,16 +805,20 @@ fn large_local_parquet_source_variants_plan() -> QueryPlan {
         512 * 1024 * 1024,
         10_000_000,
     ));
-    let left_item = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let right_item = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left_item, right_item], schema(&["inv_item_sk"]));
-    builder.finish_gpu_resident(union)
+    let left_item = builder
+        .add_projection(
+            left,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let right_item = builder
+        .add_projection(
+            right,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left_item, right_item], schema(&["inv_item_sk"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn large_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
@@ -698,16 +837,20 @@ fn large_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan 
         64 * 1024 * 1024,
         1_000_000,
     ));
-    let superset_item = builder.add_projection(
-        superset,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let subset_item = builder.add_projection(
-        subset,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"]));
-    builder.finish_gpu_resident(union)
+    let superset_item = builder
+        .add_projection(
+            superset,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let subset_item = builder
+        .add_projection(
+            subset,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn large_superset_with_grouped_aggregate_source_variant_plan() -> QueryPlan {
@@ -727,23 +870,27 @@ fn large_superset_with_grouped_aggregate_source_variant_plan() -> QueryPlan {
         1_000_000,
     ));
     let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
-    let aggregate = builder.add_aggregate(
-        aggregate_input,
-        AggregateSpec::new(
-            vec![Expr::column("inv_item_sk")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let superset_item = builder.add_projection(
-        superset,
-        vec![
-            ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("inv_quantity"), Field::new("sum_qty", DataType::Int32, false)),
-        ],
-    );
-    let union = builder.add_union(vec![aggregate, superset_item], aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let aggregate = builder
+        .add_aggregate(
+            aggregate_input,
+            AggregateSpec::new(
+                vec![Expr::column("inv_item_sk")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let superset_item = builder
+        .add_projection(
+            superset,
+            vec![
+                ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("inv_quantity"), Field::new("sum_qty", DataType::Int32, false)),
+            ],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![aggregate, superset_item], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> QueryPlan {
@@ -761,23 +908,27 @@ fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> Query
         600 * 1024 * 1024,
     ));
     let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
-    let aggregate = builder.add_aggregate(
-        aggregate_input,
-        AggregateSpec::new(
-            vec![Expr::column("inv_item_sk")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let superset_item = builder.add_projection(
-        superset,
-        vec![
-            ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("inv_quantity"), Field::new("sum_qty", DataType::Int32, false)),
-        ],
-    );
-    let union = builder.add_union(vec![aggregate, superset_item], aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let aggregate = builder
+        .add_aggregate(
+            aggregate_input,
+            AggregateSpec::new(
+                vec![Expr::column("inv_item_sk")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let superset_item = builder
+        .add_projection(
+            superset,
+            vec![
+                ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("inv_quantity"), Field::new("sum_qty", DataType::Int32, false)),
+            ],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![aggregate, superset_item], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn file_size_only_local_source_with_stable_id(
@@ -817,23 +968,30 @@ fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> QueryP
         1_000_000,
     ));
     let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
-    let aggregate = builder.add_aggregate(
-        aggregate_input,
-        AggregateSpec::new(
-            vec![Expr::column("inv_item_sk")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let subset_item = builder.add_projection(
-        subset,
-        vec![
-            ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::literal(LiteralValue::Int32(0)), Field::new("sum_qty", DataType::Int32, false)),
-        ],
-    );
-    let union = builder.add_union(vec![aggregate, subset_item], aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let aggregate = builder
+        .add_aggregate(
+            aggregate_input,
+            AggregateSpec::new(
+                vec![Expr::column("inv_item_sk")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let subset_item = builder
+        .add_projection(
+            subset,
+            vec![
+                ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::literal(LiteralValue::Int32(0)),
+                    Field::new("sum_qty", DataType::Int32, false),
+                ),
+            ],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![aggregate, subset_item], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
@@ -853,16 +1011,20 @@ fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> Q
         64 * 1024 * 1024,
         1_000_000,
     ));
-    let superset_item = builder.add_projection(
-        superset,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let subset_item = builder.add_projection(
-        subset,
-        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"]));
-    builder.finish_gpu_resident(union)
+    let superset_item = builder
+        .add_projection(
+            superset,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let subset_item = builder
+        .add_projection(
+            subset,
+            vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn customer_address_source(columns: &[&str], file_indices: &[usize], predicate: Option<Expr>) -> SourceNode {
@@ -1034,10 +1196,7 @@ fn local_parquet_source_count_for_stable_id(plan: &QueryPlan, stable_id: &str) -
     local_parquet_sources_for_stable_id(plan, stable_id).len()
 }
 
-fn local_parquet_sources_for_stable_id<'a>(
-    plan: &'a QueryPlan,
-    stable_id: &str,
-) -> Vec<&'a LocalParquetSource> {
+fn local_parquet_sources_for_stable_id<'a>(plan: &'a QueryPlan, stable_id: &str) -> Vec<&'a LocalParquetSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -1052,11 +1211,7 @@ fn local_parquet_sources_for_stable_id<'a>(
         .collect()
 }
 
-fn assert_source_input(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    name: &str,
-) {
+fn assert_source_input(plan: &QueryPlan, node_id: NodeId, name: &str) {
     let node = plan.node(node_id).expect("node should exist");
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {

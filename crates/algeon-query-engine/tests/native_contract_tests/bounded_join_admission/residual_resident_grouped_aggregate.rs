@@ -102,58 +102,66 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
         Arc::clone(&lineitem_schema),
         vec!["l_partkey".into(), "l_quantity".into(), "l_extendedprice".into()],
     )));
-    let filtered_lineitem = builder.add_filter(
-        lineitem,
-        Expr::binary(Expr::column("l_quantity"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0))),
-        Arc::clone(&lineitem_schema),
-    );
+    let filtered_lineitem = builder
+        .add_filter(
+            lineitem,
+            Expr::binary(Expr::column("l_quantity"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0))),
+        )
+        .unwrap();
     let part = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         "/tmp/residual-resident-part.parquet",
         part_schema,
         vec!["p_partkey".into(), "p_brand".into(), "p_container".into()],
     )));
-    let part_lineitem = builder.add_join(
-        filtered_lineitem,
-        part,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "l_partkey", "l_partkey"),
-                ColumnRef::input(1, "p_partkey", "p_partkey"),
-            )],
-        )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "l_partkey", "l_partkey"), "l_partkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "l_quantity", "l_quantity"), "l_quantity"),
-            JoinOutputColumn::left(ColumnRef::input(0, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&joined_lineitem_schema),
-    );
-    let joined_input = builder.add_projection(
-        part_lineitem,
-        projection_outputs(
-            vec![Expr::column("l_partkey"), Expr::column("l_quantity"), Expr::column("l_extendedprice")],
+    let part_lineitem = builder
+        .add_join(
+            filtered_lineitem,
+            part,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "l_partkey", "l_partkey"),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "l_partkey", "l_partkey"), "l_partkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "l_quantity", "l_quantity"), "l_quantity"),
+                JoinOutputColumn::left(ColumnRef::input(0, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
+            ])
+            .with_build_side(JoinSide::Right),
             Arc::clone(&joined_lineitem_schema),
-        ),
-    );
-    let joined_input = builder.add_projection(
-        joined_input,
-        projection_outputs(
-            vec![
-                Expr::column("l_partkey"),
-                Expr::column("l_quantity"),
-                Expr::column("l_extendedprice"),
-                Expr::cast(Expr::column("l_quantity"), DataType::Float64).alias("__algeon_native_join_residual_left_0"),
-            ],
-            Arc::new(Schema::new(vec![
-                Field::new("l_partkey", DataType::Int32, false),
-                Field::new("l_quantity", DataType::Float64, false),
-                Field::new("l_extendedprice", DataType::Float64, false),
-                Field::new("__algeon_native_join_residual_left_0", DataType::Float64, false),
-            ])),
-        ),
-    );
+        )
+        .unwrap();
+    let joined_input = builder
+        .add_projection(
+            part_lineitem,
+            projection_outputs(
+                vec![Expr::column("l_partkey"), Expr::column("l_quantity"), Expr::column("l_extendedprice")],
+                Arc::clone(&joined_lineitem_schema),
+            ),
+        )
+        .unwrap();
+    let joined_input = builder
+        .add_projection(
+            joined_input,
+            projection_outputs(
+                vec![
+                    Expr::column("l_partkey"),
+                    Expr::column("l_quantity"),
+                    Expr::column("l_extendedprice"),
+                    Expr::cast(Expr::column("l_quantity"), DataType::Float64)
+                        .alias("__algeon_native_join_residual_left_0"),
+                ],
+                Arc::new(Schema::new(vec![
+                    Field::new("l_partkey", DataType::Int32, false),
+                    Field::new("l_quantity", DataType::Float64, false),
+                    Field::new("l_extendedprice", DataType::Float64, false),
+                    Field::new("__algeon_native_join_residual_left_0", DataType::Float64, false),
+                ])),
+            ),
+        )
+        .unwrap();
 
     let grouped_quantity_source = match variant {
         ResidualResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput => {
@@ -205,33 +213,37 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
         AggregateSpec::new(vec![Expr::column("l_partkey")], vec![quantity_aggregate])
     };
     let grouped_quantity =
-        builder.add_aggregate(grouped_quantity_source, aggregate_spec, Arc::clone(&grouped_quantity_schema));
+        builder.add_aggregate(grouped_quantity_source, aggregate_spec, Arc::clone(&grouped_quantity_schema)).unwrap();
     let grouped_input = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput) {
         grouped_quantity
     } else if matches!(variant, ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier) {
-        builder.add_projection(
-            grouped_quantity,
-            projection_outputs(
-                vec![
-                    Expr::column("l_partkey"),
-                    Expr::binary(
-                        Expr::column("avg_quantity"),
-                        BinaryOp::Multiply,
-                        Expr::literal(LiteralValue::Float64(2.0)),
-                    )
-                    .alias("scaled_avg_quantity"),
-                ],
-                Arc::clone(&grouped_scaled_quantity_schema),
-            ),
-        )
+        builder
+            .add_projection(
+                grouped_quantity,
+                projection_outputs(
+                    vec![
+                        Expr::column("l_partkey"),
+                        Expr::binary(
+                            Expr::column("avg_quantity"),
+                            BinaryOp::Multiply,
+                            Expr::literal(LiteralValue::Float64(2.0)),
+                        )
+                        .alias("scaled_avg_quantity"),
+                    ],
+                    Arc::clone(&grouped_scaled_quantity_schema),
+                ),
+            )
+            .unwrap()
     } else {
-        builder.add_projection(
-            grouped_quantity,
-            projection_outputs(
-                vec![Expr::column("l_partkey"), Expr::column("avg_quantity")],
-                Arc::clone(&grouped_quantity_schema),
-            ),
-        )
+        builder
+            .add_projection(
+                grouped_quantity,
+                projection_outputs(
+                    vec![Expr::column("l_partkey"), Expr::column("avg_quantity")],
+                    Arc::clone(&grouped_quantity_schema),
+                ),
+            )
+            .unwrap()
     };
 
     let mut root_spec = JoinSpec::new(
@@ -300,60 +312,64 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
             ))
         };
     }
-    let root = builder.add_join(joined_input, grouped_input, root_spec, root_schema);
+    let root = builder.add_join(joined_input, grouped_input, root_spec, root_schema).unwrap();
     let (aggregate_input, aggregate_arg) =
         if matches!(variant, ResidualResidentGroupedAggregateInputVariant::BareGlobalAggregateInput) {
             (root, "l_extendedprice")
         } else {
             let aggregate_arg_schema =
                 Arc::new(Schema::new(vec![Field::new("__algeon_native_aggregate_arg_0", DataType::Float64, false)]));
-            let projection = builder.add_projection(
-                root,
-                projection_outputs(
-                    vec![Expr::column("l_extendedprice").alias("__algeon_native_aggregate_arg_0")],
-                    aggregate_arg_schema,
-                ),
-            );
+            let projection = builder
+                .add_projection(
+                    root,
+                    projection_outputs(
+                        vec![Expr::column("l_extendedprice").alias("__algeon_native_aggregate_arg_0")],
+                        aggregate_arg_schema,
+                    ),
+                )
+                .unwrap();
             (projection, "__algeon_native_aggregate_arg_0")
         };
-    let global = builder.add_aggregate(
-        aggregate_input,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(
-                if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum) {
-                    AggregateFunction::Count
-                } else {
-                    AggregateFunction::Sum
-                },
-                Expr::column(aggregate_arg),
-                "sum_extendedprice",
-            )],
-        ),
-        Arc::clone(&global_aggregate_schema),
-    );
-    let projected = builder.add_projection(
-        global,
-        projection_outputs(
-            vec![
-                Expr::binary(
-                    Expr::column("sum_extendedprice"),
-                    BinaryOp::Divide,
-                    Expr::literal(LiteralValue::Float64(7.0)),
-                )
-                .alias("avg_yearly"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let output = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::FinalSort) {
-        builder.add_sort(
-            projected,
-            SortSpec::new(vec![SortExpr::new(Expr::column("avg_yearly"), false, false)]),
-            output_schema,
+    let global = builder
+        .add_aggregate(
+            aggregate_input,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(
+                    if matches!(variant, ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum) {
+                        AggregateFunction::Count
+                    } else {
+                        AggregateFunction::Sum
+                    },
+                    Expr::column(aggregate_arg),
+                    "sum_extendedprice",
+                )],
+            ),
+            Arc::clone(&global_aggregate_schema),
         )
+        .unwrap();
+    let projected = builder
+        .add_projection(
+            global,
+            projection_outputs(
+                vec![
+                    Expr::binary(
+                        Expr::column("sum_extendedprice"),
+                        BinaryOp::Divide,
+                        Expr::literal(LiteralValue::Float64(7.0)),
+                    )
+                    .alias("avg_yearly"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let output = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::FinalSort) {
+        builder
+            .add_sort(projected, SortSpec::new(vec![SortExpr::new(Expr::column("avg_yearly"), false, false)]))
+            .unwrap()
     } else {
         projected
     };
-    builder.finish_with_host_sink(output)
+    builder.finish_with_host_sink(output).unwrap()
 }

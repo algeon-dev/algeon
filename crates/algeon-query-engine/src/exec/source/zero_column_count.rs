@@ -9,11 +9,12 @@ use super::{
 
 pub(super) fn read_zero_column_count_source(
     context: &ExecutionContext,
+    source_node_id: NodeId,
     source: &LocalParquetSource,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
-        NodeId::from_index_for_internal_use(0),
+        source_node_id,
         source,
         SourceChunkPlanningPolicy::default(),
         context,

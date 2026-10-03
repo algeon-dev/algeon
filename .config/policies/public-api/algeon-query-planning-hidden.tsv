@@ -178,7 +178,7 @@ query_planning::optimizer::dimension_pruning::optimize_dimension_derived_row_gro
 query_planning::optimizer::optimize_shared_resident_extraction	cross-crate	query-planning optimizer	tests: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_planning::pipeline::model::CompiledPipeline::from_parts_unvalidated	test-hooks	query-planning pipeline::model	tests: algeon-query-engine	no test needs a pipeline that compilation does not produce
 query_planning::plan::DeferredGraphExecutionScopeIdentity	cross-crate	query-planning plan	prod: algeon-datafusion	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-query_planning::plan::core::NodeId::from_index_for_internal_use	cross-crate	query-planning plan::core	prod: algeon-query-engine; tests: algeon-query-engine, algeon-query-runtime	error-model plan P5 derives ids from the plan and deletes it
+query_planning::plan::core::NodeId::from_index_for_test	test-hooks	query-planning plan::core	tests: algeon-query-engine, algeon-query-runtime, algeon-datafusion	only other crates' tests build ids without a plan
 query_planning::plan::core::QueryPlan::with_dynamic_filter_routes	cross-crate	query-planning plan::core	tests: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_planning::plan::core::QueryPlan::with_nodes_for_test	test-hooks	query-planning plan::core	tests: algeon-datafusion	query IR plan P4 builds rewritten test plans through PlanGraph
 query_planning::plan::estimated_output_bytes	cross-crate	query-planning plan	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
@@ -270,5 +270,4 @@ query_planning::validation::validate_aggregate_output_names	cross-crate	query-pl
 query_planning::validation::validate_avg_output_fields	cross-crate	query-planning validation	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_planning::validation::validate_final_aggregate_capability	cross-crate	query-planning validation	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_planning::validation::validate_global_aggregate_capability	cross-crate	query-planning validation	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-query_planning::validation::validate_projection_capability	cross-crate	query-planning validation	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_planning::validation::validate_query_plan	cross-crate	query-planning validation	prod: algeon-query-engine; tests: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module

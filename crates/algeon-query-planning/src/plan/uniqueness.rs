@@ -54,7 +54,7 @@ fn unique_keys_by_node(nodes: &[QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
                 let mut keys = input_keys(window.input);
                 if window.spec.partition_by.is_empty() {
                     keys.extend(window.spec.functions.iter().filter_map(|function| match function {
-                        WindowFunction::RowNumber { alias, .. } => Some(BTreeSet::from([alias.clone()])),
+                        WindowFunction::RowNumber { output } => Some(BTreeSet::from([output.name().clone()])),
                         _ => None,
                     }));
                 }
@@ -229,11 +229,13 @@ mod tests {
     fn builder_answers_partial_uniqueness_without_finishing_a_temporary_plan() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(vec![Expr::column("sourceId")], Vec::new()),
-            Arc::new(Schema::new(vec![Field::new("sourceId", DataType::Utf8, false)])),
-        );
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(vec![Expr::column("sourceId")], Vec::new()),
+                Arc::new(Schema::new(vec![Field::new("sourceId", DataType::Utf8, false)])),
+            )
+            .unwrap();
 
         assert!(builder.output_is_unique_on(aggregate, &BTreeSet::from(["sourceId".to_owned()])));
         assert!(!builder.output_is_unique_on(source, &BTreeSet::from(["targetId".to_owned()])));
@@ -254,23 +256,23 @@ mod tests {
     fn row_number_over_a_grouped_relation_is_unique_on_its_dense_id() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
-        let codebook = builder.add_aggregate(
-            source,
-            AggregateSpec::new(vec![Expr::column("sourceId")], Vec::new()),
-            Arc::new(Schema::new(vec![Field::new("sourceId", DataType::Utf8, false)])),
-        );
-        let dense = builder.add_window(
-            codebook,
-            WindowSpec::new(
-                Vec::new(),
-                vec![SortExpr::new(Expr::column("sourceId"), true, false)],
-                vec![WindowFunction::row_number_i64("__dense_id")],
-            ),
-            Arc::new(Schema::new(vec![
-                Field::new("sourceId", DataType::Utf8, false),
-                Field::new("__dense_id", DataType::Int64, false),
-            ])),
-        );
+        let codebook = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(vec![Expr::column("sourceId")], Vec::new()),
+                Arc::new(Schema::new(vec![Field::new("sourceId", DataType::Utf8, false)])),
+            )
+            .unwrap();
+        let dense = builder
+            .add_window(
+                codebook,
+                WindowSpec::new(
+                    Vec::new(),
+                    vec![SortExpr::new(Expr::column("sourceId"), true, false)],
+                    vec![WindowFunction::row_number_i64("__dense_id")],
+                ),
+            )
+            .unwrap();
 
         assert!(builder.output_is_unique_on(dense, &BTreeSet::from(["__dense_id".to_owned()])));
     }
@@ -284,28 +286,32 @@ mod tests {
         for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
             let mut builder = QueryPlanBuilder::new();
             let relation = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
-            let unique_relation = builder.add_aggregate(
-                relation,
-                AggregateSpec::new(vec![Expr::column("sourceId"), Expr::column("targetId")], Vec::new()),
-                Arc::clone(&key_schema),
-            );
-            let lookup = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
-            let selected = builder.add_join(
-                unique_relation,
-                lookup,
-                JoinSpec::new(
-                    join_type,
-                    vec![JoinKey::new(
-                        ColumnRef::input(0, "sourceId", "sourceId"),
-                        ColumnRef::input(1, "sourceId", "sourceId"),
-                    )],
+            let unique_relation = builder
+                .add_aggregate(
+                    relation,
+                    AggregateSpec::new(vec![Expr::column("sourceId"), Expr::column("targetId")], Vec::new()),
+                    Arc::clone(&key_schema),
                 )
-                .with_output_projection(vec![
-                    JoinOutputColumn::left(ColumnRef::input(0, "sourceId", "sourceId"), "sourceId"),
-                    JoinOutputColumn::left(ColumnRef::input(0, "targetId", "targetId"), "targetId"),
-                ]),
-                Arc::clone(&key_schema),
-            );
+                .unwrap();
+            let lookup = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
+            let selected = builder
+                .add_join(
+                    unique_relation,
+                    lookup,
+                    JoinSpec::new(
+                        join_type,
+                        vec![JoinKey::new(
+                            ColumnRef::input(0, "sourceId", "sourceId"),
+                            ColumnRef::input(1, "sourceId", "sourceId"),
+                        )],
+                    )
+                    .with_output_projection(vec![
+                        JoinOutputColumn::left(ColumnRef::input(0, "sourceId", "sourceId"), "sourceId"),
+                        JoinOutputColumn::left(ColumnRef::input(0, "targetId", "targetId"), "targetId"),
+                    ]),
+                    Arc::clone(&key_schema),
+                )
+                .unwrap();
 
             assert!(
                 builder.output_is_unique_on(selected, &BTreeSet::from(["sourceId".to_owned(), "targetId".to_owned()]))

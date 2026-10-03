@@ -46,31 +46,35 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
         Arc::clone(&region_schema),
         vec!["order_id".into()],
     )));
-    let first_join = builder.add_join(
-        lineitem,
-        orders,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(JoinSide::Right),
-        first_join_schema,
-    );
-    let second_join = builder.add_join(
-        first_join,
-        regions,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_residual_predicate(Expr::like(Expr::input_column(0, "category", "category"), "t%"))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        second_join_schema,
-    );
-    let plan = builder.finish_with_host_sink(second_join);
+    let first_join = builder
+        .add_join(
+            lineitem,
+            orders,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(JoinSide::Right),
+            first_join_schema,
+        )
+        .unwrap();
+    let second_join = builder
+        .add_join(
+            first_join,
+            regions,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_residual_predicate(Expr::like(Expr::input_column(0, "category", "category"), "t%"))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            second_join_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(second_join).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     // The LIKE residual is a node-local expression rejection on the second
     // join; no plan-family admission carries it anymore.

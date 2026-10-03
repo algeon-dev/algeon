@@ -281,7 +281,7 @@ fn aggregate_strategy_options_report_source_adjacent_thresholds_without_selectin
 #[test]
 fn source_adjacent_row_balanced_prior_stays_off_prepared_sort_groupby() {
     let (schema, spec) = fixed_width_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(10);
+    let node_id = NodeId::from_index_for_test(10);
     let evidence = PartialAggregateInputEvidence {
         source_chunk_fingerprint: Some(0xfeed_cafe),
         source_adjacent_partial: true,

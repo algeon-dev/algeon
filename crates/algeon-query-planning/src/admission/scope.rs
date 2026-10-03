@@ -373,7 +373,7 @@ mod tests {
         }
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::GpuResident(source));
-        builder.finish_gpu_resident(root)
+        builder.finish_gpu_resident(root).unwrap()
     }
 
     #[test]

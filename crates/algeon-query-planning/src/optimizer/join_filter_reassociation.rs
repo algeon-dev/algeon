@@ -7,11 +7,12 @@ use super::{
     unique_join_output_for_name,
 };
 use crate::{
+    error::Result,
     expr::{BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn,
         JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
-        QueryPlan, RewrittenNodes, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
+        QueryPlan, RewrittenNodes, estimated_output_bytes, estimated_output_rows,
     },
     source::SourceNode,
 };
@@ -130,26 +131,30 @@ pub(crate) fn optimize_join_filter_reassociation(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,
     resolver: &dyn dimension_pruning::LocalParquetPruningResolver,
-) -> JoinFilterReassociationResult {
+) -> Result<JoinFilterReassociationResult> {
     if !options.enabled {
-        return JoinFilterReassociationResult {
+        return Ok(JoinFilterReassociationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: JoinFilterReassociationDiagnostics::default(),
-        };
+        });
     }
 
     let mut rewriter = JoinFilterReassociationRewriter::new(&plan, options, resolver);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let diagnostics = rewriter.diagnostics;
-        return JoinFilterReassociationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+        return Ok(JoinFilterReassociationResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics,
+        });
     }
-    JoinFilterReassociationResult {
-        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo)),
+    Ok(JoinFilterReassociationResult {
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?,
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
-    }
+    })
 }
 
 struct JoinFilterReassociationRewriter<'a> {
@@ -342,7 +347,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         &mut self,
         candidate_node_id: NodeId,
         join: &JoinNode,
-    ) -> Result<ResidualFilterPushdownPlan, JoinFilterReassociationRejectedReason> {
+    ) -> std::result::Result<ResidualFilterPushdownPlan, JoinFilterReassociationRejectedReason> {
         let residual = join
             .spec
             .residual_predicate
@@ -462,8 +467,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         let input_new = self.rewrite_subtree(old_input);
         let input_node =
             self.nodes.get(input_new.index()).expect("rewritten join input node must exist before adding filter");
-        let mut facts = input_node.facts.clone();
-        facts.schema_behavior = SchemaBehavior::PreservesInput;
+        let facts = input_node.facts.clone();
         let filter_new = self.push_node(PlanNode::Filter(FilterNode { input: input_new, predicate }), facts);
         PushedFilterInput {
             node_id: filter_new,
@@ -476,7 +480,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         &mut self,
         join: &JoinNode,
         output_schema: SchemaRef,
-    ) -> Result<ReassociationPlan, JoinFilterReassociationRejectedReason> {
+    ) -> std::result::Result<ReassociationPlan, JoinFilterReassociationRejectedReason> {
         if !parent_join_supported(join) {
             return Err(JoinFilterReassociationRejectedReason::UnsupportedParentJoinShape);
         }
@@ -534,7 +538,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             .ok_or(JoinFilterReassociationRejectedReason::NonPreservedSideProjection)?;
         let new_id = self.push_node(
             PlanNode::Projection(ProjectionNode::new(preserved_new, parent_projection)),
-            PlanFacts::device(output_schema, SchemaBehavior::Projection),
+            PlanFacts::new(output_schema),
         );
         Ok(ReassociationPlan {
             new_id,
@@ -579,12 +583,12 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             .with_null_equality(JoinNullEquality::NullsDoNotMatch);
         self.push_node(
             PlanNode::Join(JoinNode { inputs: [filtered_child_new, filtering_new], spec }),
-            PlanFacts::device(filtered_schema, SchemaBehavior::Join),
+            PlanFacts::new(filtered_schema),
         )
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }
@@ -636,7 +640,7 @@ impl PreservedInputLineage {
         plan: &QueryPlan,
         preserved_input: NodeId,
         required_columns: &[ColumnRef],
-    ) -> Result<Self, JoinFilterReassociationRejectedReason> {
+    ) -> std::result::Result<Self, JoinFilterReassociationRejectedReason> {
         let node = plan.node(preserved_input).ok_or(JoinFilterReassociationRejectedReason::MissingKeyLineage)?;
         match &node.kind {
             PlanNode::Projection(projection) => {
@@ -649,7 +653,7 @@ impl PreservedInputLineage {
                             .ok_or(JoinFilterReassociationRejectedReason::MissingKeyLineage)?;
                         Ok(projected.clone())
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
                 let mut lineage = Self::analyze_join_output(plan, projection.input, &columns)?;
                 lineage.projection_node_id = Some(preserved_input);
                 Ok(lineage)
@@ -663,7 +667,7 @@ impl PreservedInputLineage {
         plan: &QueryPlan,
         crossed_join_node_id: NodeId,
         required_columns: &[ColumnRef],
-    ) -> Result<Self, JoinFilterReassociationRejectedReason> {
+    ) -> std::result::Result<Self, JoinFilterReassociationRejectedReason> {
         let node = plan.node(crossed_join_node_id).ok_or(JoinFilterReassociationRejectedReason::MissingKeyLineage)?;
         let PlanNode::Join(join) = &node.kind else {
             return Err(JoinFilterReassociationRejectedReason::UnsupportedPreservedInputShape);
@@ -1385,7 +1389,8 @@ mod tests {
             plan,
             &residual_pushdown_options(),
             &dimension_pruning::NoDimensionPruningFacts,
-        );
+        )
+        .unwrap();
 
         assert!(result.change.changed());
         assert_eq!(result.diagnostics.applied_count, 1);
@@ -1406,7 +1411,8 @@ mod tests {
             plan,
             &residual_pushdown_options(),
             &dimension_pruning::NoDimensionPruningFacts,
-        );
+        )
+        .unwrap();
 
         assert!(result.change.changed());
         let join = root_join(&result.plan);
@@ -1426,13 +1432,15 @@ mod tests {
             plan,
             &residual_pushdown_options(),
             &dimension_pruning::NoDimensionPruningFacts,
-        );
+        )
+        .unwrap();
         assert!(first.change.changed());
         let second = optimize_join_filter_reassociation(
             first.plan,
             &residual_pushdown_options(),
             &dimension_pruning::NoDimensionPruningFacts,
-        );
+        )
+        .unwrap();
 
         assert!(!second.change.changed());
         assert_eq!(second.diagnostics.applied_count, 0);
@@ -1445,20 +1453,23 @@ mod tests {
         let (mut builder, join, right) = residual_join_builder(and(left_eq("l_flag", 1), right_gt("r_price", 10)));
         let statistics =
             AdvisoryOutputStatistics { rows: AdvisoryStatistic::Inexact(100), bytes: AdvisoryStatistic::Inexact(800) };
-        builder.set_advisory_output(AdvisoryOutputBinding {
-            node: right,
-            schema: schema(vec![field("r_key"), field("r_price")]),
-            frontend: "test frontend".to_owned(),
-            frontend_version: "1".to_owned(),
-            statistics,
-            unknown_reason: None,
-        });
+        builder
+            .set_advisory_output(AdvisoryOutputBinding {
+                node: right,
+                schema: schema(vec![field("r_key"), field("r_price")]),
+                frontend: "test frontend".to_owned(),
+                frontend_version: "1".to_owned(),
+                statistics,
+                unknown_reason: None,
+            })
+            .unwrap();
 
         let result = optimize_join_filter_reassociation(
-            builder.finish_gpu_resident(join),
+            builder.finish_gpu_resident(join).unwrap(),
             &residual_pushdown_options(),
             &dimension_pruning::NoDimensionPruningFacts,
-        );
+        )
+        .unwrap();
 
         assert!(result.change.changed());
         let [binding] = result.plan.advisory_outputs() else {
@@ -1473,7 +1484,7 @@ mod tests {
 
     fn residual_join_plan(residual: Expr) -> QueryPlan {
         let (builder, join, _right) = residual_join_builder(residual);
-        builder.finish_gpu_resident(join)
+        builder.finish_gpu_resident(join).unwrap()
     }
 
     fn residual_join_builder(residual: Expr) -> (QueryPlanBuilder, NodeId, NodeId) {
@@ -1481,21 +1492,23 @@ mod tests {
         let left = builder.add_source(source("left", vec![field("l_key"), field("l_flag")]));
         let right = builder.add_source(source("right", vec![field("r_key"), field("r_price")]));
         let output_schema = schema(vec![field("l_key"), field("l_flag"), field("r_price")]);
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+                )
+                .with_residual_predicate(residual)
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "l_flag", "l_flag"), "l_flag"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "r_price", "r_price"), "r_price"),
+                ]),
+                output_schema,
             )
-            .with_residual_predicate(residual)
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
-                JoinOutputColumn::left(ColumnRef::input(0, "l_flag", "l_flag"), "l_flag"),
-                JoinOutputColumn::right(ColumnRef::input(1, "r_price", "r_price"), "r_price"),
-            ]),
-            output_schema,
-        );
+            .unwrap();
         (builder, join, right)
     }
 

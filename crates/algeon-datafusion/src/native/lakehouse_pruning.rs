@@ -82,7 +82,7 @@ pub(crate) async fn prune_native_query_plan(
     runtime_env: &Arc<RuntimeEnv>,
     source_storage_profiles: &[SourceStorageProfile],
     planning_policy: PlanningPolicy,
-) -> QueryPlan {
+) -> Result<QueryPlan> {
     let policy = TableFormatPruningPolicy::default();
     let mut resolver =
         FooterPruningResolver { object_stores: FooterObjectStoreRegistry::new(runtime_env, source_storage_profiles) };
@@ -92,7 +92,14 @@ pub(crate) async fn prune_native_query_plan(
         &mut resolver,
         rapids_analysis_context(planning_policy),
     )
-    .await;
+    .await
+    .map_err(|error| {
+        Error::from_native(
+            "algeon_datafusion.native.lakehouse_footer_pruning",
+            "lakehouse footer pruning produced a malformed plan",
+            error,
+        )
+    })?;
 
     for event in result.events {
         match event {
@@ -135,7 +142,7 @@ pub(crate) async fn prune_native_query_plan(
         }
     }
 
-    result.plan
+    Ok(result.plan)
 }
 
 struct FooterPruningResolver<'a> {

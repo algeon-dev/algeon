@@ -48,8 +48,8 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 4_000_000,
@@ -111,8 +111,8 @@ fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
@@ -188,21 +188,23 @@ fn incremental_partitioned_merge_builder(
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let dimension = builder.add_source(SourceNode::LocalParquet(dimension));
-    let join = builder.add_join(
-        source,
-        dimension,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+    let join = builder
+        .add_join(
+            source,
+            dimension,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(join, aggregate, Arc::clone(&aggregated_schema));
+        .unwrap();
+    let aggregate = builder.add_aggregate(join, aggregate, Arc::clone(&aggregated_schema)).unwrap();
     (builder, aggregate, aggregated_schema)
 }
 
@@ -211,16 +213,12 @@ fn incremental_partitioned_merge_plans(
     row_groups: usize,
     rows_per_row_group: usize,
 ) -> (QueryPlan, QueryPlan) {
-    let (mut builder, aggregate, aggregated_schema) =
-        incremental_partitioned_merge_builder(dir, row_groups, rows_per_row_group);
-    let plan = builder.clone().finish_with_host_sink(aggregate);
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&aggregated_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::new(5, Some(10)), aggregated_schema);
-    (plan, builder.finish_with_host_sink(limit))
+    let (mut builder, aggregate, _) = incremental_partitioned_merge_builder(dir, row_groups, rows_per_row_group);
+    let plan = builder.clone().finish_with_host_sink(aggregate).unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::new(5, Some(10))).unwrap();
+    (plan, builder.finish_with_host_sink(limit).unwrap())
 }
 
 #[test]
@@ -344,31 +342,28 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
 fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shared_state() {
     let dir = unique_temp_dir("query-engine-final-aggregate-fanout");
     let (mut builder, aggregate, schema) = incremental_partitioned_merge_builder(&dir, 128, 131_072);
-    let projected = builder.add_projection(
-        aggregate,
-        schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
-    let filtered = builder.add_filter(
-        projected,
-        Expr::binary(Expr::column("count_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-        Arc::clone(&schema),
-    );
-    let left_sort = builder.add_sort(
-        filtered,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&schema),
-    );
-    let left = builder.add_limit(left_sort, LimitSpec::new(5, Some(10)), Arc::clone(&schema));
-    let right_sort = builder.add_sort(
-        projected,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&schema),
-    );
-    let right = builder.add_limit(right_sort, LimitSpec::new(15, Some(10)), Arc::clone(&schema));
+    let projected = builder
+        .add_projection(
+            aggregate,
+            schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
+    let filtered = builder
+        .add_filter(
+            projected,
+            Expr::binary(Expr::column("count_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+        )
+        .unwrap();
+    let left_sort =
+        builder.add_sort(filtered, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let left = builder.add_limit(left_sort, LimitSpec::new(5, Some(10))).unwrap();
+    let right_sort =
+        builder.add_sort(projected, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let right = builder.add_limit(right_sort, LimitSpec::new(15, Some(10))).unwrap();
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_key", DataType::Int64, false),
         Field::new("right_key", DataType::Int64, false),
@@ -377,28 +372,30 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
         Field::new("left_avg", DataType::Float64, true),
         Field::new("right_avg", DataType::Float64, true),
     ]));
-    let joined = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "count_value", "count_value"),
-                ColumnRef::input(1, "count_value", "count_value"),
-            )],
+    let joined = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "count_value", "count_value"),
+                    ColumnRef::input(1, "count_value", "count_value"),
+                )],
+            )
+            .with_build_side(JoinSide::Right)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "left_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "key", "key"), "right_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "sum_value", "sum_value"), "left_sum"),
+                JoinOutputColumn::right(ColumnRef::input(1, "sum_value", "sum_value"), "right_sum"),
+                JoinOutputColumn::left(ColumnRef::input(0, "avg_value", "avg_value"), "left_avg"),
+                JoinOutputColumn::right(ColumnRef::input(1, "avg_value", "avg_value"), "right_avg"),
+            ]),
+            output_schema,
         )
-        .with_build_side(JoinSide::Right)
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "left_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "key", "key"), "right_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "sum_value", "sum_value"), "left_sum"),
-            JoinOutputColumn::right(ColumnRef::input(1, "sum_value", "sum_value"), "right_sum"),
-            JoinOutputColumn::left(ColumnRef::input(0, "avg_value", "avg_value"), "left_avg"),
-            JoinOutputColumn::right(ColumnRef::input(1, "avg_value", "avg_value"), "right_avg"),
-        ]),
-        output_schema,
-    );
-    let plan = builder.finish_with_host_sink(joined);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(joined).unwrap();
     let pipeline =
         compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()))).unwrap();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).unwrap();

@@ -10,14 +10,14 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    native::{LoweringRejection, normalize::NormalizedNativeUnion, validate::validate_schema},
+    native::{LoweringFailure, normalize::NormalizedNativeUnion, validate::validate_schema},
 };
 
 pub(super) fn lower_union_input(
     union: &NormalizedNativeUnion<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     if union.inputs.is_empty() {
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
@@ -33,11 +33,11 @@ pub(super) fn lower_union_input(
             project_union_child_to_output_schema(builder, lowered, Arc::clone(&schema), &bindings)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let node = builder.add_union(inputs.iter().map(|input| input.node).collect(), Arc::clone(&schema));
+    let node = builder.add_union(inputs.iter().map(|input| input.node).collect(), Arc::clone(&schema))?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
-fn validate_union_input_schemas(union: &NormalizedNativeUnion<'_>) -> Result<(), LoweringRejection> {
+fn validate_union_input_schemas(union: &NormalizedNativeUnion<'_>) -> Result<(), LoweringFailure> {
     let output_schema = union.union.schema();
     for input in union.union.inputs() {
         let input_schema = input.schema();
@@ -59,7 +59,7 @@ fn project_union_child_to_output_schema(
     input: LoweredNativeInput,
     schema: SchemaRef,
     bindings: &[FieldBinding],
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     if input.schema.as_ref() == schema.as_ref()
         && input.bindings.iter().zip(bindings.iter()).all(|(input, output)| {
             input.frontend_index == output.frontend_index && input.native_name == output.native_name

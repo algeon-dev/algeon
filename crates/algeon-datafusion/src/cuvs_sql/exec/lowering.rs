@@ -30,6 +30,7 @@ pub(super) fn lower_cuvs_query_plan(
     }
 
     let mut builder = QueryPlanBuilder::new();
+    let mut inputs = Vec::with_capacity(children.len());
     let mut relations = Vec::with_capacity(children.len());
     for (child, binding) in children.iter().zip(options.bindings()) {
         if child.role != binding.relation_role().as_str() {
@@ -39,13 +40,21 @@ pub(super) fn lower_cuvs_query_plan(
                 "cuVS physical child order does not match semantic relation order",
             ));
         }
-        let input = add_projected_relation_source(&mut builder, child);
+        let input = add_projected_relation_source(&mut builder, child).map_err(|error| {
+            Error::from_native(
+                "algeon_datafusion.cuvs_sql.lower",
+                "failed to lower cuVS SQL into native vector IR",
+                error,
+            )
+        })?;
+        let ordinal = inputs.len();
+        inputs.push(input);
         let relation = match binding.vector() {
             DenseVectorBinding::Columns(columns) => {
-                VectorRelationBinding::new(input, VectorRowIdBinding::column(binding.id()), columns.iter().cloned())
+                VectorRelationBinding::new(ordinal, VectorRowIdBinding::column(binding.id()), columns.iter().cloned())
             },
             DenseVectorBinding::VectorColumn(column) => VectorRelationBinding::new_vector_column(
-                input,
+                ordinal,
                 VectorRowIdBinding::column(binding.id()),
                 column.clone(),
             ),
@@ -213,7 +222,7 @@ pub(super) fn lower_cuvs_query_plan(
         CuvsOperation::Pca => VectorAlgorithm::Pca,
     };
     let root = builder
-        .try_add_vector_algorithm(VectorAlgorithmSpec::new(algorithm, params, Arc::clone(&output_schema)))
+        .add_vector_algorithm(inputs, VectorAlgorithmSpec::new(algorithm, params, Arc::clone(&output_schema)))
         .map_err(|error| {
             Error::from_native(
                 "algeon_datafusion.cuvs_sql.lower",
@@ -221,7 +230,9 @@ pub(super) fn lower_cuvs_query_plan(
                 error,
             )
         })?;
-    Ok(builder.finish_with_host_sink_schema(root, output_schema))
+    builder.finish_with_host_sink_schema(root, output_schema).map_err(|error| {
+        Error::from_native("algeon_datafusion.cuvs_sql.lower", "failed to lower cuVS SQL into native vector IR", error)
+    })
 }
 
 fn value<'a>(

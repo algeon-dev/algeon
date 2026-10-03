@@ -47,11 +47,11 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -113,10 +113,10 @@ fn bounded_native_query_executes_single_chunk_avg_finalization() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -158,9 +158,9 @@ fn native_query_executes_grouped_avg_with_float32_output_schema() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -198,10 +198,10 @@ fn bounded_native_query_executes_nullable_avg_with_null_all_group() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
 
@@ -242,10 +242,10 @@ fn bounded_native_query_rejects_avg_with_unsupported_output_schema() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("avg with unsupported output schema should be rejected"),
@@ -283,8 +283,8 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("grouped avg with unsupported output schema should be rejected before source read"),
@@ -311,8 +311,8 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("global avg reserved state alias collision should be rejected before source read"),
@@ -359,9 +359,9 @@ fn assert_grouped_decimal_avg_keeps_output_scale(context: &BackendQueryContext) 
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(context, &plan).unwrap();
 
@@ -431,9 +431,9 @@ fn assert_grouped_mixed_integer_and_decimal_avg(context: &BackendQueryContext) {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(context, &plan).unwrap();
 
@@ -494,9 +494,9 @@ fn assert_grouped_many_group_decimal_avg(context: &BackendQueryContext) {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(context, &plan).unwrap();
 
@@ -562,9 +562,9 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &BackendQueryContext, grou
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(context, &plan).unwrap();
     let metrics = result.metrics();

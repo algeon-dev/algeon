@@ -25,20 +25,22 @@ fn bounded_native_query_executes_root_left_hash_join_with_unmatched_probe_rows()
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -103,21 +105,23 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Full, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
-                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Full, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();

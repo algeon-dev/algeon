@@ -86,8 +86,8 @@ fn bounded_single_grouped_aggregate_uses_libcudf_without_exact_cardinality_probe
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("grouped", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate_spec, aggregate_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate_spec, aggregate_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
@@ -173,8 +173,8 @@ fn bounded_medium_single_string_avg_uses_libcudf_without_exact_cardinality_probe
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("grouped", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate_spec, Arc::clone(&aggregate_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate_spec, Arc::clone(&aggregate_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
@@ -269,12 +269,12 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -421,11 +421,11 @@ fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -494,9 +494,9 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -567,9 +567,9 @@ fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_re
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -635,12 +635,12 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -721,9 +721,9 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -859,9 +859,9 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -974,9 +974,9 @@ fn bounded_native_query_does_not_force_group_key_partitions_from_large_source_es
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1039,15 +1039,17 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let aggregate_projection = builder.add_projection(
-        aggregate,
-        projection_outputs(vec![Expr::column("URL"), Expr::column("c")], Arc::clone(&aggregated_schema)),
-    );
-    let sort = builder.add_sort(aggregate_projection, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let aggregate_projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(vec![Expr::column("URL"), Expr::column("c")], Arc::clone(&aggregated_schema)),
+        )
+        .unwrap();
+    let sort = builder.add_sort(aggregate_projection, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1117,8 +1119,8 @@ fn bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_f
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1347,11 +1349,11 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1409,9 +1411,9 @@ fn bounded_native_query_casts_single_partial_grouped_count_to_output_schema() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1474,9 +1476,9 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let device_budget_bytes = 8 * 1024 * 1024 * 1024;
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
@@ -1533,8 +1535,8 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
@@ -1585,9 +1587,9 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     // The encoded-byte batching target admits every row group into one raw
     // batch, whose decoded rows plus stage, partition, and slice copies cannot
@@ -1684,9 +1686,9 @@ fn assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_r
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 256 * 1024 * 1024,

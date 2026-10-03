@@ -168,12 +168,6 @@ fn shared_aggregate_family_rewrite_plan(
     if family.iter().any(|signature| !source_materialization_sources_are_unique(signature)) {
         return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
     }
-    // Reject disconnected candidates early so diagnostics do not claim an applied
-    // rewrite that the sink-reachable clone cannot observe.
-    let reachable = rewrite::sink_reachable_nodes(plan);
-    if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
-        return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
-    }
     let widened_source_fingerprints = widened_source_fingerprints(family);
     if widened_source_fingerprints.is_empty() {
         return Ok(SharedAggregateFamilyRewrite {
@@ -495,11 +489,6 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         branches.push(ScalarFilteredAggregateBranch { aggregate_node_id: signature.aggregate_node_id, outputs });
     }
 
-    let reachable = rewrite::sink_reachable_nodes(plan);
-    if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
-        return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
-    }
-
     Ok(SharedAggregateFamilyRewrite {
         family_key: representative.family_key.clone(),
         representative_aggregate_node_id: representative.aggregate_node_id,
@@ -584,9 +573,8 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
             SharedAggregateFamilyRewriteKind::Grouped { branch_filters } => {
                 let predicate = branch_filters.get(&old_aggregate_id).cloned().flatten();
                 if let Some(predicate) = predicate {
-                    let mut facts =
+                    let facts =
                         self.nodes.get(materialized_id.index()).expect("materialized node must exist").facts.clone();
-                    facts.schema_behavior = SchemaBehavior::PreservesInput;
                     self.push_node(PlanNode::Filter(FilterNode { input: materialized_id, predicate }), facts)
                 } else {
                     materialized_id
@@ -609,7 +597,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     })
                     .collect();
                 let projection = ProjectionNode::new(materialized_id, outputs);
-                let facts = PlanFacts::device(Arc::clone(projection.output_schema()), SchemaBehavior::Projection);
+                let facts = PlanFacts::new(Arc::clone(projection.output_schema()));
                 self.push_node(PlanNode::Projection(projection), facts)
             },
         };
@@ -665,7 +653,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
             ));
             return self.push_node(
                 PlanNode::Aggregate(AggregateNode { input, spec }),
-                PlanFacts::device(output_schema, SchemaBehavior::Aggregate),
+                PlanFacts::new(output_schema),
             );
         }
         let new_facts = old_node.facts.clone();
@@ -678,8 +666,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature)
                         && widen_local_parquet_source(&mut source, columns)
                     {
-                        source_facts =
-                            Some(PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput));
+                        source_facts = Some(PlanFacts::new(Arc::clone(source.output_schema())));
                     }
                     if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                         source.reader_predicate = Some(predicate.clone());
@@ -714,7 +701,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                         if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature)
                             && widen_local_parquet_source(&mut source, columns)
                         {
-                            facts = PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput);
+                            facts = PlanFacts::new(Arc::clone(source.output_schema()));
                         }
                         if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                             source.reader_predicate = Some(predicate.clone());
@@ -743,7 +730,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 let input_schema = Arc::clone(self.nodes[input.index()].output_schema());
                 self.push_node(
                     PlanNode::Filter(filter),
-                    PlanFacts::device(input_schema, SchemaBehavior::PreservesInput),
+                    PlanFacts::new(input_schema),
                 )
             },
             PlanNode::Projection(projection) => {
@@ -776,7 +763,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 let input =
                     self.clone_materialized_subtree_with_required_columns(projection.input, family, &input_required);
                 let projection = ProjectionNode::new(input, outputs);
-                let facts = PlanFacts::device(Arc::clone(projection.output_schema()), SchemaBehavior::Projection);
+                let facts = PlanFacts::new(Arc::clone(projection.output_schema()));
                 self.push_node(PlanNode::Projection(projection), facts)
             },
             PlanNode::Join(join) => {
@@ -866,7 +853,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     self.nodes[right.index()].output_schema(),
                     &join.spec.output_projection,
                 );
-                self.push_node(PlanNode::Join(join), PlanFacts::device(output_schema, SchemaBehavior::Join))
+                self.push_node(PlanNode::Join(join), PlanFacts::new(output_schema))
             },
             PlanNode::Sort(sort) => {
                 let mut input_required = required_output_columns.clone();
@@ -912,7 +899,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

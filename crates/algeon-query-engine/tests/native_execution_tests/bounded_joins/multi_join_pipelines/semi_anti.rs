@@ -31,31 +31,35 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         builder.add_source(SourceNode::LocalParquet(join_right_source(&semi_path, &semi_schema, &["order_id"])));
     let anti_orders =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&anti_path, &anti_schema, &["order_id"])));
-    let semi_join = builder.add_join(
-        lineitem,
-        semi_orders,
-        JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&left_only_join_schema),
-    );
-    let anti_join = builder.add_join(
-        semi_join,
-        anti_orders,
-        JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
-            .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&left_only_join_schema),
-    );
-    let plan = builder.finish_with_host_sink(anti_join);
+    let semi_join = builder
+        .add_join(
+            lineitem,
+            semi_orders,
+            JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&left_only_join_schema),
+        )
+        .unwrap();
+    let anti_join = builder
+        .add_join(
+            semi_join,
+            anti_orders,
+            JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
+                .with_residual_predicate(qty_gt_right_order_id_times_ten())
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&left_only_join_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(anti_join).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -238,68 +242,71 @@ fn shared_leaf_inner_probe_anti_build_plan(
         detail_schema,
         &["order_id", "supp", "commit", "receipt"],
     )));
-    let late = builder.add_filter(
-        detail,
-        Expr::binary(Expr::column("receipt"), BinaryOp::Gt, Expr::column("commit")),
-        Arc::clone(detail_schema),
-    );
-    let keys = builder.add_projection(
-        late,
-        projection_outputs(vec![Expr::column("order_id"), Expr::column("supp")], Arc::clone(&keys_schema)),
-    );
+    let late = builder
+        .add_filter(detail, Expr::binary(Expr::column("receipt"), BinaryOp::Gt, Expr::column("commit")))
+        .unwrap();
+    let keys = builder
+        .add_projection(
+            late,
+            projection_outputs(vec![Expr::column("order_id"), Expr::column("supp")], Arc::clone(&keys_schema)),
+        )
+        .unwrap();
     let supplier = builder.add_source(SourceNode::LocalParquet(join_right_source(
         supplier_path,
         supplier_schema,
         &["supp_id", "nation"],
     )));
-    let inner = builder.add_join(
-        supplier,
-        keys,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "supp_id", "supp_id"), ColumnRef::input(1, "supp", "supp"))],
+    let inner = builder
+        .add_join(
+            supplier,
+            keys,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "supp_id", "supp_id"), ColumnRef::input(1, "supp", "supp"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "supp", "supp"), "supp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation"),
+            ])
+            .with_build_side(JoinSide::Left),
+            inner_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "supp", "supp"), "supp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation"),
-        ])
-        .with_build_side(JoinSide::Left),
-        inner_schema,
-    );
-    let anti = builder.add_join(
-        inner,
-        keys,
-        JoinSpec::new(
-            JoinType::LeftAnti,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "order_id"),
-                ColumnRef::input(1, "order_id", "order_id"),
-            )],
+        .unwrap();
+    let anti = builder
+        .add_join(
+            inner,
+            keys,
+            JoinSpec::new(
+                JoinType::LeftAnti,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(1, "order_id", "order_id"),
+                )],
+            )
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(1, "supp", "supp"),
+                BinaryOp::NotEq,
+                Expr::input_column(0, "supp", "supp"),
+            ))
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation")])
+            .with_build_side(JoinSide::Right),
+            anti_schema,
         )
-        .with_residual_predicate(Expr::binary(
-            Expr::input_column(1, "supp", "supp"),
-            BinaryOp::NotEq,
-            Expr::input_column(0, "supp", "supp"),
-        ))
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation")])
-        .with_build_side(JoinSide::Right),
-        anti_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        anti,
-        AggregateSpec::new(
-            vec![Expr::column("nation")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("nation"), "late_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("nation"), false, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            anti,
+            AggregateSpec::new(
+                vec![Expr::column("nation")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("nation"), "late_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("nation"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 #[test]

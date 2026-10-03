@@ -43,7 +43,8 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
 
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);
@@ -108,30 +109,39 @@ fn dimension_pruning_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let dim = builder.add_source(SourceNode::LocalParquet(dim_source));
-    let dim = builder.add_projection(
-        dim,
-        vec![ProjectionOutput::new(Expr::column("dim_key"), Field::new("dim_key", DataType::Int32, false))],
-    );
-    let fact = builder.add_source(SourceNode::LocalParquet(fact_source));
-    let fact = builder.add_projection(
-        fact,
-        vec![
-            ProjectionOutput::new(Expr::column("fact_key"), Field::new("fact_key", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
-        ],
-    );
-    let join = builder.add_join(
-        dim,
-        fact,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "dim_key", "dim_key"), ColumnRef::input(1, "fact_key", "fact_key"))],
+    let dim = builder
+        .add_projection(
+            dim,
+            vec![ProjectionOutput::new(Expr::column("dim_key"), Field::new("dim_key", DataType::Int32, false))],
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "dim_key", "dim_key"), "dim_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "payload", "payload"), "payload"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    builder.finish_with_host_sink(join)
+        .unwrap();
+    let fact = builder.add_source(SourceNode::LocalParquet(fact_source));
+    let fact = builder
+        .add_projection(
+            fact,
+            vec![
+                ProjectionOutput::new(Expr::column("fact_key"), Field::new("fact_key", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
+            ],
+        )
+        .unwrap();
+    let join = builder
+        .add_join(
+            dim,
+            fact,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "dim_key", "dim_key"),
+                    ColumnRef::input(1, "fact_key", "fact_key"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "dim_key", "dim_key"), "dim_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "payload", "payload"), "payload"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }

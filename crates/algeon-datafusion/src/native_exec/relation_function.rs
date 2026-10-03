@@ -638,26 +638,31 @@ fn plan_for_sink(host_plan: &QueryPlan, sink: RelationFunctionSink) -> QueryPlan
     }
 }
 
-pub(crate) fn add_projected_relation_source(builder: &mut QueryPlanBuilder, child: &NativeChildBinding) -> NodeId {
+pub(crate) fn add_projected_relation_source(
+    builder: &mut QueryPlanBuilder,
+    child: &NativeChildBinding,
+) -> std::result::Result<NodeId, QueryError> {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         child.input_name.clone(),
         Arc::clone(&child.schema),
     )));
-    if child.projection.len() == child.schema.fields().len()
-        && child.projection.iter().copied().eq(0..child.schema.fields().len())
-    {
-        source
-    } else {
-        let outputs = child
-            .projection
-            .iter()
-            .map(|index| {
-                let field = child.schema.field(*index);
-                ProjectionOutput::new(NativeExpr::column(field.name()), field.as_ref().clone())
-            })
-            .collect();
-        builder.add_projection(source, outputs)
-    }
+    Ok(
+        if child.projection.len() == child.schema.fields().len()
+            && child.projection.iter().copied().eq(0..child.schema.fields().len())
+        {
+            source
+        } else {
+            let outputs = child
+                .projection
+                .iter()
+                .map(|index| {
+                    let field = child.schema.field(*index);
+                    ProjectionOutput::new(NativeExpr::column(field.name()), field.as_ref().clone())
+                })
+                .collect();
+            builder.add_projection(source, outputs)?
+        },
+    )
 }
 
 fn relation_execution_error<S: RelationFunctionSpec>(error: QueryError) -> Error {
@@ -726,8 +731,8 @@ mod tests {
         fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan> {
             self.lower_calls.fetch_add(1, Ordering::SeqCst);
             let mut builder = QueryPlanBuilder::new();
-            let root = add_projected_relation_source(&mut builder, &bindings[0]);
-            Ok(builder.finish_with_host_sink_schema(root, schema))
+            let root = add_projected_relation_source(&mut builder, &bindings[0]).unwrap();
+            Ok(builder.finish_with_host_sink_schema(root, schema).unwrap())
         }
 
         fn feature_available(&self) -> bool {

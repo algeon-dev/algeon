@@ -51,7 +51,7 @@ fn observed_execution_cancellation_preserves_error_metrics_and_partial_events() 
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    let plan = plan.finish_with_host_sink(source);
+    let plan = plan.finish_with_host_sink(source).unwrap();
     let cancellation = ExecutionCancellation::new();
     cancellation.cancel();
     let observed = RuntimeObservedExecutionContext::standalone(
@@ -88,7 +88,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    let _plan = plan.finish_with_host_sink(source);
+    let _plan = plan.finish_with_host_sink(source).unwrap();
     let failure = RuntimeObservedExecutionContext::standalone(
         StandaloneConfig {
             query_id: Some("context-query".into()),
@@ -117,7 +117,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_trace_mismatch() {
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    let _plan = plan.finish_with_host_sink(source);
+    let _plan = plan.finish_with_host_sink(source).unwrap();
     let failure = RuntimeObservedExecutionContext::standalone(
         StandaloneConfig {
             query_id: Some("shared-query".into()),

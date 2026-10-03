@@ -21,8 +21,8 @@ fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates()
     let schema = Arc::new(Schema::new(vec![Field::new("ca_zip", ArrowDataType::Utf8, true)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-    let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(filter);
+    let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384)).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
 
     validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect("large q08-class filter predicate should validate without generic lowering");
@@ -34,23 +34,23 @@ fn validate_rejects_global_whole_partition_aggregate_window() {
         Field::new("k", ArrowDataType::Int32, false),
         Field::new("v", ArrowDataType::Int64, true),
     ]));
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("k", ArrowDataType::Int32, false),
-        Field::new("v", ArrowDataType::Int64, true),
-        Field::new("window_v", ArrowDataType::Int64, true),
-    ]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(input_schema)));
-    let window = builder.add_window(
-        source,
-        WindowSpec::new(
-            Vec::new(),
-            Vec::new(),
-            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
-        ),
-        window_schema,
-    );
-    let plan = builder.finish_with_host_sink(window);
+    let window = builder
+        .add_window(
+            source,
+            WindowSpec::new(
+                Vec::new(),
+                Vec::new(),
+                vec![WindowFunction::aggregate(
+                    AggregateFunction::Sum,
+                    Expr::column("v"),
+                    Field::new("window_v", ArrowDataType::Int64, true),
+                )],
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(window).unwrap();
 
     let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect_err("global whole-partition aggregate windows are unsupported");
@@ -73,8 +73,8 @@ fn validate_graph_algorithm_rejects_incompatible_directedness() {
         GraphConstructionOptions { directed: false, ..Default::default() },
         GraphAlgorithmParams::StronglyConnectedComponents(Default::default()),
     );
-    let graph = builder.add_graph_algorithm(source, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(source, Vec::new(), spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let error = validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect_err("SCC must reject undirected graph construction");
@@ -142,11 +142,13 @@ fn validate_local_parquet_source_uses_output_schema_override_for_available_colum
         .with_output_schema_override(Arc::clone(&logical_schema));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        vec![ProjectionOutput::new(Expr::column("status"), Field::new("status", ArrowDataType::Int64, true))],
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("status"), Field::new("status", ArrowDataType::Int64, true))],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     validate_query_plan(&plan, rapids_analysis_context(PlanningPolicy::default()))
         .expect("logical output alias should be available downstream");
@@ -182,6 +184,6 @@ fn graph_algorithm_validation_plan(
         params,
         Arc::clone(&output_schema),
     );
-    let graph = builder.add_graph_algorithm(source, spec);
-    builder.finish_with_host_sink_schema(graph, output_schema)
+    let graph = builder.add_graph_algorithm(source, Vec::new(), spec).unwrap();
+    builder.finish_with_host_sink_schema(graph, output_schema).unwrap()
 }

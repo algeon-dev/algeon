@@ -202,7 +202,7 @@ fn read_local_parquet_source_uncached(
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if source.is_zero_column_count_source() {
-        return read_zero_column_count_source(context, source, metrics);
+        return read_zero_column_count_source(context, source_node_id, source, metrics);
     }
 
     if source.scan_limit == Some(0) {
@@ -940,7 +940,7 @@ mod tests {
             .with_row_group_rows(vec![1]);
         let source = test_source(vec![file], vec!["c1".to_string()]);
         let plan = plan_local_parquet_source_chunks(
-            NodeId::from_index_for_internal_use(1),
+            NodeId::from_index_for_test(1),
             &source,
             SourceChunkPlanningPolicy::default(),
         )
@@ -1049,7 +1049,7 @@ mod tests {
                 .execution_scope();
         let context = context.with_runtime_execution_scope(scope.clone()).unwrap();
 
-        record_background_cache_file_fill_enqueue(&context, NodeId::from_index_for_internal_use(1), &source, &file, 0);
+        record_background_cache_file_fill_enqueue(&context, NodeId::from_index_for_test(1), &source, &file, 0);
 
         let rows = scope.metrics_checkpoint().unwrap().source_read_rows;
         assert_eq!(rows.len(), 1);

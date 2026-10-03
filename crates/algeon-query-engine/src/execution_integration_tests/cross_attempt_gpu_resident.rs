@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::Path,
     process,
     sync::{Arc, Barrier},
@@ -23,10 +22,8 @@ fn pagerank_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
     let params = plan::GraphAlgorithmParams::PageRank(plan::GraphPageRankParams::default());
     let vertex_type = edge_schema.field_with_name("src").unwrap().data_type().clone();
     let mut builder = plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new(
-        "edges",
-        Arc::clone(&edge_schema),
-    )));
+    let edges = builder
+        .add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
     let output_schema =
         plan::graph_result_schema_for_vertex_type(plan::GraphAlgorithm::PageRank, &params, &vertex_type);
     let spec = plan::GraphAlgorithmSpec::new(
@@ -40,35 +37,35 @@ fn pagerank_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
         params,
         Arc::clone(&output_schema),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    builder.finish_with_host_sink_schema(graph, output_schema)
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    builder.finish_with_host_sink_schema(graph, output_schema).unwrap()
 }
 
 fn bfs_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
     let params = plan::GraphAlgorithmParams::Bfs(Box::new(plan::GraphBfsParams::new(0, None)));
     let vertex_type = edge_schema.field_with_name("src").unwrap().data_type().clone();
     let mut builder = plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new(
-        "edges",
-        Arc::clone(&edge_schema),
-    )));
-    let output_schema =
-        plan::graph_result_schema_for_vertex_type(plan::GraphAlgorithm::Bfs, &params, &vertex_type);
-    let graph = builder.add_graph_algorithm(
-        edges,
-        plan::GraphAlgorithmSpec::new(
-            plan::GraphAlgorithm::Bfs,
-            plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-            plan::GraphConstructionOptions {
-                directed: true,
-                renumber: true,
-                policy: plan::GraphConstructionPolicy::RawLibcugraph,
-            },
-            params,
-            Arc::clone(&output_schema),
-        ),
-    );
-    builder.finish_with_host_sink_schema(graph, output_schema)
+    let edges = builder
+        .add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let output_schema = plan::graph_result_schema_for_vertex_type(plan::GraphAlgorithm::Bfs, &params, &vertex_type);
+    let graph = builder
+        .add_graph_algorithm(
+            edges,
+            Vec::new(),
+            plan::GraphAlgorithmSpec::new(
+                plan::GraphAlgorithm::Bfs,
+                plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+                plan::GraphConstructionOptions {
+                    directed: true,
+                    renumber: true,
+                    policy: plan::GraphConstructionPolicy::RawLibcugraph,
+                },
+                params,
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    builder.finish_with_host_sink_schema(graph, output_schema).unwrap()
 }
 
 #[test]
@@ -125,10 +122,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
     let batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
-            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 2])), Arc::new(Int32Array::from(vec![1, 2, 0, 3]))],
     )
     .unwrap();
     let gpu_edges = runtime::resident::GpuDataFrame::new(
@@ -160,8 +154,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     producer_owner.commit_terminal(observability::RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(producer);
 
-    let producer_report =
-        producer_completion.wait_timeout(Duration::from_secs(10)).expect("producer frozen report");
+    let producer_report = producer_completion.wait_timeout(Duration::from_secs(10)).expect("producer frozen report");
     assert_eq!(producer_report.capacity_disposition, observability::AttemptCapacityDisposition::FrozenResident);
     let freeze_deadline = Instant::now() + Duration::from_secs(10);
     let frozen = loop {
@@ -181,7 +174,9 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     tiny_evidence.attest_cugraph_graph_execution_scope(&pagerank);
     let tiny = service
         .admit_query_with_request(
-            QueryAdmissionRequest::test_attempt().with_query_cap_bytes(1).with_query_plan_capability_evidence(tiny_evidence),
+            QueryAdmissionRequest::test_attempt()
+                .with_query_cap_bytes(1)
+                .with_query_plan_capability_evidence(tiny_evidence),
         )
         .expect("tiny explicit cap is admissible");
     let tiny_context = tiny.acquire_context().expect("tiny context");
@@ -202,7 +197,9 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
         evidence.attest_cugraph_graph_execution_scope(plan);
         let consumer = service
-            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
+            )
             .expect("remaining capacity admits graph consumer");
         let consumer_context = consumer.acquire_context().expect("consumer context");
         let result = execute_plan(consumer_context.context(), plan, Some(&inputs))
@@ -264,10 +261,7 @@ fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
     let batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
-            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 2])), Arc::new(Int32Array::from(vec![1, 2, 0, 3]))],
     )
     .unwrap();
     let edges = runtime::resident::GpuDataFrame::new(
@@ -348,7 +342,9 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     evidence.attest_cugraph_graph_execution_scope(&plan);
     let producer_attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()))
+        .admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()),
+        )
         .expect("producer attempt admission");
     let consumer_attempt = service
         .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
@@ -372,10 +368,7 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     );
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
-            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 2])), Arc::new(Int32Array::from(vec![1, 2, 0, 3]))],
     )
     .expect("valid edge batch");
     let producer_input = runtime::resident::GpuResultHandle::new(
@@ -495,8 +488,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
     let attempt = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new(attempt_owner.admission_binding())
-                .with_query_plan_capability_evidence(evidence),
+            QueryAdmissionRequest::new(attempt_owner.admission_binding()).with_query_plan_capability_evidence(evidence),
         )
         .expect("admission");
     let admitted = attempt.acquire_context().expect("admitted context");
@@ -504,10 +496,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let runtime = context.runtime().expect("attempt runtime");
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
-            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 2])), Arc::new(Int32Array::from(vec![1, 2, 0, 3]))],
     )
     .expect("valid edge batch");
     let descriptor = plan::GraphResidencyDescriptor::for_content_identity(
@@ -528,8 +517,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     .expect("resident graph input");
     let mut inputs = runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), input);
-    let result = execute_plan(context, &plan, Some(&inputs))
-        .expect("cache-enabled PageRank execution");
+    let result = execute_plan(context, &plan, Some(&inputs)).expect("cache-enabled PageRank execution");
     let ledger_report = service.device_ledger_reports().expect("ledger report").remove(0);
     assert!(ledger_report.cache_evictable_resident_bytes > 0, "the parked graph remains ledger-owned after execution");
     assert_eq!(ledger_report.cache_pinned_in_use_bytes, 0, "the graph checkout releases its pin after execution");
@@ -625,16 +613,12 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
         .unzip();
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(src)),
-            Arc::new(Int32Array::from(dst)),
-        ],
+        vec![Arc::new(Int32Array::from(src)), Arc::new(Int32Array::from(dst))],
     )
     .expect("valid edge batch");
 
-    let cache_evictable_bytes = || {
-        service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes
-    };
+    let cache_evictable_bytes =
+        || service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes;
 
     // Cold execution parks the graph; the attempt domain covers only the edge
     // upload and the output copy because the build runs in the cache domain.
@@ -657,8 +641,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     // the test sensitive to routing regressions: were the workspace charged
     // anywhere but the attempt grant, the capped run would succeed and the
     // expectation below would fail.
-    let capped_grant_bytes =
-        edge_batch.get_array_memory_size() as u64 + VERTEX_COUNT as u64 * (4 + 8) * 3 / 2;
+    let capped_grant_bytes = edge_batch.get_array_memory_size() as u64 + VERTEX_COUNT as u64 * (4 + 8) * 3 / 2;
     let tiny_error = execute_pagerank_attempt(
         &service,
         &plan,
@@ -732,12 +715,9 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     let pagerank_edges = cycle_chord_edge_batch(&edge_schema, VERTEX_COUNT, VERTEX_COUNT / 2 + 1);
     let bfs_edges = cycle_chord_edge_batch(&edge_schema, VERTEX_COUNT, VERTEX_COUNT / 3 + 1);
 
-    let cache_evictable_bytes = || {
-        service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes
-    };
-    let live_grants = || {
-        service.device_ledger_reports().expect("ledger report").remove(0).grants.len()
-    };
+    let cache_evictable_bytes =
+        || service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes;
+    let live_grants = || service.device_ledger_reports().expect("ledger report").remove(0).grants.len();
 
     // Sequential baselines park both graphs and fix the expected outputs.
     let (pagerank_baseline, _, _) =
@@ -798,11 +778,7 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
 /// Builds a deterministic two-edge-per-vertex digraph: a directed cycle plus
 /// chords of the given offset. Shared by the mixed-overlap graphs so their
 /// sizes stay comparable while their contents differ.
-fn cycle_chord_edge_batch(
-    edge_schema: &Arc<ArrowSchema>,
-    vertex_count: i32,
-    chord_offset: i32,
-) -> RecordBatch {
+fn cycle_chord_edge_batch(edge_schema: &Arc<ArrowSchema>, vertex_count: i32, chord_offset: i32) -> RecordBatch {
     let (src, dst): (Vec<i32>, Vec<i32>) = (0..2 * vertex_count)
         .map(|edge| {
             let vertex = edge % vertex_count;
@@ -815,10 +791,7 @@ fn cycle_chord_edge_batch(
         .unzip();
     RecordBatch::try_new(
         Arc::clone(edge_schema),
-        vec![
-            Arc::new(Int32Array::from(src)),
-            Arc::new(Int32Array::from(dst)),
-        ],
+        vec![Arc::new(Int32Array::from(src)), Arc::new(Int32Array::from(dst))],
     )
     .expect("valid edge batch")
 }
@@ -855,8 +828,8 @@ fn execute_pagerank_attempt(
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
-    let mut request = QueryAdmissionRequest::new(attempt_owner.admission_binding())
-        .with_query_plan_capability_evidence(evidence);
+    let mut request =
+        QueryAdmissionRequest::new(attempt_owner.admission_binding()).with_query_plan_capability_evidence(evidence);
     if let Some(cap_bytes) = cap_bytes {
         request = request.with_query_cap_bytes(cap_bytes);
     }
@@ -869,23 +842,18 @@ fn execute_pagerank_attempt(
     let result = (|| {
         let input = runtime::resident::GpuResultHandle::new(
             context,
-            runtime::resident::GpuDataFrame::new(
-                CudfDataFrame::from_record_batch(&runtime, edge_batch).map_err(|error| {
+            runtime::resident::GpuDataFrame::new(CudfDataFrame::from_record_batch(&runtime, edge_batch).map_err(
+                |error| {
                     native_error::cudf_query_error(
                         "query_engine.graph_algorithm.attempt_domain.upload_edges",
                         "failed to upload warm-graph test edges into the attempt domain",
                         error,
                     )
-                })?,
-            )
+                },
+            )?)
             .with_graph_residency(
-                plan::GraphResidencyDescriptor::for_content_identity(
-                    graph_identity,
-                    ArrowDataType::Int32,
-                    None,
-                    None,
-                )
-                .expect("stable graph source identity"),
+                plan::GraphResidencyDescriptor::for_content_identity(graph_identity, ArrowDataType::Int32, None, None)
+                    .expect("stable graph source identity"),
             ),
             Arc::clone(edge_schema),
         )?;
@@ -893,8 +861,11 @@ fn execute_pagerank_attempt(
         inputs.insert("edges".to_string(), input);
         execute_plan(context, plan, Some(&inputs))
     })();
-    let peak_bytes =
-        context.attempt_allocation_domain_usage().expect("attempt domain usage").map(|usage| usage.peak_bytes).unwrap_or(0);
+    let peak_bytes = context
+        .attempt_allocation_domain_usage()
+        .expect("attempt domain usage")
+        .map(|usage| usage.peak_bytes)
+        .unwrap_or(0);
     let domain_id = context.attempt_allocation_domain_id();
     drop(runtime);
     drop(admitted);
@@ -946,8 +917,7 @@ fn write_multi_row_group_string_parquet(path: &Path) -> Arc<ArrowSchema> {
         ],
     )
     .expect("multi row-group fixture batch");
-    let properties =
-        parquet_properties::WriterProperties::builder().set_max_row_group_row_count(Some(512)).build();
+    let properties = parquet_properties::WriterProperties::builder().set_max_row_group_row_count(Some(512)).build();
     let file = fs::File::create(path).expect("fixture parquet file");
     let mut writer = parquet_arrow::ArrowWriter::try_new(file, Arc::clone(&schema), Some(properties))
         .expect("fixture parquet writer");
@@ -987,10 +957,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let dir = env::temp_dir().join(format!(
         "algeon-resident-freeze-{}-{}",
         process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default()
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_nanos()).unwrap_or_default()
     ));
     fs::create_dir_all(&dir).expect("fixture directory");
     let path = dir.join("edges.parquet");
@@ -1013,7 +980,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     .with_scan_limit(Some(4_096));
     let mut builder = plan::QueryPlanBuilder::new();
     let scan = builder.add_source(source::SourceNode::LocalParquet(source));
-    let plan = builder.finish_gpu_resident(scan);
+    let plan = builder.finish_gpu_resident(scan).unwrap();
 
     let lifecycle = runtime::BackendLifecycle::new();
     let counters = Arc::new(attempt::AttemptBackendCounters::default());
@@ -1035,15 +1002,13 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     let producer = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new(attempt_owner.admission_binding())
-                .with_query_plan_capability_evidence(evidence),
+            QueryAdmissionRequest::new(attempt_owner.admission_binding()).with_query_plan_capability_evidence(evidence),
         )
         .expect("producer admission");
     attempt_observation.record_physical_execution_started().unwrap();
     attempt_observation.record_gpu_execution_started().unwrap();
     let producer_context = producer.acquire_context().expect("producer context");
-    let result = execute_plan(producer_context.context(), &plan, None)
-        .expect("multi row-group resident scan executes");
+    let result = execute_plan(producer_context.context(), &plan, None).expect("multi row-group resident scan executes");
     let (output, _) = result.into_parts();
     let resident = output.as_gpu_resident().expect("GPU-resident sink produces a resident output owner");
     let resident_rows = resident.to_host_record_batch().expect("resident output is readable").num_rows();

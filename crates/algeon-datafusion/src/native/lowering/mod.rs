@@ -33,7 +33,7 @@ use query_engine::{
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
-use crate::{capability::CapabilityReason, native::LoweringRejection};
+use crate::{capability::CapabilityReason, native::LoweringFailure};
 
 /// Lowers a normalized native tree into the DataFusion-free query IR.
 ///
@@ -41,9 +41,7 @@ use crate::{capability::CapabilityReason, native::LoweringRejection};
 /// pruning, filter pushdown, zero-column count, aggregate, sort, and limit can
 /// be planned together. All other aggregate roots lower their input tree first,
 /// which covers joins and recursive unary/aggregate inputs.
-pub(super) fn lower_normalized_plan(
-    normalized: &NormalizedNativePlan<'_>,
-) -> Result<NativeQueryPlan, LoweringRejection> {
+pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, LoweringFailure> {
     match &normalized.root {
         NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
             root::lower_slice1_plan(normalized, root)
@@ -56,7 +54,7 @@ pub(super) fn lower_normalized_plan(
 pub(super) fn projection_outputs(
     expressions: Vec<NativeExpr>,
     schema: &SchemaRef,
-) -> Result<Vec<NativeProjectionOutput>, LoweringRejection> {
+) -> Result<Vec<NativeProjectionOutput>, LoweringFailure> {
     if expressions.len() != schema.fields().len() {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
@@ -72,7 +70,7 @@ fn project_bindings_to_schema(
     input: LoweredNativeInput,
     schema: SchemaRef,
     bindings: Vec<FieldBinding>,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let expressions = bindings
         .iter()
         .map(|binding| {
@@ -82,8 +80,8 @@ fn project_bindings_to_schema(
                 binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -96,7 +94,7 @@ fn lower_native_input(
     input: &NormalizedNativeInput<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     lower_native_input_with_scan_limit(input, builder, required_output_fields, None)
 }
 
@@ -105,7 +103,7 @@ fn lower_native_input_with_scan_limit(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     source_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let output = match input {
         NormalizedNativeInput::Source(source) => {
             source::lower_source_input(source, builder, required_output_fields, source_scan_limit)
@@ -124,7 +122,7 @@ fn lower_native_input_with_scan_limit(
             let pushed_scan_limit = source_scan_limit_through_limit(limit.spec, source_scan_limit);
             let input =
                 lower_native_input_with_scan_limit(&limit.input, builder, required_output_fields, pushed_scan_limit)?;
-            let node = builder.add_limit(input.node, limit.spec, Arc::clone(&input.schema));
+            let node = builder.add_limit(input.node, limit.spec)?;
             Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
         },
         NormalizedNativeInput::Aggregate(aggregate) => {
@@ -139,7 +137,7 @@ fn lower_native_input_with_scan_limit(
         },
         NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
     }?;
-    advisory::attach_input(builder, input, &output);
+    advisory::attach_input(builder, input, &output)?;
     Ok(output)
 }
 
@@ -169,7 +167,7 @@ fn lower_literal_source_input(
     source: &super::normalize::NormalizedNativeLiteralSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let (source_schema, batches, fetch) = match source {
         super::normalize::NormalizedNativeLiteralSource::PlaceholderRow(placeholder) => {
             if !placeholder.schema().fields().is_empty() {
@@ -201,7 +199,7 @@ fn lower_literal_source_input(
     let source_node = builder
         .add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::new(Arc::clone(&native_schema), batches)));
     let source_node = if let Some(fetch) = fetch {
-        builder.add_limit(source_node, NativeLimitSpec::fetch(fetch), Arc::clone(&native_schema))
+        builder.add_limit(source_node, NativeLimitSpec::fetch(fetch))?
     } else {
         source_node
     };
@@ -209,10 +207,7 @@ fn lower_literal_source_input(
     project_literal_output_columns(builder, source_input, required_output_fields)
 }
 
-fn project_memory_batch(
-    batch: &RecordBatch,
-    projection: &Option<Vec<usize>>,
-) -> Result<RecordBatch, LoweringRejection> {
+fn project_memory_batch(batch: &RecordBatch, projection: &Option<Vec<usize>>) -> Result<RecordBatch, LoweringFailure> {
     projection.as_ref().map_or_else(
         || Ok(batch.clone()),
         |projection| batch.project(projection).map_err(|_| CapabilityReason::UnsupportedOperator.into()),
@@ -223,7 +218,7 @@ fn project_literal_output_columns(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     if required_output_fields.is_all() {
         return Ok(input);
     }
@@ -242,8 +237,8 @@ fn project_literal_output_columns(
                 rename_field(field, projected.native_name.as_str()),
             ))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let projected_node = builder.add_projection(input.node, expressions);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let projected_node = builder.add_projection(input.node, expressions)?;
     Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
 }
 
@@ -251,7 +246,7 @@ fn lower_gpu_resident_source_input(
     source: &super::normalize::NormalizedNativeGpuResidentSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let full_schema = source.source_exec.schema();
     let full_required = RequiredFields::all();
     let (source_schema, source_bindings) = executable_schema_and_bindings(&full_schema, &full_required)?;
@@ -303,7 +298,7 @@ fn lower_gpu_resident_source_input(
                 ),
             ))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let projected_node = builder.add_projection(source_node, expressions);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let projected_node = builder.add_projection(source_node, expressions)?;
     Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
 }

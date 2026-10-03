@@ -285,6 +285,63 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Direct child expressions in evaluation order.
+    pub fn children(&self) -> impl Iterator<Item = &Expr> {
+        let children: Vec<&Expr> = match self {
+            Self::Column(_) | Self::Literal(_) => Vec::new(),
+            Self::Not(expr)
+            | Self::IsNull(expr)
+            | Self::IsNotNull(expr)
+            | Self::Cast { expr, .. }
+            | Self::TryCast { expr, .. }
+            | Self::Like { expr, .. }
+            | Self::Substring { expr, .. }
+            | Self::Lower(expr)
+            | Self::Upper(expr)
+            | Self::Trim { expr, .. }
+            | Self::LTrim { expr, .. }
+            | Self::RTrim { expr, .. }
+            | Self::StringContains { expr, .. }
+            | Self::StartsWith { expr, .. }
+            | Self::EndsWith { expr, .. }
+            | Self::StringLength { expr, .. }
+            | Self::RegexpReplace { expr, .. }
+            | Self::Abs(expr)
+            | Self::UnaryMath { expr, .. }
+            | Self::Round { expr, .. }
+            | Self::Extract { expr, .. }
+            | Self::DateTrunc { expr, .. }
+            | Self::Alias { expr, .. } => vec![expr.as_ref()],
+            Self::Binary { left, right, .. }
+            | Self::IsDistinctFrom { left, right }
+            | Self::IsNotDistinctFrom { left, right } => vec![left.as_ref(), right.as_ref()],
+            Self::Concat(exprs) => exprs.iter().collect(),
+            Self::InList { expr, list, .. } => std::iter::once(expr.as_ref()).chain(list).collect(),
+            Self::Case { branches, else_expr } => branches
+                .iter()
+                .flat_map(|branch| [&branch.when, &branch.then])
+                .chain(std::iter::once(else_expr.as_ref()))
+                .collect(),
+        };
+        children.into_iter()
+    }
+
+    /// Every column this expression references, in depth-first order.
+    pub fn columns(&self) -> impl Iterator<Item = &ColumnRef> {
+        let mut pending = vec![self];
+        std::iter::from_fn(move || {
+            while let Some(expr) = pending.pop() {
+                if let Self::Column(column) = expr {
+                    return Some(column);
+                }
+                let first = pending.len();
+                pending.extend(expr.children());
+                pending[first..].reverse();
+            }
+            None
+        })
+    }
+
     pub fn column(name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::unqualified(name))
     }

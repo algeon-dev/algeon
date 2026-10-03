@@ -18,8 +18,8 @@ use super::{
     join_node_execution_capability, join_residual_requires_post_join_filter,
     keyed_hash_join_strategy_decision_for_plan,
     model::{
-        AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty,
-        ResidualRequirement, SourceFormatCapability,
+        AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
+        SourceFormatCapability,
     },
     one_shot_equi_join_supported,
     rejection::{Reason, UnsupportedPart},
@@ -29,11 +29,12 @@ use crate::{
     backend::AnalysisContext,
     ml_validation::validate_ml_algorithm_node_contract,
     plan::{
-        AggregateNode, DataPlacement, EdgeNormalizeNode, EdgeWeightCombiner, GraphAlgorithmNode, GraphAlgorithmParams,
-        GraphVertexPairInput, SortNode, UnionNode, VectorAlgorithmNode, WindowFrame, WindowFunction, WindowNode,
+        AggregateNode, EdgeNormalizeNode, EdgeWeightCombiner, GraphAlgorithmNode, GraphAlgorithmParams,
+        GraphVertexPairInput, SortNode, VectorAlgorithmNode, WindowFrame, WindowFunction, WindowNode,
         graph_result_schema_for_vertex_type,
     },
     source::validate_literal_batch_source,
+    validation::algorithm_input,
     vector_validation::validate_vector_algorithm_node_contract,
 };
 
@@ -42,13 +43,12 @@ pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCont
     let kind = &node.kind;
     let operator = node_operator(kind);
     let executable = node_executable_decision(plan, node, ctx);
-    let produced_properties = produced_properties(node);
     let aggregate_state = match kind {
         PlanNode::Aggregate(aggregate) => aggregate_state_contract(&aggregate.spec),
         _ => None,
     };
     let max_output_rows = node_max_output_rows(kind);
-    NodeCapability { node_id, operator, executable, produced_properties, aggregate_state, max_output_rows }
+    NodeCapability { node_id, operator, executable, aggregate_state, max_output_rows }
 }
 
 /// Rows a node emits at most, when the operator alone bounds it: a scalar
@@ -168,7 +168,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
         PlanNode::Limit(limit) => limit_node_executable_decision(node.id, limit),
         PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join, ctx),
-        PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
+        PlanNode::Union(_) => CapabilityDecision::Satisfied,
         PlanNode::EdgeNormalize(edge_normalize) => {
             edge_normalize_node_executable_decision(plan, node.id, edge_normalize)
         },
@@ -620,45 +620,6 @@ fn join_node_executable_decision(
     CapabilityDecision::Satisfied
 }
 
-fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &UnionNode) -> CapabilityDecision {
-    if union.inputs.is_empty() {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedUnionNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "empty_inputs".to_string())],
-        );
-    }
-    let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedUnionNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "missing_union_node".to_string())],
-        );
-    };
-    for (input_index, input) in union.inputs.iter().enumerate() {
-        let Some(input_schema) = plan.node(*input).map(|node| node.output_schema()) else {
-            return CapabilityDecision::rejected(
-                Reason::UnsupportedUnionNodeCapability,
-                [
-                    ("node_id", node_id.to_string()),
-                    ("input_index", input_index.to_string()),
-                    ("reason", "missing_input_node".to_string()),
-                ],
-            );
-        };
-        if input_schema.as_ref() != output_schema.as_ref() {
-            return CapabilityDecision::rejected(
-                Reason::UnsupportedUnionNodeCapability,
-                [
-                    ("node_id", node_id.to_string()),
-                    ("input_index", input_index.to_string()),
-                    ("input_node", input.to_string()),
-                    ("reason", "input_schema_mismatch".to_string()),
-                ],
-            );
-        }
-    }
-    CapabilityDecision::Satisfied
-}
-
 fn graph_algorithm_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -678,7 +639,7 @@ fn graph_algorithm_node_executable_decision(
             ],
         );
     }
-    let Some(input) = plan.node(graph.input) else {
+    let Some(input) = plan.node(graph.edge_input()) else {
         return CapabilityDecision::rejected(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
@@ -844,7 +805,7 @@ fn graph_similarity_pair_input_decision(
     pair_input: &GraphVertexPairInput,
     vertex_type: &ArrowDataType,
 ) -> CapabilityDecision {
-    let Some(input) = plan.node(pair_input.input) else {
+    let Some(input) = plan.node(algorithm_input(plan, node_id, pair_input.input)) else {
         return CapabilityDecision::rejected(
             Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
@@ -1020,21 +981,4 @@ fn edge_normalize_node_executable_decision(
     }
 
     CapabilityDecision::Satisfied
-}
-
-pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
-    let mut properties = Vec::new();
-    if node.facts.placement == DataPlacement::Device {
-        properties.push(ProducedProperty::Resident);
-    }
-    match &node.kind {
-        PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
-            properties.push(ProducedProperty::Scalar);
-        },
-        PlanNode::Aggregate(_) => properties.push(ProducedProperty::Grouped),
-        PlanNode::Window(_) => properties.push(ProducedProperty::Ordered),
-        PlanNode::Sort(_) => properties.push(ProducedProperty::Ordered),
-        _ => {},
-    }
-    properties
 }

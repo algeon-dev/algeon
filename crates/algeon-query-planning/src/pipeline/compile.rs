@@ -98,7 +98,7 @@ fn contract_rejection_error(rejection: &Rejection) -> QueryError {
 fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<GraphCompilation> {
     reject_local_capability_rejections(analysis)?;
 
-    let node_order = reachable_postorder(plan)?;
+    let node_order = reachable_postorder(plan);
     let node_set = node_order.iter().copied().collect::<BTreeSet<_>>();
     let dependencies = collect_dependencies(plan, &node_order, &node_set)?;
     validate_analysis_covers_plan(plan, analysis, &node_order, &dependencies)?;
@@ -123,30 +123,14 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
 }
 
 fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<()> {
-    // Only sink-reachable rejections refuse compilation: the task graph below
-    // covers exactly the reachable subgraph, so a detached node, edge, or
-    // invariant can neither execute nor break the schedule.
-    if let Some(node) = analysis
-        .nodes
-        .iter()
-        .filter(|node| analysis.reachable_node_ids.contains(&node.node_id))
-        .find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
+    if let Some(node) =
+        analysis.nodes.iter().find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &node.executable
     {
         return Err(capability_rejection_error("node", *reason).with_fact("node_id", node.node_id));
     }
 
-    if let Some(edge) = analysis
-        .edges
-        .iter()
-        .filter(|edge| {
-            analysis.reachable_node_ids.contains(&edge.producer)
-                && match edge.consumer {
-                    EdgeConsumer::Node(consumer) => analysis.reachable_node_ids.contains(&consumer),
-                    EdgeConsumer::Sink(_) => true,
-                }
-        })
-        .find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
+    if let Some(edge) = analysis.edges.iter().find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &edge.decision
     {
         return Err(capability_rejection_error("edge", *reason)
@@ -154,11 +138,8 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<(
             .with_fact("consumer", edge_consumer_label(edge.consumer)));
     }
 
-    if let Some(invariant) = analysis
-        .invariants
-        .iter()
-        .filter(|invariant| invariant.nodes.iter().all(|node| analysis.reachable_node_ids.contains(node)))
-        .find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
+    if let Some(invariant) =
+        analysis.invariants.iter().find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &invariant.decision
     {
         return Err(capability_rejection_error("invariant", *reason)
@@ -231,37 +212,23 @@ impl NodeTasks {
     }
 }
 
-fn reachable_postorder(plan: &QueryPlan) -> Result<Vec<NodeId>> {
-    let mut order = Vec::new();
-    let mut visiting = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    visit_reachable(plan, plan.sink().input(), &mut visiting, &mut visited, &mut order)?;
-    Ok(order)
+/// Every node in dependency post-order from the sink, so each input precedes
+/// its consumers. Plan construction makes every node reachable.
+fn reachable_postorder(plan: &QueryPlan) -> Vec<NodeId> {
+    let mut order = Vec::with_capacity(plan.node_count());
+    let mut visited = vec![false; plan.node_count()];
+    visit_reachable(plan, plan.sink().input(), &mut visited, &mut order);
+    order
 }
 
-fn visit_reachable(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    visiting: &mut BTreeSet<NodeId>,
-    visited: &mut BTreeSet<NodeId>,
-    order: &mut Vec<NodeId>,
-) -> Result<()> {
-    if visited.contains(&node_id) {
-        return Ok(());
+fn visit_reachable(plan: &QueryPlan, node_id: NodeId, visited: &mut [bool], order: &mut Vec<NodeId>) {
+    if std::mem::replace(&mut visited[node_id.index()], true) {
+        return;
     }
-    if !visiting.insert(node_id) {
-        return Err(invalid("query plan contains a cycle reachable from the sink").with_fact("node_id", node_id));
+    for input in plan.nodes()[node_id.index()].input_ids() {
+        visit_reachable(plan, *input, visited, order);
     }
-    let node = plan
-        .node(node_id)
-        .ok_or_else(|| invalid("query plan sink references a missing node").with_fact("node_id", node_id))?;
-    for input in node.input_ids() {
-        visit_reachable(plan, *input, visiting, visited, order)?;
-    }
-    visiting.remove(&node_id);
-    visited.insert(node_id);
     order.push(node_id);
-    Ok(())
 }
 
 fn collect_dependencies(

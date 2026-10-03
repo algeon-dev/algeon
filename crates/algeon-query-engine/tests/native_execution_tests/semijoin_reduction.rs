@@ -47,7 +47,8 @@ fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
@@ -102,46 +103,47 @@ fn semijoin_reduction_execution_plan(
     let b = builder.add_source(SourceNode::LocalParquet(join_right_source(b_path, b_schema, &["b_key", "b_payload"])));
     let keyset =
         builder.add_source(SourceNode::LocalParquet(join_right_source(keyset_path, keyset_schema, &["b_key"])));
-    let keyset = builder.add_aggregate(
-        keyset,
-        AggregateSpec::new(vec![Expr::column("b_key")], Vec::new()),
-        Arc::clone(keyset_schema),
-    );
-    let joined = builder.add_join(
-        a,
-        b,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
+    let keyset = builder
+        .add_aggregate(keyset, AggregateSpec::new(vec![Expr::column("b_key")], Vec::new()), Arc::clone(keyset_schema))
+        .unwrap();
+    let joined = builder
+        .add_join(
+            a,
+            b,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+                JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let semi = builder.add_join(
-        joined,
-        keyset,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "b_key", "b_key"))],
+        .unwrap();
+    let semi = builder
+        .add_join(
+            joined,
+            keyset,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "b_key", "b_key"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+                JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "b_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort =
-        builder.add_sort(semi, SortSpec::new(vec![SortExpr::new(Expr::column("a_key"), false, false)]), output_schema);
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let sort = builder.add_sort(semi, SortSpec::new(vec![SortExpr::new(Expr::column("a_key"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn write_i32_parquet(runtime: &cudf::Runtime, path: &Path, schema: Arc<Schema>, columns: Vec<(&str, Vec<i32>)>) {

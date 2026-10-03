@@ -2,7 +2,7 @@
 fn dynamic_filter_runtime_metrics_record_produced_skipped_and_applied_events() {
     let plan = optimize_query_plan(
         estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 10_000_000, 16 * 1024 * 1024, 100_000),
-        &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver())
+        &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap()
     .plan;
     let route = &plan.dynamic_filter_routes()[0];
     let filter = DynamicFilter::SmallInListI64 { values: vec![10, 20, 30], min: 10, max: 30 };
@@ -82,7 +82,7 @@ fn aggregate_group_key_dynamic_filter_uses_aggregate_output_column_before_projec
             Expr::column("raw_customer_sk"),
             Field::new("ctr_customer_sk", DataType::Int32, false),
         )],
-    );
+    ).unwrap();
     let customer =
         builder.add_source(estimated_local_source("customer", "c_customer_sk", 256 * 1024 * 1024, 2_000_000));
     let join = builder.add_join(
@@ -101,14 +101,14 @@ fn aggregate_group_key_dynamic_filter_uses_aggregate_output_column_before_projec
         )])
         .with_build_side(JoinSide::Left),
         schema(&["c_customer_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let route = &result.plan.dynamic_filter_routes()[0];
@@ -127,7 +127,7 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
         returns,
         AggregateSpec::new(vec![Expr::column("raw_customer_sk"), Expr::column("raw_store_sk")], Vec::new()),
         schema(&["raw_customer_sk", "raw_store_sk"]),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         aggregate,
         vec![
@@ -137,7 +137,7 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
             ),
             ProjectionOutput::new(Expr::column("raw_store_sk"), Field::new("ctr_store_sk", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let store = builder.add_source(estimated_local_source("store", "s_store_sk", 1024, 10));
     let narrowed = builder.add_join(
         store,
@@ -155,7 +155,7 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
         )])
         .with_build_side(JoinSide::Left),
         schema(&["ctr_customer_sk"]),
-    );
+    ).unwrap();
     let customer =
         builder.add_source(estimated_local_source("customer", "c_customer_sk", 256 * 1024 * 1024, 2_000_000));
     let final_join = builder.add_join(
@@ -174,14 +174,14 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
         )])
         .with_build_side(JoinSide::Left),
         schema(&["c_customer_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(final_join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(final_join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let route = result
         .plan

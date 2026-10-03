@@ -30,12 +30,13 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     let one_chunk_plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
-    let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
+    let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema)).unwrap();
     let projection = builder
-        .add_projection(aggregate, projection_outputs(wide_final_sort_projection(16), Arc::clone(&final_sort_schema)));
-    let sort = builder.add_sort(projection, sort, Arc::clone(&final_sort_schema));
-    let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
-    let plan = builder.finish_with_host_sink(limit);
+        .add_projection(aggregate, projection_outputs(wide_final_sort_projection(16), Arc::clone(&final_sort_schema)))
+        .unwrap();
+    let sort = builder.add_sort(projection, sort).unwrap();
+    let limit = builder.add_limit(sort, limit).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1_200_000,

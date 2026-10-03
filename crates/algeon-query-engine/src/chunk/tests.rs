@@ -30,7 +30,7 @@ use crate::{
 
 fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
     SourceChunk {
-        source_node_id: NodeId::from_index_for_internal_use(1),
+        source_node_id: NodeId::from_index_for_test(1),
         chunk_index: index,
         file_index,
         location: ParquetSourceLocation::LocalPath(PathBuf::from(format!("part-{file_index}.parquet"))),
@@ -290,7 +290,7 @@ fn remote_direct_decimal_reader_predicate_requires_footer_type_metadata() {
         .with_reader_predicate(predicate);
 
     let error = plan_local_parquet_source_chunks(
-        NodeId::from_index_for_internal_use(7),
+        NodeId::from_index_for_test(7),
         &source,
         SourceChunkPlanningPolicy::new(None, 1),
     )
@@ -372,7 +372,7 @@ fn local_throughput_source_chunk_planning_requires_represented_source_read_bytes
 
     assert_eq!(policy.max_row_groups_per_chunk, 1);
 
-    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, policy).unwrap();
     assert_eq!(plan.chunk_count(), 2048);
     assert!(plan.chunks.iter().all(|chunk| chunk.row_group_count() == 1));
 }
@@ -406,7 +406,7 @@ fn object_store_source_without_row_group_metadata_plans_read_all_row_groups_chun
         SourceChunkPlanningMode::Conservative,
     );
 
-    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, policy).unwrap();
 
     assert_eq!(plan.chunk_count(), 1);
     assert!(plan.chunks[0].reads_all_row_groups);
@@ -427,7 +427,7 @@ fn object_store_zero_column_count_uses_synthetic_row_count_metadata() {
         SourceChunkPlanningMode::Conservative,
     );
 
-    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, policy).unwrap();
 
     assert_eq!(plan.chunk_count(), 1);
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
@@ -450,7 +450,7 @@ fn empty_zero_column_count_source_plans_one_zero_weight_identity() {
         SourceChunkPlanningMode::Conservative,
     );
 
-    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, policy).unwrap();
 
     assert_eq!(plan.chunk_count(), 1);
     let identity = &plan.chunks[0];
@@ -479,7 +479,7 @@ fn chunk_planning_prefers_footer_row_counts_over_whole_file_synthetic_count() {
         SourceChunkPlanningMode::Conservative,
     );
 
-    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_internal_use(3), &source, policy).unwrap();
+    let plan = plan_local_parquet_source_chunks(NodeId::from_index_for_test(3), &source, policy).unwrap();
 
     assert_eq!(plan.chunk_count(), 3);
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);

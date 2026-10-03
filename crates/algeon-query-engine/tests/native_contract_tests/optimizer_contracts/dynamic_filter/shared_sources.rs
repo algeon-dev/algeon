@@ -6,7 +6,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_consumer_source_feeds_prod
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
     assert!(diagnostics.candidates.iter().any(|candidate| {
@@ -25,7 +25,7 @@ fn native_optimizer_discovers_source_dynamic_filter_for_independent_repeated_con
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
     assert_eq!(diagnostics.considered_count, 1);
@@ -43,7 +43,7 @@ fn native_optimizer_rejects_probe_dynamic_filter_when_consumer_lineage_crosses_s
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
 
     for branch_join in [first_branch_join, second_branch_join] {
@@ -78,7 +78,7 @@ fn native_optimizer_does_not_attach_branch_dynamic_filter_to_pre_split_shared_fi
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
 
     for branch_join in [first_branch_join, second_branch_join] {
@@ -114,14 +114,14 @@ fn native_optimizer_discovers_hash_join_build_to_probe_dynamic_filter_route_for_
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -151,9 +151,7 @@ fn native_optimizer_discovers_hash_join_build_to_filter_dynamic_filter_route_for
     let fact = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", Arc::clone(&fact_schema))));
     let filtered_fact = builder.add_filter(
         fact,
-        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&fact_schema),
-    );
+        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let dim = builder.add_source(estimated_local_source("dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         filtered_fact,
@@ -165,14 +163,14 @@ fn native_optimizer_discovers_hash_join_build_to_filter_dynamic_filter_route_for
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -216,19 +214,19 @@ fn native_optimizer_rejects_join_probe_dynamic_filter_for_reused_local_source() 
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&fact_schema),
-    );
+    ).unwrap();
     let passthrough = builder.add_projection(
         fact,
         vec![ProjectionOutput::new(Expr::column("fact_key"), Field::new("fact_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![join, passthrough], fact_schema);
-    let plan = builder.finish_gpu_resident(union);
+    ).unwrap();
+    let union = builder.add_union(vec![join, passthrough], fact_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -257,7 +255,7 @@ fn native_optimizer_routes_q02_like_shared_partsupp_source_when_all_key_consumer
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -306,7 +304,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_ext
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -335,7 +333,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -362,7 +360,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_use
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -389,7 +387,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_k
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -417,7 +415,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_s
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = result
         .diagnostics
@@ -451,7 +449,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consu
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = result
         .diagnostics
@@ -499,7 +497,7 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -507,22 +505,22 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let passthrough = builder.add_projection(
         fact,
         vec![ProjectionOutput::new(
             Expr::column("amount"),
             Field::new("sum_amount", DataType::Decimal128(38, 2), true),
         )],
-    );
-    let union = builder.add_union(vec![aggregate, passthrough], aggregate_schema);
-    let plan = builder.finish_gpu_resident(union);
+    ).unwrap();
+    let union = builder.add_union(vec![aggregate, passthrough], aggregate_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -558,16 +556,14 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_filtered_join_feeds_sca
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let filtered = builder.add_filter(
         join,
         Expr::binary(
             Expr::column("amount"),
             BinaryOp::GtEq,
             Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 18, scale: 2 }),
-        ),
-        Arc::clone(&join_schema),
-    );
+        )).unwrap();
     let aggregate = builder.add_aggregate(
         filtered,
         AggregateSpec::new(
@@ -575,15 +571,15 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_filtered_join_feeds_sca
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_gpu_resident(aggregate);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -623,7 +619,7 @@ fn native_optimizer_keeps_join_probe_dynamic_filter_when_scalar_sum_is_not_decim
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount")])
         .with_build_side(JoinSide::Right),
         schema(&["amount"]),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -631,19 +627,19 @@ fn native_optimizer_keeps_join_probe_dynamic_filter_when_scalar_sum_is_not_decim
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let passthrough = builder.add_projection(
         fact,
         vec![ProjectionOutput::new(Expr::column("amount"), Field::new("sum_amount", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![aggregate, passthrough], aggregate_schema);
-    let plan = builder.finish_gpu_resident(union);
+    ).unwrap();
+    let union = builder.add_union(vec![aggregate, passthrough], aggregate_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -678,7 +674,7 @@ fn native_optimizer_skips_resident_join_probe_dynamic_filter_when_it_feeds_scala
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount")])
         .with_build_side(JoinSide::Right),
         Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(18, 2), true)])),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -686,15 +682,15 @@ fn native_optimizer_skips_resident_join_probe_dynamic_filter_when_it_feeds_scala
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_gpu_resident(aggregate);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -719,9 +715,7 @@ fn native_optimizer_falls_back_to_branch_filter_dynamic_filter_for_reused_local_
     let fact = builder.add_source(estimated_local_source("fact", "fact_key", 256 * 1024 * 1024, 10_000_000));
     let filtered_fact = builder.add_filter(
         fact,
-        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&fact_schema),
-    );
+        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let dim = builder.add_source(estimated_local_source("dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         filtered_fact,
@@ -733,19 +727,19 @@ fn native_optimizer_falls_back_to_branch_filter_dynamic_filter_for_reused_local_
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&fact_schema),
-    );
+    ).unwrap();
     let passthrough = builder.add_projection(
         fact,
         vec![ProjectionOutput::new(Expr::column("fact_key"), Field::new("fact_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![join, passthrough], fact_schema);
-    let plan = builder.finish_gpu_resident(union);
+    ).unwrap();
+    let union = builder.add_union(vec![join, passthrough], fact_schema).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -781,13 +775,11 @@ fn native_optimizer_discovers_filter_dynamic_filter_route_through_direct_project
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", Arc::clone(&raw_fact_schema))));
     let filtered_fact = builder.add_filter(
         fact,
-        Expr::binary(Expr::column("raw_fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&raw_fact_schema),
-    );
+        Expr::binary(Expr::column("raw_fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let projected_fact = builder.add_projection(
         filtered_fact,
         vec![ProjectionOutput::new(Expr::column("raw_fact_key"), Field::new("fact_key", DataType::Int32, false))],
-    );
+    ).unwrap();
     let dim = builder.add_source(estimated_local_source("dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         projected_fact,
@@ -799,14 +791,14 @@ fn native_optimizer_discovers_filter_dynamic_filter_route_through_direct_project
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -839,14 +831,12 @@ fn native_optimizer_does_not_push_filter_dynamic_filter_below_limit() {
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", Arc::clone(&raw_fact_schema))));
     let filtered_fact = builder.add_filter(
         fact,
-        Expr::binary(Expr::column("raw_fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&raw_fact_schema),
-    );
-    let limited_fact = builder.add_limit(filtered_fact, LimitSpec::fetch(10), Arc::clone(&raw_fact_schema));
+        Expr::binary(Expr::column("raw_fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
+    let limited_fact = builder.add_limit(filtered_fact, LimitSpec::fetch(10)).unwrap();
     let projected_fact = builder.add_projection(
         limited_fact,
         vec![ProjectionOutput::new(Expr::column("raw_fact_key"), Field::new("fact_key", DataType::Int32, false))],
-    );
+    ).unwrap();
     let dim = builder.add_source(estimated_local_source("dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         projected_fact,
@@ -858,14 +848,14 @@ fn native_optimizer_does_not_push_filter_dynamic_filter_below_limit() {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -886,13 +876,12 @@ fn native_optimizer_does_not_push_filter_dynamic_filter_below_limit() {
 #[test]
 fn native_optimizer_does_not_attach_source_dynamic_filter_below_limit() {
     let mut builder = QueryPlanBuilder::new();
-    let raw_fact_schema = schema(&["raw_fact_key"]);
     let fact = builder.add_source(estimated_local_source("fact", "raw_fact_key", 512 * 1024 * 1024, 10_000_000));
-    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(10), Arc::clone(&raw_fact_schema));
+    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(10)).unwrap();
     let projected_fact = builder.add_projection(
         limited_fact,
         vec![ProjectionOutput::new(Expr::column("raw_fact_key"), Field::new("fact_key", DataType::Int32, false))],
-    );
+    ).unwrap();
     let dim = builder.add_source(estimated_local_source("dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         projected_fact,
@@ -904,14 +893,14 @@ fn native_optimizer_does_not_attach_source_dynamic_filter_below_limit() {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -936,12 +925,10 @@ fn native_optimizer_does_not_attach_post_decode_dynamic_filter_to_shared_filter_
     let fact_schema = schema(&["fact_key"]);
     let fact =
         builder.add_source(estimated_local_source("shared_limited_fact", "fact_key", 256 * 1024 * 1024, 10_000_000));
-    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(10), Arc::clone(&fact_schema));
+    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(10)).unwrap();
     let shared_filter = builder.add_filter(
         limited_fact,
-        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&fact_schema),
-    );
+        Expr::binary(Expr::column("fact_key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let dim = builder.add_source(estimated_local_source("shared_limited_dim", "dim_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         shared_filter,
@@ -953,16 +940,16 @@ fn native_optimizer_does_not_attach_post_decode_dynamic_filter_to_shared_filter_
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&fact_schema),
-    );
-    let root = builder.add_union(vec![join, shared_filter], Arc::clone(&fact_schema));
-    let plan = builder.finish_gpu_resident(root);
+    ).unwrap();
+    let root = builder.add_union(vec![join, shared_filter], Arc::clone(&fact_schema)).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);

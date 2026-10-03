@@ -12,8 +12,8 @@ use super::{
     CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataType, Error, ErrorCode, GraphAlgorithm,
     GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LiteralBatchSource,
     NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef,
-    SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan, result_schema_for_params,
-    vertex_id_domain_for_call,
+    SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, lowering::native_plan_error, plan,
+    result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::cugraph_sql::registry::{CugraphLogicalOutputColumn, NATIVE_LOGICAL_ID_TYPE};
 
@@ -106,30 +106,27 @@ pub(super) fn add_logical_mapping_plan(
             columns.iter().map(|column| project_logical_vertex(builder, *node, schema, column)).collect::<Vec<_>>()
         })
         .collect::<Result<Vec<_>>>()?;
-    let union = builder.add_union(branches, Arc::clone(&codebook_schema));
-    let distinct = builder.add_aggregate(
-        union,
-        AggregateSpec::new(vec![NativeExpr::column(LOGICAL_VERTEX_COLUMN)], Vec::new()),
-        Arc::clone(&codebook_schema),
-    );
-    let sorted = builder.add_sort(
-        distinct,
-        SortSpec::new(vec![SortExpr::new(NativeExpr::column(LOGICAL_VERTEX_COLUMN), false, false)]),
-        Arc::clone(&codebook_schema),
-    );
-    let codebook_schema = Arc::new(Schema::new(vec![
-        Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false),
-        Field::new(NATIVE_VERTEX_COLUMN, NATIVE_LOGICAL_ID_TYPE, false),
-    ]));
-    let codebook = builder.add_window(
-        sorted,
-        WindowSpec::new(
-            Vec::new(),
-            vec![SortExpr::new(NativeExpr::column(LOGICAL_VERTEX_COLUMN), false, false)],
-            vec![WindowFunction::row_number_i64(NATIVE_VERTEX_COLUMN)],
-        ),
-        Arc::clone(&codebook_schema),
-    );
+    let union = builder.add_union(branches, Arc::clone(&codebook_schema)).map_err(native_plan_error)?;
+    let distinct = builder
+        .add_aggregate(
+            union,
+            AggregateSpec::new(vec![NativeExpr::column(LOGICAL_VERTEX_COLUMN)], Vec::new()),
+            Arc::clone(&codebook_schema),
+        )
+        .map_err(native_plan_error)?;
+    let sorted = builder
+        .add_sort(distinct, SortSpec::new(vec![SortExpr::new(NativeExpr::column(LOGICAL_VERTEX_COLUMN), false, false)]))
+        .map_err(native_plan_error)?;
+    let codebook = builder
+        .add_window(
+            sorted,
+            WindowSpec::new(
+                Vec::new(),
+                vec![SortExpr::new(NativeExpr::column(LOGICAL_VERTEX_COLUMN), false, false)],
+                vec![WindowFunction::row_number_i64(NATIVE_VERTEX_COLUMN)],
+            ),
+        )
+        .map_err(native_plan_error)?;
 
     let (encoded_edge, encoded_edge_schema) = encode_relation_columns(
         builder,
@@ -204,7 +201,7 @@ fn project_logical_vertex(
         .field_with_name(column)
         .map_err(|_| plan(format!("cuGraph logical vertex mapping could not find vertex column '{column}'")))?;
     let input = if field.is_nullable() {
-        builder.add_filter(input, NativeExpr::is_not_null(NativeExpr::column(column)), Arc::clone(schema))
+        builder.add_filter(input, NativeExpr::is_not_null(NativeExpr::column(column))).map_err(native_plan_error)?
     } else {
         input
     };
@@ -213,10 +210,12 @@ fn project_logical_vertex(
     } else {
         NativeExpr::cast(NativeExpr::column(column), DataType::Utf8)
     };
-    Ok(builder.add_projection(
-        input,
-        vec![ProjectionOutput::new(expr, Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false))],
-    ))
+    builder
+        .add_projection(
+            input,
+            vec![ProjectionOutput::new(expr, Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false))],
+        )
+        .map_err(native_plan_error)
 }
 
 fn encode_relation_columns(
@@ -244,7 +243,7 @@ fn encode_relation_columns(
                 NativeExpr::cast(NativeExpr::column(column), DataType::Utf8),
                 Field::new(&cast_name, DataType::Utf8, field.is_nullable()),
             ));
-            relation = builder.add_projection(relation, outputs);
+            relation = builder.add_projection(relation, outputs).map_err(native_plan_error)?;
             let mut fields = schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
             fields.push(Field::new(&cast_name, DataType::Utf8, field.is_nullable()));
             schema = Arc::new(Schema::new(fields));
@@ -288,7 +287,7 @@ fn encode_relation_columns(
         .with_output_projection(output_projection)
         .with_build_side(JoinSide::Right)
         .with_at_most_one_match_per_bounded_row(JoinSide::Left);
-        relation = builder.add_join(relation, codebook, spec, Arc::clone(&output_schema));
+        relation = builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)).map_err(native_plan_error)?;
         schema = output_schema;
     }
     Ok((relation, schema))
@@ -340,7 +339,10 @@ fn decode_relation_column(
     .with_output_projection(output_projection)
     .with_build_side(JoinSide::Right)
     .with_at_most_one_match_per_bounded_row(JoinSide::Left);
-    Ok((builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)), output_schema))
+    Ok((
+        builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)).map_err(native_plan_error)?,
+        output_schema,
+    ))
 }
 
 fn logical_execution_spec(spec: &CugraphAlgorithmSpec) -> Result<CugraphAlgorithmSpec> {

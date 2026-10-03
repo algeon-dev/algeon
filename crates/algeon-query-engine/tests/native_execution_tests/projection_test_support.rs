@@ -24,14 +24,16 @@ pub(super) fn assert_bounded_duplicate_host_sink_schema_restoration() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
-            executable_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
+                executable_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

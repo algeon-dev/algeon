@@ -34,13 +34,13 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema).unwrap();
     let projection =
-        builder.add_projection(aggregate, projection_outputs(projection, Arc::clone(&post_projection_schema)));
-    let sort = builder.add_sort(projection, sort, Arc::clone(&post_projection_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), post_projection_schema);
-    let plan = builder.finish_with_host_sink(limit);
+        builder.add_projection(aggregate, projection_outputs(projection, Arc::clone(&post_projection_schema))).unwrap();
+    let sort = builder.add_sort(projection, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -96,13 +96,13 @@ fn bounded_native_query_executes_filter_between_aggregate_and_sort() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let filter = builder.add_filter(aggregate, post_filter, Arc::clone(&aggregated_schema));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let filter = builder.add_filter(aggregate, post_filter).unwrap();
     let projection =
-        builder.add_projection(filter, projection_outputs(projection, Arc::clone(&post_projection_schema)));
-    let sort = builder.add_sort(projection, sort, Arc::clone(&post_projection_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(25), post_projection_schema);
-    let plan = builder.finish_with_host_sink(limit);
+        builder.add_projection(filter, projection_outputs(projection, Arc::clone(&post_projection_schema))).unwrap();
+    let sort = builder.add_sort(projection, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(25)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = bounded_test_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -154,13 +154,15 @@ fn bounded_native_query_executes_projection_between_sort_and_limit() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let sort_input =
-        builder.add_projection(aggregate, projection_outputs(sort_input_projection, Arc::clone(&sort_input_schema)));
-    let sort = builder.add_sort(sort_input, sort, Arc::clone(&sort_input_schema));
-    let output = builder.add_projection(sort, projection_outputs(output_projection, Arc::clone(&output_schema)));
-    let limit = builder.add_limit(output, LimitSpec::fetch(2), output_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let sort_input = builder
+        .add_projection(aggregate, projection_outputs(sort_input_projection, Arc::clone(&sort_input_schema)))
+        .unwrap();
+    let sort = builder.add_sort(sort_input, sort).unwrap();
+    let output =
+        builder.add_projection(sort, projection_outputs(output_projection, Arc::clone(&output_schema))).unwrap();
+    let limit = builder.add_limit(output, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = bounded_test_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

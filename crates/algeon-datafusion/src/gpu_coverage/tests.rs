@@ -93,7 +93,9 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["key".to_string()],
     )));
-    Arc::new(AlgeonNativeExec::try_new(builder.finish_with_host_sink(source), test_execution_config()).unwrap())
+    Arc::new(
+        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), test_execution_config()).unwrap(),
+    )
 }
 
 #[cfg(feature = "cugraph")]
@@ -108,7 +110,9 @@ fn native_edge_exec() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["src".to_string(), "dst".to_string()],
     )));
-    Arc::new(AlgeonNativeExec::try_new(builder.finish_with_host_sink(source), test_execution_config()).unwrap())
+    Arc::new(
+        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), test_execution_config()).unwrap(),
+    )
 }
 
 #[cfg(feature = "cugraph")]
@@ -117,8 +121,12 @@ fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
     Arc::new(
-        AlgeonNativeComposedExec::try_new(builder.finish_with_host_sink(source), vec![child], test_execution_config())
-            .unwrap(),
+        AlgeonNativeComposedExec::try_new(
+            builder.finish_with_host_sink(source).unwrap(),
+            vec![child],
+            test_execution_config(),
+        )
+        .unwrap(),
     )
 }
 
@@ -591,16 +599,18 @@ mod cugraph {
         let input_name = child.coverage_gpu_result_input_name().to_string();
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, child.schema())));
-        let projected = builder.add_projection(
-            source,
-            vec![
-                ProjectionOutput::new(Expr::column("vertex"), Field::new("src", DataType::Int64, false)),
-                ProjectionOutput::new(Expr::column("triangle_count"), Field::new("dst", DataType::Int64, false)),
-            ],
-        );
+        let projected = builder
+            .add_projection(
+                source,
+                vec![
+                    ProjectionOutput::new(Expr::column("vertex"), Field::new("src", DataType::Int64, false)),
+                    ProjectionOutput::new(Expr::column("triangle_count"), Field::new("dst", DataType::Int64, false)),
+                ],
+            )
+            .unwrap();
         Arc::new(
             AlgeonNativeComposedExec::try_new(
-                builder.finish_with_host_sink(projected),
+                builder.finish_with_host_sink(projected).unwrap(),
                 vec![child],
                 test_execution_config(),
             )

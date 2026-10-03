@@ -43,8 +43,8 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
                 )])
                 .with_build_side(JoinSide::Right),
                 schema(&["customer"]),
-            );
-            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+            ).unwrap();
+            let result = optimize_query_plan(builder.finish_gpu_resident(root).unwrap(), &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
             assert!(result.diagnostics.join_filter_reassociation.applied_count > 0);
             let candidate = result
                 .diagnostics
@@ -66,7 +66,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
 fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_losing_multiplicity() {
     let plan = inner_join_filter_over_projected_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 1);
@@ -98,7 +98,7 @@ fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_los
 fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
     let plan = nested_inner_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 2);
@@ -127,7 +127,7 @@ fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
 fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_fact_join() {
     let plan = projected_parent_join_filter_over_fact_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert!(
@@ -166,7 +166,7 @@ fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_
 fn join_filter_reassociation_rejects_shared_projected_parent_to_preserve_projection_fanout() {
     let plan = shared_projected_parent_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 0);
     assert!(
@@ -212,7 +212,7 @@ fn join_filter_reassociation_pushes_scalar_range_residuals_into_dimension_join_i
     );
     let plan = scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(
         result.diagnostics.join_filter_reassociation.applied_count >= 2,
@@ -273,7 +273,7 @@ fn join_filter_reassociation_uses_date32_literals_for_temporal_scalar_range_resi
     write_record_batch_parquet(&date_path, Arc::clone(&date_schema), &batch, 8);
     let plan = date32_scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let expected = Expr::binary(
         Expr::binary(
@@ -310,7 +310,7 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     write_record_batch_parquet(&scalar_path, Arc::clone(&scalar_schema), &batch, 8);
     let plan = out_of_range_float_scalar_range_residual_plan(&scalar_path, Arc::clone(&scalar_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(
         result.diagnostics.join_filter_reassociation.applied_count, 0,
@@ -326,7 +326,7 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
 
 fn inner_join_filter_over_projected_inner_join_plan() -> QueryPlan {
     let (builder, filtered) = inner_join_filter_over_projected_inner_join_builder(None, None);
-    builder.finish_gpu_resident(filtered)
+    builder.finish_gpu_resident(filtered).unwrap()
 }
 
 fn inner_join_filter_over_projected_inner_join_builder(
@@ -363,7 +363,7 @@ fn inner_join_filter_over_projected_inner_join_builder(
         ])
         },
         sales_returns_schema,
-    );
+    ).unwrap();
     let projected_schema = schema(&["customer", "net_amount", "reason_key"]);
     let projected = builder.add_projection(
         sales_returns,
@@ -375,7 +375,7 @@ fn inner_join_filter_over_projected_inner_join_builder(
             ),
             ProjectionOutput::new(Expr::column("reason_key"), Field::new("reason_key", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let filtered = builder.add_join(
         projected,
         reason,
@@ -394,7 +394,7 @@ fn inner_join_filter_over_projected_inner_join_builder(
         ])
         },
         schema(&["customer", "net_amount"]),
-    );
+    ).unwrap();
     assert_eq!(projected_schema.fields().len(), 3);
     (builder, filtered)
 }
@@ -422,7 +422,7 @@ fn nested_inner_join_filter_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "addr_sk", "addr_sk"), "addr_sk"),
         ]),
         schema(&["sold_date_sk", "amount", "addr_sk"]),
-    );
+    ).unwrap();
     let projected_sales_customer = builder.add_projection(
         sales_customer,
         vec![
@@ -430,7 +430,7 @@ fn nested_inner_join_filter_plan() -> QueryPlan {
             ProjectionOutput::new(Expr::column("amount"), Field::new("amount", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("addr_sk"), Field::new("addr_sk", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let address_sales = builder.add_join(
         address,
         projected_sales_customer,
@@ -444,7 +444,7 @@ fn nested_inner_join_filter_plan() -> QueryPlan {
             JoinOutputColumn::left(ColumnRef::input(0, "zip", "zip"), "zip"),
         ]),
         schema(&["sold_date_sk", "amount", "zip"]),
-    );
+    ).unwrap();
     let date_filtered = builder.add_join(
         date,
         address_sales,
@@ -460,8 +460,8 @@ fn nested_inner_join_filter_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "zip", "zip"), "zip"),
         ]),
         schema(&["amount", "zip"]),
-    );
-    builder.finish_gpu_resident(date_filtered)
+    ).unwrap();
+    builder.finish_gpu_resident(date_filtered).unwrap()
 }
 
 fn projected_parent_join_filter_over_fact_join_plan() -> QueryPlan {
@@ -487,7 +487,7 @@ fn projected_parent_join_filter_over_fact_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         schema(&["n_nationkey", "n_regionkey"]),
-    );
+    ).unwrap();
     let supplier_partsupp = builder.add_join(
         supplier,
         partsupp,
@@ -506,7 +506,7 @@ fn projected_parent_join_filter_over_fact_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         schema(&["ps_suppkey", "ps_partkey", "ps_supplycost", "s_nationkey"]),
-    );
+    ).unwrap();
     let parent = builder.add_join(
         filtered_nation,
         supplier_partsupp,
@@ -524,15 +524,15 @@ fn projected_parent_join_filter_over_fact_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         schema(&["ps_partkey", "ps_supplycost", "n_regionkey"]),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         parent,
         vec![
             ProjectionOutput::new(Expr::column("ps_partkey"), Field::new("ps_partkey", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("ps_supplycost"), Field::new("ps_supplycost", DataType::Int32, false)),
         ],
-    );
-    builder.finish_gpu_resident(projected)
+    ).unwrap();
+    builder.finish_gpu_resident(projected).unwrap()
 }
 
 fn shared_projected_parent_join_filter_plan() -> QueryPlan {
@@ -559,7 +559,7 @@ fn shared_projected_parent_join_filter_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "reason_key", "reason_key"), "reason_key"),
         ]),
         schema(&["s_item", "s_ticket", "customer", "amount", "reason_key"]),
-    );
+    ).unwrap();
     let reason_join = builder.add_join(
         sales_returns,
         reason,
@@ -577,7 +577,7 @@ fn shared_projected_parent_join_filter_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "reason_group", "reason_group"), "reason_group"),
         ]),
         schema(&["customer", "amount", "reason_key", "reason_group"]),
-    );
+    ).unwrap();
     let shared_projected = builder.add_projection(
         reason_join,
         vec![
@@ -585,10 +585,10 @@ fn shared_projected_parent_join_filter_plan() -> QueryPlan {
             ProjectionOutput::new(Expr::column("amount"), Field::new("amount", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("reason_key"), Field::new("reason_key", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let union =
-        builder.add_union(vec![shared_projected, shared_projected], schema(&["customer", "amount", "reason_key"]));
-    builder.finish_gpu_resident(union)
+        builder.add_union(vec![shared_projected, shared_projected], schema(&["customer", "amount", "reason_key"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn subtree_contains_gpu_source(plan: &QueryPlan, node_id: NodeId, source_name: &str) -> bool {
@@ -627,7 +627,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
             ProjectionOutput::new(Expr::column("d_date_sk"), Field::new("d_date_sk", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("d_month_seq"), Field::new("d_month_seq", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let sales_date = builder.add_join(
         sales,
         date_all,
@@ -644,7 +644,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
             JoinOutputColumn::right(ColumnRef::input(1, "d_month_seq", "d_month_seq"), "d_month_seq"),
         ]),
         schema(&["price", "d_month_seq"]),
-    );
+    ).unwrap();
 
     let december = builder.add_filter(
         date_source,
@@ -652,13 +652,11 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
             Expr::binary(Expr::column("d_moy"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(12))),
             BinaryOp::And,
             Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1998))),
-        ),
-        Arc::clone(&date_schema),
-    );
+        )).unwrap();
     let month_projection = builder.add_projection(
         december,
         vec![ProjectionOutput::new(Expr::column("d_month_seq"), Field::new("d_month_seq", DataType::Int32, false))],
-    );
+    ).unwrap();
     let lower_projection = builder.add_projection(
         month_projection,
         vec![ProjectionOutput::new(
@@ -666,12 +664,12 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
                 .alias("lower_month"),
             Field::new("lower_month", DataType::Int64, false),
         )],
-    );
+    ).unwrap();
     let lower = builder.add_aggregate(
         lower_projection,
         AggregateSpec::new(vec![Expr::column("lower_month")], vec![]),
         Arc::new(Schema::new(vec![Field::new("lower_month", DataType::Int64, false)])),
-    );
+    ).unwrap();
     let lower_join = builder.add_join(
         sales_date,
         lower,
@@ -687,7 +685,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
                 JoinOutputColumn::left(ColumnRef::input(0, "d_month_seq", "d_month_seq"), "d_month_seq"),
             ]),
         schema(&["price", "d_month_seq"]),
-    );
+    ).unwrap();
 
     let upper_projection = builder.add_projection(
         month_projection,
@@ -696,12 +694,12 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
                 .alias("upper_month"),
             Field::new("upper_month", DataType::Int64, false),
         )],
-    );
+    ).unwrap();
     let upper = builder.add_aggregate(
         upper_projection,
         AggregateSpec::new(vec![Expr::column("upper_month")], vec![]),
         Arc::new(Schema::new(vec![Field::new("upper_month", DataType::Int64, false)])),
-    );
+    ).unwrap();
     let upper_join = builder.add_join(
         lower_join,
         upper,
@@ -714,8 +712,8 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> Que
             ))
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "price", "price"), "price")]),
         schema(&["price"]),
-    );
-    builder.finish_gpu_resident(upper_join)
+    ).unwrap();
+    builder.finish_gpu_resident(upper_join).unwrap()
 }
 
 fn date32_scalar_range_residual_plan(
@@ -751,8 +749,8 @@ fn date32_scalar_range_residual_plan(
             ))
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
         left_schema,
-    );
-    builder.finish_gpu_resident(join)
+    ).unwrap();
+    builder.finish_gpu_resident(join).unwrap()
 }
 
 fn out_of_range_float_scalar_range_residual_plan(
@@ -787,6 +785,6 @@ fn out_of_range_float_scalar_range_residual_plan(
             ))
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value")]),
         schema(&["value"]),
-    );
-    builder.finish_gpu_resident(join)
+    ).unwrap();
+    builder.finish_gpu_resident(join).unwrap()
 }

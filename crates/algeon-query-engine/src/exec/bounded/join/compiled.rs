@@ -1606,7 +1606,7 @@ mod tests {
 
     fn join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {
-            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
+            inputs: [NodeId::from_index_for_test(0), NodeId::from_index_for_test(1)],
             spec: JoinSpec::new(join_type, Vec::new()).with_build_side(build_side),
         }
     }

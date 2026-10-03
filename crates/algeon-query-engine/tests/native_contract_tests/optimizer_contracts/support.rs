@@ -2,7 +2,7 @@ fn single_source_plan() -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    builder.finish_gpu_resident(source)
+    builder.finish_gpu_resident(source).unwrap()
 }
 
 fn between_i32(column: &str, min: i32, max: i32) -> Expr {

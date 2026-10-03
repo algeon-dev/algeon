@@ -38,8 +38,8 @@ use query_engine::{
     },
     metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
     plan::{
-        DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
-        ProjectionOutput, QueryPlanBuilder, ResultSink, SchemaBehavior, WindowFunction, WindowSpec,
+        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
+        QueryPlanBuilder, ResultSink, WindowFunction, WindowSpec,
     },
     runtime::{ExecutionCancellation, MemoryControlPolicy, ReservationKind, SourceSchedulerPolicy},
     source::{

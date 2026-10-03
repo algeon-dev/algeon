@@ -224,7 +224,7 @@ mod tests {
     fn test_chunk(index: usize, row_groups: Vec<usize>, scan_limit_rows: Option<usize>) -> SourceChunk {
         let path = PathBuf::from("/tmp/algeon-source-identity.parquet");
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_test(0),
             chunk_index: index,
             file_index: 0,
             location: ParquetSourceLocation::LocalPath(path.clone()),

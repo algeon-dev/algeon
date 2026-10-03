@@ -56,7 +56,7 @@ pub(in crate::exec) fn graph_empty_input_prevalidated(
     context: &ExecutionContext,
     node: &GraphAlgorithmNode,
     sanitized_edges: &DataFrame,
-    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &BTreeMap<usize, GpuDataFrame>,
     input_rows: u64,
     sanitized_input_rows: u64,
 ) -> Result<bool> {
@@ -74,7 +74,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     node: &GraphAlgorithmNode,
     runtime_spec: RuntimeGraphSpecResolution,
     input: GpuDataFrame,
-    side_inputs: BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: BTreeMap<usize, GpuDataFrame>,
     input_rows: u64,
     input_columns: u64,
     null_edge_rows_dropped: u64,
@@ -201,7 +201,7 @@ pub(super) struct GraphAlgorithmExecutionResult {
 #[derive(Clone)]
 pub(super) struct GraphAlgorithmExecutionInputs {
     pub(super) edge_list: GpuDataFrame,
-    pub(super) side_inputs: BTreeMap<NodeId, GpuDataFrame>,
+    pub(super) side_inputs: BTreeMap<usize, GpuDataFrame>,
 }
 
 type GraphAlgorithmExecutor =
@@ -282,7 +282,7 @@ mod graph_peak_measurement_tests {
 
     #[test]
     fn graph_claim_error_records_the_measured_cache_scope_peak() {
-        let node_id = NodeId::from_index_for_internal_use(7);
+        let node_id = NodeId::from_index_for_test(7);
         let metrics = ExecutionMetrics::detached("graph-claim-error");
         metrics.record_graph_claim_calibration(node_id, GraphAlgorithm::PageRank);
 
@@ -297,7 +297,7 @@ mod graph_peak_measurement_tests {
 
     #[test]
     fn graph_claim_error_without_any_measurement_stays_unavailable() {
-        let node_id = NodeId::from_index_for_internal_use(8);
+        let node_id = NodeId::from_index_for_test(8);
         let metrics = ExecutionMetrics::detached("graph-claim-incomplete-error");
         metrics.record_graph_claim_calibration(node_id, GraphAlgorithm::PageRank);
 

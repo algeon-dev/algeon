@@ -88,7 +88,7 @@ pub(super) fn optimize_count_only_native_plan(
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let _footers = FooterScope::enter();
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
-    let lowering = lower_count_only_physical_plan_to_native(lowering_input);
+    let lowering = lower_count_only_physical_plan_to_native(lowering_input)?;
     replace_lowered_root_or_keep_plan(
         plan,
         None,
@@ -167,7 +167,7 @@ fn lower_gpu_resident_producer_relation_inputs(
         if let Some(input_name) = relation_input_names.as_ref().and_then(|names| names.get(index))
             && gpu_resident_producer(rewritten.as_ref()).is_none()
         {
-            let lowering = lower_physical_plan_to_native(Arc::clone(&rewritten));
+            let lowering = lower_physical_plan_to_native(Arc::clone(&rewritten))?;
             let mut attempt = replace_lowered_root_or_keep_plan_for_sink(
                 Arc::clone(&rewritten),
                 None,
@@ -199,11 +199,11 @@ fn optimize_final_native_root(
     native_optimizer_options: &NativeOptimizerOptions,
     cost_selection: NativeCostSelection,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
-    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan))?;
     if whole_plan_has_unsupported_expression_miss(&lowering)
         && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
     {
-        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()));
+        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()))?;
         if native_leaf_lowering.plans.len() == 1
             && native_leaf_lowering.selected_count() == 1
             && boundary.accepts_native_leaf(&native_leaf_lowering.plans[0])
@@ -296,7 +296,14 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         &optimizer_options,
         rapids_analysis_context(native_execution_config.planning_policy()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .map_err(|error| {
+        Error::from_native(
+            "algeon_datafusion.native_optimizer.optimize",
+            "native optimizer produced a malformed plan",
+            error,
+        )
+    })?;
     let native_optimizer = optimizer_result.diagnostics;
     let shared_resident_producers = optimizer_result.shared_resident_producers;
     let ordered_output_sort_needed = plan.properties().output_ordering().is_some()
@@ -596,7 +603,16 @@ fn remove_subsumed_composed_consumer(
     let source = builder.add_source(source);
     // The producer now runs the consumer's work, so the composed node only
     // reads its output; that pass-through plan is decided like any other.
-    let pass_through = builder.finish_with_host_sink(source).clone_with_deferred_host_materialization_sink();
+    let pass_through = builder
+        .finish_with_host_sink(source)
+        .map_err(|error| {
+            Error::from_native(
+                "algeon_datafusion.native_optimizer.subsumed_consumer",
+                "a subsumed composed consumer pass-through plan is malformed",
+                error,
+            )
+        })?
+        .clone_with_deferred_host_materialization_sink();
     match native_admission_decision(&pass_through, native_execution_config)? {
         AdmissionDecision::Admitted(pass_through) => Ok((pass_through, gpu_inputs)),
         AdmissionDecision::Rejected(rejection) => Err(Error::from_native(
@@ -776,19 +792,17 @@ mod tests {
             .expect("literal batch");
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-        let window = builder.add_window(
-            source,
-            WindowSpec::new(
-                Vec::new(),
-                vec![SortExpr::new(Expr::column("value"), false, false)],
-                vec![WindowFunction::row_number("row_number")],
-            ),
-            Arc::new(Schema::new(vec![
-                Field::new("value", DataType::Int32, false),
-                Field::new("row_number", DataType::UInt64, false),
-            ])),
-        );
-        let plan = builder.finish_with_host_sink(window).clone_with_deferred_host_materialization_sink();
+        let window = builder
+            .add_window(
+                source,
+                WindowSpec::new(
+                    Vec::new(),
+                    vec![SortExpr::new(Expr::column("value"), false, false)],
+                    vec![WindowFunction::row_number("row_number")],
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(window).unwrap().clone_with_deferred_host_materialization_sink();
         let execution_config =
             AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
 

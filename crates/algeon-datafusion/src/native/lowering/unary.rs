@@ -18,7 +18,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         expression_contract::validate_physical_expr_contract,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
     },
@@ -28,7 +28,7 @@ pub(super) fn lower_filter_input(
     filter: &NormalizedNativeFilter<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let validated_predicate =
         validate_physical_expr_contract(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
@@ -56,8 +56,7 @@ pub(super) fn lower_filter_input(
     let filtered_node = builder.add_filter(
         input.node,
         lower_validated_physical_expr_with_bindings(&validated_predicate, Some(&input.bindings))?,
-        Arc::clone(&input.schema),
-    );
+    )?;
     if !selection.requires_projection_from(&input) {
         return Ok(LoweredNativeInput { node: filtered_node, schema: input.schema, bindings: input.bindings });
     }
@@ -72,8 +71,8 @@ pub(super) fn lower_filter_input(
                 output_binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let node = builder.add_projection(filtered_node, projection_outputs(expressions, &selection.schema)?);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let node = builder.add_projection(filtered_node, projection_outputs(expressions, &selection.schema)?)?;
     Ok(LoweredNativeInput::with_bindings(node, selection.schema, selection.bindings))
 }
 
@@ -95,7 +94,7 @@ impl FilterOutputSelection {
 fn required_filter_output_selection(
     filter: &FilterExec,
     required_output_fields: &RequiredFields,
-) -> Result<FilterOutputSelection, LoweringRejection> {
+) -> Result<FilterOutputSelection, LoweringFailure> {
     let input_schema = filter.input().schema();
     let output_schema = filter.schema();
     let (schema, bindings) = executable_schema_and_bindings(&output_schema, required_output_fields)?;
@@ -122,7 +121,7 @@ pub(super) fn lower_projection_input(
     projection: &NormalizedNativeProjection<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
     let mut validated_projection = Vec::with_capacity(required_projection.len());
@@ -156,8 +155,8 @@ pub(super) fn lower_projection_input(
             let expr = lower_validated_physical_expr_with_bindings(validated, Some(&input.bindings))?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -165,7 +164,7 @@ pub(super) fn add_projection_node_with_input(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     projection: &ProjectionExec,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let required = RequiredFields::all();
     let (schema, bindings) = executable_schema_and_bindings(&projection.schema(), &required)?;
     let expressions = projection
@@ -180,16 +179,16 @@ pub(super) fn add_projection_node_with_input(
             )?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
-    super::advisory::attach(builder, node, &schema, projection);
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
+    super::advisory::attach(builder, node, &schema, projection)?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
 fn required_projection_exprs<'a>(
     projection: &'a ProjectionExec,
     required_output_fields: &RequiredFields,
-) -> Result<Vec<&'a Arc<dyn PhysicalExpr>>, LoweringRejection> {
+) -> Result<Vec<&'a Arc<dyn PhysicalExpr>>, LoweringFailure> {
     let indices = required_output_fields.requested_indices(projection.expr().len())?;
     let exprs = indices
         .into_iter()
@@ -197,6 +196,6 @@ fn required_projection_exprs<'a>(
             let projection_expr = projection.expr().get(index).ok_or(CapabilityReason::UnsupportedExpression)?;
             Ok(&projection_expr.expr)
         })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
+        .collect::<Result<Vec<_>, LoweringFailure>>()?;
     Ok(exprs)
 }

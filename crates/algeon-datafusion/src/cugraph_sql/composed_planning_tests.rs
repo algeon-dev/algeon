@@ -261,7 +261,7 @@ fn schema_field_names(schema: &Schema) -> Vec<&str> {
 fn producer_plan(schema: &SchemaRef) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(schema))));
-    builder.finish_gpu_resident(source)
+    builder.finish_gpu_resident(source).unwrap()
 }
 
 #[tokio::test]
@@ -360,8 +360,8 @@ fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
             consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(name, Arc::clone(&schema))))
         })
         .collect::<Vec<_>>();
-    let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema));
-    let consumer = consumer_builder.finish_with_host_sink(union);
+    let union = consumer_builder.add_union(consumer_inputs, Arc::clone(&schema)).unwrap();
+    let consumer = consumer_builder.finish_with_host_sink(union).unwrap();
     let composed = AlgeonNativeComposedExec::try_new(consumer, producers, AlgeonNativeExecutionConfig::default())
         .expect("synthetic N=3 topology must reach the composed production boundary");
 
@@ -407,7 +407,6 @@ async fn cpu_input_bfs_orders_by_vertex_through_composed_native_plan() {
     let plan = df.create_physical_plan().await.unwrap();
     let composed = find_composed_exec(plan.as_ref()).expect("backend SQL should compose the downstream native plan");
     let native_plan = composed.native_plan();
-    assert!(native_plan.unreachable_node_ids().is_empty(), "the composed native plan must have no detached nodes");
     assert_eq!(native_plan.nodes().len(), 2, "BFS ORDER BY should lower to one source and one sort");
     let [source_node, sort_node] = native_plan.nodes() else {
         panic!("BFS ORDER BY should lower to exactly GpuResidentSource -> Sort");
@@ -461,7 +460,6 @@ async fn pagerank_top_k_consumer_keeps_source_sort_limit_structure() {
         let top_k_composed =
             find_composed_exec(top_k_plan.as_ref()).expect("PageRank top-k must lower to one composed native consumer");
         let top_k_native_plan = top_k_composed.native_plan();
-        assert!(top_k_native_plan.unreachable_node_ids().is_empty());
         assert_eq!(
             top_k_native_plan.nodes().len(),
             3,

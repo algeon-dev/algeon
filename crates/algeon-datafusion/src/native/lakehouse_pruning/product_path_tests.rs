@@ -269,8 +269,11 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
         file_size_bytes,
         Some(UNREACHABLE_ENGINE_PROFILE_ID),
     )));
-    let plan =
-        if gpu_resident_sink { builder.finish_gpu_resident(source) } else { builder.finish_with_host_sink(source) };
+    let plan = if gpu_resident_sink {
+        builder.finish_gpu_resident(source).unwrap()
+    } else {
+        builder.finish_with_host_sink(source).unwrap()
+    };
     (plan, source)
 }
 
@@ -346,14 +349,14 @@ async fn product_pruning_uses_runtime_object_store_and_noops_when_store_is_missi
     let source = prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), None);
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source_node_id);
+    let plan = builder.finish_with_host_sink(source_node_id).unwrap();
 
-    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[], PlanningPolicy::default()).await;
+    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[], PlanningPolicy::default()).await.unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
 
     let unchanged =
-        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[], PlanningPolicy::default()).await;
+        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[], PlanningPolicy::default()).await.unwrap();
     let unchanged_source =
         local_parquet_source(&unchanged, source_node_id).expect("unpruned source should remain present");
     assert_eq!(unchanged_source.files[0].row_groups, None);
@@ -376,10 +379,11 @@ async fn product_pruning_prefers_runtime_object_store_over_source_storage_profil
         prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("unreachable-profile"));
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source_node_id);
+    let plan = builder.finish_with_host_sink(source_node_id).unwrap();
     let unreachable_profile = unreachable_storage_profile("unreachable-profile");
 
-    let pruned = prune_native_query_plan(plan, &runtime_env, &[unreachable_profile], PlanningPolicy::default()).await;
+    let pruned =
+        prune_native_query_plan(plan, &runtime_env, &[unreachable_profile], PlanningPolicy::default()).await.unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
     remove_fixture(dir);
@@ -400,10 +404,11 @@ async fn product_pruning_falls_back_to_source_storage_profile() {
     let source = prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("local-profile"));
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source_node_id);
+    let plan = builder.finish_with_host_sink(source_node_id).unwrap();
 
-    let pruned =
-        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile], PlanningPolicy::default()).await;
+    let pruned = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile], PlanningPolicy::default())
+        .await
+        .unwrap();
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
     assert!(server.request_count.load(Ordering::Relaxed) > 0, "storage-profile fallback should reach S3");
@@ -611,8 +616,8 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     )));
     let producer_source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));
-    let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
-    let consumer_plan = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema)).unwrap();
+    let consumer_plan = builder.finish_with_host_sink(union).unwrap();
     let (_attempt, config) = composed_admission_execution_config(&backend);
     let exec = AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], config)
         .expect("test native composed execution should build");

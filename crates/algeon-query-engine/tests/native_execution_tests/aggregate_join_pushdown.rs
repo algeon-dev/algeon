@@ -27,7 +27,8 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
@@ -71,7 +72,8 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
@@ -121,51 +123,55 @@ fn aggregate_join_pushdown_execution_plan(
         &["zip_prefix", "s_store_name", "ss_net_profit"],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(local_source(right_path, right_schema, &["zip_prefix"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "zip_prefix", "zip_prefix"),
-                ColumnRef::input(1, "zip_prefix", "zip_prefix"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "zip_prefix", "zip_prefix"),
+                    ColumnRef::input(1, "zip_prefix", "zip_prefix"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "ss_net_profit", "ss_net_profit"), "ss_net_profit"),
+                JoinOutputColumn::left(ColumnRef::input(0, "s_store_name", "s_store_name"), "s_store_name"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "ss_net_profit", "ss_net_profit"), "ss_net_profit"),
-            JoinOutputColumn::left(ColumnRef::input(0, "s_store_name", "s_store_name"), "s_store_name"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let projection = builder.add_projection(
-        join,
-        vec![
-            ProjectionOutput::new(Expr::column("s_store_name"), Field::new("s_store_name", DataType::Utf8, true)),
-            ProjectionOutput::new(
-                Expr::column("ss_net_profit"),
-                Field::new("__algeon_native_aggregate_arg_0", DataType::Int64, true),
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            join,
+            vec![
+                ProjectionOutput::new(Expr::column("s_store_name"), Field::new("s_store_name", DataType::Utf8, true)),
+                ProjectionOutput::new(
+                    Expr::column("ss_net_profit"),
+                    Field::new("__algeon_native_aggregate_arg_0", DataType::Int64, true),
+                ),
+            ],
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("s_store_name")],
+                vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column("__algeon_native_aggregate_arg_0"),
+                    "sum_profit",
+                )],
             ),
-        ],
-    );
-    let aggregate = builder.add_aggregate(
-        projection,
-        AggregateSpec::new(
-            vec![Expr::column("s_store_name")],
-            vec![AggregateExpr::new(
-                AggregateFunction::Sum,
-                Expr::column("__algeon_native_aggregate_arg_0"),
-                "sum_profit",
-            )],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("s_store_name"), false, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("s_store_name"), false, false)]))
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn aggregate_join_pushdown_left_count_plan(
@@ -190,37 +196,39 @@ fn aggregate_join_pushdown_left_count_plan(
         right_schema,
         &["o_custkey", "o_orderkey"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Left,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "c_custkey", "c_custkey"),
-                ColumnRef::input(1, "o_custkey", "o_custkey"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "c_custkey", "c_custkey"),
+                    ColumnRef::input(1, "o_custkey", "o_custkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("c_custkey")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("c_custkey"), false, true)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("c_custkey")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("c_custkey"), false, true)]))
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn local_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
@@ -343,40 +351,42 @@ fn left_semi_group_filter_aggregate_plan(
     let keyset =
         builder.add_source(SourceNode::LocalParquet(join_right_source(keyset_path, keyset_schema, &["order_id"])));
     let keyset = match keyset_filter {
-        Some(predicate) => builder.add_filter(keyset, predicate, Arc::clone(keyset_schema)),
+        Some(predicate) => builder.add_filter(keyset, predicate).unwrap(),
         None => keyset,
     };
-    let semi = builder.add_join(
-        detail,
-        keyset,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "order_id"),
-                ColumnRef::input(1, "order_id", "order_id"),
-            )],
+    let semi = builder
+        .add_join(
+            detail,
+            keyset,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(1, "order_id", "order_id"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(detail_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(detail_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        semi,
-        AggregateSpec::new(
-            vec![Expr::column("order_id")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "sum_qty")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("order_id"), false, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            semi,
+            AggregateSpec::new(
+                vec![Expr::column("order_id")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "sum_qty")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("order_id"), false, false)]))
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 #[test]
@@ -396,7 +406,8 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     let pushdown = &optimizer_result.diagnostics.aggregate_join_pushdown;
     assert_eq!(pushdown.applied_count, 0, "{pushdown:?}");
     assert_eq!(

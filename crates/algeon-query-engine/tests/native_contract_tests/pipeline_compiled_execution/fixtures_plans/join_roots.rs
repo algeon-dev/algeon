@@ -36,8 +36,8 @@ pub(super) fn root_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn keyless_root_join_plan() -> QueryPlan {
@@ -94,8 +94,8 @@ pub(super) fn keyless_root_join_data_plan(left_path: &Path, right_path: &Path) -
             ])
             .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn keyless_outer_cross_root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -133,8 +133,8 @@ pub(super) fn keyless_outer_cross_root_join_data_plan(left_path: &Path, right_pa
             ])
             .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn aggregate_join_input_plan() -> QueryPlan {
@@ -170,7 +170,7 @@ pub(super) fn aggregate_join_input_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let join = builder.add_join(
         aggregate,
         right,
@@ -184,8 +184,8 @@ pub(super) fn aggregate_join_input_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Left),
         join_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -233,7 +233,7 @@ pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path:
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let join = builder.add_join(
         aggregate,
         right,
@@ -247,8 +247,8 @@ pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path:
         ])
         .with_build_side(JoinSide::Left),
         join_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path, dim_path: &Path) -> QueryPlan {
@@ -306,7 +306,7 @@ pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path,
         ])
         .with_build_side(JoinSide::Right),
         joined_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         fact,
         AggregateSpec::new(
@@ -314,7 +314,7 @@ pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path,
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let joined_with_aggregate = builder.add_join(
         joined,
         aggregate,
@@ -328,8 +328,8 @@ pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path,
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(joined_with_aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(joined_with_aggregate).unwrap()
 }
 
 pub(super) fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPlan {
@@ -376,8 +376,8 @@ pub(super) fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPla
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -426,8 +426,8 @@ pub(super) fn root_join_data_plan_with_sink(left_path: &Path, right_path: &Path,
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    if gpu_resident_sink { builder.finish_gpu_resident(join) } else { builder.finish_with_host_sink(join) }
+    ).unwrap();
+    if gpu_resident_sink { builder.finish_gpu_resident(join).unwrap() } else { builder.finish_with_host_sink(join).unwrap() }
 }
 
 pub(super) fn shared_source_self_join_data_plan(path: &Path) -> QueryPlan {
@@ -459,8 +459,8 @@ pub(super) fn shared_source_self_join_data_plan(path: &Path) -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn root_join_sort_limit_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -501,14 +501,12 @@ pub(super) fn root_join_sort_limit_data_plan(left_path: &Path, right_path: &Path
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), output_schema);
-    builder.finish_with_host_sink(limit)
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 /// Join → Sort → Limit → Filter over the same fixtures as
@@ -553,19 +551,15 @@ pub(super) fn root_join_sort_limit_filter_data_plan(left_path: &Path, right_path
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
     let filter = builder.add_filter(
         limit,
-        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100))),
-        output_schema,
-    );
-    builder.finish_with_host_sink(filter)
+        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100)))).unwrap();
+    builder.finish_with_host_sink(filter).unwrap()
 }
 
 /// Join → Sort → Limit with skip and fetch over the same fixtures as
@@ -610,14 +604,12 @@ pub(super) fn root_join_sort_limit_offset_data_plan(left_path: &Path, right_path
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::new(1, 1), output_schema);
-    builder.finish_with_host_sink(limit)
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::new(1, 1)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path) -> QueryPlan {
@@ -675,7 +667,7 @@ pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&first_join_schema),
-    );
+    ).unwrap();
     let abc = builder.add_join(
         ab,
         c,
@@ -691,8 +683,8 @@ pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(abc)
+    ).unwrap();
+    builder.finish_with_host_sink(abc).unwrap()
 }
 
 pub(super) fn residual_one_shot_frame_stream_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path) -> QueryPlan {
@@ -742,7 +734,7 @@ pub(super) fn residual_one_shot_frame_stream_multi_join_plan(a_path: &Path, b_pa
             ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(b_path).with_row_group_rows(vec![2]).with_row_group_bytes(vec![1024])],
         Arc::clone(&b_schema),
@@ -767,7 +759,7 @@ pub(super) fn residual_one_shot_frame_stream_multi_join_plan(a_path: &Path, b_pa
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&first_join_schema),
-    );
+    ).unwrap();
     let abc = builder.add_join(
         ab,
         c,
@@ -792,8 +784,8 @@ pub(super) fn residual_one_shot_frame_stream_multi_join_plan(a_path: &Path, b_pa
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(abc)
+    ).unwrap();
+    builder.finish_with_host_sink(abc).unwrap()
 }
 
 pub(super) fn residual_one_shot_leaf_stream_join_plan(a_path: &Path, c_path: &Path) -> QueryPlan {
@@ -833,7 +825,7 @@ pub(super) fn residual_one_shot_leaf_stream_join_plan(a_path: &Path, c_path: &Pa
             ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(c_path).with_row_group_rows(vec![50_000]).with_row_group_bytes(vec![1024])],
         Arc::clone(&c_schema),
@@ -858,8 +850,8 @@ pub(super) fn residual_one_shot_leaf_stream_join_plan(a_path: &Path, c_path: &Pa
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(ac)
+    ).unwrap();
+    builder.finish_with_host_sink(ac).unwrap()
 }
 
 pub(super) fn residual_one_shot_leaf_stream_left_build_join_plan(a_path: &Path, c_path: &Path) -> QueryPlan {
@@ -904,7 +896,7 @@ pub(super) fn residual_one_shot_leaf_stream_left_build_join_plan(a_path: &Path, 
             ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let ca = builder.add_join(
         c,
         a,
@@ -924,8 +916,8 @@ pub(super) fn residual_one_shot_leaf_stream_left_build_join_plan(a_path: &Path, 
         ])
         .with_build_side(JoinSide::Left),
         output_schema,
-    );
-    builder.finish_with_host_sink(ca)
+    ).unwrap();
+    builder.finish_with_host_sink(ca).unwrap()
 }
 
 pub(super) fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -950,16 +942,14 @@ pub(super) fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path
     )));
     let left_filter = builder.add_filter(
         left,
-        Expr::binary(Expr::column("left_id"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(1))),
-        Arc::clone(&left_source_schema),
-    );
+        Expr::binary(Expr::column("left_id"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(1)))).unwrap();
     let left_projected = builder.add_projection(
         left_filter,
         vec![
             ProjectionOutput::new(Expr::column("left_id"), Field::new("left_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("left_value"), Field::new("left_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         right_path,
         Arc::clone(&right_source_schema),
@@ -967,16 +957,14 @@ pub(super) fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path
     )));
     let right_filter = builder.add_filter(
         right,
-        Expr::binary(Expr::column("right_id"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(5))),
-        Arc::clone(&right_source_schema),
-    );
+        Expr::binary(Expr::column("right_id"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(5)))).unwrap();
     let right_projected = builder.add_projection(
         right_filter,
         vec![
             ProjectionOutput::new(Expr::column("right_id"), Field::new("right_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("right_value"), Field::new("right_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let join = builder.add_join(
         left_projected,
         right_projected,
@@ -990,8 +978,8 @@ pub(super) fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    builder.finish_with_host_sink(join)
+    ).unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 pub(super) fn single_join_post_root_aggregate_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
@@ -1036,7 +1024,7 @@ pub(super) fn single_join_post_root_aggregate_data_plan(customers_path: &Path, o
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -1044,8 +1032,8 @@ pub(super) fn single_join_post_root_aggregate_data_plan(customers_path: &Path, o
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 pub(super) fn string_group_join_post_root_aggregate_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
@@ -1093,7 +1081,7 @@ pub(super) fn string_group_join_post_root_aggregate_data_plan(customers_path: &P
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -1101,8 +1089,8 @@ pub(super) fn string_group_join_post_root_aggregate_data_plan(customers_path: &P
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 pub(super) fn single_join_post_root_aggregate_sort_limit_data_plan(
@@ -1150,14 +1138,14 @@ pub(super) fn single_join_post_root_aggregate_sort_limit_data_plan(
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let projection = builder.add_projection(
         join,
         vec![
             ProjectionOutput::new(Expr::column("c_custkey"), Field::new("c_custkey", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("o_orderkey"), Field::new("o_orderkey", DataType::Int32, true)),
         ],
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projection,
         AggregateSpec::new(
@@ -1165,15 +1153,13 @@ pub(super) fn single_join_post_root_aggregate_sort_limit_data_plan(
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
         SortSpec::new(vec![
             SortExpr::new(Expr::column("c_count"), false, false),
             SortExpr::new(Expr::column("c_custkey"), true, false),
-        ]),
-        Arc::clone(&aggregate_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregate_schema);
-    builder.finish_with_host_sink(limit)
+        ])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }

@@ -15,6 +15,26 @@ use crate::{
     runtime::{ExecutionContext, resident::GpuDataFrame},
 };
 
+/// Evaluated relation frames of one dense-relation node. Bindings name a
+/// relation by its position in the node's `inputs`; the frames are keyed by
+/// node id because inputs that share a plan node share one evaluated frame.
+#[derive(Clone, Copy)]
+pub(super) struct DenseRelationInputs<'a> {
+    node_ids: &'a [NodeId],
+    frames: &'a BTreeMap<NodeId, GpuDataFrame>,
+}
+
+impl<'a> DenseRelationInputs<'a> {
+    pub(super) fn new(node_ids: &'a [NodeId], frames: &'a BTreeMap<NodeId, GpuDataFrame>) -> Self {
+        Self { node_ids, frames }
+    }
+
+    /// Plan construction proves that every binding ordinal indexes `inputs`.
+    pub(super) fn node_id(&self, ordinal: usize) -> NodeId {
+        self.node_ids[ordinal]
+    }
+}
+
 pub(super) struct DenseRelationOperations {
     pub(super) pack: &'static str,
     pub(super) before_pack: &'static str,
@@ -116,20 +136,21 @@ pub(super) fn require_libcudf_row_count(rows: usize, algorithm: &'static str) ->
 pub(super) fn relation_element_type_for(
     ops: &DenseRelationOperations,
     plan: &QueryPlan,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
-    input_id: NodeId,
+    inputs: DenseRelationInputs<'_>,
+    ordinal: usize,
     binding: &DenseVectorBinding,
     node_id: NodeId,
     algorithm: &str,
     role: &'static str,
 ) -> Result<TypeId> {
+    let input_id = inputs.node_id(ordinal);
     let schema = plan
         .node(input_id)
         .ok_or_else(|| invalid_node_reference(input_id, "vector relation references a missing input"))?
         .output_schema();
     let column = match binding {
         DenseVectorBinding::Columns(columns) => {
-            let input = relation_input_for(ops, inputs, input_id, node_id, role)?;
+            let input = relation_input_for(ops, inputs, ordinal, node_id, role)?;
             return input
                 .frame()
                 .series(&columns[0])
@@ -496,12 +517,13 @@ fn packed_bytes(
 
 pub(super) fn relation_input_for<'a>(
     ops: &DenseRelationOperations,
-    inputs: &'a BTreeMap<NodeId, GpuDataFrame>,
-    input_id: NodeId,
+    inputs: DenseRelationInputs<'a>,
+    ordinal: usize,
     node_id: NodeId,
     role: &'static str,
 ) -> Result<&'a GpuDataFrame> {
-    inputs.get(&input_id).ok_or_else(|| {
+    let input_id = inputs.node_id(ordinal);
+    inputs.frames.get(&input_id).ok_or_else(|| {
         QueryError::new(QueryErrorCode::InvalidPlan, ops.execute, "evaluated vector relation input is missing")
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)

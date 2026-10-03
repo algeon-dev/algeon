@@ -28,8 +28,8 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -76,8 +76,8 @@ fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integ
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 2);
@@ -202,8 +202,8 @@ fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -250,8 +250,8 @@ fn bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale()
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

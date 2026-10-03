@@ -17,13 +17,13 @@ use query_engine::{
 pub(super) fn host_sink_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-    builder.finish_with_host_sink(source)
+    builder.finish_with_host_sink(source).unwrap()
 }
 
 pub(super) fn gpu_resident_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-    builder.finish_gpu_resident(source)
+    builder.finish_gpu_resident(source).unwrap()
 }
 
 pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
@@ -34,7 +34,7 @@ pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Ar
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    builder.finish_gpu_resident(source)
+    builder.finish_gpu_resident(source).unwrap()
 }
 
 pub(super) fn local_parquet_host_sink_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
@@ -45,7 +45,7 @@ pub(super) fn local_parquet_host_sink_plan(path: &std::path::Path, schema: Arc<S
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    builder.finish_with_host_sink(source)
+    builder.finish_with_host_sink(source).unwrap()
 }
 
 pub(super) fn local_parquet_source_with_exact_metadata(
@@ -90,7 +90,7 @@ fn exact_local_parquet_file(path: &std::path::Path) -> LocalParquetFile {
 pub(super) fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
-    builder.finish_with_host_sink(source)
+    builder.finish_with_host_sink(source).unwrap()
 }
 
 fn local_parquet_source() -> LocalParquetSource {

@@ -38,8 +38,8 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -103,14 +103,12 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(2), output_schema);
-    let plan = builder.finish_with_host_sink(limit);
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -175,11 +173,11 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let prefix_projected = builder.add_projection(
         prefix,
         projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&prefix_schema)),
-    );
+    ).unwrap();
     let first_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &first_dim_path,
         &first_dim_schema,
@@ -203,7 +201,7 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let second = builder.add_join(
         prefix_projected,
         second_dim,
@@ -217,23 +215,23 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let first_projected = builder.add_projection(
         first,
         projection_outputs(
             vec![Expr::literal(LiteralValue::Int32(1)), Expr::column("order_id"), Expr::column("qty")],
             Arc::clone(&branch_schema),
         ),
-    );
+    ).unwrap();
     let second_projected = builder.add_projection(
         second,
         projection_outputs(
             vec![Expr::literal(LiteralValue::Int32(2)), Expr::column("order_id"), Expr::column("qty")],
             Arc::clone(&branch_schema),
         ),
-    );
-    let union = builder.add_union(vec![first_projected, second_projected], Arc::clone(&branch_schema));
-    let plan = builder.finish_with_host_sink(union);
+    ).unwrap();
+    let union = builder.add_union(vec![first_projected, second_projected], Arc::clone(&branch_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -288,11 +286,11 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let prefix_projected = builder.add_projection(
         prefix,
         projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&prefix_schema)),
-    );
+    ).unwrap();
     let first_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &first_dim_path,
         &first_dim_schema,
@@ -316,7 +314,7 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let second = builder.add_join(
         prefix_projected,
         second_dim,
@@ -330,23 +328,23 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
-    );
+    ).unwrap();
     let first_projected = builder.add_projection(
         first,
         projection_outputs(
             vec![Expr::literal(LiteralValue::Int32(1)), Expr::column("order_id"), Expr::column("qty")],
             Arc::clone(&branch_schema),
         ),
-    );
+    ).unwrap();
     let second_projected = builder.add_projection(
         second,
         projection_outputs(
             vec![Expr::literal(LiteralValue::Int32(2)), Expr::column("order_id"), Expr::column("qty")],
             Arc::clone(&branch_schema),
         ),
-    );
-    let union = builder.add_union(vec![first_projected, second_projected], Arc::clone(&branch_schema));
-    let plan = builder.finish_with_host_sink(union);
+    ).unwrap();
+    let union = builder.add_union(vec![first_projected, second_projected], Arc::clone(&branch_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -403,8 +401,8 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -484,8 +482,8 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -548,15 +546,15 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
-    let filtered = builder.add_filter(join, Expr::is_not_null(Expr::column("category")), Arc::clone(&join_schema));
+    ).unwrap();
+    let filtered = builder.add_filter(join, Expr::is_not_null(Expr::column("category"))).unwrap();
     let projected = builder.add_projection(
         filtered,
         vec![
             ProjectionOutput::new(Expr::column("category"), Field::new("category", DataType::Utf8, false)),
             ProjectionOutput::new(Expr::column("qty"), Field::new("qty", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -564,8 +562,8 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_grant(512 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -643,7 +641,7 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let hash_join = builder.add_join(
         left_join,
         dim,
@@ -660,7 +658,7 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&hash_join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         hash_join,
         AggregateSpec::new(
@@ -668,8 +666,8 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -734,8 +732,8 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(&runtime);
 
@@ -803,17 +801,15 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
         SortSpec::new(vec![
             SortExpr::new(Expr::column("order_id"), false, false),
             SortExpr::new(Expr::column("qty"), false, false),
             SortExpr::new(Expr::column("category"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        ])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -886,7 +882,7 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
         SortSpec::new(vec![
@@ -894,10 +890,8 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
             SortExpr::new(Expr::column("qty"), false, false),
             SortExpr::new(Expr::column("right_order_id"), false, false),
             SortExpr::new(Expr::column("category"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        ])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -990,13 +984,11 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
     ));
     let filtered_left = builder.add_filter(
         left,
-        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15))),
-        Arc::clone(&left_schema),
-    );
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15)))).unwrap();
     let projected_left = builder.add_projection(
         filtered_left,
         vec![ProjectionOutput::new(Expr::column("order_id"), Field::new("order_id", DataType::Int32, false))],
-    );
+    ).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
     let joined = builder.add_join(
         projected_left,
@@ -1014,7 +1006,7 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         joined,
         AggregateSpec::new(
@@ -1022,8 +1014,8 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_id"), "order_count")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(
@@ -1095,13 +1087,11 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
     ));
     let filtered_left = builder.add_filter(
         left,
-        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15))),
-        Arc::clone(&left_schema),
-    );
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15)))).unwrap();
     let projected_left = builder.add_projection(
         filtered_left,
         vec![ProjectionOutput::new(Expr::column("order_id"), Field::new("order_id", DataType::Int32, false))],
-    );
+    ).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
     let joined = builder.add_join(
         projected_left,
@@ -1119,7 +1109,7 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let semi_keys =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&semi_path, &semi_schema, &["order_id"])));
     let semi_join = builder.add_join(
@@ -1138,7 +1128,7 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         semi_join,
         AggregateSpec::new(
@@ -1146,8 +1136,8 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_id"), "order_count")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();

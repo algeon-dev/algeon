@@ -33,7 +33,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         expression_contract::validate_join_residual,
         normalize::{
             NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeLiteralSource,
@@ -67,7 +67,7 @@ impl CanonicalJoin {
     pub(super) fn native_input_index_for_datafusion_side(
         self,
         side: DataFusionJoinSide,
-    ) -> Result<usize, LoweringRejection> {
+    ) -> Result<usize, LoweringFailure> {
         // Residual predicates are expressed in DataFusion sides, while the
         // native IR addresses ordered join inputs. This is the shared mapping.
         match (self.swap_inputs, side) {
@@ -80,7 +80,7 @@ impl CanonicalJoin {
     pub(super) fn native_side_for_datafusion_side(
         self,
         side: DataFusionJoinSide,
-    ) -> Result<NativeJoinSide, LoweringRejection> {
+    ) -> Result<NativeJoinSide, LoweringFailure> {
         match self.native_input_index_for_datafusion_side(side)? {
             0 => Ok(NativeJoinSide::Left),
             1 => Ok(NativeJoinSide::Right),
@@ -114,7 +114,7 @@ fn add_join_residual_materializations(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     materializations: &[JoinResidualMaterialization],
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     // Residual casts that cannot live in the predicate AST are appended as
     // synthetic pre-join projection columns on the original DataFusion side.
     // Canonical input ordering happens after this step.
@@ -136,7 +136,7 @@ fn add_join_residual_materializations(
         });
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -145,7 +145,7 @@ fn add_join_residual_materializations_by_side(
     left: LoweredNativeInput,
     right: LoweredNativeInput,
     residual: &LoweredJoinResidual,
-) -> Result<(LoweredNativeInput, LoweredNativeInput), LoweringRejection> {
+) -> Result<(LoweredNativeInput, LoweredNativeInput), LoweringFailure> {
     Ok((
         add_join_residual_materializations(builder, left, residual.materializations.side(DataFusionJoinSide::Left)?)?,
         add_join_residual_materializations(builder, right, residual.materializations.side(DataFusionJoinSide::Right)?)?,
@@ -182,7 +182,7 @@ fn prepare_join_key_expr(
     key_index: usize,
     required: &mut BTreeSet<usize>,
     materializations: &mut Vec<JoinKeyMaterialization>,
-) -> Result<PreparedJoinKeyExpr, LoweringRejection> {
+) -> Result<PreparedJoinKeyExpr, LoweringFailure> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let field = input_schema.fields().get(column.index()).ok_or(CapabilityReason::UnsupportedExpression)?;
         if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
@@ -208,7 +208,7 @@ fn prepare_join_keys(
     right_required: &mut BTreeSet<usize>,
     left_predicate_required: &mut BTreeSet<usize>,
     right_predicate_required: &mut BTreeSet<usize>,
-) -> Result<PreparedJoinKeys, LoweringRejection> {
+) -> Result<PreparedJoinKeys, LoweringFailure> {
     let left_schema = join.join.left().schema();
     let right_schema = join.join.right().schema();
     let mut left_materializations = Vec::new();
@@ -243,7 +243,7 @@ fn add_join_key_materializations(
     input: LoweredNativeInput,
     input_schema: &SchemaRef,
     materializations: &[JoinKeyMaterialization],
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     if materializations.is_empty() {
         return Ok(input);
     }
@@ -263,7 +263,7 @@ fn add_join_key_materializations(
         });
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -291,7 +291,7 @@ fn unique_synthetic_join_key_alias(
 fn lowered_join_key_ref<'a>(
     key: &'a PreparedJoinKeyExpr,
     input: &'a LoweredNativeInput,
-) -> Result<(&'a str, &'a str), LoweringRejection> {
+) -> Result<(&'a str, &'a str), LoweringFailure> {
     if let Some(alias) = key.synthetic_alias.as_deref() {
         return Ok((alias, alias));
     }
@@ -305,7 +305,7 @@ fn lower_prepared_join_keys(
     left: &LoweredNativeInput,
     right: &LoweredNativeInput,
     canonical: CanonicalJoin,
-) -> Result<Vec<NativeJoinKey>, LoweringRejection> {
+) -> Result<Vec<NativeJoinKey>, LoweringFailure> {
     prepared
         .iter()
         .map(|(left_key, right_key)| {
@@ -367,7 +367,7 @@ pub(super) fn lower_hash_join_input(
     join: &NormalizedNativeHashJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     // Flow: canonicalize the join type, derive DataFusion-output-preserving
     // projection, collect keys/residual requirements, lower both children, add
     // residual materializations, then order inputs for the native spec.
@@ -475,10 +475,10 @@ pub(super) fn lower_hash_join_input(
     {
         spec = spec.with_at_most_one_match_per_bounded_row(bounded_side);
     }
-    let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
+    let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema))?;
     let output = LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings);
     if let Some(fetch) = join.fetch {
-        let node = builder.add_limit(output.node, fetch, Arc::clone(&output.schema));
+        let node = builder.add_limit(output.node, fetch)?;
         Ok(LoweredNativeInput::with_bindings(node, output.schema, output.bindings))
     } else {
         Ok(output)
@@ -518,7 +518,7 @@ pub(super) fn lower_nested_loop_join_input(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     // Nested-loop lowering shares the residual/materialization path with hash
     // joins, but has no equality keys. Cross joins are represented as keyless
     // native joins without residual predicates.
@@ -582,7 +582,7 @@ pub(super) fn lower_nested_loop_join_input(
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
-    let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
+    let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema))?;
     Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
 }
 
@@ -590,7 +590,7 @@ pub(super) fn lower_cross_join_input(
     join: &NormalizedNativeCrossJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let canonical = CanonicalJoin::new(NativeJoinType::Cross, false);
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
@@ -621,7 +621,7 @@ pub(super) fn lower_cross_join_input(
     if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
         spec = spec.with_advisory_output_statistics(statistics);
     }
-    let node = builder.add_join(left.node, right.node, spec, Arc::clone(&output_columns.schema));
+    let node = builder.add_join(left.node, right.node, spec, Arc::clone(&output_columns.schema))?;
     Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
 }
 
@@ -671,7 +671,7 @@ const fn opposite_native_side(side: NativeJoinSide) -> NativeJoinSide {
 fn nested_loop_join_canonical(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<CanonicalJoin, LoweringRejection> {
+) -> Result<CanonicalJoin, LoweringFailure> {
     // Predicate-free inner nested-loop joins are native cross joins.
     // Predicate-free left/right joins are also native cross joins when the null-supplying
     // input is provably a scalar aggregate subtree: a scalar aggregate emits
@@ -706,7 +706,7 @@ fn nested_loop_join_canonical(
 fn nested_loop_join_residual(
     join: &NestedLoopJoinExec,
     canonical: CanonicalJoin,
-) -> Result<Option<LoweredJoinResidual>, LoweringRejection> {
+) -> Result<Option<LoweredJoinResidual>, LoweringFailure> {
     // Non-inner nested-loop joins require a residual predicate unless the
     // canonicalizer has proven that the predicate-free join is a cross join.
     if let Some(filter) = join.filter() {
@@ -749,7 +749,7 @@ fn normalized_input_is_scalar_single_row(input: &NormalizedNativeInput<'_>) -> b
 fn nested_loop_join_required_outputs_are_right_only(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<bool, LoweringRejection> {
+) -> Result<bool, LoweringFailure> {
     let mut saw_output = false;
     for output_index in required_output_fields.requested_indices(join.join.schema().fields().len())? {
         saw_output = true;
@@ -770,7 +770,7 @@ fn nested_loop_join_required_outputs_are_right_only(
     Ok(saw_output)
 }
 
-fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, LoweringRejection> {
+fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, LoweringFailure> {
     // Native join variants are left-oriented for right/semi/anti cases. Right
     // joins become left joins with swapped inputs, and right semi/anti become
     // left semi/anti with swapped inputs.

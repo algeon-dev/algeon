@@ -50,14 +50,14 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -96,7 +96,7 @@ fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe()
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let sorted_left = builder.add_sort(left, qty_descending(), Arc::clone(&left_schema));
+    let sorted_left = builder.add_sort(left, qty_descending()).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
         Arc::clone(&right_schema),
@@ -112,15 +112,15 @@ fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe()
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let sorted_join = builder.add_sort(join, qty_descending(), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sorted_join);
+    ).unwrap();
+    let sorted_join = builder.add_sort(join, qty_descending()).unwrap();
+    let plan = builder.finish_with_host_sink(sorted_join).unwrap();
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
     assert_eq!(optimized.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Sort(_))).count(), 2);
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| matches!(
         route.consumer,
@@ -200,7 +200,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&result_schema),
-    );
+    ).unwrap();
     let supplier_partsupp = builder.add_join(
         supplier,
         partsupp,
@@ -217,7 +217,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&partsupp_result_schema),
-    );
+    ).unwrap();
     let partsupp_min = builder.add_aggregate(
         supplier_partsupp,
         AggregateSpec::new(
@@ -228,7 +228,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             Field::new("ps_partkey", DataType::Int32, false),
             Field::new("min_supplycost", DataType::Int32, false),
         ])),
-    );
+    ).unwrap();
     let final_join = builder.add_join(
         part_partsupp_join,
         partsupp_min,
@@ -251,15 +251,15 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&result_schema),
-    );
-    let plan = builder.finish_with_host_sink(final_join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(final_join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
             && route.consumer_lowering == DynamicFilterConsumerLowering::PostDecodeOnly
@@ -352,14 +352,14 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -498,7 +498,7 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&sales_with_d1_schema),
-    );
+    ).unwrap();
     let inventory_with_d2 = builder.add_join(
         inventory,
         d2,
@@ -515,7 +515,7 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&inventory_with_d2_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         sales_with_d1,
         inventory_with_d2,
@@ -537,14 +537,14 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(root);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     let residual_route = optimized
         .plan
         .dynamic_filter_routes()
@@ -634,14 +634,14 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -740,7 +740,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let qty_keys =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("qty_keys", Arc::clone(&qty_schema))));
     let qty_join = builder.add_join(
@@ -756,14 +756,14 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(qty_join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(qty_join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -871,14 +871,14 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -968,14 +968,14 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1050,7 +1050,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         Arc::clone(&large_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let union = builder.add_union(vec![small, large], Arc::clone(&output_schema));
+    let union = builder.add_union(vec![small, large], Arc::clone(&output_schema)).unwrap();
     let right =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
@@ -1063,14 +1063,14 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1148,14 +1148,14 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1264,14 +1264,14 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1378,14 +1378,14 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1445,14 +1445,14 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::HashJoinProbe { .. }));
 
@@ -1514,9 +1514,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&left_schema))));
     let filtered_left = builder.add_filter(
         left,
-        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&left_schema),
-    );
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
         Arc::clone(&right_schema),
@@ -1532,14 +1530,14 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
 
@@ -1604,16 +1602,14 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&left_schema))));
     let filtered_left = builder.add_filter(
         left,
-        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&left_schema),
-    );
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let projected_left = builder.add_projection(
         filtered_left,
         vec![
             ProjectionOutput::new(Expr::column("raw_order_id"), Field::new("order_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("qty"), Field::new("qty", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
         Arc::clone(&right_schema),
@@ -1629,14 +1625,14 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
             ])
             .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert_eq!(optimized.plan.dynamic_filter_routes()[0].consumer_columns, ["raw_order_id".to_string()]);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
@@ -1707,7 +1703,7 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
         right,
         AggregateSpec::new(vec![Expr::column("order_id")], Vec::new()),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let join = builder.add_join(
         left,
         keyset,
@@ -1715,14 +1711,14 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1772,7 +1768,7 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
         fact,
         AggregateSpec::new(vec![Expr::column("order_id")], Vec::new()),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let join = builder.add_join(
         dim,
         grouped_fact,
@@ -1783,14 +1779,14 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
             )])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let optimizer_options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,

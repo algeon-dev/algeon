@@ -15,9 +15,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     )));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::Literal(LiteralValue::Utf8("a".to_string()))),
-        Arc::clone(&schema),
-    );
+        Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::Literal(LiteralValue::Utf8("a".to_string())))).unwrap();
     let output = Arc::new(Schema::new(vec![
         Field::new("left_name", DataType::Utf8, false),
         Field::new("right_name", DataType::Utf8, false),
@@ -31,7 +29,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
                 JoinOutputColumn::new(JoinSide::Right, ColumnRef::unqualified("name"), "right_name"),
             ]),
         Arc::clone(&output),
-    );
+    ).unwrap();
     let resident = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("existing-resident", Arc::clone(&schema)).with_row_count_upper_bound(8),
     ));
@@ -47,8 +45,8 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
             JoinOutputColumn::new(JoinSide::Left, ColumnRef::unqualified("right_name"), "right_name"),
         ]),
         Arc::clone(&output),
-    );
-    let plan = builder.finish_with_host_sink_schema(outer, output);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink_schema(outer, output).unwrap();
     let considered_count = plan.node_count();
     let routed = plan.clone().with_dynamic_filter_routes(vec![DynamicFilterRoute::new(
         DynamicFilterId::new(0),
@@ -59,7 +57,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
         vec![DynamicFilterKind::Range],
         DynamicFilterConsumerLowering::ReaderPredicate,
     )]);
-    let routed_split = optimize_shared_resident_extraction(routed);
+    let routed_split = optimize_shared_resident_extraction(routed).unwrap();
     assert!(routed_split.producers.is_empty());
     let routed_candidate = routed_split
         .diagnostics
@@ -70,7 +68,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     assert_eq!(routed_candidate.decision, SharedResidentExtractionDecision::Skipped);
     assert_eq!(routed_candidate.reason, SharedResidentExtractionReason::DynamicFilterRoutesUnremappable);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     let split = SharedResidentPlan {
         consumer: optimized.plan,
         producers: optimized.shared_resident_producers,

@@ -29,9 +29,9 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut inputs = GpuResidentInputMap::new();
@@ -99,8 +99,8 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -193,9 +193,9 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -322,9 +322,9 @@ fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_g
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -383,8 +383,8 @@ fn native_global_aggregate_filter_masks_false_and_null_predicates() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut inputs = GpuResidentInputMap::new();
@@ -425,8 +425,8 @@ fn native_global_aggregate_filter_masks_count_distinct_inputs() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut inputs = GpuResidentInputMap::new();
@@ -531,8 +531,8 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -680,8 +680,8 @@ fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -854,8 +854,8 @@ fn bounded_native_partial_global_filtered_aggregate_segments_large_materializati
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -957,30 +957,35 @@ fn bounded_native_query_shares_one_filtered_source_stream_between_two_aggregates
         Arc::clone(&schema),
         vec!["entity_id".to_string(), "quantity".to_string(), "measure".to_string()],
     )));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("entity_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2))),
-        Arc::clone(&schema),
-    );
+    let filtered = builder
+        .add_filter(
+            source,
+            Expr::binary(Expr::column("entity_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2))),
+        )
+        .unwrap();
     let value_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, true)]));
-    let measure = builder.add_aggregate(
-        filtered,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "value")],
-        ),
-        Arc::clone(&value_schema),
-    );
-    let quantity = builder.add_aggregate(
-        filtered,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "value")],
-        ),
-        Arc::clone(&value_schema),
-    );
-    let union = builder.add_union(vec![measure, quantity], value_schema);
-    let plan = builder.finish_with_host_sink(union);
+    let measure = builder
+        .add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "value")],
+            ),
+            Arc::clone(&value_schema),
+        )
+        .unwrap();
+    let quantity = builder
+        .add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "value")],
+            ),
+            Arc::clone(&value_schema),
+        )
+        .unwrap();
+    let union = builder.add_union(vec![measure, quantity], value_schema).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

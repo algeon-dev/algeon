@@ -17,14 +17,16 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![Expr::column("key").alias("dup"), Expr::column("payload").alias("dup")],
-            duplicate_projection_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![Expr::column("key").alias("dup"), Expr::column("payload").alias("dup")],
+                duplicate_projection_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => {
@@ -39,49 +41,12 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
     assert_eq!(error.fact_value("duplicate_output_index"), Some("1"));
     assert_eq!(error.fact_value("output_names"), Some("dup,dup"));
     assert_eq!(error.fact_value("node_kind"), Some("projection"));
-    assert_eq!(error.fact_value("schema_behavior"), Some("projection"));
     assert!(error.fact_value("input_name").is_none());
 }
 
 #[test]
 fn bounded_native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
     assert_bounded_duplicate_host_sink_schema_restoration();
-}
-
-#[test]
-fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_materialization() {
-    let dir = unique_temp_dir("query-engine-native-execution-schema-mismatch");
-    let path = dir.join("input.parquet");
-    let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
-    let input_schema = write_input_parquet(&runtime, &path);
-    let mismatched_schema = Arc::new(Schema::new(vec![
-        Field::new("payload", DataType::Int64, false),
-        Field::new("key", DataType::Int32, false),
-        Field::new("m00", DataType::Int64, false),
-        Field::new("m01", DataType::Int64, false),
-    ]));
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let limit = builder.add_limit(source, LimitSpec::fetch(2), mismatched_schema);
-    let plan = builder.finish_with_host_sink(limit);
-
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("GPU result handle should reject sink schema name/order mismatches"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
-    assert_eq!(error.operation(), "query_engine.gpu_result_handle");
-    assert_eq!(error.fact_value("cudf_operation"), Some("dataframe::GpuRecordBatch::new"));
-    assert_eq!(error.fact_value("cudf_status"), Some("permanent"));
-
-    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -93,11 +58,13 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
     let source = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("int_input", Arc::clone(&input_schema)).with_row_count_upper_bound(3),
     ));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
     let error = match context.admit_plan(&plan) {
         Ok(_) => panic!("projection schema coercion should reject unsupported Int32 to Utf8 mismatch before grant"),
         Err(error) => error,
@@ -135,12 +102,14 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_b
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema);
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&projection_schema)),
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema).unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&projection_schema)),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),

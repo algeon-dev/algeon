@@ -75,23 +75,6 @@ impl MlAlgorithmParams {
             _ => MlRelationRole::Input,
         }
     }
-
-    pub(crate) fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
-        match self {
-            Self::Tsvd(params) => params.input.input = remap(params.input.input),
-            Self::Hdbscan(params) => params.input.input = remap(params.input.input),
-            Self::Umap(params) => params.input.input = remap(params.input.input),
-            Self::ForestPredict(params) => params.input.input = remap(params.input.input),
-            Self::LogisticRegression(params) => {
-                params.training.input = remap(params.training.input);
-                params.predict.input = remap(params.predict.input);
-            },
-            Self::RandomForestClassifier(params) | Self::RandomForestRegressor(params) => {
-                params.training.input = remap(params.training.input);
-                params.predict.input = remap(params.predict.input);
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +93,8 @@ impl MlAlgorithmSpec {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MlAlgorithmNode {
+    /// Relation inputs; each relation binding names its relation by its
+    /// position here.
     pub inputs: Vec<NodeId>,
     pub spec: MlAlgorithmSpec,
 }

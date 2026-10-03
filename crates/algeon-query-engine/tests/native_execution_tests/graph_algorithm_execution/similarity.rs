@@ -1,10 +1,12 @@
-fn similarity_spec(algorithm: GraphAlgorithm, pair_input: NodeId, with_weight: bool) -> GraphAlgorithmSpec {
-    similarity_spec_for_pair_columns(algorithm, pair_input, with_weight, "first", "second")
+// The pair relation is the only side input of a similarity node; ordinal 0 is the edge list.
+const SIMILARITY_PAIR_INPUT_ORDINAL: usize = 1;
+
+fn similarity_spec(algorithm: GraphAlgorithm, with_weight: bool) -> GraphAlgorithmSpec {
+    similarity_spec_for_pair_columns(algorithm, with_weight, "first", "second")
 }
 
 fn similarity_spec_for_pair_columns(
     algorithm: GraphAlgorithm,
-    pair_input: NodeId,
     with_weight: bool,
     first_column: &str,
     second_column: &str,
@@ -12,7 +14,6 @@ fn similarity_spec_for_pair_columns(
     similarity_spec_for_pair_columns_and_vertex_type(
         algorithm,
         &DataType::Int32,
-        pair_input,
         with_weight,
         first_column,
         second_column,
@@ -22,7 +23,6 @@ fn similarity_spec_for_pair_columns(
 fn similarity_spec_for_pair_columns_and_vertex_type(
     algorithm: GraphAlgorithm,
     vertex_type: &DataType,
-    pair_input: NodeId,
     with_weight: bool,
     first_column: &str,
     second_column: &str,
@@ -32,7 +32,7 @@ fn similarity_spec_for_pair_columns_and_vertex_type(
         GraphEdgeColumnBindings::new("src", "dst", with_weight.then_some("weight")),
         GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
         GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
-            pair_input,
+            SIMILARITY_PAIR_INPUT_ORDINAL,
             first_column,
             second_column,
         ))),
@@ -72,18 +72,16 @@ fn similarity_plan(
             u64::try_from(pair_row_count_upper_bound).expect("test pair cardinality must fit u64"),
         ),
     ));
-    let graph = builder.add_graph_algorithm(
-        edges,
-        similarity_spec_for_pair_columns_and_vertex_type(
-            algorithm,
-            &vertex_type,
-            pairs,
-            with_weight,
-            "first",
-            "second",
-        ),
-    );
-    builder.finish_with_host_sink_schema(graph, stable_graph_result_schema_for_vertex_type(algorithm, &vertex_type))
+    let graph = builder
+        .add_graph_algorithm(
+            edges,
+            vec![pairs],
+            similarity_spec_for_pair_columns_and_vertex_type(algorithm, &vertex_type, with_weight, "first", "second"),
+        )
+        .unwrap();
+    builder
+        .finish_with_host_sink_schema(graph, stable_graph_result_schema_for_vertex_type(algorithm, &vertex_type))
+        .unwrap()
 }
 
 fn execute_similarity_plan(
@@ -164,8 +162,10 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
         GpuResidentSource::new("pairs", Arc::clone(&pair_schema))
             .with_row_count_upper_bound(u64::try_from(pair_rows).expect("test pair cardinality must fit u64")),
     ));
-    let graph = builder.add_graph_algorithm(edges, similarity_spec(GraphAlgorithm::Jaccard, pairs, false));
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard));
+    let graph =
+        builder.add_graph_algorithm(edges, vec![pairs], similarity_spec(GraphAlgorithm::Jaccard, false)).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard)).unwrap();
 
     // The allocator is the sole arbiter of admission; a generous bounded
     // budget only needs to prove the large resident pair input is admitted
@@ -308,11 +308,15 @@ fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints
             u64::try_from(pair_batch.num_rows()).expect("test pair cardinality must fit u64"),
         ),
     ));
-    let graph = builder.add_graph_algorithm(
-        edges,
-        similarity_spec_for_pair_columns(GraphAlgorithm::Jaccard, pairs, false, "vertex", "vertex"),
-    );
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard));
+    let graph = builder
+        .add_graph_algorithm(
+            edges,
+            vec![pairs],
+            similarity_spec_for_pair_columns(GraphAlgorithm::Jaccard, false, "vertex", "vertex"),
+        )
+        .unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 

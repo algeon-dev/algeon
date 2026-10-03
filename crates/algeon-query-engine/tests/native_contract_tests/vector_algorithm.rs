@@ -143,23 +143,24 @@ fn typed_vector_builders_preserve_schemas_input_order_and_display() {
 }
 
 #[test]
-fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
+fn vector_optimizer_rewrite_keeps_relation_bindings_aligned_with_ordered_inputs() {
     let schema = relation_schema("id");
     let query_schema = relation_schema("query_id");
     let mut builder = QueryPlanBuilder::new();
     let dataset = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&schema))));
-    let dataset_projection = builder.add_projection(
-        dataset,
-        schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
+    let dataset_projection = builder
+        .add_projection(
+            dataset,
+            schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
     let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", query_schema)));
-    let spec = knn_spec(dataset_projection, queries);
-    let root = builder.add_vector_algorithm(spec);
-    let plan = builder.finish_with_host_sink(root);
+    let root = builder.add_vector_algorithm(vec![dataset_projection, queries], knn_spec()).unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
 
     let optimized = optimize_query_plan(
         plan,
@@ -167,13 +168,15 @@ fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     preflight_query_plan(&optimized).expect("rewritten vector bindings should remain valid");
     let PlanNode::VectorAlgorithm(vector) = &optimized.root_node().kind else {
         panic!("rewritten root should remain a vector algorithm");
     };
-    let binding_inputs = vector.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
-    assert_eq!(vector.inputs, binding_inputs);
+    let bound_relations =
+        vector.spec.params.relation_bindings().map(|binding| vector.inputs[binding.input]).collect::<Vec<_>>();
+    assert_eq!(bound_relations, vector.inputs);
     assert_eq!(vector.inputs.len(), 2);
     assert!(matches!(optimized.node(vector.inputs[0]).map(|node| &node.kind), Some(PlanNode::Source(_))));
     assert!(matches!(optimized.node(vector.inputs[1]).map(|node| &node.kind), Some(PlanNode::Source(_))));
@@ -184,13 +187,18 @@ fn vector_validation_rejects_invalid_bindings_parameters_and_output_schema() {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let missing_feature =
-        VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["missing"]), 1);
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(missing_feature),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    let missing_feature = builder.finish_with_host_sink(root);
+        VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["missing"]), 1);
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(missing_feature),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    let missing_feature = builder.finish_with_host_sink(root).unwrap();
     assert_preflight_reason(&missing_feature, "missing_feature_column");
 
     let nullable_schema =
@@ -222,20 +230,25 @@ fn vector_column_binding_validates_fixed_size_list_element_type_after_relational
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
         2,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 2),
-    ));
-    preflight_query_plan(&builder.finish_with_host_sink(root)).expect("fixed-size Float32 vectors are valid");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 2),
+            ),
+        )
+        .unwrap();
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap()).expect("fixed-size Float32 vectors are valid");
 
     let mut non_vector_builder = QueryPlanBuilder::new();
     let non_vector_source =
         non_vector_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("non_vector_input", schema)));
-    preflight_query_plan(&non_vector_builder.finish_with_host_sink(non_vector_source))
+    preflight_query_plan(&non_vector_builder.finish_with_host_sink(non_vector_source).unwrap())
         .expect("numeric FixedSizeList remains valid as a relational carry column");
 }
 
@@ -248,16 +261,21 @@ fn variable_list_vector_column_defers_dimension_validation_to_the_device_witness
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
         1,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
 
-    preflight_query_plan(&builder.finish_with_host_sink(root))
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
         .expect("non-null List<Float32> is admitted subject to a runtime uniform-dimension device witness");
 }
 
@@ -269,14 +287,19 @@ fn pca_requires_two_feature_columns_when_the_dimension_is_known() {
     ]));
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let params = VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]), 1);
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
+    let params = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]), 1);
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
 
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "insufficient_feature_dimension");
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "insufficient_feature_dimension");
 }
 
 #[test]
@@ -288,16 +311,21 @@ fn large_list_vector_column_defers_dimension_validation_to_the_device_witness() 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
         1,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
 
-    preflight_query_plan(&builder.finish_with_host_sink(root))
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
         .expect("non-null LargeList<Float32> is admitted subject to a runtime uniform-dimension device witness");
 }
 
@@ -318,23 +346,30 @@ fn vector_column_ingress_tracks_safe_projection_lineage_with_relational_carry_su
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", source_schema)));
-    let projected = builder.add_projection(
-        source,
-        vec![
-            ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int64, false)),
-            ProjectionOutput::new(Expr::column("embedding"), projected_vector),
-        ],
-    );
+    let projected = builder
+        .add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("embedding"), projected_vector),
+            ],
+        )
+        .unwrap();
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new_vector_column(projected, VectorRowIdBinding::column("id"), "projected_embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "projected_embedding"),
         2,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 2),
-    ));
-    preflight_query_plan(&builder.finish_with_host_sink(root))
+    let root = builder
+        .add_vector_algorithm(
+            vec![projected],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 2),
+            ),
+        )
+        .unwrap();
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
         .expect("safe direct-column projection lineage should retain typed vector ingress");
 }
 
@@ -346,73 +381,102 @@ fn direct_ir_enforces_registry_parameter_maxima_and_logical_id_roles() {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let mut kmeans =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
     kmeans.n_clusters = i32::MAX as usize + 1;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(kmeans),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "parameter_exceeds_registry_maximum");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(kmeans),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "parameter_exceeds_registry_maximum");
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let mut kmeans =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
     kmeans.max_iterations = i32::MAX as u32 + 1;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(kmeans),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "parameter_exceeds_registry_maximum");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(kmeans),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "parameter_exceeds_registry_maximum");
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let mut kmeans =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
     kmeans.n_init = i32::MAX as u32 + 1;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(kmeans),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "parameter_exceeds_registry_maximum");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(kmeans),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "parameter_exceeds_registry_maximum");
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let pca = VectorPcaParams::new(
-        VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]),
+        VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
         i32::MAX as usize + 1,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(pca),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "parameter_exceeds_registry_maximum");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(pca),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "parameter_exceeds_registry_maximum");
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
-    let mut pca =
-        VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
+    let mut pca = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 1);
     pca.n_iterations = i32::MAX as u32 + 1;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(pca),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "parameter_exceeds_registry_maximum");
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(pca),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "parameter_exceeds_registry_maximum");
 
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
-    let params = VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::RowIndex, ["x", "y"]), 1);
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    assert_preflight_reason(&builder.finish_with_host_sink(root), "missing_logical_row_id_column");
+    let params = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::RowIndex, ["x", "y"]), 1);
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    assert_preflight_reason(&builder.finish_with_host_sink(root).unwrap(), "missing_logical_row_id_column");
 }
 
 #[test]
@@ -424,15 +488,20 @@ fn relation_initialized_kmeans_accepts_row_index_only_for_initial_centroids() {
         relation_schema("unused_centroid_id"),
     )));
     let params =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 4)
-            .with_initial_centroids(VectorRelationBinding::new(centroids, VectorRowIdBinding::RowIndex, ["x", "y"]));
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(params),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 4)
+            .with_initial_centroids(VectorRelationBinding::new(1, VectorRowIdBinding::RowIndex, ["x", "y"]));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input, centroids],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(params),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
 
-    preflight_query_plan(&builder.finish_with_host_sink(root))
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
         .expect("only relation-backed initial centroids may use positional row identity");
 }
 
@@ -470,23 +539,19 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
             "brute_force_knn",
             knn_plan(false),
             vec![
-                (NodeId::from_index_for_internal_use(0), VectorInputRole::Dataset, dataset_schema),
-                (NodeId::from_index_for_internal_use(1), VectorInputRole::Queries, query_schema),
+                (NodeId::from_index_for_test(0), VectorInputRole::Dataset, dataset_schema),
+                (NodeId::from_index_for_test(1), VectorInputRole::Queries, query_schema),
             ],
         ),
         (
             "kmeans",
             kmeans_plan_with_initial_centroids(),
             vec![
-                (NodeId::from_index_for_internal_use(0), VectorInputRole::Input, relation_schema("id")),
-                (NodeId::from_index_for_internal_use(1), VectorInputRole::InitialCentroids, centroid_schema),
+                (NodeId::from_index_for_test(0), VectorInputRole::Input, relation_schema("id")),
+                (NodeId::from_index_for_test(1), VectorInputRole::InitialCentroids, centroid_schema),
             ],
         ),
-        (
-            "pca",
-            pca_plan(),
-            vec![(NodeId::from_index_for_internal_use(0), VectorInputRole::Input, relation_schema("id"))],
-        ),
+        ("pca", pca_plan(), vec![(NodeId::from_index_for_test(0), VectorInputRole::Input, relation_schema("id"))]),
     ];
 
     for (algorithm, plan, expected_inputs) in cases {
@@ -564,39 +629,46 @@ fn vector_algorithm_composes_with_relational_tasks_and_keeps_resident_handoffs()
     let schema = relation_schema("id");
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("x"), BinaryOp::Gt, Expr::literal(LiteralValue::Float32(0.0))),
-        Arc::clone(&schema),
-    );
-    let projected = builder.add_projection(
-        filtered,
-        schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
-    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(VectorPcaParams::new(
-            VectorRelationBinding::new(projected, VectorRowIdBinding::column("id"), ["x", "y"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
+    let filtered = builder
+        .add_filter(source, Expr::binary(Expr::column("x"), BinaryOp::Gt, Expr::literal(LiteralValue::Float32(0.0))))
+        .unwrap();
+    let projected = builder
+        .add_projection(
+            filtered,
+            schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
+    let vector = builder
+        .add_vector_algorithm(
+            vec![projected],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(VectorPcaParams::new(
+                    VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("pc_0", DataType::Float32, false),
     ]));
-    let output = builder.add_projection(
-        vector,
-        vec![
-            ProjectionOutput::new(Expr::column("id"), output_schema.field(0).clone()),
-            ProjectionOutput::new(Expr::column("pc_0"), output_schema.field(1).clone()),
-        ],
-    );
-    let plan = builder.finish_with_host_sink(output);
+    let output = builder
+        .add_projection(
+            vector,
+            vec![
+                ProjectionOutput::new(Expr::column("id"), output_schema.field(0).clone()),
+                ProjectionOutput::new(Expr::column("pc_0"), output_schema.field(1).clone()),
+            ],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(output).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis).expect("relational operators can surround a vector task");
     pipeline.validate().expect("compiled vector composition satisfies resident task contracts");
@@ -635,8 +707,8 @@ fn knn_plan(with_join_input: bool) -> QueryPlan {
     };
     let queries =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", relation_schema("query_id"))));
-    let root = builder.add_vector_algorithm(knn_spec(dataset, queries));
-    builder.finish_with_host_sink(root)
+    let root = builder.add_vector_algorithm(vec![dataset, queries], knn_spec()).unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn knn_plan_with_k(k: usize) -> QueryPlan {
@@ -644,7 +716,7 @@ fn knn_plan_with_k(k: usize) -> QueryPlan {
     let dataset = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", relation_schema("id"))));
     let queries =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", relation_schema("query_id"))));
-    let mut params = match knn_spec(dataset, queries).params {
+    let mut params = match knn_spec().params {
         VectorAlgorithmParams::BruteForceKnn(params) => params,
         _ => unreachable!(),
     };
@@ -654,16 +726,16 @@ fn knn_plan_with_k(k: usize) -> QueryPlan {
         VectorAlgorithmParams::BruteForceKnn(params),
         vector_knn_output_schema(DataType::Int64, DataType::Int64),
     );
-    let root = builder.add_vector_algorithm(spec);
-    builder.finish_with_host_sink(root)
+    let root = builder.add_vector_algorithm(vec![dataset, queries], spec).unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
-fn knn_spec(dataset: NodeId, queries: NodeId) -> VectorAlgorithmSpec {
+fn knn_spec() -> VectorAlgorithmSpec {
     VectorAlgorithmSpec::new(
         VectorAlgorithm::BruteForceKnn,
         VectorAlgorithmParams::BruteForceKnn(VectorBruteForceKnnParams::new(
-            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x", "y"]),
-            VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x", "y"]),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x", "y"]),
             3,
             VectorDistanceMetric::L2Expanded,
         )),
@@ -675,13 +747,18 @@ fn kmeans_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let params =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 4);
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(params),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    builder.finish_with_host_sink(root)
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 4);
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(params),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn kmeans_plan_with_initial_centroids() -> QueryPlan {
@@ -692,14 +769,19 @@ fn kmeans_plan_with_initial_centroids() -> QueryPlan {
         relation_schema("centroid_id"),
     )));
     let params =
-        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 2)
-            .with_initial_centroids(VectorRelationBinding::new(centroids, VectorRowIdBinding::RowIndex, ["x", "y"]));
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(params),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    builder.finish_with_host_sink(root)
+        VectorKMeansParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]), 2)
+            .with_initial_centroids(VectorRelationBinding::new(1, VectorRowIdBinding::RowIndex, ["x", "y"]));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input, centroids],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(params),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn pca_plan() -> QueryPlan {
@@ -716,16 +798,15 @@ fn pca_plan_with_schema(schema: SchemaRef, n_components: usize, output_schema: S
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let params = VectorPcaParams::new(
-        VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), features),
-        n_components,
-    );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        output_schema,
-    ));
-    builder.finish_with_host_sink(root)
+    let params =
+        VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), features), n_components);
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(VectorAlgorithm::Pca, VectorAlgorithmParams::Pca(params), output_schema),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn joined_vector_relation(builder: &mut QueryPlanBuilder) -> NodeId {
@@ -740,21 +821,23 @@ fn joined_vector_relation(builder: &mut QueryPlanBuilder) -> NodeId {
     let output_schema = relation_schema("id");
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset_left", left_schema)));
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset_right", right_schema)));
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "right_id", "right_id"))],
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "right_id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "x", "x"), "x"),
+                JoinOutputColumn::right(ColumnRef::input(1, "y", "y"), "y"),
+            ])
+            .with_build_side(JoinSide::Right),
+            output_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "x", "x"), "x"),
-            JoinOutputColumn::right(ColumnRef::input(1, "y", "y"), "y"),
-        ])
-        .with_build_side(JoinSide::Right),
-        output_schema,
-    )
+        .unwrap()
 }
 
 fn relation_schema(id: &str) -> SchemaRef {

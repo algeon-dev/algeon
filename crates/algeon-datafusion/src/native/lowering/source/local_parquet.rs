@@ -27,7 +27,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         expression_contract::validate_physical_expr_contract,
         lowering::{
             LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
@@ -49,7 +49,7 @@ pub(super) fn lower_local_parquet_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(CapabilityReason::UnsupportedOperator)?;
     let required_scan_output_indices =
@@ -173,8 +173,7 @@ pub(super) fn lower_local_parquet_source_input(
             builder.add_filter(
                 source_node,
                 lower_physical_expr_with_bindings(predicate, &table_schema, Some(&bindings))?,
-                Arc::clone(&source_output_schema),
-            ),
+            )?,
             Arc::clone(&source_output_schema),
         )
     } else {
@@ -193,7 +192,7 @@ pub(super) fn lower_local_parquet_source_input(
         {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?), schema)
+            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?)?, schema)
         } else {
             (scan_input_node, scan_input_schema)
         }
@@ -201,10 +200,7 @@ pub(super) fn lower_local_parquet_source_input(
         (scan_input_node, scan_input_schema)
     };
     let (scan_output_node, scan_output_schema) = if let Some(scan_limit) = post_predicate_scan_limit {
-        (
-            builder.add_limit(scan_output_node, NativeLimitSpec::fetch(scan_limit), Arc::clone(&scan_output_schema)),
-            scan_output_schema,
-        )
+        (builder.add_limit(scan_output_node, NativeLimitSpec::fetch(scan_limit))?, scan_output_schema)
     } else {
         (scan_output_node, scan_output_schema)
     };
@@ -235,7 +231,7 @@ fn lower_empty_local_parquet_source_input(
     filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let frontend_schema = filter.map_or_else(|| source_exec.schema(), |filter| filter.schema());
     let (source_schema, source_bindings) = executable_schema_and_bindings(&frontend_schema, required_output_fields)?;
     validate_schema(Arc::clone(&source_schema))?;

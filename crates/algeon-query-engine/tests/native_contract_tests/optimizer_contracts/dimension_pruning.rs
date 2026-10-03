@@ -14,7 +14,7 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -45,7 +45,7 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -130,12 +130,12 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
     let fact_a_projected = builder.add_projection(
         fact_a,
         projection_outputs(vec![Expr::column("a_date_sk").alias("date_sk")], Arc::clone(&union_schema)),
-    );
+    ).unwrap();
     let fact_b_projected = builder.add_projection(
         fact_b,
         projection_outputs(vec![Expr::column("b_date_sk").alias("date_sk")], Arc::clone(&union_schema)),
-    );
-    let union = builder.add_union(vec![fact_a_projected, fact_b_projected], Arc::clone(&union_schema));
+    ).unwrap();
+    let union = builder.add_union(vec![fact_a_projected, fact_b_projected], Arc::clone(&union_schema)).unwrap();
     let date = builder.add_source(SourceNode::LocalParquet(
         LocalParquetSource::from_files(
             vec![LocalParquetFile::new(&date_path)],
@@ -150,7 +150,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
     ));
     let date_key_schema = Arc::new(Schema::new(vec![Field::new("d_date_sk", DataType::Int32, false)]));
     let date_projected =
-        builder.add_projection(date, projection_outputs(vec![Expr::column("d_date_sk")], Arc::clone(&date_key_schema)));
+        builder.add_projection(date, projection_outputs(vec![Expr::column("d_date_sk")], Arc::clone(&date_key_schema))).unwrap();
     let joined = builder.add_join(
         union,
         date_projected,
@@ -163,8 +163,8 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")]),
         Arc::clone(&union_schema),
-    );
-    let plan = builder.finish_gpu_resident(joined);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(joined).unwrap();
 
     let requests = discover_dimension_derived_pruning_requests(&plan);
     assert_eq!(requests.len(), 2);
@@ -177,7 +177,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -280,7 +280,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
             JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
         ]),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("d_year", DataType::Int32, false),
         Field::new("cnt", DataType::Int64, true),
@@ -292,19 +292,17 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "cnt")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let filtered = builder.add_filter(
         aggregate,
-        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
-        aggregate_schema,
-    );
-    let plan = builder.finish_gpu_resident(filtered);
+        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000)))).unwrap();
+    let plan = builder.finish_gpu_resident(filtered).unwrap();
     let options = NativeOptimizerOptions {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -430,14 +428,14 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
             "ps_partkey",
         )]),
         Arc::clone(&join_schema),
-    );
-    let plan = builder.finish_gpu_resident(joined);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(joined).unwrap();
     let options = NativeOptimizerOptions {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -481,7 +479,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         Arc::clone(&fact_schema),
         vec!["fact_key".to_string()],
     )));
-    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(1), Arc::clone(&fact_schema));
+    let limited_fact = builder.add_limit(fact, LimitSpec::fetch(1)).unwrap();
     let dim = builder.add_source(SourceNode::LocalParquet(
         LocalParquetSource::from_files(
             vec![LocalParquetFile::new(&dim_path)],
@@ -503,14 +501,14 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")]),
         Arc::clone(&fact_schema),
-    );
-    let plan = builder.finish_gpu_resident(joined);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(joined).unwrap();
     let options = NativeOptimizerOptions {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
@@ -545,7 +543,7 @@ fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
 
     assert!(discover_dimension_derived_pruning_requests(&plan).is_empty());
 
-    let seeded = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default()));
+    let seeded = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default())).unwrap();
     let requests = discover_dimension_derived_pruning_requests(&seeded);
 
     assert_eq!(requests.len(), 1);
@@ -567,7 +565,7 @@ fn dimension_pruning_does_not_seed_unsupported_reader_predicate() {
         ),
     );
 
-    let seeded = seed_dimension_derived_reader_predicates(plan.clone(), rapids_analysis_context(PlanningPolicy::default()));
+    let seeded = seed_dimension_derived_reader_predicates(plan.clone(), rapids_analysis_context(PlanningPolicy::default())).unwrap();
 
     assert_eq!(seeded, plan);
     assert!(discover_dimension_derived_pruning_requests(&seeded).is_empty());
@@ -585,7 +583,7 @@ fn dimension_pruning_external_stats_narrow_existing_row_group_selection() {
         Arc::clone(&schema),
         vec!["fact_key".to_string()],
     )));
-    let plan = builder.finish_gpu_resident(source);
+    let plan = builder.finish_gpu_resident(source).unwrap();
     let result = apply_dimension_derived_pruning_with_stats(
         plan,
         source,
@@ -597,7 +595,7 @@ fn dimension_pruning_external_stats_narrow_existing_row_group_selection() {
             min: 35,
             max: 35,
         }),
-    );
+    ).unwrap();
 
     assert!(result.applied);
     assert_eq!(result.before, 2);
@@ -624,7 +622,7 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
         Arc::clone(&schema),
         vec!["fact_key".to_string()],
     )));
-    let plan = builder.finish_gpu_resident(source);
+    let plan = builder.finish_gpu_resident(source).unwrap();
 
     let scattered = DimensionKeyFilter::from_keys(&[5, 35])
         .expect("non-empty keyset builds a filter");
@@ -638,7 +636,7 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
             Some(KeyRange { min: 30, max: 39 }),
         ]],
         &scattered,
-    );
+    ).unwrap();
 
     assert!(result.applied);
     assert_eq!(result.before, 2);
@@ -661,7 +659,7 @@ fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -686,7 +684,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -725,12 +723,12 @@ fn shared_fact_target_dimension_pruning_plan() -> QueryPlan {
                 JoinOutputColumn::right(ColumnRef::input(1, "fact_key", "fact_key"), "fact_key"),
             ]),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         joins.push(join);
     }
 
-    let union = builder.add_union(joins, output_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(joins, output_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan {
@@ -806,7 +804,7 @@ fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
             JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
         ]),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("ss_sold_year", DataType::Int32, false),
         Field::new("ss_item_sk", DataType::Int32, false),
@@ -819,9 +817,9 @@ fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ss_quantity"), "ss_qty")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let filtered = builder.add_filter(aggregate, filter_predicate, aggregate_schema);
-    builder.finish_gpu_resident(filtered)
+    ).unwrap();
+    let filtered = builder.add_filter(aggregate, filter_predicate).unwrap();
+    builder.finish_gpu_resident(filtered).unwrap()
 }
 
 fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan {
@@ -887,7 +885,7 @@ fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan
             JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
         ]),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("ss_sold_year", DataType::Int32, false),
         Field::new("ss_item_sk", DataType::Int32, false),
@@ -900,14 +898,12 @@ fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ss_quantity"), "ss_qty")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let filtered = builder.add_filter(
         aggregate,
-        Expr::binary(Expr::column("ss_sold_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
-        Arc::clone(&aggregate_schema),
-    );
-    let union = builder.add_union(vec![filtered, aggregate], aggregate_schema);
-    builder.finish_gpu_resident(union)
+        Expr::binary(Expr::column("ss_sold_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000)))).unwrap();
+    let union = builder.add_union(vec![filtered, aggregate], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> QueryPlan {
@@ -953,7 +949,7 @@ fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "d_year", "d_year"), "d_year"),
         ]),
         join_schema,
-    );
+    ).unwrap();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("d_year", DataType::Int32, true),
         Field::new("cnt", DataType::Int64, true),
@@ -965,13 +961,11 @@ fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "cnt")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let filtered = builder.add_filter(
         aggregate,
-        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
-        aggregate_schema,
-    );
-    builder.finish_gpu_resident(filtered)
+        Expr::binary(Expr::column("d_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000)))).unwrap();
+    builder.finish_gpu_resident(filtered).unwrap()
 }
 
 fn part_brand_type_size_predicate() -> Expr {
@@ -1077,16 +1071,14 @@ fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
         source_node_id,
         AggregateSpec::new(vec![Expr::column("x")], Vec::new()),
         Arc::clone(&schema),
-    );
+    ).unwrap();
     let filter = builder.add_filter(
         aggregate,
-        Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5))),
-        Arc::clone(&schema),
-    );
+        Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))).unwrap();
     let route = test_dynamic_filter_route(source_node_id);
-    let plan = builder.finish_with_host_sink(filter).with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(filter).unwrap().with_dynamic_filter_routes(vec![route.clone()]);
 
-    let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default()));
+    let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 
     assert_eq!(result.dynamic_filter_routes(), &[route]);
     let source = local_parquet_source(&result, source_node_id).unwrap();
@@ -1122,16 +1114,16 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
         JoinSpec::new(JoinType::Inner, vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))])
             .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "x", "x"), "x")]),
         Arc::clone(&schema),
-    );
+    ).unwrap();
     let route = test_dynamic_filter_route(fact);
-    let plan = builder.finish_with_host_sink(join).with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(join).unwrap().with_dynamic_filter_routes(vec![route.clone()]);
 
     let result = optimize_dimension_derived_row_group_pruning(
         plan,
         &DimensionDerivedRowGroupPruningOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.applied_count, 1);

@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn wire_facts_render_typed_context_over_disagreeing_stored_facts() {
-        let node = NodeId::from_index_for_internal_use(4);
+        let node = NodeId::from_index_for_test(4);
         let error = QueryError::new(
             QueryErrorCode::QueryMemoryLimitExceeded,
             "query_engine.test.wire_facts",

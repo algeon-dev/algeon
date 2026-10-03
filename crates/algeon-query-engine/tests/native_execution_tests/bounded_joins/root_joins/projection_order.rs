@@ -21,16 +21,18 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
     let left = builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&right_path, &right_schema, &["category"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
@@ -106,18 +108,20 @@ fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);

@@ -1,23 +1,7 @@
-use std::collections::BTreeSet;
-
 // Canonical home is `crate::plan`; re-exported while optimizer rules still
 // spell node-input remapping through this module.
+use crate::plan::QueryPlan;
 pub(super) use crate::plan::clone_plan_node_with_inputs;
-use crate::plan::{NodeId, QueryPlan};
-
-pub(super) fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
-    let mut reachable = BTreeSet::new();
-    let mut stack = vec![plan.sink().input()];
-    while let Some(node_id) = stack.pop() {
-        if !reachable.insert(node_id) {
-            continue;
-        }
-        if let Some(node) = plan.node(node_id) {
-            stack.extend(node.input_ids().iter().copied());
-        }
-    }
-    reachable
-}
 
 pub(crate) fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = vec![0; plan.node_count()];
@@ -37,17 +21,22 @@ mod tests {
 
     use super::*;
     use crate::{
+        dynamic_filter::{
+            DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
+            DynamicFilterProducer, DynamicFilterRoute,
+        },
         expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
         plan::{
             AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AggregateNode, EdgeNormalizeNode,
             EdgeNormalizeSpec, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
             GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
             GraphConstructionOptions, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinKey,
-            JoinNode, JoinSpec, JoinType, LimitNode, PlanNode, ProjectionNode, ProjectionOutput, QueryPlanBuilder,
-            ResultSink, RewrittenNodes, SortNode, UnionNode, VectorAlgorithm, VectorAlgorithmNode,
-            VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
-            VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec,
-            remap_plan_node_inputs, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
+            JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode,
+            ProjectionOutput, QueryNode, QueryPlanBuilder, ResultSink, RewrittenNodes, SortNode, UnionNode,
+            VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
+            VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams,
+            VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec, remap_plan_node_inputs,
+            vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -58,8 +47,6 @@ mod tests {
             let cloned = clone_plan_node_with_inputs(&node, remapped);
 
             assert_eq!(cloned.input_ids(), expected_inputs.as_slice(), "{label}");
-            assert_graph_bfs_side_inputs_match_input_list(label, &cloned);
-            assert_vector_bindings_match_input_list(label, &cloned);
         }
     }
 
@@ -70,26 +57,32 @@ mod tests {
             let remapped = remap_plan_node_inputs(node, &remap);
 
             assert_eq!(remapped.input_ids(), expected_inputs.as_slice(), "{label}");
-            assert_graph_bfs_side_inputs_match_input_list(label, &remapped);
-            assert_vector_bindings_match_input_list(label, &remapped);
         }
     }
 
     #[test]
-    fn finish_compacted_rewritten_plan_remaps_root_sink_and_drops_unreachable_nodes() {
+    fn rebuilt_rewrite_compacts_unreachable_nodes_and_remaps_root_and_sink() {
         let schema = test_schema(&["x"]);
         let mut builder = QueryPlanBuilder::new();
         let source =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("reachable", Arc::clone(&schema))));
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("unreachable", Arc::clone(&schema))));
-        let projection = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(Expr::column("x"), Field::new("x", DataType::Int32, false))],
+        let projection = builder
+            .add_projection(
+                source,
+                vec![ProjectionOutput::new(Expr::column("x"), Field::new("x", DataType::Int32, false))],
+            )
+            .unwrap();
+        let source_plan = builder.finish_with_host_sink(projection).unwrap();
+        let unreachable = SourceNode::GpuResident(GpuResidentSource::new("unreachable", Arc::clone(&schema)));
+        let mut nodes = source_plan.nodes().to_vec();
+        nodes.insert(
+            1,
+            QueryNode { id: node_id(1), kind: PlanNode::Source(Box::new(unreachable)), facts: nodes[0].facts.clone() },
         );
-        let source_plan = builder.finish_with_host_sink(projection);
-        assert_eq!(projection, node_id(2));
+        nodes[2].id = node_id(2);
+        let origin = BTreeMap::from([(source, node_id(0)), (projection, node_id(2))]);
 
-        let plan = source_plan.rewrite(RewrittenNodes::in_place(source_plan.nodes().to_vec(), node_id(2)));
+        let plan = source_plan.rewrite(RewrittenNodes::rebuilt(nodes, node_id(2), origin)).unwrap();
 
         assert_eq!(plan.node_count(), 2);
         assert_eq!(plan.root_id(), node_id(1));
@@ -98,41 +91,48 @@ mod tests {
             panic!("compacted root should remain the projection");
         };
         assert_eq!(projection.input, node_id(0));
-        assert!(plan.unreachable_node_ids().is_empty());
     }
 
     #[test]
     fn compaction_keeps_advisory_on_moved_node() {
         let schema = test_schema(&["x"]);
         let mut builder = QueryPlanBuilder::new();
+        let x = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", Arc::clone(&schema))));
         let a = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("a", Arc::clone(&schema))));
-        let _unreachable =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", Arc::clone(&schema))));
         let b = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("b", Arc::clone(&schema))));
-        let join = builder.add_join(
-            a,
-            b,
+        let join_spec = || {
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))],
-            ),
-            Arc::clone(&schema),
-        );
-        builder.set_advisory_output(AdvisoryOutputBinding {
-            node: b,
-            schema: Arc::clone(&schema),
-            frontend: "test frontend".to_owned(),
-            frontend_version: "1".to_owned(),
-            statistics: AdvisoryOutputStatistics {
-                rows: AdvisoryStatistic::Inexact(100),
-                bytes: AdvisoryStatistic::Inexact(800),
-            },
-            unknown_reason: None,
-        });
-        let source = builder.finish_with_host_sink(join);
+            )
+        };
+        let join = builder.add_join(a, b, join_spec(), Arc::clone(&schema)).unwrap();
+        let root = builder.add_union(vec![join, x], Arc::clone(&schema)).unwrap();
+        builder
+            .set_advisory_output(AdvisoryOutputBinding {
+                node: b,
+                schema: Arc::clone(&schema),
+                frontend: "test frontend".to_owned(),
+                frontend_version: "1".to_owned(),
+                statistics: AdvisoryOutputStatistics {
+                    rows: AdvisoryStatistic::Inexact(100),
+                    bytes: AdvisoryStatistic::Inexact(800),
+                },
+                unknown_reason: None,
+            })
+            .unwrap();
+        let source = builder.finish_with_host_sink(root).unwrap();
         assert_eq!(b, node_id(2));
+        // The rewrite drops the union branch `x`; every kept node moves down
+        // one index.
+        let mut nodes = source.nodes()[1..4].to_vec();
+        for (index, node) in nodes.iter_mut().enumerate() {
+            node.id = node_id(index);
+        }
+        nodes[2].kind = PlanNode::Join(JoinNode { inputs: [node_id(0), node_id(1)], spec: join_spec() });
+        let origin = BTreeMap::from([(a, node_id(0)), (b, node_id(1)), (join, node_id(2))]);
 
-        let rewritten = source.rewrite(RewrittenNodes::in_place(source.nodes().to_vec(), source.root_id()));
+        let rewritten = source.rewrite(RewrittenNodes::rebuilt(nodes, node_id(2), origin)).unwrap();
 
         assert_eq!(rewritten.node_count(), 3);
         let bindings = rewritten.advisory_outputs();
@@ -141,6 +141,71 @@ mod tests {
         assert_eq!(bindings[0].statistics.rows, AdvisoryStatistic::Inexact(100));
         assert_eq!(bindings[0].statistics.bytes, AdvisoryStatistic::Inexact(800));
         assert_eq!(bindings[0].unknown_reason, None);
+    }
+
+    #[test]
+    fn rebuilt_rewrite_moves_dynamic_filter_routes_with_renumbered_nodes() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let source = |builder: &mut QueryPlanBuilder, name: &str| {
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(name, Arc::clone(&schema))))
+        };
+        let join_spec = || {
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::new(
+                JoinSide::Left,
+                ColumnRef::unqualified("id"),
+                "id",
+            )])
+        };
+        let mut builder = QueryPlanBuilder::new();
+        let x = source(&mut builder, "x");
+        let a = source(&mut builder, "a");
+        let b = source(&mut builder, "b");
+        let first_join = builder.add_join(a, b, join_spec(), Arc::clone(&schema)).unwrap();
+        let c = source(&mut builder, "c");
+        let second_join = builder.add_join(first_join, c, join_spec(), Arc::clone(&schema)).unwrap();
+        let root = builder.add_union(vec![second_join, x], Arc::clone(&schema)).unwrap();
+        let route = DynamicFilterRoute::new(
+            DynamicFilterId::new(0),
+            DynamicFilterProducer::HashJoinBuild {
+                join_node_id: first_join,
+                build_side: JoinSide::Right,
+                build_input: b,
+            },
+            DynamicFilterConsumer::HashJoinProbe { join_node_id: second_join, probe_side: JoinSide::Left },
+            vec!["id".to_string()],
+            vec!["id".to_string()],
+            vec![DynamicFilterKind::Range],
+            DynamicFilterConsumerLowering::PostDecodeOnly,
+        );
+        let plan = builder.finish_gpu_resident(root).unwrap().with_dynamic_filter_routes(vec![route]);
+        // The rewrite drops the union and its branch `x`, which precedes every
+        // route endpoint, so each kept node moves down one index.
+        let shifted = |id: NodeId| node_id(id.index() - 1);
+        let mut nodes = plan.nodes()[1..6].to_vec();
+        for node in &mut nodes {
+            node.id = shifted(node.id);
+            node.kind =
+                remap_plan_node_inputs(node.kind.clone(), &[a, b, first_join, c].map(|id| (id, shifted(id))).into());
+        }
+        let origin = [a, b, first_join, c, second_join].into_iter().map(|id| (id, shifted(id))).collect();
+
+        let rewritten = plan.rewrite(RewrittenNodes::rebuilt(nodes, shifted(second_join), origin)).unwrap();
+
+        let routes = rewritten.dynamic_filter_routes();
+        assert_eq!(routes.len(), 1, "pure renumbering must keep the route");
+        let DynamicFilterProducer::HashJoinBuild { join_node_id, build_input, .. } = &routes[0].producer else {
+            panic!("producer kind must survive the remap");
+        };
+        assert_eq!(*join_node_id, shifted(first_join));
+        assert_eq!(*build_input, shifted(b));
+        let DynamicFilterConsumer::HashJoinProbe { join_node_id, .. } = &routes[0].consumer else {
+            panic!("consumer kind must survive the remap");
+        };
+        assert_eq!(*join_node_id, shifted(second_join));
     }
 
     fn rewrite_helper_coverage_cases() -> Vec<(&'static str, PlanNode, Vec<NodeId>)> {
@@ -237,14 +302,14 @@ mod tests {
     fn graph_algorithm_with_all_bfs_side_inputs() -> PlanNode {
         let params = GraphBfsParams {
             source_vertex: 0,
-            source_vertices: Some(GraphPredicateInput::new(node_id(1), "source_vertex")),
+            source_vertices: Some(GraphPredicateInput::new(1, "source_vertex")),
             depth_limit: None,
             predicates: GraphBfsPredicateInputs {
-                include_vertices: Some(GraphPredicateInput::new(node_id(2), "vertex")),
-                exclude_vertices: Some(GraphPredicateInput::new(node_id(3), "vertex")),
-                target_vertices: Some(GraphPredicateInput::new(node_id(4), "vertex")),
-                include_edge_ids: Some(GraphPredicateInput::new(node_id(5), "edge_id")),
-                include_edges: Some(GraphEdgePredicateInput::new(node_id(6), "src", "dst", Some("edge_id"))),
+                include_vertices: Some(GraphPredicateInput::new(2, "vertex")),
+                exclude_vertices: Some(GraphPredicateInput::new(3, "vertex")),
+                target_vertices: Some(GraphPredicateInput::new(4, "vertex")),
+                include_edge_ids: Some(GraphPredicateInput::new(5, "edge_id")),
+                include_edges: Some(GraphEdgePredicateInput::new(6, "src", "dst", Some("edge_id"))),
             },
             endpoint_policy: GraphBfsEndpointPolicy::Strict,
             path_output: None,
@@ -256,34 +321,18 @@ mod tests {
             GraphConstructionOptions::default(),
             GraphAlgorithmParams::Bfs(Box::new(params)),
         );
-        PlanNode::GraphAlgorithm(GraphAlgorithmNode { input: node_id(0), inputs: (0..=6).map(node_id).collect(), spec })
-    }
-
-    fn assert_graph_bfs_side_inputs_match_input_list(label: &str, node: &PlanNode) {
-        let PlanNode::GraphAlgorithm(graph) = node else {
-            return;
-        };
-        let GraphAlgorithmParams::Bfs(params) = &graph.spec.params else {
-            panic!("{label}: expected BFS graph params");
-        };
-        assert_eq!(graph.input, remapped(node_id(0)), "{label}: primary graph input");
-        assert_eq!(graph.inputs, (0..=6).map(|index| remapped(node_id(index))).collect::<Vec<_>>(), "{label}");
-        assert_eq!(params.source_vertices.as_ref().map(|input| input.input), Some(remapped(node_id(1))));
-        assert_eq!(params.predicates.include_vertices.as_ref().map(|input| input.input), Some(remapped(node_id(2))));
-        assert_eq!(params.predicates.exclude_vertices.as_ref().map(|input| input.input), Some(remapped(node_id(3))));
-        assert_eq!(params.predicates.target_vertices.as_ref().map(|input| input.input), Some(remapped(node_id(4))));
-        assert_eq!(params.predicates.include_edge_ids.as_ref().map(|input| input.input), Some(remapped(node_id(5))));
-        assert_eq!(params.predicates.include_edges.as_ref().map(|input| input.input), Some(remapped(node_id(6))));
+        PlanNode::GraphAlgorithm(GraphAlgorithmNode { inputs: (0..=6).map(node_id).collect(), spec })
     }
 
     fn vector_brute_force_knn() -> PlanNode {
         let params = VectorBruteForceKnnParams::new(
-            vector_relation_binding(node_id(12)),
-            vector_relation_binding(node_id(13)),
+            vector_relation_binding(0),
+            vector_relation_binding(1),
             3,
             VectorDistanceMetric::L2Expanded,
         );
         vector_algorithm_node(
+            vec![node_id(12), node_id(13)],
             VectorAlgorithm::BruteForceKnn,
             VectorAlgorithmParams::BruteForceKnn(params),
             vector_knn_output_schema(DataType::Int32, DataType::Int32),
@@ -291,9 +340,10 @@ mod tests {
     }
 
     fn vector_kmeans_with_initial_centroids() -> PlanNode {
-        let params = VectorKMeansParams::new(vector_relation_binding(node_id(13)), 4)
-            .with_initial_centroids(vector_relation_binding(node_id(14)));
+        let params =
+            VectorKMeansParams::new(vector_relation_binding(0), 4).with_initial_centroids(vector_relation_binding(1));
         vector_algorithm_node(
+            vec![node_id(13), node_id(14)],
             VectorAlgorithm::KMeans,
             VectorAlgorithmParams::KMeans(params),
             vector_kmeans_output_schema(DataType::Int32),
@@ -301,8 +351,9 @@ mod tests {
     }
 
     fn vector_pca() -> PlanNode {
-        let params = VectorPcaParams::new(vector_relation_binding(node_id(15)), 1);
+        let params = VectorPcaParams::new(vector_relation_binding(0), 1);
         vector_algorithm_node(
+            vec![node_id(15)],
             VectorAlgorithm::Pca,
             VectorAlgorithmParams::Pca(params),
             vector_pca_output_schema(DataType::Int32, 1),
@@ -310,54 +361,17 @@ mod tests {
     }
 
     fn vector_algorithm_node(
+        inputs: Vec<NodeId>,
         algorithm: VectorAlgorithm,
         params: VectorAlgorithmParams,
         output_schema: Arc<Schema>,
     ) -> PlanNode {
         let spec = VectorAlgorithmSpec::new(algorithm, params, output_schema);
-        let inputs = spec.params.relation_bindings().map(|binding| binding.input).collect();
         PlanNode::VectorAlgorithm(VectorAlgorithmNode { inputs, spec })
     }
 
-    fn vector_relation_binding(input: NodeId) -> VectorRelationBinding {
+    fn vector_relation_binding(input: usize) -> VectorRelationBinding {
         VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"])
-    }
-
-    fn assert_vector_bindings_match_input_list(label: &str, node: &PlanNode) {
-        let PlanNode::VectorAlgorithm(vector) = node else {
-            return;
-        };
-        match &vector.spec.params {
-            VectorAlgorithmParams::BruteForceKnn(params) => {
-                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
-            },
-            VectorAlgorithmParams::IvfFlat(params) => {
-                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
-            },
-            VectorAlgorithmParams::IvfPq(params) => {
-                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
-            },
-            VectorAlgorithmParams::Cagra(params) => {
-                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
-            },
-            VectorAlgorithmParams::PairwiseDistance(params) => {
-                assert_eq!(vector.inputs, [params.x.input, params.y.input], "{label}");
-            },
-            VectorAlgorithmParams::TopK(params) => {
-                assert_eq!(vector.inputs, [params.input.input], "{label}");
-            },
-            VectorAlgorithmParams::KMeans(params) => {
-                assert_eq!(vector.inputs.first().copied(), Some(params.input.input), "{label}: input");
-                assert_eq!(
-                    vector.inputs.get(1).copied(),
-                    params.initial_centroids.as_ref().map(|binding| binding.input),
-                    "{label}: initial centroids"
-                );
-            },
-            VectorAlgorithmParams::Pca(params) => {
-                assert_eq!(vector.inputs, [params.input.input], "{label}");
-            },
-        }
     }
 
     fn test_schema(fields: &[&str]) -> Arc<Schema> {
@@ -369,6 +383,6 @@ mod tests {
     }
 
     fn node_id(index: usize) -> NodeId {
-        NodeId::from_index_for_internal_use(index)
+        NodeId::from_index_for_test(index)
     }
 }

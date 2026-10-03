@@ -256,8 +256,7 @@ fn statistical_aggregate_execution_mode_rejection(
     if !statistical_aggregate_execution_mode.is_datafusion_exact() {
         return None;
     }
-    let unreachable = plan.unreachable_node_ids();
-    plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).find_map(|node| {
+    plan.nodes().iter().find_map(|node| {
         let PlanNode::Aggregate(aggregate) = &node.kind else {
             return None;
         };
@@ -455,20 +454,22 @@ mod tests {
             Arc::clone(&input_schema),
             input_schema.fields().iter().map(|field| field.name().clone()).collect(),
         )));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("key")],
-                vec![
-                    AggregateExpr::new(AggregateFunction::Count, Expr::column("quantity"), "quantity_count"),
-                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity"), "quantity_avg"),
-                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("quantity"), "quantity_stddev"),
-                    extra,
-                ],
-            ),
-            output_schema,
-        );
-        builder.finish_with_host_sink(aggregate)
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    vec![Expr::column("key")],
+                    vec![
+                        AggregateExpr::new(AggregateFunction::Count, Expr::column("quantity"), "quantity_count"),
+                        AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity"), "quantity_avg"),
+                        AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("quantity"), "quantity_stddev"),
+                        extra,
+                    ],
+                ),
+                output_schema,
+            )
+            .unwrap();
+        builder.finish_with_host_sink(aggregate).unwrap()
     }
 
     #[test]
@@ -485,18 +486,24 @@ mod tests {
                 Arc::clone(&input_schema),
                 vec!["quantity".to_string(), "amount".to_string()],
             )));
-            let aggregate = builder.add_aggregate(
-                source,
-                AggregateSpec::new(
-                    Vec::new(),
-                    vec![
-                        AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("quantity"), "quantity_stddev"),
-                        extra,
-                    ],
-                ),
-                Arc::new(Schema::new(vec![Field::new("quantity_stddev", DataType::Float64, true), extra_output])),
-            );
-            builder.finish_with_host_sink(aggregate)
+            let aggregate = builder
+                .add_aggregate(
+                    source,
+                    AggregateSpec::new(
+                        Vec::new(),
+                        vec![
+                            AggregateExpr::new(
+                                AggregateFunction::StddevSamp,
+                                Expr::column("quantity"),
+                                "quantity_stddev",
+                            ),
+                            extra,
+                        ],
+                    ),
+                    Arc::new(Schema::new(vec![Field::new("quantity_stddev", DataType::Float64, true), extra_output])),
+                )
+                .unwrap();
+            builder.finish_with_host_sink(aggregate).unwrap()
         };
 
         let avg = ungrouped(

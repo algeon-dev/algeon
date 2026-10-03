@@ -15,10 +15,11 @@ fn shadow_envelope_releases_last_consumers_and_separates_borrowed_allocations() 
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let projection =
-        builder.add_projection(source, vec![ProjectionOutput::new(Expr::column("key"), schema.field(0).clone())]);
-    let root = builder.add_limit(projection, LimitSpec::fetch(10), schema);
-    let plan = builder.finish_gpu_resident(root);
+    let projection = builder
+        .add_projection(source, vec![ProjectionOutput::new(Expr::column("key"), schema.field(0).clone())])
+        .unwrap();
+    let root = builder.add_limit(projection, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let pipeline =
         compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()))).unwrap();
     let mut models = ShadowMemoryModels {

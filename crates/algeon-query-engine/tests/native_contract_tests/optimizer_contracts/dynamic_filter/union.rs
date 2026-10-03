@@ -8,12 +8,12 @@ fn native_optimizer_discovers_dynamic_filter_routes_for_union_probe_branches() {
     let fact_a_projected = builder.add_projection(
         fact_a,
         vec![ProjectionOutput::new(Expr::column("a_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
+    ).unwrap();
     let fact_b_projected = builder.add_projection(
         fact_b,
         vec![ProjectionOutput::new(Expr::column("b_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![fact_a_projected, fact_b_projected], Arc::clone(&fact_schema));
+    ).unwrap();
+    let union = builder.add_union(vec![fact_a_projected, fact_b_projected], Arc::clone(&fact_schema)).unwrap();
     let join = builder.add_join(
         dim,
         union,
@@ -27,14 +27,14 @@ fn native_optimizer_discovers_dynamic_filter_routes_for_union_probe_branches() {
         .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         fact_schema,
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 2);
@@ -92,7 +92,7 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
     let sales_branch = builder.add_projection(
         sales,
         vec![ProjectionOutput::new(Expr::column("ws_sold_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
+    ).unwrap();
     let returns_projected = builder.add_projection(
         returns,
         vec![
@@ -106,7 +106,7 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
                 Field::new("wr_order_number", DataType::Int32, false),
             ),
         ],
-    );
+    ).unwrap();
     let sales_join_build = builder.add_projection(
         sales,
         vec![
@@ -116,7 +116,7 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
                 Field::new("ws_order_number", DataType::Int32, false),
             ),
         ],
-    );
+    ).unwrap();
     let returns_with_sales = builder.add_join(
         returns_projected,
         sales_join_build,
@@ -139,8 +139,8 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
-    let union = builder.add_union(vec![sales_branch, returns_with_sales], Arc::clone(&branch_schema));
+    ).unwrap();
+    let union = builder.add_union(vec![sales_branch, returns_with_sales], Arc::clone(&branch_schema)).unwrap();
     let final_join = builder.add_join(
         union,
         dim,
@@ -154,15 +154,15 @@ fn native_optimizer_adds_post_decode_probe_route_for_mixed_union_branch_reuse() 
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Right),
         branch_schema,
-    );
-    let plan = builder.finish_gpu_resident(final_join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(final_join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 2);
@@ -229,7 +229,7 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
     let sales_branch = builder.add_projection(
         sales,
         vec![ProjectionOutput::new(Expr::column("ws_sold_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
+    ).unwrap();
     let sales_join_build = builder.add_projection(
         sales,
         vec![
@@ -239,7 +239,7 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
                 Field::new("ws_order_number", DataType::Int32, false),
             ),
         ],
-    );
+    ).unwrap();
     let returns_projected = builder.add_projection(
         returns,
         vec![
@@ -253,7 +253,7 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
                 Field::new("wr_order_number", DataType::Int32, false),
             ),
         ],
-    );
+    ).unwrap();
     let returns_with_sales = builder.add_join(
         returns_projected,
         sales_join_build,
@@ -276,13 +276,13 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let returns_passthrough = builder.add_projection(
         returns,
         vec![ProjectionOutput::new(Expr::column("wr_returned_date_sk"), Field::new("date_sk", DataType::Int32, false))],
-    );
+    ).unwrap();
     let union =
-        builder.add_union(vec![sales_branch, returns_with_sales, returns_passthrough], Arc::clone(&branch_schema));
+        builder.add_union(vec![sales_branch, returns_with_sales, returns_passthrough], Arc::clone(&branch_schema)).unwrap();
     let final_join = builder.add_join(
         union,
         dim,
@@ -296,15 +296,15 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Right),
         branch_schema,
-    );
-    let plan = builder.finish_gpu_resident(final_join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(final_join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);

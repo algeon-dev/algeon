@@ -26,9 +26,9 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, unsupported_filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let filter = builder.add_filter(source, unsupported_filter).unwrap();
+    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &plan) {

@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use query_engine::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
-    error::QueryErrorKind,
+    error::{QueryError, QueryErrorKind},
     exec::{admit_query_plan, preflight_query_plan},
     expr::Expr,
     plan::{
-        GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, NodeId, QueryPlan,
-        graph_result_schema_for_vertex_type,
+        GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, QueryPlan, graph_result_schema_for_vertex_type,
     },
 };
 
@@ -30,7 +29,7 @@ use super::{
     NativeGraphBfsPredicateInputs, NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput,
     NativeGraphPredicateInput, ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result,
     SchemaRef, SortExpr, SortSpec, SourceNode, add_logical_mapping_plan, decode_logical_graph_result,
-    execute_query_plan, finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan,
+    execute_query_plan, finalize_graph_query_outcome, graph_uses_logical_mapping, plan,
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
@@ -236,39 +235,34 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     let graph_spec = native_graph_spec(
         &execution_spec,
         edge_normalize_inserted,
-        &graph_predicates,
+        graph_predicates.len(),
         bfs_path_output_rows,
         native_vertex_type,
     );
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
-    let mut root = builder.try_add_graph_algorithm(graph_input, graph_spec).map_err(|error| {
-        Error::from_native("algeon_datafusion.cugraph_sql.plan", "failed to build native cuGraph query plan", error)
-    })?;
+    let mut root = builder.add_graph_algorithm(graph_input, graph_predicates, graph_spec).map_err(native_plan_error)?;
     if let Some(outputs) = bfs_normalized_output_projection(&execution_spec, &graph_edge_schema)? {
-        root = builder.add_projection(root, outputs);
+        root = builder.add_projection(root, outputs).map_err(native_plan_error)?;
         root_schema = Arc::clone(&execution_spec.output_schema);
     }
     if logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
-        root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
+        root = builder.add_sort(root, sort.clone()).map_err(native_plan_error)?;
     }
     if logical_mapping && let Some(limit) = result_options.limit {
-        root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
+        root = builder.add_limit(root, LimitSpec::fetch(limit)).map_err(native_plan_error)?;
     }
     if let Some(codebook) = codebook {
-        (root, root_schema) = decode_logical_graph_result(&mut builder, &spec, root, root_schema, codebook)?;
+        (root, _) = decode_logical_graph_result(&mut builder, &spec, root, root_schema, codebook)?;
         if spec.is_bfs_path_output() {
-            root = builder.add_sort(
-                root,
-                SortSpec::new(vec![SortExpr::new(NativeExpr::column("path_index"), false, false)]),
-                Arc::clone(&root_schema),
-            );
+            root = builder
+                .add_sort(root, SortSpec::new(vec![SortExpr::new(NativeExpr::column("path_index"), false, false)]))
+                .map_err(native_plan_error)?;
         }
     }
     if logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
-        root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
+        root = builder.add_sort(root, sort.clone()).map_err(native_plan_error)?;
     }
     if let Some(projection) = &result_options.projection {
-        root_schema = projected_schema(&root_schema, Some(projection))?;
         let outputs = projection
             .iter()
             .map(|index| {
@@ -281,15 +275,20 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
                 Ok(ProjectionOutput::new(Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
-        root = builder.add_projection(root, outputs);
+        root = builder.add_projection(root, outputs).map_err(native_plan_error)?;
     }
     if !logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
-        root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
+        root = builder.add_sort(root, sort.clone()).map_err(native_plan_error)?;
     }
     if !logical_mapping && let Some(limit) = result_options.limit {
-        root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
+        root = builder.add_limit(root, LimitSpec::fetch(limit)).map_err(native_plan_error)?;
     }
-    Ok(builder.finish_gpu_resident(root))
+    builder.finish_gpu_resident(root).map_err(native_plan_error)
+}
+
+/// A native cuGraph plan the builder rejects is an adapter defect.
+pub(super) fn native_plan_error(error: QueryError) -> Error {
+    Error::from_native("algeon_datafusion.cugraph_sql.plan", "failed to build native cuGraph query plan", error)
 }
 
 pub(super) fn cugraph_execution_capability_evidence(
@@ -323,7 +322,7 @@ pub(super) fn bind_predicate_gpu_inputs(
 pub(super) fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
-    predicate_nodes: &[NodeId],
+    predicate_count: usize,
     bfs_path_output_rows: Option<u64>,
     vertex_type: &DataType,
 ) -> GraphAlgorithmSpec {
@@ -336,7 +335,9 @@ pub(super) fn native_graph_spec(
         edge_columns = edge_columns.with_edge_id(CUGRAPH_EDGE_ID_COLUMN.to_string());
     }
     let algorithm = native_algorithm(spec.algorithm);
-    let params = native_algorithm_params(&spec.params, predicate_nodes, bfs_path_output_rows);
+    // Side input `i` is the graph node's input `i + 1`; input 0 is the edge list.
+    let predicate_ordinals = (1..=predicate_count).collect::<Vec<_>>();
+    let params = native_algorithm_params(&spec.params, &predicate_ordinals, bfs_path_output_rows);
     let output_schema = graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
     GraphAlgorithmSpec::new(
         algorithm,
@@ -365,20 +366,9 @@ pub(super) fn native_graph_spec_for_placement_hint(
     predicate_sources: &[Arc<dyn ExecutionPlan>],
     edge_schema: &SchemaRef,
 ) -> Option<GraphAlgorithmSpec> {
-    let mut builder = QueryPlanBuilder::new();
-    let predicate_nodes = predicate_sources
-        .iter()
-        .enumerate()
-        .map(|(index, source)| {
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-                format!("__algeon_datafusion_cugraph_placement_hint_{index}"),
-                source.schema(),
-            )))
-        })
-        .collect::<Vec<_>>();
     let vertex_type = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).ok()?.data_type();
     matches!(vertex_type, DataType::Int32 | DataType::Int64)
-        .then(|| native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes, None, vertex_type))
+        .then(|| native_graph_spec(spec, edge_normalize_inserted, predicate_sources.len(), None, vertex_type))
 }
 
 fn bfs_path_output_row_bound(
@@ -486,7 +476,7 @@ pub(super) fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
 
 pub(super) fn native_algorithm_params(
     params: &CugraphAlgorithmParams,
-    predicate_nodes: &[NodeId],
+    predicate_ordinals: &[usize],
     bfs_path_output_rows: Option<u64>,
 ) -> GraphAlgorithmParams {
     match params {
@@ -496,7 +486,7 @@ pub(super) fn native_algorithm_params(
             max_iterations: params.max_iterations,
         }),
         CugraphAlgorithmParams::PersonalizedPageRank(params) => {
-            let personalization_node = predicate_nodes.first().copied().expect("personalization node missing");
+            let personalization_input = predicate_ordinals.first().copied().expect("personalization node missing");
             GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
                 pagerank: GraphPageRankParams {
                     alpha: params.pagerank.alpha,
@@ -504,14 +494,14 @@ pub(super) fn native_algorithm_params(
                     max_iterations: params.pagerank.max_iterations,
                 },
                 personalization: NativeGraphPageRankPersonalizationInput::new(
-                    personalization_node,
+                    personalization_input,
                     CUGRAPH_VERTEX_COLUMN,
                     CUGRAPH_VALUE_COLUMN,
                 ),
             })
         },
         CugraphAlgorithmParams::Bfs(params) => {
-            GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes, bfs_path_output_rows)))
+            GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_ordinals, bfs_path_output_rows)))
         },
         CugraphAlgorithmParams::Louvain(params) => GraphAlgorithmParams::Louvain(GraphLouvainParams {
             max_level: params.max_level,
@@ -539,7 +529,7 @@ pub(super) fn native_algorithm_params(
         }),
         CugraphAlgorithmParams::BetweennessCentrality(params) => {
             GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
-                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_nodes)),
+                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_ordinals)),
                 k: params.k,
                 normalized: params.normalized,
                 include_endpoints: params.include_endpoints,
@@ -548,7 +538,7 @@ pub(super) fn native_algorithm_params(
         },
         CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
-                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_nodes)),
+                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_ordinals)),
                 k: params.k,
                 normalized: params.normalized,
                 exact_vertex_threshold: params.exact_vertex_threshold,
@@ -558,7 +548,7 @@ pub(super) fn native_algorithm_params(
             let source_vertex = match &params.source_vertex {
                 CugraphVertexSelector::Int64(value) => GraphSsspSource::I64(*value),
                 CugraphVertexSelector::Utf8(_) => GraphSsspSource::Input(NativeGraphPredicateInput::new(
-                    predicate_nodes.first().copied().expect("SSSP source node missing"),
+                    predicate_ordinals.first().copied().expect("SSSP source node missing"),
                     "__source_vertex",
                 )),
             };
@@ -610,7 +600,7 @@ pub(super) fn native_algorithm_params(
             })
         },
         CugraphAlgorithmParams::ForceAtlas2(params) => {
-            let mut next = predicate_nodes.iter().copied();
+            let mut next = predicate_ordinals.iter().copied();
             let vertex_attributes = params.vertex_attributes.as_ref().map(|input| {
                 GraphForceAtlas2VertexAttributesInput::new(
                     next.next().expect("ForceAtlas2 vertex-attributes node missing"),
@@ -648,9 +638,9 @@ pub(super) fn native_algorithm_params(
             })
         },
         CugraphAlgorithmParams::Similarity(_params) => {
-            let vertex_pairs_node = predicate_nodes.first().copied().expect("similarity vertex-pairs node missing");
+            let vertex_pairs_input = predicate_ordinals.first().copied().expect("similarity vertex-pairs node missing");
             GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
-                vertex_pairs_node,
+                vertex_pairs_input,
                 "first",
                 "second",
             )))
@@ -660,7 +650,7 @@ pub(super) fn native_algorithm_params(
 
 fn native_betweenness_seeds(
     seeds: &CugraphBetweennessSeeds,
-    predicate_nodes: &[NodeId],
+    predicate_ordinals: &[usize],
 ) -> NativeGraphBetweennessSeeds {
     match seeds.vertices.first() {
         Some(CugraphVertexSelector::Int64(_)) => NativeGraphBetweennessSeeds::I64(
@@ -675,7 +665,7 @@ fn native_betweenness_seeds(
         ),
         Some(CugraphVertexSelector::Utf8(_)) => NativeGraphBetweennessSeeds::Input {
             input: NativeGraphPredicateInput::new(
-                predicate_nodes.first().copied().expect("betweenness seed node missing"),
+                predicate_ordinals.first().copied().expect("betweenness seed node missing"),
                 "__seed_vertex",
             ),
             row_count_upper_bound: seeds.vertices.len() as u64,
@@ -686,11 +676,11 @@ fn native_betweenness_seeds(
 
 pub(super) fn native_bfs_params(
     params: &super::CugraphBfsParams,
-    predicate_nodes: &[NodeId],
+    predicate_ordinals: &[usize],
     path_output_rows: Option<u64>,
 ) -> GraphBfsParams {
     let mut native = GraphBfsParams::new(params.source.as_i64().unwrap_or(0), params.depth_limit);
-    let mut next = predicate_nodes.iter().copied();
+    let mut next = predicate_ordinals.iter().copied();
     if params.source.requires_source_vertices_input() {
         native.source_vertices = Some(NativeGraphPredicateInput::new(
             next.next().expect("BFS source-vertices node missing"),

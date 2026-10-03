@@ -145,19 +145,21 @@ mod tests {
         let batch = RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![0]))]).unwrap();
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("a")],
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    vec![Expr::column("a")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+                )
+                .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
+                Arc::new(Schema::new(vec![
+                    Field::new("a", DataType::Int32, true),
+                    Field::new("count", DataType::UInt64, false),
+                ])),
             )
-            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
-            Arc::new(Schema::new(vec![
-                Field::new("a", DataType::Int32, true),
-                Field::new("count", DataType::UInt64, false),
-            ])),
-        );
-        let plan = builder.finish_with_host_sink(aggregate);
+            .unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
         assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(2));
     }
@@ -170,19 +172,21 @@ mod tests {
                 .unwrap();
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![empty])));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("a")],
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    vec![Expr::column("a")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+                )
+                .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
+                Arc::new(Schema::new(vec![
+                    Field::new("a", DataType::Int32, true),
+                    Field::new("count", DataType::UInt64, false),
+                ])),
             )
-            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
-            Arc::new(Schema::new(vec![
-                Field::new("a", DataType::Int32, true),
-                Field::new("count", DataType::UInt64, false),
-            ])),
-        );
-        let plan = builder.finish_with_host_sink(aggregate);
+            .unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
         assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(1), "ROLLUP emits its total row for empty input");
     }

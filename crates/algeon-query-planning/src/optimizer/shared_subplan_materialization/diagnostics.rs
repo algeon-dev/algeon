@@ -77,6 +77,4 @@ pub enum SharedSubplanMaterializationRejectedReason {
     UnsupportedScalarAggregateShape,
     /// Branch predicate columns could not be carried to the shared aggregate input.
     PredicateColumnPropagationUnsupported,
-    /// The candidate was not reachable from the query sink.
-    NotReachableFromSink,
 }

@@ -9,7 +9,7 @@ fn native_optimizer_discovers_repeated_grouped_aggregate_materialization_family(
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -57,7 +57,7 @@ fn native_optimizer_materializes_aliased_grouped_aggregates_when_branch_replay_i
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -76,7 +76,7 @@ fn native_optimizer_materializes_grouped_aggregates_with_equivalent_projected_ar
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -126,7 +126,7 @@ fn native_optimizer_does_not_materialize_projected_aliases_across_different_loca
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -145,7 +145,7 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -212,7 +212,7 @@ fn native_optimizer_keeps_shared_subplan_materialization_contract_isolated() {
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -228,7 +228,7 @@ fn native_optimizer_keeps_shared_subplan_materialization_decimal_contract_isolat
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -244,7 +244,7 @@ fn native_optimizer_ignores_identity_projection_depth_for_scalar_count_materiali
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
@@ -263,7 +263,7 @@ fn native_optimizer_lifts_reader_predicate_filters_for_scalar_count_materializat
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
@@ -313,7 +313,7 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
     assert_eq!(diagnostics.considered_count, 3);
@@ -363,7 +363,7 @@ fn native_optimizer_combines_q09_like_scalar_branches_with_different_read_column
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -420,7 +420,7 @@ fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -483,7 +483,7 @@ fn native_optimizer_combines_q09_like_scalar_branches_when_projected_count_is_no
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -524,7 +524,7 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -566,7 +566,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_projection_l
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -585,7 +585,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filter
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -604,7 +604,7 @@ fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collid
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -627,7 +627,7 @@ fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_di
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -650,7 +650,7 @@ fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurr
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -673,7 +673,7 @@ fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occu
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -687,28 +687,6 @@ fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occu
     );
 }
 
-#[test]
-fn native_optimizer_rejects_unreachable_grouped_materialization_without_claiming_applied_rewrite() {
-    let plan = unreachable_grouped_aggregate_materialization_plan();
-    let options = NativeOptimizerOptions {
-        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
-        ..NativeOptimizerOptions::disabled()
-    };
-
-    let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
-
-    assert_eq!(result.plan, plan);
-    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
-    let diagnostics = &result.diagnostics.shared_subplan_materialization;
-    assert_eq!(diagnostics.considered_count, 2);
-    assert_eq!(diagnostics.candidate_count, 1);
-    assert_eq!(diagnostics.applied_count, 0);
-    assert_eq!(
-        diagnostics.candidates[0].rejected_reason,
-        Some(SharedSubplanMaterializationRejectedReason::NotReachableFromSink)
-    );
-}
 
 #[test]
 fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs() {
@@ -719,7 +697,7 @@ fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs(
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -743,7 +721,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate(
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -759,7 +737,7 @@ fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_col
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -782,7 +760,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -801,7 +779,7 @@ fn native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -824,7 +802,7 @@ fn native_optimizer_derives_scalar_sum_from_grouped_sum_with_permuted_source_fil
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -863,7 +841,7 @@ fn disabled_shared_subplan_materialization_does_not_derive_scalar_sum_from_group
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -879,7 +857,7 @@ fn disabled_shared_subplan_materialization_emits_no_diagnostics() {
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -899,16 +877,15 @@ fn repeated_grouped_aggregate_materialization_plan() -> QueryPlan {
                 vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
             ),
             Arc::clone(&aggregate_schema),
-        );
+        ).unwrap();
         aggregates.push(aggregate);
     }
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_aliased_grouped_aggregate_materialization_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let source_schema = schema(&["county", "sales"]);
     let aggregate_schema = schema(&["county_name", "store_sales"]);
     let source = builder.add_source(estimated_local_source_with_stable_id(
         "store_sales_alias",
@@ -924,12 +901,10 @@ fn repeated_aliased_grouped_aggregate_materialization_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sorted = builder.add_sort(
         source,
-        SortSpec::new(vec![SortExpr::new(Expr::column("county"), false, false)]),
-        source_schema,
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("county"), false, false)])).unwrap();
     let sorted_aggregate = builder.add_aggregate(
         sorted,
         AggregateSpec::new(
@@ -937,10 +912,10 @@ fn repeated_aliased_grouped_aggregate_materialization_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let aggregates = vec![aggregate, sorted_aggregate];
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan() -> QueryPlan {
@@ -968,7 +943,7 @@ fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_pl
                     Field::new(projected_sales.as_str(), DataType::Float64, true),
                 ),
             ],
-        );
+        ).unwrap();
         let aggregate = builder.add_aggregate(
             projection,
             AggregateSpec::new(
@@ -976,16 +951,15 @@ fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_pl
                 vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(projected_sales), "store_sales")],
             ),
             Arc::clone(&aggregate_schema),
-        );
+        ).unwrap();
         aggregates.push(aggregate);
     }
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let source_schema = schema(&["county", "quarter", "year", "sales"]);
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("county", DataType::Int32, false),
         Field::new("quarter", DataType::Int32, false),
@@ -997,9 +971,7 @@ fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() ->
         let source = builder.add_source(estimated_sales_source_without_reader_predicate(512 * 1024 * 1024));
         let filtered = builder.add_filter(
             source,
-            Expr::binary(Expr::column("quarter"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(quarter))),
-            Arc::clone(&source_schema),
-        );
+            Expr::binary(Expr::column("quarter"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(quarter)))).unwrap();
         let projected_sales = format!("__common_expr_{quarter}");
         let projection = builder.add_projection(
             filtered,
@@ -1013,7 +985,7 @@ fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() ->
                     Field::new(projected_sales.as_str(), DataType::Float64, true),
                 ),
             ],
-        );
+        ).unwrap();
         let aggregate = builder.add_aggregate(
             projection,
             AggregateSpec::new(
@@ -1021,11 +993,11 @@ fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() ->
                 vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(projected_sales), "store_sales")],
             ),
             Arc::clone(&aggregate_schema),
-        );
+        ).unwrap();
         aggregates.push(aggregate);
     }
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn estimated_sales_source_with_common_sales_and_quarter_predicate(quarter: i32, bytes: u64) -> SourceNode {
@@ -1072,11 +1044,11 @@ fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> QueryPlan {
                 vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
             ),
             Arc::clone(&aggregate_schema),
-        );
+        ).unwrap();
         aggregates.push(aggregate);
     }
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> QueryPlan {
@@ -1108,7 +1080,7 @@ fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> Q
                 JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
             ]),
             Arc::clone(&join_schema),
-        );
+        ).unwrap();
         let aggregate = builder.add_aggregate(
             joined,
             AggregateSpec::new(
@@ -1116,11 +1088,11 @@ fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> Q
                 vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
             ),
             Arc::clone(&aggregate_schema),
-        );
+        ).unwrap();
         aggregates.push(aggregate);
     }
-    let union = builder.add_union(aggregates, aggregate_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> QueryPlan {
@@ -1141,7 +1113,7 @@ fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> QueryPlan {
             JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
         ]),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         joined,
         AggregateSpec::new(
@@ -1149,12 +1121,10 @@ fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sorted = builder.add_sort(
         joined,
-        SortSpec::new(vec![SortExpr::new(Expr::column("customer_id"), false, false)]),
-        join_schema,
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("customer_id"), false, false)])).unwrap();
     let sorted_aggregate = builder.add_aggregate(
         sorted,
         AggregateSpec::new(
@@ -1162,9 +1132,9 @@ fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let union = builder.add_union(vec![aggregate, sorted_aggregate], aggregate_schema);
-    builder.finish_gpu_resident(union)
+    ).unwrap();
+    let union = builder.add_union(vec![aggregate, sorted_aggregate], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> QueryPlan {
@@ -1184,7 +1154,7 @@ fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> QueryPlan {
             JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
         ]),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         joined,
         AggregateSpec::new(
@@ -1192,12 +1162,10 @@ fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sorted = builder.add_sort(
         joined,
-        SortSpec::new(vec![SortExpr::new(Expr::column("customer_id"), false, false)]),
-        join_schema,
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("customer_id"), false, false)])).unwrap();
     let sorted_aggregate = builder.add_aggregate(
         sorted,
         AggregateSpec::new(
@@ -1205,46 +1173,11 @@ fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         Arc::clone(&aggregate_schema),
-    );
-    let union = builder.add_union(vec![aggregate, sorted_aggregate], aggregate_schema);
-    builder.finish_gpu_resident(union)
+    ).unwrap();
+    let union = builder.add_union(vec![aggregate, sorted_aggregate], aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
-fn unreachable_grouped_aggregate_materialization_plan() -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let root = builder.add_source(estimated_local_source("root", "root_key", 1024, 10));
-    let aggregate_schema = schema(&["county", "store_sales"]);
-    let source = builder.add_source(estimated_local_source_with_stable_id(
-        "unreachable_sales",
-        "unreachable_sales",
-        &["county", "sales"],
-        512 * 1024 * 1024,
-        10_000_000,
-    ));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("county")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sorted = builder.add_sort(
-        source,
-        SortSpec::new(vec![SortExpr::new(Expr::column("county"), false, false)]),
-        schema(&["county", "sales"]),
-    );
-    let _sorted_aggregate = builder.add_aggregate(
-        sorted,
-        AggregateSpec::new(
-            vec![Expr::column("county")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
-        ),
-        aggregate_schema,
-    );
-    assert_ne!(aggregate, root, "unreachable aggregate should not be the plan root");
-    builder.finish_gpu_resident(root)
-}
 
 fn repeated_scalar_count_materialization_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
@@ -1258,7 +1191,7 @@ fn repeated_scalar_count_materialization_plan() -> QueryPlan {
         let time_key = builder.add_projection(
             time,
             vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
-        );
+        ).unwrap();
         let joined = builder.add_join(
             fact,
             time_key,
@@ -1275,7 +1208,7 @@ fn repeated_scalar_count_materialization_plan() -> QueryPlan {
             )])
             .with_build_side(JoinSide::Right),
             Arc::clone(&fact_schema),
-        );
+        ).unwrap();
         let count = builder.add_aggregate(
             joined,
             AggregateSpec::new(
@@ -1283,11 +1216,11 @@ fn repeated_scalar_count_materialization_plan() -> QueryPlan {
                 vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
             ),
             Arc::clone(&count_schema),
-        );
+        ).unwrap();
         counts.push(count);
     }
-    let union = builder.add_union(counts, count_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(counts, count_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> QueryPlan {
@@ -1309,7 +1242,7 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
         let time_key = builder.add_projection(
             time,
             vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
-        );
+        ).unwrap();
         let joined = builder.add_join(
             fact,
             time_key,
@@ -1326,7 +1259,7 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
             )])
             .with_build_side(JoinSide::Right),
             Arc::clone(&fact_schema),
-        );
+        ).unwrap();
         let count = builder.add_aggregate(
             joined,
             AggregateSpec::new(
@@ -1334,11 +1267,11 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
                 vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
             ),
             Arc::clone(&count_schema),
-        );
+        ).unwrap();
         counts.push(count);
     }
-    let union = builder.add_union(counts, count_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(counts, count_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> QueryPlan {
@@ -1367,7 +1300,7 @@ fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan(
         let time_key = builder.add_projection(
             time,
             vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
-        );
+        ).unwrap();
         let joined = builder.add_join(
             fact,
             time_key,
@@ -1384,7 +1317,7 @@ fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan(
             )])
             .with_build_side(JoinSide::Right),
             Arc::clone(&fact_schema),
-        );
+        ).unwrap();
         let count = builder.add_aggregate(
             joined,
             AggregateSpec::new(
@@ -1392,11 +1325,11 @@ fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan(
                 vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
             ),
             Arc::clone(&count_schema),
-        );
+        ).unwrap();
         counts.push(count);
     }
-    let union = builder.add_union(counts, count_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(counts, count_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> QueryPlan {
@@ -1411,7 +1344,7 @@ fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> Que
         let time_key = builder.add_projection(
             time,
             vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
-        );
+        ).unwrap();
         let mut input = builder.add_join(
             fact,
             time_key,
@@ -1428,7 +1361,7 @@ fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> Que
             )])
             .with_build_side(JoinSide::Right),
             Arc::clone(&fact_schema),
-        );
+        ).unwrap();
         for _ in 0..projection_depth {
             input = builder.add_projection(
                 input,
@@ -1436,7 +1369,7 @@ fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> Que
                     Expr::column("ss_sold_time_sk"),
                     Field::new("ss_sold_time_sk", DataType::Int32, false),
                 )],
-            );
+            ).unwrap();
         }
         let count = builder.add_aggregate(
             input,
@@ -1445,20 +1378,16 @@ fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> Que
                 vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
             ),
             Arc::clone(&count_schema),
-        );
+        ).unwrap();
         counts.push(count);
     }
-    let union = builder.add_union(counts, count_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(counts, count_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
-    let time_schema = Arc::new(Schema::new(vec![
-        Field::new("t_time_sk", DataType::Int32, false),
-        Field::new("t_hour", DataType::Int32, false),
-    ]));
     let count_schema = schema(&["count"]);
     let mut counts = Vec::new();
     for hour in [8, 9] {
@@ -1466,11 +1395,11 @@ fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() ->
             builder.add_source(estimated_local_source("store_sales", "ss_sold_time_sk", 512 * 1024 * 1024, 10_000_000));
         let time = builder.add_source(estimated_time_source_with_hour_predicate(hour));
         let predicate = Expr::binary(Expr::column("t_hour"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(hour)));
-        let filtered_time = builder.add_filter(time, predicate, Arc::clone(&time_schema));
+        let filtered_time = builder.add_filter(time, predicate).unwrap();
         let time_key = builder.add_projection(
             filtered_time,
             vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
-        );
+        ).unwrap();
         let joined = builder.add_join(
             fact,
             time_key,
@@ -1487,7 +1416,7 @@ fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() ->
             )])
             .with_build_side(JoinSide::Right),
             Arc::clone(&fact_schema),
-        );
+        ).unwrap();
         let count = builder.add_aggregate(
             joined,
             AggregateSpec::new(
@@ -1495,11 +1424,11 @@ fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() ->
                 vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
             ),
             Arc::clone(&count_schema),
-        );
+        ).unwrap();
         counts.push(count);
     }
-    let union = builder.add_union(counts, count_schema);
-    builder.finish_gpu_resident(union)
+    let union = builder.add_union(counts, count_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn repeated_scalar_mixed_aggregate_materialization_plan() -> QueryPlan {
@@ -1533,19 +1462,13 @@ fn repeated_scalar_mixed_aggregate_materialization_plan() -> QueryPlan {
                 ],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    let output_schema = Arc::new(Schema::new(
-        branch_schemas
-            .iter()
-            .flat_map(|schema| schema.fields().iter().map(|field| field.as_ref().clone()))
-            .collect::<Vec<_>>(),
-    ));
-    let root = builder.add_limit(root, LimitSpec::fetch(100), output_schema);
-    builder.finish_gpu_resident(root)
+    let root = builder.add_limit(root, LimitSpec::fetch(100)).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1591,7 +1514,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
                                 Field::new("ss_quantity", DataType::Int32, false),
                             ),
                         ],
-                    );
+                    ).unwrap();
                     (
                         count_arg,
                         AggregateExpr::new(
@@ -1635,13 +1558,13 @@ fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
                 aggregate_input,
                 AggregateSpec::new(Vec::new(), vec![aggregate_expr]),
                 Arc::clone(&output_schema),
-            );
+            ).unwrap();
             branches.push(aggregate);
             branch_schemas.push(output_schema);
         }
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_projected_literal_count_star_scalar_materialization_plan() -> QueryPlan {
@@ -1650,14 +1573,14 @@ fn repeated_projected_literal_count_star_scalar_materialization_plan() -> QueryP
     let mut branch_schemas = Vec::new();
     for bucket in 0..2 {
         let source = builder.add_source(q09_filter_only_count_source(bucket));
-        let empty = builder.add_projection(source, Vec::new());
+        let empty = builder.add_projection(source, Vec::new()).unwrap();
         let count_arg = builder.add_projection(
             empty,
             vec![ProjectionOutput::new(
                 Expr::literal(LiteralValue::Int64(1)),
                 Field::new("__algeon_native_aggregate_arg_0", DataType::Int64, false),
             )],
-        );
+        ).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             count_arg,
@@ -1670,12 +1593,12 @@ fn repeated_projected_literal_count_star_scalar_materialization_plan() -> QueryP
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_count_with_different_projected_filter_plan() -> QueryPlan {
@@ -1684,16 +1607,13 @@ fn repeated_scalar_count_with_different_projected_filter_plan() -> QueryPlan {
     let mut branch_schemas = Vec::new();
     for projected_column in ["a", "b"] {
         let source = builder.add_source(two_value_projection_filter_source());
-        let projection_schema = Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false)]));
         let projected = builder.add_projection(
             source,
             vec![ProjectionOutput::new(Expr::column(projected_column), Field::new("p", DataType::Int32, false))],
-        );
+        ).unwrap();
         let filtered = builder.add_filter(
             projected,
-            Expr::binary(Expr::column("p"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-            projection_schema,
-        );
+            Expr::binary(Expr::column("p"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
         let output_schema =
             Arc::new(Schema::new(vec![Field::new(format!("CNT_{projected_column}"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
@@ -1707,12 +1627,12 @@ fn repeated_scalar_count_with_different_projected_filter_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_count_with_different_local_filter_plan() -> QueryPlan {
@@ -1721,16 +1641,13 @@ fn repeated_scalar_count_with_different_local_filter_plan() -> QueryPlan {
     let mut branch_schemas = Vec::new();
     for bucket in 0..2 {
         let source = builder.add_source(q09_like_store_sales_source(bucket, Q09ScalarBranch::Count));
-        let filter_schema = Arc::new(Schema::new(vec![Field::new("ss_quantity", DataType::Int32, false)]));
         let filtered = builder.add_filter(
             source,
             Expr::binary(
                 Expr::column("ss_quantity"),
                 BinaryOp::GtEq,
                 Expr::literal(LiteralValue::Int32(bucket * 20 + 10)),
-            ),
-            filter_schema,
-        );
+            )).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             filtered,
@@ -1743,12 +1660,12 @@ fn repeated_scalar_count_with_different_local_filter_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> QueryPlan {
@@ -1766,12 +1683,12 @@ fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> QueryPlan {
                 vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), format!("AVG_V_{file_index}"))],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_count_with_limit_plan() -> QueryPlan {
@@ -1780,8 +1697,7 @@ fn repeated_scalar_count_with_limit_plan() -> QueryPlan {
     let mut branch_schemas = Vec::new();
     for bucket in 0..2 {
         let source = builder.add_source(q09_like_store_sales_source(bucket, Q09ScalarBranch::Count));
-        let limit_schema = Arc::new(Schema::new(vec![Field::new("ss_quantity", DataType::Int32, false)]));
-        let limited = builder.add_limit(source, LimitSpec::fetch(10), limit_schema);
+        let limited = builder.add_limit(source, LimitSpec::fetch(10)).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             limited,
@@ -1794,12 +1710,12 @@ fn repeated_scalar_count_with_limit_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> QueryPlan {
@@ -1819,7 +1735,7 @@ fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> QueryPlan {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
             join_schema,
-        );
+        ).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             joined,
@@ -1832,12 +1748,12 @@ fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> QueryPlan {
@@ -1857,7 +1773,7 @@ fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> QueryPlan {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
             join_schema,
-        );
+        ).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             joined,
@@ -1870,12 +1786,12 @@ fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> QueryPlan {
@@ -1894,7 +1810,7 @@ fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> QueryPlan {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v")]),
             join_schema,
-        );
+        ).unwrap();
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
         let aggregate = builder.add_aggregate(
             joined,
@@ -1907,12 +1823,12 @@ fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> QueryPlan {
                 )],
             ),
             Arc::clone(&output_schema),
-        );
+        ).unwrap();
         branches.push(aggregate);
         branch_schemas.push(output_schema);
     }
     let root = cross_join_scalar_branches(&mut builder, &branches, &branch_schemas);
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> QueryPlan {
@@ -1926,12 +1842,12 @@ fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
         ),
         schema(&["k", "sum_v"]),
-    );
+    ).unwrap();
     let scalar = builder.add_aggregate(
         scalar_input,
         AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total_v")]),
         schema(&["total_v"]),
-    );
+    ).unwrap();
     let root = builder.add_join(
         grouped,
         scalar,
@@ -1941,8 +1857,8 @@ fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "total_v", "total_v"), "total_v"),
         ]),
         schema(&["k", "sum_v", "total_v"]),
-    );
-    builder.finish_gpu_resident(root)
+    ).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn two_file_source(order: [&str; 2]) -> SourceNode {
@@ -2219,7 +2135,7 @@ fn cross_join_scalar_branches(
             branch,
             JoinSpec::new(JoinType::Inner, Vec::new()).with_output_projection(output_projection),
             output_schema,
-        );
+        ).unwrap();
     }
     current
 }

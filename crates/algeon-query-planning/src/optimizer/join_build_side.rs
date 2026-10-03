@@ -186,13 +186,13 @@ pub(crate) struct JoinBuildSideSelectionResult {
 pub(crate) fn optimize_join_build_side_selection(
     plan: QueryPlan,
     options: &JoinBuildSideSelectionOptions,
-) -> JoinBuildSideSelectionResult {
+) -> Result<JoinBuildSideSelectionResult> {
     if !options.enabled {
-        return JoinBuildSideSelectionResult {
+        return Ok(JoinBuildSideSelectionResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: JoinBuildSideSelectionDiagnostics::default(),
-        };
+        });
     }
 
     let mut nodes = plan.nodes().to_vec();
@@ -256,7 +256,7 @@ pub(crate) fn optimize_join_build_side_selection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    JoinBuildSideSelectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root)), change, diagnostics }
+    Ok(JoinBuildSideSelectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root))?, change, diagnostics })
 }
 
 fn join_build_side_selection_supported(join: &JoinNode) -> bool {

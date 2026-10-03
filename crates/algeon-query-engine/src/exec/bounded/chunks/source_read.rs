@@ -395,7 +395,7 @@ mod tests {
     fn test_chunk(index: usize, bytes: u64, pure_filter_bytes: bool) -> SourceChunk {
         let pure_filter_bytes = if pure_filter_bytes { bytes } else { 0 };
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(1),
+            source_node_id: NodeId::from_index_for_test(1),
             chunk_index: index,
             file_index: index,
             location: ParquetSourceLocation::LocalPath(PathBuf::from(format!("part-{index}.parquet"))),

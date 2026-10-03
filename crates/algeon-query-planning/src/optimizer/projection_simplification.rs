@@ -4,6 +4,7 @@ use arrow::datatypes::SchemaRef;
 
 use super::rewrite;
 use crate::{
+    error::Result,
     expr::{ColumnRef, Expr},
     plan::{NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes},
 };
@@ -91,27 +92,31 @@ pub(crate) struct ProjectionSimplificationResult {
 pub(crate) fn optimize_projection_simplification(
     plan: QueryPlan,
     options: &ProjectionSimplificationOptions,
-) -> ProjectionSimplificationResult {
+) -> Result<ProjectionSimplificationResult> {
     if !options.enabled {
-        return ProjectionSimplificationResult {
+        return Ok(ProjectionSimplificationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: ProjectionSimplificationDiagnostics::default(),
-        };
+        });
     }
 
     let mut rewriter = ProjectionSimplificationRewriter::new(&plan);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let diagnostics = rewriter.diagnostics.clone();
-        return ProjectionSimplificationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+        return Ok(ProjectionSimplificationResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics,
+        });
     }
 
-    ProjectionSimplificationResult {
-        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo)),
+    Ok(ProjectionSimplificationResult {
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?,
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
-    }
+    })
 }
 
 struct ProjectionSimplificationRewriter<'a> {
@@ -205,7 +210,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }
@@ -294,18 +299,17 @@ mod tests {
     fn removes_chained_identity_projections() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(source("input", schema(vec![field("k"), field("v")])));
-        let first = builder.add_projection(source, identity_outputs(&["k", "v"]));
-        let second = builder.add_projection(first, identity_alias_outputs(&["k", "v"]));
-        let plan = builder.finish_gpu_resident(second);
+        let first = builder.add_projection(source, identity_outputs(&["k", "v"])).unwrap();
+        let second = builder.add_projection(first, identity_alias_outputs(&["k", "v"])).unwrap();
+        let plan = builder.finish_gpu_resident(second).unwrap();
 
-        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default());
+        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default()).unwrap();
 
         assert!(result.change.changed());
         assert_eq!(result.diagnostics.considered_count, 2);
         assert_eq!(result.diagnostics.applied_count, 2);
         assert_eq!(result.plan.node_count(), 1);
         assert!(matches!(result.plan.root_node().kind, PlanNode::Source(_)));
-        assert!(result.plan.unreachable_node_ids().is_empty());
     }
 
     #[test]
@@ -313,10 +317,11 @@ mod tests {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(source("input", schema(vec![field("k")])));
         let projection = builder
-            .add_projection(source, vec![ProjectionOutput::new(Expr::column("k").alias("renamed"), field("renamed"))]);
-        let plan = builder.finish_gpu_resident(projection);
+            .add_projection(source, vec![ProjectionOutput::new(Expr::column("k").alias("renamed"), field("renamed"))])
+            .unwrap();
+        let plan = builder.finish_gpu_resident(projection).unwrap();
 
-        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default());
+        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default()).unwrap();
 
         assert!(!result.change.changed());
         assert_eq!(result.diagnostics.considered_count, 1);
@@ -331,16 +336,18 @@ mod tests {
     fn keeps_projection_with_computed_expression() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(source("input", schema(vec![field("k")])));
-        let projection = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(
-                Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1))).alias("k"),
-                field("k"),
-            )],
-        );
-        let plan = builder.finish_gpu_resident(projection);
+        let projection = builder
+            .add_projection(
+                source,
+                vec![ProjectionOutput::new(
+                    Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1))).alias("k"),
+                    field("k"),
+                )],
+            )
+            .unwrap();
+        let plan = builder.finish_gpu_resident(projection).unwrap();
 
-        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default());
+        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default()).unwrap();
 
         assert!(!result.change.changed());
         assert_eq!(result.diagnostics.considered_count, 1);
@@ -355,12 +362,13 @@ mod tests {
     fn fuses_direct_projection_chain() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(source("input", schema(vec![field("k"), field("v"), field("payload")])));
-        let first = builder.add_projection(source, identity_alias_outputs(&["k", "v", "payload"]));
+        let first = builder.add_projection(source, identity_alias_outputs(&["k", "v", "payload"])).unwrap();
         let second = builder
-            .add_projection(first, vec![ProjectionOutput::new(Expr::column("v").alias("renamed"), field("renamed"))]);
-        let plan = builder.finish_gpu_resident(second);
+            .add_projection(first, vec![ProjectionOutput::new(Expr::column("v").alias("renamed"), field("renamed"))])
+            .unwrap();
+        let plan = builder.finish_gpu_resident(second).unwrap();
 
-        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default());
+        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default()).unwrap();
 
         assert!(result.change.changed());
         assert_eq!(result.diagnostics.considered_count, 1);
@@ -373,25 +381,28 @@ mod tests {
         assert_eq!(projection.outputs.len(), 1);
         assert_eq!(projection.outputs[0].field.name(), "renamed");
         assert_eq!(projection.outputs[0].expr.to_string(), "v AS renamed");
-        assert!(result.plan.unreachable_node_ids().is_empty());
     }
 
     #[test]
     fn keeps_projection_chain_when_inner_projection_computes_expression() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(source("input", schema(vec![field("k")])));
-        let first = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(
-                Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1))).alias("computed"),
-                field("computed"),
-            )],
-        );
-        let second =
-            builder.add_projection(first, vec![ProjectionOutput::new(Expr::column("computed"), field("renamed"))]);
-        let plan = builder.finish_gpu_resident(second);
+        let first = builder
+            .add_projection(
+                source,
+                vec![ProjectionOutput::new(
+                    Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(1)))
+                        .alias("computed"),
+                    field("computed"),
+                )],
+            )
+            .unwrap();
+        let second = builder
+            .add_projection(first, vec![ProjectionOutput::new(Expr::column("computed"), field("renamed"))])
+            .unwrap();
+        let plan = builder.finish_gpu_resident(second).unwrap();
 
-        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default());
+        let result = optimize_projection_simplification(plan, &ProjectionSimplificationOptions::default()).unwrap();
 
         assert!(!result.change.changed());
         assert_eq!(result.diagnostics.considered_count, 2);

@@ -29,8 +29,8 @@ mod tests {
 
     #[test]
     fn unavailable_error_is_structured_without_constructing_gpu_inputs() {
-        let input = NodeId::from_index_for_internal_use(0);
-        let binding = VectorRelationBinding::new(input, VectorRowIdBinding::Column("id".into()), ["x"]);
+        let input = NodeId::from_index_for_test(0);
+        let binding = VectorRelationBinding::new(0, VectorRowIdBinding::Column("id".into()), ["x"]);
         let spec = VectorAlgorithmSpec::new(
             VectorAlgorithm::Pca,
             VectorAlgorithmParams::Pca(VectorPcaParams::new(binding, 1)),
@@ -38,7 +38,7 @@ mod tests {
         );
         let node = crate::plan::VectorAlgorithmNode { inputs: vec![input], spec };
 
-        let error = vector_algorithm_execution_unavailable(NodeId::from_index_for_internal_use(1), &node);
+        let error = vector_algorithm_execution_unavailable(NodeId::from_index_for_test(1), &node);
 
         assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
         assert_eq!(error.operation(), "query_engine.vector_algorithm.execute");

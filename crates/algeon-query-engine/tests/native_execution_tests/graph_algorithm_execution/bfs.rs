@@ -25,8 +25,9 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -103,8 +104,9 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -164,8 +166,9 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -248,8 +251,9 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -325,7 +329,7 @@ fn bfs_include_edge_ids_filters_edges() {
         source_vertices: None,
         depth_limit: None,
         predicates: GraphBfsPredicateInputs {
-            include_edge_ids: Some(GraphPredicateInput::new(allowed, "edge_id")),
+            include_edge_ids: Some(GraphPredicateInput::new(1, "edge_id")),
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
@@ -338,8 +342,9 @@ fn bfs_include_edge_ids_filters_edges() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![allowed], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -425,7 +430,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
         source_vertices: None,
         depth_limit: None,
         predicates: GraphBfsPredicateInputs {
-            include_edges: Some(GraphEdgePredicateInput::new(allowed, "allowed_src", "allowed_dst", None::<&str>)),
+            include_edges: Some(GraphEdgePredicateInput::new(1, "allowed_src", "allowed_dst", None::<&str>)),
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
@@ -438,8 +443,9 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![allowed], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -512,15 +518,16 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
         &source_batch,
     )));
     let mut params = GraphBfsParams::new(0, None);
-    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
+    params.source_vertices = Some(GraphPredicateInput::new(1, "source_vertex"));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![sources], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -592,15 +599,16 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
         &source_batch,
     )));
     let mut params = GraphBfsParams::new(0, None);
-    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
+    params.source_vertices = Some(GraphPredicateInput::new(1, "source_vertex"));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![sources], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -682,11 +690,11 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
         Arc::clone(&allowed_schema),
         &allowed_batch,
     )));
+    // Ordinals name `side_inputs` positions starting at 1; ordinal 0 is the edge list.
     let mut params = GraphBfsParams::new(0, None);
-    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
-    params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
-    params.predicates.include_edges =
-        Some(GraphEdgePredicateInput::new(allowed, "allowed_src", "allowed_dst", None::<&str>));
+    params.source_vertices = Some(GraphPredicateInput::new(1, "source_vertex"));
+    params.predicates.target_vertices = Some(GraphPredicateInput::new(2, "vertex_id"));
+    params.predicates.include_edges = Some(GraphEdgePredicateInput::new(3, "allowed_src", "allowed_dst", None::<&str>));
     params.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
@@ -694,8 +702,9 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![sources, targets, allowed], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -755,11 +764,10 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
         &target_batch,
     )));
     let mut params = GraphBfsParams::new(0, None);
-    params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
+    params.predicates.target_vertices = Some(GraphPredicateInput::new(1, "vertex_id"));
     params.return_target_info = true;
     let params = GraphAlgorithmParams::Bfs(Box::new(params));
-    let output_schema =
-        graph_result_schema_for_vertex_type(GraphAlgorithm::Bfs, &params, &DataType::Int32);
+    let output_schema = graph_result_schema_for_vertex_type(GraphAlgorithm::Bfs, &params, &DataType::Int32);
     let spec = GraphAlgorithmSpec::new(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -767,8 +775,8 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
         params,
         Arc::clone(&output_schema),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, output_schema);
+    let graph = builder.add_graph_algorithm(edges, vec![targets], spec).unwrap();
+    let plan = builder.finish_with_host_sink_schema(graph, output_schema).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 

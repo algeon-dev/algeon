@@ -272,30 +272,33 @@ pub fn optimize_query_plan(
     options: &NativeOptimizerOptions,
     ctx: AnalysisContext<'_>,
     resolver: &dyn LocalParquetPruningResolver,
-) -> NativeOptimizerResult {
+) -> Result<NativeOptimizerResult> {
     let projection_simplification_result =
-        projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification);
+        projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification)?;
     let semijoin_result =
-        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction);
-    let join_filter_reassociation_result =
-        optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation, resolver);
+        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction)?;
+    let join_filter_reassociation_result = optimize_join_filter_reassociation_fixpoint(
+        semijoin_result.plan,
+        &options.join_filter_reassociation,
+        resolver,
+    )?;
     let join_build_side_result = join_build_side::optimize_join_build_side_selection(
         join_filter_reassociation_result.plan,
         &options.join_build_side_selection,
-    );
+    )?;
     let null_rejection_result = outer_join_null_rejection::optimize_outer_join_null_rejection(
         join_build_side_result.plan,
         &options.outer_join_null_rejection,
-    );
+    )?;
     let pre_aggregate_scalar_derivation_result =
         shared_subplan_materialization::optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
             null_rejection_result.plan,
             &options.shared_subplan_materialization,
-        );
+        )?;
     let aggregate_join_pushdown_result = aggregate_join_pushdown::optimize_aggregate_join_pushdown(
         pre_aggregate_scalar_derivation_result.plan,
         &options.aggregate_join_pushdown,
-    );
+    )?;
     let aggregate_join_pushdown_change = aggregate_join_pushdown_result.change;
     let post_aggregate_join_build_side_result = rerun_optimizer_pass_if_changed(
         aggregate_join_pushdown_result.plan,
@@ -306,7 +309,7 @@ pub fn optimize_query_plan(
             change: NativeOptimizerChange::Unchanged,
             diagnostics: JoinBuildSideSelectionDiagnostics::default(),
         },
-    );
+    )?;
     let post_aggregate_null_rejection_result = rerun_optimizer_pass_if_changed(
         post_aggregate_join_build_side_result.plan,
         aggregate_join_pushdown_change,
@@ -316,13 +319,13 @@ pub fn optimize_query_plan(
             change: NativeOptimizerChange::Unchanged,
             diagnostics: OuterJoinNullRejectionDiagnostics::default(),
         },
-    );
+    )?;
     let dimension_pruning_result = dimension_pruning::optimize_dimension_derived_row_group_pruning(
         post_aggregate_null_rejection_result.plan,
         &options.dimension_derived_row_group_pruning,
         ctx,
         resolver,
-    );
+    )?;
     let dimension_pruning_change = dimension_pruning_result.change;
     let post_dimension_join_build_side_result = rerun_optimizer_pass_if_changed(
         dimension_pruning_result.plan,
@@ -333,36 +336,36 @@ pub fn optimize_query_plan(
             change: NativeOptimizerChange::Unchanged,
             diagnostics: JoinBuildSideSelectionDiagnostics::default(),
         },
-    );
+    )?;
     let count_non_null_column_pruning_result = count_non_null_pruning::optimize_count_non_null_column_pruning(
         post_dimension_join_build_side_result.plan,
         &options.count_non_null_column_pruning,
-    );
+    )?;
     let stream_fanout_replay_result = stream_fanout_replay::optimize_stream_fanout_replay(
         count_non_null_column_pruning_result.plan,
         &options.stream_fanout_replay,
-    );
+    )?;
     let shared_subplan_materialization_result =
         shared_subplan_materialization::optimize_shared_subplan_materialization_without_scalar_derivation(
             stream_fanout_replay_result.plan,
             &options.shared_subplan_materialization,
-        );
+        )?;
     let local_parquet_source_reuse_result = local_parquet_source_reuse::optimize_local_parquet_source_reuse(
         shared_subplan_materialization_result.plan,
         &options.local_parquet_source_reuse,
         &options.dynamic_filter_route_discovery,
         ctx,
-    );
+    )?;
     let final_projection_simplification_result = projection_simplification::optimize_projection_simplification(
         local_parquet_source_reuse_result.plan,
         &options.projection_simplification,
-    );
+    )?;
     let dynamic_filter_route_result = dynamic_filter::optimize_dynamic_filter_route_discovery(
         final_projection_simplification_result.plan,
         &options.dynamic_filter_route_discovery,
         ctx,
     );
-    let shared_resident_result = optimize_shared_resident_extraction(dynamic_filter_route_result.plan);
+    let shared_resident_result = optimize_shared_resident_extraction(dynamic_filter_route_result.plan)?;
     let change = if projection_simplification_result.change.changed()
         || final_projection_simplification_result.change.changed()
         || semijoin_result.change.changed()
@@ -386,7 +389,7 @@ pub fn optimize_query_plan(
     } else {
         NativeOptimizerChange::Unchanged
     };
-    NativeOptimizerResult {
+    Ok(NativeOptimizerResult {
         change,
         plan: shared_resident_result.consumer,
         shared_resident_producers: shared_resident_result.producers,
@@ -429,41 +432,41 @@ pub fn optimize_query_plan(
             shared_resident_extraction: shared_resident_result.diagnostics,
             dynamic_filter_route_discovery: dynamic_filter_route_result.diagnostics,
         },
-    }
+    })
 }
 
 fn rerun_optimizer_pass_if_changed<T>(
     plan: QueryPlan,
     change: NativeOptimizerChange,
-    rerun: impl FnOnce(QueryPlan) -> T,
+    rerun: impl FnOnce(QueryPlan) -> Result<T>,
     unchanged: impl FnOnce(QueryPlan) -> T,
-) -> T {
-    if change.changed() { rerun(plan) } else { unchanged(plan) }
+) -> Result<T> {
+    if change.changed() { rerun(plan) } else { Ok(unchanged(plan)) }
 }
 
 fn optimize_join_filter_reassociation_fixpoint(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,
     resolver: &dyn LocalParquetPruningResolver,
-) -> join_filter_reassociation::JoinFilterReassociationResult {
+) -> Result<join_filter_reassociation::JoinFilterReassociationResult> {
     let max_iterations = plan.node_count().max(1);
     let mut current = plan;
     let mut diagnostics = JoinFilterReassociationDiagnostics::default();
     let mut changed = NativeOptimizerChange::Unchanged;
 
     for _ in 0..max_iterations {
-        let result = join_filter_reassociation::optimize_join_filter_reassociation(current, options, resolver);
+        let result = join_filter_reassociation::optimize_join_filter_reassociation(current, options, resolver)?;
         diagnostics.merge(result.diagnostics);
         if !result.change.changed() {
-            return join_filter_reassociation::JoinFilterReassociationResult {
+            return Ok(join_filter_reassociation::JoinFilterReassociationResult {
                 plan: result.plan,
                 change: changed,
                 diagnostics,
-            };
+            });
         }
         changed = NativeOptimizerChange::Changed;
         current = result.plan;
     }
 
-    join_filter_reassociation::JoinFilterReassociationResult { plan: current, change: changed, diagnostics }
+    Ok(join_filter_reassociation::JoinFilterReassociationResult { plan: current, change: changed, diagnostics })
 }

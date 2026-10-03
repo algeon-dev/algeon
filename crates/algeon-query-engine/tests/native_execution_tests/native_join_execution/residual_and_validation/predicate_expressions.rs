@@ -38,26 +38,28 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_residual_predicate(residual)
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_residual_predicate(residual)
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -111,19 +113,21 @@ fn native_query_executes_join_residual_cast_predicate() {
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_residual_predicate(residual)
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_residual_predicate(residual)
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -170,19 +174,21 @@ fn native_query_executes_join_residual_decimal_to_float_cast_predicate() {
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_residual_predicate(residual)
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_residual_predicate(residual)
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -232,25 +238,23 @@ fn native_query_executes_join_residual_literal_in_list_predicate() {
         &right_schema,
         &["order_id", "category"],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_residual_predicate(residual)
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_residual_predicate(residual)
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();

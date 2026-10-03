@@ -120,7 +120,7 @@ mod tests {
 
     fn test_chunk() -> SourceChunk {
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(1),
+            source_node_id: NodeId::from_index_for_test(1),
             chunk_index: 0,
             file_index: 0,
             location: ParquetSourceLocation::LocalPath(PathBuf::from("part-0.parquet")),
@@ -215,7 +215,7 @@ mod tests {
             let outer = RuntimeResourceFacts {
                 memory_boundary: "outer_stage",
                 stage: "outer_stage",
-                node_id: NodeId::from_index_for_internal_use(9),
+                node_id: NodeId::from_index_for_test(9),
                 attempt: 1,
                 max_attempts: 1,
                 resume_boundary: "outer_stage",

@@ -44,8 +44,10 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PageRank));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan = builder
+        .finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PageRank))
+        .unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -85,8 +87,9 @@ fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, Vec::new(), spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -142,12 +145,13 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
             pagerank: GraphPageRankParams::default(),
-            personalization: GraphPageRankPersonalizationInput::new(personalization, "vertex", "value"),
+            personalization: GraphPageRankPersonalizationInput::new(1, "vertex", "value"),
         }),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
+    let graph = builder.add_graph_algorithm(edges, vec![personalization], spec).unwrap();
     let plan = builder
-        .finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank));
+        .finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank))
+        .unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -209,15 +213,16 @@ fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
         &predicate_batch,
     )));
     let mut params = GraphBfsParams::new(0, None);
-    params.predicates.include_vertices = Some(GraphPredicateInput::new(predicate, "vertex"));
+    params.predicates.include_vertices = Some(GraphPredicateInput::new(1, "vertex"));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let graph = builder.add_graph_algorithm(edges, vec![predicate], spec).unwrap();
+    let plan =
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs)).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
