@@ -314,7 +314,7 @@ pub query_runtime::metrics::QueryMetrics::input_batches: u64
 pub query_runtime::metrics::QueryMetrics::input_rows: u64
 pub query_runtime::metrics::QueryMetrics::join_gather_map_bytes: u64
 pub query_runtime::metrics::QueryMetrics::join_strategy_decisions: alloc::vec::Vec<query_runtime::metrics::JoinStrategyDecisionMetrics>
-pub query_runtime::metrics::QueryMetrics::lakehouse_cache_fill_events: alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
+pub query_runtime::metrics::QueryMetrics::lakehouse_cache_fill_events: alloc::vec::Vec<query_runtime::observability::LakehouseCacheFillEventSnapshot>
 pub query_runtime::metrics::QueryMetrics::materialization_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::max_task_observed_peak_bytes: core::option::Option<u64>
 pub query_runtime::metrics::QueryMetrics::max_task_retained_bytes: core::option::Option<u64>
@@ -923,6 +923,18 @@ impl query_runtime::observability::DeterministicRuntimeObservationClock
 pub fn query_runtime::observability::DeterministicRuntimeObservationClock::advance(&self, u64) -> u64
 pub const fn query_runtime::observability::DeterministicRuntimeObservationClock::new(core::option::Option<u64>) -> Self
 pub fn query_runtime::observability::DeterministicRuntimeObservationClock::set_monotonic_ns(&self, u64)
+pub struct query_runtime::observability::LakehouseCacheFillEventSnapshot
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::bytes: core::option::Option<u64>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::cache_path_hash: alloc::string::String
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::chunk_index: core::option::Option<usize>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::elapsed: core::time::Duration
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::error_code: core::option::Option<alloc::string::String>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::error_kind: core::option::Option<alloc::string::String>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::error_operation: core::option::Option<alloc::string::String>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::error_status: core::option::Option<alloc::string::String>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::file_index: core::option::Option<usize>
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::outcome: &'static str
+pub query_runtime::observability::LakehouseCacheFillEventSnapshot::stable_id_hash: alloc::string::String
 pub struct query_runtime::observability::LiveRuntimeObservationSnapshot
 impl query_runtime::observability::LiveRuntimeObservationSnapshot
 pub fn query_runtime::observability::LiveRuntimeObservationSnapshot::attempt_report(&self) -> core::option::Option<&query_runtime::observability::QueryAttemptReport>
@@ -1943,18 +1955,6 @@ pub const query_runtime::runtime::LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIME
 pub fn query_runtime::runtime::LakehouseCacheFillConfig::validate(&self) -> query_planning::error::Result<()>
 impl core::default::Default for query_runtime::runtime::LakehouseCacheFillConfig
 pub fn query_runtime::runtime::LakehouseCacheFillConfig::default() -> Self
-pub struct query_runtime::runtime::LakehouseCacheFillEventSnapshot
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::bytes: core::option::Option<u64>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::cache_path_hash: alloc::string::String
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::chunk_index: core::option::Option<usize>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::elapsed: core::time::Duration
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::error_code: core::option::Option<alloc::string::String>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::error_kind: core::option::Option<alloc::string::String>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::error_operation: core::option::Option<alloc::string::String>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::error_status: core::option::Option<alloc::string::String>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::file_index: core::option::Option<usize>
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::outcome: &'static str
-pub query_runtime::runtime::LakehouseCacheFillEventSnapshot::stable_id_hash: alloc::string::String
 pub struct query_runtime::runtime::QueryActivityLease
 impl query_runtime::runtime::QueryActivityLease
 pub fn query_runtime::runtime::QueryActivityLease::new(impl core::marker::Send + core::marker::Sync + 'static) -> Self

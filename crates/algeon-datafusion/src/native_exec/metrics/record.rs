@@ -20,8 +20,7 @@ use query_engine::{
     exec::output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
     graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::{AttemptId, QueryAttemptReport, RuntimeObservationConfig},
-    runtime::LakehouseCacheFillEventSnapshot,
+    observability::{AttemptId, LakehouseCacheFillEventSnapshot, QueryAttemptReport, RuntimeObservationConfig},
 };
 
 use super::{

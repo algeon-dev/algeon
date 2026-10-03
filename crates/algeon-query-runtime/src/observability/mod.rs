@@ -1,6 +1,7 @@
 //! Native typed runtime observations and bounded query-local capture.
 
 mod attempt_report;
+mod cache_fill_event;
 mod clock;
 mod jsonl;
 mod lifecycle;
@@ -28,6 +29,9 @@ pub(crate) use attempt_report::{
     AttemptTeardownHealth, AttemptTerminalCommit, AttemptTimedDomainUsage, AttemptUnattributedAllocatorEvent,
     has_proven_device_local_fault_evidence,
 };
+pub use cache_fill_event::LakehouseCacheFillEventSnapshot;
+#[doc(hidden)]
+pub use cache_fill_event::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
 pub use clock::DeterministicRuntimeObservationClock;
 pub(crate) use clock::{RuntimeObservationClock, SystemRuntimeObservationClock};
 pub use jsonl::{

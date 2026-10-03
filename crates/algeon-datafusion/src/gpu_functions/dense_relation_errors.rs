@@ -48,23 +48,23 @@ impl DenseRelationErrorContext {
             operation,
             "input_ordering_key_not_projected",
             format!(
-                "{} {relation_role} ORDER BY key '{key}' is not an output column of the input; project the key in the input or drop the ORDER BY",
+                "{} {relation_role} ORDER BY key is not an output column of the input; project the key in the input or drop the ORDER BY",
                 self.family
             ),
         )
         .with_log_safe_fact("relation_role", relation_role)
-        .with_fact("key", key)
+        .with_client_detail(ClientDetail::OrderingKey { name: key })
     }
 
     pub(crate) fn field_not_found(&self, operation: &'static str, relation_role: &'static str, field: &str) -> Error {
         Error::new(
             ErrorCode::FieldNotFound,
             self.validate_schema_operation,
-            format!("{} {relation_role} relation has no field named '{field}'", self.family),
+            format!("{} {relation_role} relation has no field with the requested name", self.family),
         )
         .with_log_safe_fact(self.operation_fact, operation)
         .with_log_safe_fact("relation_role", relation_role)
-        .with_fact("field", field)
+        .with_client_detail(ClientDetail::Field { name: field.to_string() })
     }
 
     pub(crate) fn unsupported_type(
@@ -102,8 +102,9 @@ impl DenseRelationErrorContext {
         self.invalid_call(
             operation,
             "nullable_feature_field",
-            format!("{} {relation_role} feature field '{field}' must be non-nullable", self.family),
+            format!("{} {relation_role} feature field must be non-nullable", self.family),
         )
+        .with_client_detail(ClientDetail::Field { name: field.to_string() })
         .with_fact(
             "remedy",
             "wrap the column with COALESCE(column, <fallback>) or CAST a null-free expression; \

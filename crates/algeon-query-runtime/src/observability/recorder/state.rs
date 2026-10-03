@@ -8,7 +8,7 @@ use super::{
     RuntimeObservationRecordClass, RuntimeObservationSealObserver, RuntimeTimelineEvent,
     SealedRuntimeObservationSnapshot, SourceReadRuntimeMetrics,
 };
-use crate::runtime::LakehouseCacheFillEventSnapshot;
+use crate::observability::LakehouseCacheFillEventSnapshot;
 
 /// Exact cleanup-failure accounting for an attempt report. It sits outside the
 /// record limits, so bounded timeline loss never changes the count or the

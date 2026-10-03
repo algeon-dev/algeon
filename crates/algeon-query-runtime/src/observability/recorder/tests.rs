@@ -15,9 +15,9 @@ use super::*;
 use crate::{
     metrics::{BudgetedExecutionEvent, SourceReadRuntimeMetrics},
     observability::{
-        CleanupFailurePhase, DeterministicRuntimeObservationClock, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId,
+        CleanupFailurePhase, DeterministicRuntimeObservationClock, LakehouseCacheFillErrorEvent,
+        LakehouseCacheFillEvent, LakehouseCacheFillOutcome, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId,
     },
-    runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome},
 };
 
 #[test]
