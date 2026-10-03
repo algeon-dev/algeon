@@ -3,16 +3,15 @@ use std::collections::BTreeSet;
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
-    FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetSource, MemoryControlPolicy, NodeId,
-    ProjectionNode, QueryError, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk,
-    SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
+    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, ExecutionMetrics, FilterNode, GpuDataFrame,
+    GpuResidentInputMap, Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError,
+    ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk, SourceChunkBatch,
+    SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
     apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error, execute_filter_with_budget,
-    execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
-    join_leaf_prefetch_admitted, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
-    plan_source_chunk_batches, read_gpu_resident_source, read_literal_batch_source,
-    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
-    validate_local_parquet_source,
+    execute_projection_with_budget, execution_overrides, is_retryable_chunk_error, join_leaf_prefetch_admitted,
+    observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
+    read_gpu_resident_source, read_literal_batch_source, record_bounded_parquet_source_metrics,
+    record_chunk_retry_error, split_retryable_chunk, validate_local_parquet_source,
 };
 use crate::{
     chunk::{

@@ -9,6 +9,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+
+namespace cudf::rust {
+
+/// A shim ownership or lifetime invariant failed. The exception boundary
+/// returns `CUDF_ERROR_INVARIANT_VIOLATION`; caller-input preconditions keep
+/// their own exception types.
+class invariant_error final : public std::logic_error {
+ public:
+  using std::logic_error::logic_error;
+};
+
+}  // namespace cudf::rust
 
 namespace cudf::rust::memory {
 

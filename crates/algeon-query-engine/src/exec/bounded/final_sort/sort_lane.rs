@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use super::{
     BoundedExecutionAttempt, CommittedPartial, ExecutionBudgetRequest, GpuDataFrame, LimitSpec, NodeId,
-    ResidentGpuFrame, Result, SortNode, cudf_query_error_with_budget_details, execute_limit_spec_with_token,
-    final_sort_runtime_facts, observe_final_sort_output, sort_topk_candidate_with_budget,
+    ResidentGpuFrame, Result, SortNode, cudf_query_error, execute_limit_spec_with_token, final_sort_runtime_facts,
+    observe_final_sort_output, sort_topk_candidate_with_budget,
 };
 use crate::{
     error::QueryError,
@@ -195,14 +195,13 @@ fn lane_candidate_frame(
         .map(GpuDataFrame::new)
         .map_err(|error| {
             attach_budget_token_failure_facts(
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.final_sort.topk_slice",
                     "failed to slice bounded native final sort input",
                     error,
                 ),
                 work_token,
             )
-            .with_fact_if_absent("budget_operation", "dataframe::slice")
         })
 }
 

@@ -45,7 +45,7 @@ fn query_memory_domain_rejects_pool_backed_manager() {
             &mut installation,
         )
     };
-    assert_eq!(native_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert_eq!(native_status, cudf_sys::CUDF_ERROR_RUNTIME_BINDING_MISMATCH);
     assert!(raw_manager.is_null());
     assert_eq!(
         DeviceMemoryManager::options_for_device(device).unwrap(),

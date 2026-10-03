@@ -239,7 +239,9 @@ impl QueryError {
         if let Some(query_id) = self.query_id().cloned().or_else(|| self.fact_value("query_id").map(QueryId::new)) {
             evidence = evidence.with_query_id(query_id);
         }
-        if let Some(node_id) = self.fact_value("node_id") {
+        if let Some(node_id) = self.context().boundary.and_then(|boundary| boundary.node_id) {
+            evidence = evidence.with_plan_node_id(node_id);
+        } else if let Some(node_id) = self.fact_value("node_id") {
             evidence = evidence.with_plan_node_id(node_id);
         }
         if let Some(compiled_task_id) = self.fact_value("compiled_task_id") {

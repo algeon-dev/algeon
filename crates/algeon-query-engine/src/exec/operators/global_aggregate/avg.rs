@@ -3,8 +3,8 @@ use arrow::datatypes::{DECIMAL128_MAX_PRECISION, SchemaRef as ArrowSchemaRef};
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, LiteralValue, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg,
-    budgeted_value, cudf_query_error, cudf_query_error_with_budget_details, execution_overrides,
-    frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
+    budgeted_value, cudf_query_error, execution_overrides, frame_column_arrow_data_type, lower_expr,
+    validate_avg_output_fields,
 };
 use crate::expr::CaseWhen;
 
@@ -75,7 +75,7 @@ fn finalize_avg_output_columns_impl(
         Some((token, metrics)) => frame
             .with_columns_with_budget(avg_exprs, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.aggregate.finalize_avg",
                     "failed to finalize bounded native avg aggregate output columns",
                     error,

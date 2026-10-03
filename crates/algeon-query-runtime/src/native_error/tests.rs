@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use cudf::io::parquet::RemoteParquetSource;
 use query_planning::error::{QueryErrorCode, redact_uri_tokens};
 
@@ -37,6 +39,7 @@ fn cudf_allocation_error_for_test(
                 1024,
                 1024,
                 1024,
+                512,
                 512,
                 4096,
                 1,
@@ -104,4 +107,50 @@ fn cudf_allocation_attribution_drives_native_classification_not_scope_usage() {
         );
         assert_eq!(error.code(), expected, "native mismatch for case {index}");
     }
+}
+
+#[test]
+fn cudf_budget_scope_becomes_typed_memory_context_projected_under_budget_keys() {
+    let error = cudf_query_error(
+        "query_engine.test.budget_scope",
+        "wrapped cudf failure",
+        cudf_allocation_error_for_test(
+            cudf::ErrorCode::OutOfMemory,
+            Some(cudf::CudfErrorFailureSource::Physical),
+            true,
+        ),
+    );
+
+    // A scope snapshot never turns a physical failure into a cap failure.
+    assert_eq!(error.code(), QueryErrorCode::DeviceOutOfMemory);
+    let memory = error.context().memory.as_ref().expect("the budget scope is typed context");
+    assert_eq!(memory.boundary, "test_boundary");
+    assert_eq!(memory.operation, "cudf.test.allocation_attribution");
+    let usage = memory.usage.expect("the scope carried member counters");
+    assert_eq!((usage.limit_bytes, usage.current_aligned_bytes, usage.failed_allocation_count), (1024, 512, 1));
+    let wire = error.wire_facts().map(|(key, value)| (key, value.into_owned())).collect::<BTreeMap<_, _>>();
+    for (key, value) in [
+        ("budget_boundary", "test_boundary"),
+        ("budget_operation", "cudf.test.allocation_attribution"),
+        ("budget_enforcement", "query_domain_member"),
+        ("budget_status", "exceeded_or_lower_layer_rejected"),
+        ("budget_bytes", "1024"),
+        ("budget_peak_bytes", "1024"),
+        ("budget_peak_aligned_bytes", "1024"),
+        ("budget_current_bytes", "512"),
+        ("budget_current_aligned_bytes", "512"),
+        ("budget_largest_failed_allocation_bytes", "4096"),
+        ("budget_failed_allocation_count", "1"),
+    ] {
+        assert_eq!(wire.get(key).map(String::as_str), Some(value), "{key}");
+    }
+    assert_eq!(error.fact_value("budget_bytes"), None, "budget keys are projected, not stored");
+
+    let unscoped = cudf_query_error(
+        "query_engine.test.budget_scope",
+        "wrapped cudf failure",
+        cudf_allocation_error_for_test(cudf::ErrorCode::OutOfMemory, None, false),
+    );
+    assert!(unscoped.context().memory.is_none());
+    assert!(unscoped.wire_facts().all(|(key, _)| !key.starts_with("budget_")));
 }

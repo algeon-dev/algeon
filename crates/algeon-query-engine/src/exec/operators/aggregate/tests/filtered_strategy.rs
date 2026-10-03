@@ -262,13 +262,19 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         "query_engine.filtered_global_aggregate.filter_inputs",
         "failed while testing segmented filtered global failure reporting",
     )
-    .with_fact("budget_boundary", "test_boundary")
-    .with_fact("budget_bytes", 32 * 1024 * 1024)
-    .with_fact("budget_enforcement", "query_domain_member")
-    .with_fact("budget_status", "exceeded_or_lower_layer_rejected")
-    .with_fact("budget_operation", "dataframe::with_columns_with_budget")
-    .with_fact("budget_peak_bytes", 8192)
-    .with_fact("budget_current_bytes", 2048);
+    .with_memory_failure(MemoryFailure {
+        boundary: "test_boundary".into(),
+        operation: "dataframe::with_columns_with_budget".into(),
+        usage: Some(MemoryUsage {
+            limit_bytes: 32 * 1024 * 1024,
+            peak_bytes: 8192,
+            peak_aligned_bytes: 8192,
+            current_bytes: 2048,
+            current_aligned_bytes: 2048,
+            failed_allocation_count: 1,
+            largest_failed_allocation_bytes: 65_536,
+        }),
+    });
     let input_evidence = Some(source_adjacent_group_key_evidence(4, 3));
 
     record_filtered_global_segmented_failure(
@@ -313,6 +319,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     assert_eq!(recorded.facts.get("budget_status").map(String::as_str), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(recorded.facts.get("budget_operation").map(String::as_str), Some("dataframe::with_columns_with_budget"));
     assert_eq!(recorded.facts.get("budget_peak_bytes").map(String::as_str), Some("8192"));
+    assert_eq!(recorded.facts.get("budget_bytes").map(String::as_str), Some("33554432"));
     assert_eq!(recorded.facts.get("filtered_global_observed_temporary_peak_bytes").map(String::as_str), Some("8192"));
     assert_eq!(recorded.facts.get("filtered_global_observed_retained_peak_bytes").map(String::as_str), Some("2048"));
     assert_eq!(recorded.facts.get("source_adjacent_partial").map(String::as_str), Some("true"));

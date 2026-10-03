@@ -2,8 +2,7 @@ use std::time::Instant;
 
 use super::{
     CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode, Result, cudf_query_error,
-    cudf_query_error_with_budget_details, execute_limit_with_token, execution_overrides, final_sort_retained_bytes,
-    limit_keeps_all_rows, lower_sort_spec,
+    execute_limit_with_token, execution_overrides, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
 };
 
 impl FinalSortExecutor<'_, '_, '_> {
@@ -33,7 +32,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                     .clone()
                     .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, &prepare_token)
                     .map_err(|error| {
-                        cudf_query_error_with_budget_details(
+                        cudf_query_error(
                             "query_engine.final_sort.prepare",
                             "failed to prepare bounded native final sort order",
                             error,
@@ -72,7 +71,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                 match prepared_sort
                     .materialize_with_budget(&materialize_token)
                     .map_err(|error| {
-                        cudf_query_error_with_budget_details(
+                        cudf_query_error(
                             "query_engine.final_sort.materialize",
                             "failed to materialize bounded native final sort output",
                             error,

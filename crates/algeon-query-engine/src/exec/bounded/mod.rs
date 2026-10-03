@@ -55,7 +55,7 @@ pub(in crate::exec::bounded) use join::{
 pub(in crate::exec::bounded) use operator::execute_bounded_graph_algorithm_from_inputs;
 pub(in crate::exec::bounded) use operator::{
     execute_bounded_edge_normalize_from_input, execute_bounded_projection, execute_bounded_projection_from_frame,
-    execute_bounded_unary, execute_bounded_unary_from_frame,
+    execute_bounded_unary, run_budgeted,
 };
 use operator::{
     execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source, execute_bounded_local_parquet_source,

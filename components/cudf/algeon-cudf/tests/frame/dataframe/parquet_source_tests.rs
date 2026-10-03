@@ -1903,21 +1903,15 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     .expect_err("one-byte budget should not cover parquet decoded output allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("source_read"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
-    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
-    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
     let budget = err.budget_exhaustion().expect("budgeted source read should expose typed budget detail");
-    assert_eq!(budget.hard_budget_bytes(), 1);
-    assert_eq!(budget.peak_bytes(), 0);
-    assert_eq!(budget.peak_aligned_bytes(), 0);
-    assert_eq!(budget.current_bytes(), 0);
-    assert_eq!(budget.failed_allocation_count(), 1);
-    assert!(budget.largest_failed_allocation_bytes() > 0);
+    assert_eq!(budget.boundary(), "source_read");
+    let usage = budget.usage().expect("the member was sampled");
+    assert_eq!(usage.allocation_limit_bytes, 1);
+    assert_eq!(usage.peak_bytes, 0);
+    assert_eq!(usage.peak_aligned_bytes, 0);
+    assert_eq!(usage.current_bytes, 0);
+    assert_eq!(usage.failed_allocation_count, 1);
+    assert!(usage.largest_failed_allocation_bytes > 0);
     assert_eq!(budget.boundary(), "source_read");
     assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget");
 }
@@ -1955,12 +1949,10 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budge
     .expect_err("one-byte budget should not cover host-buffer parquet decoded output allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("host_buffer_source_read"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(
-        error_context_value(&err, "budget_operation").as_deref(),
-        Some("dataframe::read_parquet_source_chunk_with_budget_from_host_buffer")
-    );
+    let budget = err.budget_exhaustion().expect("budgeted host-buffer read exposes its budget scope");
+    assert_eq!(budget.boundary(), "host_buffer_source_read");
+    assert_eq!(budget.usage().expect("the member was sampled").allocation_limit_bytes, 1);
+    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget_from_host_buffer");
 }
 
 #[test]

@@ -3,8 +3,8 @@ use std::time::Instant;
 use super::{
     DataFrame, ExecutionBudgetRequest, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, NodeId,
     QueryError, QueryErrorCode, Result, SourceChunkPlanningPolicy, ZERO_COLUMN_COUNT_COLUMN, attach_row_group_facts,
-    cudf_query_error, cudf_query_error_with_budget_details, parquet_chunk_path_fact,
-    plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
+    cudf_query_error, parquet_chunk_path_fact, plan_local_parquet_source_chunks_with_execution_context,
+    record_bounded_parquet_source_metrics,
 };
 
 pub(super) fn read_zero_column_count_source(
@@ -116,12 +116,11 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
 
     let timer = Instant::now();
     let outcome = context.runtime()?.series_from_value_with_budget(count, 1, &token).map_err(|error| {
-        cudf_query_error_with_budget_details(
+        cudf_query_error(
             "query_engine.local_parquet_chunk.zero_column_count",
             "failed to construct bounded native zero-column count input",
             error,
         )
-        .with_fact_if_absent("budget_operation", "runtime::series_from_value_with_budget")
     })?;
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk.zero_column_count", outcome.report());
     let series = outcome.into_value();

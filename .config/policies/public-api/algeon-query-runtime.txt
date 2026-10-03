@@ -489,10 +489,9 @@ pub fn query_runtime::metrics::project_backend_duration_histogram(&query_runtime
 pub mod query_runtime::native_error
 pub fn query_runtime::native_error::cudf_message_fact(&cudf::core::error::Error) -> core::option::Option<alloc::string::String>
 pub fn query_runtime::native_error::cudf_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> query_planning::error::QueryError
-pub fn query_runtime::native_error::cudf_query_error_with_budget_details(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> query_planning::error::QueryError
 pub fn query_runtime::native_error::cudf_query_error_without_source(&'static str, impl core::convert::Into<alloc::string::String>, &cudf::core::error::Error) -> query_planning::error::QueryError
-pub fn query_runtime::native_error::cudf_query_error_without_source_with_budget_details(&'static str, impl core::convert::Into<alloc::string::String>, &cudf::core::error::Error) -> query_planning::error::QueryError
 pub fn query_runtime::native_error::cudf_unsupported_type_error(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> query_planning::error::QueryError
+pub fn query_runtime::native_error::memory_failure(&cudf::core::error::BudgetExhaustionDetail) -> query_planning::error::context::MemoryFailure
 pub fn query_runtime::native_error::query_error_code_for_cudf_error(&cudf::core::error::Error) -> query_planning::error::QueryErrorCode
 pub mod query_runtime::observability
 pub use query_runtime::observability::AttemptComposedScheduleProjection

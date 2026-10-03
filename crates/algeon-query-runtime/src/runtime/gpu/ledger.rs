@@ -39,7 +39,7 @@ use super::DeviceResourceProfile;
 use super::{DeviceCapabilities, DeviceResourceEnvelope};
 use crate::{
     native_error::cudf_query_error,
-    observability::{AdmissionRequestId, AttemptId},
+    observability::{AdmissionRequestId, AttemptFaultIsolation, AttemptId},
     runtime::context::QueryServiceResourceEpoch,
 };
 
@@ -51,7 +51,9 @@ pub(crate) enum DeviceAdmissionHealth {
     /// New attempts may be admitted.
     Open,
     /// New admission is closed; in-flight attempts finish and release.
-    Closed { reason: String, generation: u64 },
+    /// `isolation` says whether the fault is confined to this device;
+    /// `reason` is diagnostic text only.
+    Closed { reason: String, isolation: AttemptFaultIsolation, generation: u64 },
 }
 
 impl DeviceAdmissionHealth {
@@ -646,14 +648,25 @@ impl DeviceLedger {
         Ok(state.health.clone())
     }
 
-    /// Closes new admission on this device; in-flight grants still release.
+    /// Closes new admission on this device for a fault confined to it;
+    /// in-flight grants still release.
     pub(crate) fn close_admission(&self, reason: impl Into<String>) -> Result<u64> {
+        self.close_admission_with(AttemptFaultIsolation::DeviceLocal, reason.into())
+    }
+
+    /// Closes new admission because cleanup could not establish whether a
+    /// fault stayed on one device. Only the service-wide closure uses it.
+    pub(crate) fn close_admission_for_unknown_isolation(&self, detail: impl Into<String>) -> Result<u64> {
+        self.close_admission_with(AttemptFaultIsolation::Unknown, detail.into())
+    }
+
+    fn close_admission_with(&self, isolation: AttemptFaultIsolation, reason: String) -> Result<u64> {
         let mut state = self.lock_state("close_admission")?;
         let generation = match &state.health {
             DeviceAdmissionHealth::Open => 1,
             DeviceAdmissionHealth::Closed { generation, .. } => generation.saturating_add(1),
         };
-        state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation };
+        state.health = DeviceAdmissionHealth::Closed { reason, isolation, generation };
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
         // Admission observers wake service queues, so they run outside the ledger lock.
         drop(state);
@@ -672,7 +685,11 @@ impl DeviceLedger {
         if !matches!(state.health, DeviceAdmissionHealth::Open) {
             return Ok(false);
         }
-        state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation: 1 };
+        state.health = DeviceAdmissionHealth::Closed {
+            reason: reason.into(),
+            isolation: AttemptFaultIsolation::DeviceLocal,
+            generation: 1,
+        };
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
         // Admission observers wake service queues, so they run outside the ledger lock.
         drop(state);

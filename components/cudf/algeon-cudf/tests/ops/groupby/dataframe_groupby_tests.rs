@@ -58,9 +58,7 @@ fn groupby_sum_pairs(result: &DataFrame) -> Vec<(i32, i64)> {
 }
 
 fn assert_no_budget_error_details(err: &cudf::Error) {
-    for key in ["budget_boundary", "budget_bytes", "budget_enforcement", "budget_status"] {
-        assert_eq!(error_context_value(err, key).as_deref(), None, "{key} should not be attached");
-    }
+    assert!(err.budget_exhaustion().is_none(), "an unbudgeted operation carries no budget scope");
 }
 
 // ---------------------------------------------------------------------------
@@ -254,14 +252,14 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("grouped_sum"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
-    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
-    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
+    let budget = err.budget_exhaustion().expect("budgeted aggregate exposes its budget scope");
+    assert_eq!(budget.boundary(), "grouped_sum");
+    let usage = budget.usage().expect("the member was sampled");
+    assert_eq!(usage.allocation_limit_bytes, 1);
+    assert_eq!(usage.peak_bytes, 0);
+    assert_eq!(usage.current_bytes, 0);
+    assert_eq!(usage.failed_allocation_count, 1);
+    assert!(usage.largest_failed_allocation_bytes > 0);
 }
 
 fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details() {

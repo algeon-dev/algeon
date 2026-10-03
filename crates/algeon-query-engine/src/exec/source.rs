@@ -10,8 +10,7 @@ use super::{
     LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode, Result, SourceChunk,
     SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode, SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN,
     append_source_order_columns, budgeted_value, comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, cudf_query_error_without_source,
-    cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error, execution_overrides,
+    cudf_query_error_without_source, cudf_unsupported_type_error, execution_overrides,
     plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
@@ -867,9 +866,9 @@ fn cudf_error_for_chunk_with_budget_details(
     chunk: &SourceChunk,
 ) -> QueryError {
     if chunk.location.is_local_path() {
-        cudf_query_error_with_budget_details(operation, message, error)
+        cudf_query_error(operation, message, error)
     } else {
-        cudf_query_error_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     }
 }
 
@@ -880,9 +879,9 @@ fn cudf_error_for_chunk_batch_with_budget_details(
     chunks: &[SourceChunk],
 ) -> QueryError {
     if chunks.iter().any(|chunk| !chunk.location.is_local_path()) {
-        cudf_query_error_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     } else {
-        cudf_query_error_with_budget_details(operation, message, error)
+        cudf_query_error(operation, message, error)
     }
 }
 

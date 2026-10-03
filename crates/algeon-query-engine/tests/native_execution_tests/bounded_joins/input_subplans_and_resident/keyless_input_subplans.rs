@@ -120,7 +120,7 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     };
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), Some("query_domain_member"));
 
     fs::remove_dir_all(dir).unwrap();
 }

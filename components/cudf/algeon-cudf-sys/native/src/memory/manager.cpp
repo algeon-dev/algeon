@@ -515,11 +515,11 @@ cudf_status_t memory_manager_for_device_impl(
                                  false,
                                  CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH);
       }
-      set_error(
-        "device memory manager already exists with different physical-base "
-        "options; "
-        "the process-global allocator cannot be replaced after first use");
-      return CUDF_ERROR_INVALID_OPERATION;
+      set_error(CUDF_ERROR_RUNTIME_BINDING_MISMATCH,
+                "device memory manager already exists with different physical-base "
+                "options; "
+                "the process-global allocator cannot be replaced after first use");
+      return CUDF_ERROR_RUNTIME_BINDING_MISMATCH;
     } else if (failure_callback != nullptr && !it->second->failure_callback_installed) {
       if (installation != nullptr) {
         fill_installation_record(it->second.get(), device, *installation);

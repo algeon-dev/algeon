@@ -5,8 +5,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, CaseWhen, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, Field, LiteralValue, QueryError, QueryErrorCode, Result, Schema,
-    aggregate_spec_has_filters, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
-    execution_overrides, global_count_star_expr, lower_expr,
+    aggregate_spec_has_filters, budgeted_value, cudf_query_error, execution_overrides, global_count_star_expr,
+    lower_expr,
 };
 use crate::naming::unique_alias_with_suffix;
 
@@ -50,7 +50,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.aggregate.filter_inputs",
                     "failed to materialize bounded native aggregate filter inputs",
                     error,

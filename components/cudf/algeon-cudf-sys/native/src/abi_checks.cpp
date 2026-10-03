@@ -57,6 +57,8 @@ static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 static_assert(CUDF_ERROR_UNSUPPORTED == 11);
 static_assert(CUDF_ERROR_SIZE_OVERFLOW == 12);
+static_assert(CUDF_ERROR_INVARIANT_VIOLATION == 13);
+static_assert(CUDF_ERROR_RUNTIME_BINDING_MISMATCH == 14);
 
 static_assert(sizeof(cudf_error_failure_source_t) == sizeof(int32_t), "cudf_error_failure_source_t must be 32-bit");
 static_assert(CUDF_ERROR_FAILURE_SOURCE_PHYSICAL == 0);

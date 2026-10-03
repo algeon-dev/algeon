@@ -186,7 +186,7 @@ mod allocation_attribution_tests {
     }
 
     fn budget_annotation_for_test() -> BudgetExhaustionDetail {
-        BudgetExhaustionDetail::new(1024, 1024, 1024, 512, 4096, 1, "test_boundary", TEST_OPERATION)
+        BudgetExhaustionDetail::new("test_boundary", TEST_OPERATION, None)
     }
 
     fn annotated(error: Error) -> Error {

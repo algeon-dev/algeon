@@ -96,7 +96,7 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
                 &mut installation,
             )
         },
-        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        cudf_sys::CUDF_ERROR_RUNTIME_BINDING_MISMATCH,
     );
     assert!(conflicting_manager.is_null());
     assert_eq!(installation.cause, cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH);

@@ -199,25 +199,18 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
         );
     }
 
-    execute_bounded_unary_from_frame(
-        execution,
-        node_id,
-        "compiled_aggregate",
-        input,
-        true,
-        |context, input, token, metrics| {
-            execute_aggregate_with_budget_for_node(
-                context,
-                Some(node_id),
-                aggregate,
-                input_schema,
-                input,
-                output_schema,
-                token.expect("budget token is created for compiled bounded aggregate stages"),
-                metrics,
-            )
-        },
-    )
+    run_budgeted(execution, node_id, "compiled_aggregate", input, |context, input, token, metrics| {
+        execute_aggregate_with_budget_for_node(
+            context,
+            Some(node_id),
+            aggregate,
+            input_schema,
+            input,
+            output_schema,
+            token,
+            metrics,
+        )
+    })
 }
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_frame(

@@ -2,7 +2,7 @@ use arrow::datatypes::SchemaRef;
 #[cfg(feature = "cugraph")]
 use cugraph::AllocationFailureSource;
 #[cfg(feature = "cugraph")]
-use cugraph::AllocationSource;
+use cugraph::AllocationSource as CugraphAllocationSource;
 #[cfg(feature = "cugraph")]
 use cugraph::ErrorKind;
 #[cfg(feature = "cugraph")]
@@ -13,7 +13,7 @@ use super::{
     cudf_unsupported_type_error,
 };
 #[cfg(feature = "cugraph")]
-use crate::error::CugraphAllocationSource;
+use crate::error::AllocationSource as QueryAllocationSource;
 #[cfg(feature = "cugraph")]
 use crate::metrics::BoundaryMetrics;
 #[cfg(feature = "cugraph")]
@@ -254,13 +254,13 @@ pub(super) fn map_cugraph_error(
         );
         let query_error = if error.kind() == ErrorKind::OutOfMemory {
             let source = match error.allocation_source() {
-                AllocationSource::Unknown => CugraphAllocationSource::Unknown,
-                AllocationSource::RmmOutOfMemory => CugraphAllocationSource::RmmOutOfMemory,
-                AllocationSource::RmmBadAlloc => CugraphAllocationSource::RmmBadAlloc,
-                AllocationSource::StdBadAlloc => CugraphAllocationSource::StdBadAlloc,
+                CugraphAllocationSource::Unknown => QueryAllocationSource::Unknown,
+                CugraphAllocationSource::RmmOutOfMemory => QueryAllocationSource::RmmOutOfMemory,
+                CugraphAllocationSource::RmmBadAlloc => QueryAllocationSource::RmmBadAlloc,
+                CugraphAllocationSource::StdBadAlloc => QueryAllocationSource::StdBadAlloc,
             };
             query_error
-                .with_cugraph_allocation_source(source)
+                .with_allocation_source(source)
                 .with_fact("cugraph_allocation_failure_source", error.allocation_failure_source().as_str())
         } else {
             query_error
@@ -310,15 +310,14 @@ mod tests {
         // physical device OOM or a query-cap rejection.
         assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed);
         assert_eq!(error.fact_value("cugraph_allocation_failure_source"), Some("unknown"));
-        assert_eq!(error.fact_value("cugraph_allocation_source"), Some("unknown"));
-        assert_eq!(error.cugraph_allocation_source(), Some(CugraphAllocationSource::Unknown));
+        assert_eq!(error.context().allocation_source, Some(QueryAllocationSource::Unknown));
+        assert!(error.wire_facts().any(|(key, value)| key == "cugraph_allocation_source" && value == "unknown"));
 
         let dependency_error = map_cugraph_error("query_engine.graph_algorithm.test", "cuGraph dependency failure")(
             cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "cugraph.test.invalid_input"),
         );
 
-        assert_eq!(dependency_error.fact_value("cugraph_allocation_source"), None);
-        assert_eq!(dependency_error.cugraph_allocation_source(), None);
+        assert_eq!(dependency_error.context().allocation_source, None);
     }
 
     #[cfg(feature = "test-hooks")]

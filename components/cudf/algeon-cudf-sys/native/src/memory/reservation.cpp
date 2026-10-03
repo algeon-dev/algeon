@@ -155,7 +155,7 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
     return result;
   }
   if (bytes != 0) {
-    throw cudf::logic_error{
+    throw cudf::rust::invariant_error{
       "device allocation stream has no query domain or explicit backend owner"};
   }
   return upstream_.allocate(stream, bytes, alignment);
@@ -193,7 +193,7 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
   if (bytes != 0) {
     query_domain_allocations_->record_invariant_violation(
       query_domain_allocation_registry::invariant_violation::unknown_device_pointer);
-    set_error("unknown or already-freed device allocation pointer");
+    set_error(CUDF_ERROR_INVARIANT_VIOLATION, "unknown or already-freed device allocation pointer");
     return;
   }
 

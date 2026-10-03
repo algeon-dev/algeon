@@ -544,11 +544,13 @@ pub fn query_planning::dynamic_filter::apply_dynamic_filters_to_local_parquet_so
 pub fn query_planning::dynamic_filter::dynamic_filter_i64_values(&dyn arrow_array::array::Array) -> core::option::Option<alloc::vec::Vec<core::option::Option<i64>>>
 pub fn query_planning::dynamic_filter::dynamic_filter_predicate_for_schema(&arrow_schema::schema::Schema, &str, &query_planning::dynamic_filter::DynamicFilter) -> core::option::Option<query_planning::expr::Expr>
 pub mod query_planning::error
-pub enum query_planning::error::CugraphAllocationSource
-pub query_planning::error::CugraphAllocationSource::RmmBadAlloc
-pub query_planning::error::CugraphAllocationSource::RmmOutOfMemory
-pub query_planning::error::CugraphAllocationSource::StdBadAlloc
-pub query_planning::error::CugraphAllocationSource::Unknown
+pub enum query_planning::error::AllocationSource
+pub query_planning::error::AllocationSource::RmmBadAlloc
+pub query_planning::error::AllocationSource::RmmOutOfMemory
+pub query_planning::error::AllocationSource::StdBadAlloc
+pub query_planning::error::AllocationSource::Unknown
+impl query_planning::error::AllocationSource
+pub const fn query_planning::error::AllocationSource::as_str(self) -> &'static str
 pub enum query_planning::error::QueryErrorCode
 pub query_planning::error::QueryErrorCode::AlgorithmDidNotConverge
 pub query_planning::error::QueryErrorCode::Cancelled
@@ -614,10 +616,28 @@ pub struct query_planning::error::Facts
 impl query_planning::error::Facts
 pub fn query_planning::error::Facts::get(&self, &str) -> core::option::Option<&str>
 pub fn query_planning::error::Facts::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &str)>
+#[non_exhaustive] pub struct query_planning::error::FailureContext
+pub query_planning::error::FailureContext::allocation_source: core::option::Option<query_planning::error::AllocationSource>
+pub query_planning::error::FailureContext::boundary: core::option::Option<query_planning::error::ResourceBoundary>
+pub query_planning::error::FailureContext::cleanup_deadline_elapsed: bool
+pub query_planning::error::FailureContext::graph_cache_scope_peak_bytes: core::option::Option<u64>
+pub query_planning::error::FailureContext::memory: core::option::Option<query_planning::error::MemoryFailure>
+pub struct query_planning::error::MemoryFailure
+pub query_planning::error::MemoryFailure::boundary: alloc::borrow::Cow<'static, str>
+pub query_planning::error::MemoryFailure::operation: alloc::borrow::Cow<'static, str>
+pub query_planning::error::MemoryFailure::usage: core::option::Option<query_planning::error::MemoryUsage>
+pub struct query_planning::error::MemoryUsage
+pub query_planning::error::MemoryUsage::current_aligned_bytes: u64
+pub query_planning::error::MemoryUsage::current_bytes: u64
+pub query_planning::error::MemoryUsage::failed_allocation_count: u64
+pub query_planning::error::MemoryUsage::largest_failed_allocation_bytes: u64
+pub query_planning::error::MemoryUsage::limit_bytes: u64
+pub query_planning::error::MemoryUsage::peak_aligned_bytes: u64
+pub query_planning::error::MemoryUsage::peak_bytes: u64
 pub struct query_planning::error::QueryError(_)
 impl query_planning::error::QueryError
 pub fn query_planning::error::QueryError::code(&self) -> query_planning::error::QueryErrorCode
-pub const fn query_planning::error::QueryError::cugraph_allocation_source(&self) -> core::option::Option<query_planning::error::CugraphAllocationSource>
+pub fn query_planning::error::QueryError::context(&self) -> &query_planning::error::FailureContext
 pub fn query_planning::error::QueryError::fact_value(&self, &str) -> core::option::Option<&str>
 pub fn query_planning::error::QueryError::facts(&self) -> &query_planning::error::Facts
 pub fn query_planning::error::QueryError::kind(&self) -> query_planning::error::QueryErrorKind
@@ -629,8 +649,12 @@ pub fn query_planning::error::QueryError::source_error(&self) -> core::option::O
 pub fn query_planning::error::QueryError::status(&self) -> query_planning::error::QueryErrorStatus
 pub fn query_planning::error::QueryError::to_json(&self) -> serde_json::value::Value
 pub fn query_planning::error::QueryError::trace_id(&self) -> core::option::Option<&TraceId>
+pub fn query_planning::error::QueryError::wire_fact(&self, &str) -> core::option::Option<alloc::borrow::Cow<'_, str>>
+pub fn query_planning::error::QueryError::wire_facts(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, alloc::borrow::Cow<'_, str>)>
 pub fn query_planning::error::QueryError::with_fact(self, &'static str, impl alloc::string::ToString) -> Self
+pub fn query_planning::error::QueryError::with_memory_failure(self, query_planning::error::MemoryFailure) -> Self
 pub fn query_planning::error::QueryError::with_query_id(self, impl core::convert::Into<QueryId>) -> Self
+pub fn query_planning::error::QueryError::with_resource_boundary(self, query_planning::error::ResourceBoundary) -> Self
 pub fn query_planning::error::QueryError::with_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 pub fn query_planning::error::QueryError::with_trace_id(self, impl core::convert::Into<TraceId>) -> Self
 impl query_planning::error::QueryError
@@ -641,6 +665,17 @@ impl core::fmt::Debug for query_planning::error::QueryError
 pub fn query_planning::error::QueryError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for query_planning::error::QueryError
 pub fn query_planning::error::QueryError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::error::ResourceBoundary
+pub query_planning::error::ResourceBoundary::memory_boundary: &'static str
+pub query_planning::error::ResourceBoundary::node_id: core::option::Option<query_planning::plan::NodeId>
+pub query_planning::error::ResourceBoundary::resume: core::option::Option<&'static str>
+pub query_planning::error::ResourceBoundary::side: core::option::Option<query_planning::plan::JoinSide>
+pub query_planning::error::ResourceBoundary::stage: &'static str
+impl query_planning::error::ResourceBoundary
+pub const fn query_planning::error::ResourceBoundary::new(&'static str, query_planning::plan::NodeId) -> Self
+pub const fn query_planning::error::ResourceBoundary::with_resume(self, &'static str) -> Self
+pub const fn query_planning::error::ResourceBoundary::with_side(self, query_planning::plan::JoinSide) -> Self
+pub const fn query_planning::error::ResourceBoundary::with_stage(self, &'static str) -> Self
 pub fn query_planning::error::redact_uri_tokens(&str) -> alloc::string::String
 pub type query_planning::error::Result<T> = core::result::Result<T, query_planning::error::QueryError>
 pub mod query_planning::expr

@@ -1310,7 +1310,7 @@ fn slice_source_adjacent_aggregate_partition(
     }
     let sliced = budgeted_value(
         frame.slice_with_budget(start, len, token).map_err(|error| {
-            cudf_query_error_with_budget_details(
+            cudf_query_error(
                 "query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
                 "failed to slice source-adjacent hash-partitioned aggregate input",
                 error,

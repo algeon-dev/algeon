@@ -12,23 +12,25 @@ pub fn with_ffi_detail_for_test(error: Error, detail: CudfErrorDetail) -> Error 
     testing_hooks::with_ffi_detail_for_test(error, detail)
 }
 
-/// Testing-only: build the typed budget-exhaustion counters attached by a
-/// hard budget token's `annotate_error` path.
+/// Testing-only: build the budget scope a token's `annotate_error` attaches,
+/// with member counters that are zero unless named here.
 pub fn budget_exhaustion_detail_for_test(
-    hard_budget_bytes: usize,
-    peak_bytes: usize,
-    peak_aligned_bytes: usize,
-    current_bytes: usize,
-    largest_failed_allocation_bytes: usize,
-    failed_allocation_count: usize,
+    member_limit_bytes: u64,
+    peak_bytes: u64,
+    peak_aligned_bytes: u64,
+    current_bytes: u64,
+    current_aligned_bytes: u64,
+    largest_failed_allocation_bytes: u64,
+    failed_allocation_count: u64,
     boundary: &'static str,
     operation: &'static str,
 ) -> BudgetExhaustionDetail {
     testing_hooks::budget_exhaustion_detail_for_test(
-        hard_budget_bytes,
+        member_limit_bytes,
         peak_bytes,
         peak_aligned_bytes,
         current_bytes,
+        current_aligned_bytes,
         largest_failed_allocation_bytes,
         failed_allocation_count,
         boundary,

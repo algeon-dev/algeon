@@ -3,7 +3,7 @@ use std::{ffi::c_void, io};
 use rapids_interop::InteropError;
 
 use super::{BudgetExhaustionDetail, CudfErrorDetail, Error, ErrorCode};
-use crate::core::{Result, types::TypeId};
+use crate::core::{Result, memory::ReservationUsage, types::TypeId};
 
 pub(crate) fn new_with_for_test(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Error {
     Error::new_with(code, operation, message)
@@ -15,28 +15,37 @@ pub(crate) fn with_ffi_detail_for_test(error: Error, detail: CudfErrorDetail) ->
     error.with_ffi_detail(detail)
 }
 
-/// Testing-only: build the typed budget-exhaustion counters attached by a
-/// hard budget token's `annotate_error` path.
+/// Testing-only: build the budget scope a token's `annotate_error` attaches,
+/// with member counters that are zero unless named here.
 pub(crate) fn budget_exhaustion_detail_for_test(
-    hard_budget_bytes: usize,
-    peak_bytes: usize,
-    peak_aligned_bytes: usize,
-    current_bytes: usize,
-    largest_failed_allocation_bytes: usize,
-    failed_allocation_count: usize,
+    member_limit_bytes: u64,
+    peak_bytes: u64,
+    peak_aligned_bytes: u64,
+    current_bytes: u64,
+    current_aligned_bytes: u64,
+    largest_failed_allocation_bytes: u64,
+    failed_allocation_count: u64,
     boundary: &'static str,
     operation: &'static str,
 ) -> BudgetExhaustionDetail {
-    BudgetExhaustionDetail::new(
-        hard_budget_bytes,
-        peak_bytes,
-        peak_aligned_bytes,
+    let usage = ReservationUsage {
+        reservation_id: 0,
+        attached: true,
+        direct_total_allocations: 0,
+        routed_total_allocations: 0,
+        allocation_limit_bytes: member_limit_bytes,
         current_bytes,
-        largest_failed_allocation_bytes,
+        peak_bytes,
+        total_bytes: 0,
+        current_aligned_bytes,
+        peak_aligned_bytes,
+        total_allocations: 0,
+        current_allocations: 0,
+        peak_allocations: 0,
         failed_allocation_count,
-        boundary,
-        operation,
-    )
+        largest_failed_allocation_bytes,
+    };
+    BudgetExhaustionDetail::new(boundary, operation, Some(usage))
 }
 
 /// Testing-only: attach typed budget-exhaustion counters, mirroring the

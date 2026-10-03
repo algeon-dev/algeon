@@ -154,9 +154,9 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_b
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
-    assert_eq!(error.fact_value("budget_boundary"), None);
-    assert_eq!(error.fact_value("budget_bytes"), None);
-    assert_eq!(error.fact_value("budget_enforcement"), None);
+    assert_eq!(error.wire_fact("budget_boundary").as_deref(), None);
+    assert_eq!(error.wire_fact("budget_bytes").as_deref(), None);
+    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), None);
 
     fs::remove_dir_all(dir).unwrap();
 }

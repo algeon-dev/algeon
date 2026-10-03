@@ -145,4 +145,5 @@ unsafe extern "C" {
     pub fn cudf_test_throw_runtime_error() -> cudf_status_t;
     pub fn cudf_test_throw_bad_alloc() -> cudf_status_t;
     pub fn cudf_test_throw_invalid_argument() -> cudf_status_t;
+    pub fn cudf_test_throw_invariant_error() -> cudf_status_t;
 }

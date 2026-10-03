@@ -181,6 +181,23 @@ fn test_invalid_argument_maps_to_invalid_argument() {
 }
 
 #[test]
+fn test_shim_invariant_error_publishes_invariant_status_with_unknown_source() {
+    let _shim_state = lock_shim_state();
+    let status = unsafe { test_support::cudf_test_throw_invariant_error() };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION);
+
+    let detail = unsafe {
+        let ptr = cudf_sys::cudf_last_error_detail();
+        assert!(!ptr.is_null());
+        ptr::read(ptr)
+    };
+    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION);
+    assert_eq!(detail.failure_source, cudf_sys::CUDF_ERROR_FAILURE_SOURCE_UNKNOWN);
+    let message = unsafe { CStr::from_ptr(detail.message.as_ptr()) }.to_string_lossy();
+    assert!(message.contains("ownership invariant from test shim"), "{message}");
+}
+
+#[test]
 fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
     let _shim_state = lock_shim_state();
     let mut out = usize::MAX;

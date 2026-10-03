@@ -4,7 +4,7 @@ use super::{
     BackgroundLakehouseCacheFillEnqueue, DataFrame, ExecutionBudgetRequest, ExecutionContext, ExecutionMetrics,
     GpuDataFrame, LakehouseOptimizedBatchCacheEntry, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions,
     QueryError, QueryErrorCode, Result, SourceChunk, SourceReadFact, acquire_lakehouse_optimized_batch_read_pin,
-    append_source_order_columns, coerce_local_parquet_source_schema, cudf_query_error_with_budget_details,
+    append_source_order_columns, coerce_local_parquet_source_schema, cudf_query_error,
     enqueue_background_lakehouse_cache_chunk_fill, enqueue_background_lakehouse_cache_file_fill,
     optimized_cache_path_fact, record_background_cache_chunk_fill_enqueue_runtime,
     record_background_cache_file_fill_enqueue_runtime, record_source_chunk_batch_read_runtime, record_source_read,
@@ -102,7 +102,7 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
         &token,
     )
     .map_err(|error| {
-        cudf_query_error_with_budget_details(
+        cudf_query_error(
             "query_engine.local_parquet_chunk_batch.optimized_cache_read",
             "failed to read optimized local cache parquet source chunk batch with cudf",
             error,

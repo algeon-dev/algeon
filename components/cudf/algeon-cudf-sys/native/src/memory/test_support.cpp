@@ -322,7 +322,8 @@ cudf_status_t cudf_rust_test_support_memory_resource_deallocate(cudf_memory_reso
   cudf_clear_error();
   auto& owner = memory_resource_owner_from_handle(handle);
   owner.mr->deallocate(cudf_stream_view_from_handle(stream), ptr, bytes, alignment);
-  return cudf_last_error_detail() == nullptr ? CUDF_SUCCESS : CUDF_ERROR_INVALID_OPERATION;
+  auto const* detail = cudf_last_error_detail();
+  return detail == nullptr ? CUDF_SUCCESS : detail->status;
 }
 
 }  // extern "C"

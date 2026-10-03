@@ -7,7 +7,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_query_error,
     filter_inputs::{aggregate_expr_input_type, filtered_aggregate_input_type, filtered_aggregate_value_expr},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
@@ -436,20 +436,16 @@ fn add_segmented_failure_error_facts(
     facts.insert("filtered_global_segmented_failure_error_code", error.code().to_string());
     facts.insert("filtered_global_segmented_failure_error_kind", error.kind().to_string());
     facts.insert("filtered_global_segmented_failure_error_status", error.status().to_string());
-    for (key, value) in error.facts().iter() {
+    for (key, value) in error.wire_facts() {
         if key.starts_with("budget_") {
-            facts.insert(key, value.to_string());
+            facts.insert(key, value.into_owned());
         }
     }
-    for key in ["budget_peak_bytes", "budget_peak_aligned_bytes"] {
-        if let Some(bytes) = error.fact_value(key).and_then(|value| value.parse::<u64>().ok()) {
-            stats.observed_temporary_peak_bytes = stats.observed_temporary_peak_bytes.max(bytes);
-        }
-    }
-    for key in ["budget_current_bytes", "budget_current_aligned_bytes"] {
-        if let Some(bytes) = error.fact_value(key).and_then(|value| value.parse::<u64>().ok()) {
-            stats.observed_retained_peak_bytes = stats.observed_retained_peak_bytes.max(bytes);
-        }
+    if let Some(usage) = error.context().memory.as_ref().and_then(|memory| memory.usage) {
+        stats.observed_temporary_peak_bytes =
+            stats.observed_temporary_peak_bytes.max(usage.peak_bytes).max(usage.peak_aligned_bytes);
+        stats.observed_retained_peak_bytes =
+            stats.observed_retained_peak_bytes.max(usage.current_bytes).max(usage.current_aligned_bytes);
     }
 }
 
@@ -674,7 +670,7 @@ fn prepare_filtered_global_predicates_for_chunk(
         frame = frame
             .with_columns_with_budget(predicate_expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.filtered_global_aggregate.filter_predicates",
                     "failed to materialize segmented filtered global aggregate predicates",
                     error,
@@ -733,7 +729,7 @@ fn prepare_filtered_global_partial_segment(
         frame = frame
             .with_columns_with_budget(masked_expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.filtered_global_aggregate.filter_inputs",
                     "failed to materialize segmented filtered global aggregate inputs",
                     error,

@@ -517,7 +517,7 @@ fn raw_current_resource_route_accounts_and_detaches_before_stream_reuse() {
                 &mut rejected_ptr,
             )
         },
-        cudf_sys::CUDF_ERROR_INVALID_OPERATION
+        cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION
     );
     assert!(rejected_ptr.is_null());
     assert_eq!(
@@ -1398,7 +1398,7 @@ fn query_domain_pointer_registry_uses_recorded_owner_and_rejects_double_free() {
     let second_deallocate_status = unsafe {
         test_support::cudf_test_memory_resource_deallocate(manager_resource.as_raw(), stream.as_raw(), ptr, 4096, 256)
     };
-    assert_eq!(second_deallocate_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert_eq!(second_deallocate_status, cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION);
     let message = unsafe { cudf_sys::cudf_last_error_message() };
     assert!(!message.is_null());
     let message = unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy();
@@ -1411,7 +1411,7 @@ fn query_domain_pointer_registry_uses_recorded_owner_and_rejects_double_free() {
     assert_eq!(invariant_error.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(invariant_error.kind(), ErrorKind::InvariantViolation);
     let detail = invariant_error.ffi_detail().expect("sticky allocator invariant keeps its typed native payload");
-    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION);
     assert!(detail.message.contains("allocator invariant violation"));
     assert!(detail.message.contains("unknown or already-freed device allocation pointer"));
 }
@@ -2026,8 +2026,7 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
     assert_eq!(second_outcome.report().member_limit_bytes(), Some(64 * 1024 * 1024));
 
     let error = runtime.series_from_value_with_budget(7i32, 20_000_000, &first).unwrap_err();
-    assert_eq!(error.budget_exhaustion().unwrap().hard_budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(common::error_context_value(&error, "budget_bytes"), Some((64 * 1024 * 1024).to_string()));
+    assert_eq!(error.budget_exhaustion().unwrap().usage().unwrap().allocation_limit_bytes, 64 * 1024 * 1024);
 
     drop(first);
     drop(second);

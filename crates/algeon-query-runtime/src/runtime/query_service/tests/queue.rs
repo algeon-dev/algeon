@@ -647,7 +647,7 @@ async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admis
     wait_for_queued_len(&service, 1);
 
     let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only service ledger");
-    ledger.close_admission("unknown-isolation backend failure: injected").unwrap();
+    ledger.close_admission_for_unknown_isolation("injected").unwrap();
 
     let error = time::timeout(Duration::from_secs(2), queued)
         .await
@@ -655,6 +655,19 @@ async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admis
         .unwrap()
         .unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
+    assert_eq!(error.fact_value("detail"), Some("injected"));
+}
+
+#[test]
+fn device_local_closure_is_not_backend_unhealthy_whatever_its_text_says() {
+    let service = test_service(1, 8);
+    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only service ledger");
+    // Diagnostic text that once encoded the isolation scope decides nothing.
+    ledger.close_admission("unknown-isolation backend failure: device-local text").unwrap();
+
+    let error = service.admit_query().unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
+    assert_eq!(error.fact_value("detail"), None);
 }
 
 #[test]

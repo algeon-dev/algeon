@@ -5,13 +5,12 @@ use super::{
     CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_unary,
-    execute_bounded_unary_from_frame, execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
-    execute_compiled_bounded_aggregate_from_empty_input, execute_compiled_bounded_aggregate_from_frame,
-    execute_compiled_bounded_final_aggregate_merge, execute_partial_aggregate_with_budget,
-    execution_budget_token_for_boundary, execution_overrides,
+    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_union,
+    execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
+    execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
+    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
     final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
-    observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes,
+    observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes, run_budgeted,
     should_execute_incremental_partitioned_final_aggregate_merge, stream_bounded_join_leaf_local_parquet_source_chunks,
     unsupported_bounded_shape,
 };
@@ -597,12 +596,11 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
     partials: Vec<CommittedPartial>,
 ) -> Result<ResidentGpuFrame> {
     let merged = execute_bounded_union(execution, node_id, partials)?;
-    execute_bounded_unary_from_frame(
+    run_budgeted(
         execution,
         node_id,
         "compiled_statistical_aggregate_final_merge",
         merged.frame,
-        true,
         |context, input, token, metrics| {
             execute_gpu_native_statistical_final_merge_with_budget(
                 context,
@@ -611,7 +609,7 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
                 &aggregate.spec,
                 input_schema,
                 output_schema,
-                token.expect("budget token is created for compiled statistical final aggregate stages"),
+                token,
                 metrics,
             )
         },
@@ -717,25 +715,10 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     // The distinct aggregate below allocates, so the concatenated inputs cannot wait for end of scope.
     drop(frames);
     let concatenated = concatenated.map(GpuDataFrame::new)?;
-    let concatenated_bytes = observe_device_memory_bytes(&concatenated, execution.metrics())?;
-    execute_bounded_unary(
-        execution,
-        node_id,
-        "compiled_aggregate_distinct",
-        ResidentGpuFrame::with_device_bytes(concatenated, concatenated_bytes),
-        true,
-        |context, input, token, metrics| {
-            execute_aggregate_with_budget(
-                context,
-                aggregate,
-                input_schema,
-                input,
-                output_schema,
-                token.expect("budget token is created for compiled bounded distinct aggregate stages"),
-                metrics,
-            )
-        },
-    )
+    observe_device_memory_bytes(&concatenated, execution.metrics())?;
+    run_budgeted(execution, node_id, "compiled_aggregate_distinct", concatenated, |context, input, token, metrics| {
+        execute_aggregate_with_budget(context, aggregate, input_schema, input, output_schema, token, metrics)
+    })
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggregate_from_frame(

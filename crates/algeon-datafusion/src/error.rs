@@ -744,12 +744,12 @@ impl Error {
             .with_log_safe_fact("native_operation", source.operation())
             .with_fact("native_message", source.message());
         let mut collision_keys = Vec::new();
-        for (key, value) in source.facts().iter() {
+        for (key, value) in source.wire_facts() {
             if key == NATIVE_FACT_COLLISION_KEYS || error.facts.get(key).is_some() {
                 collision_keys.push(key);
                 continue;
             }
-            error.facts.insert(key, value.to_string());
+            error.facts.insert(key, value.into_owned());
         }
         if !collision_keys.is_empty() {
             error.facts.insert_log_safe(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
@@ -804,9 +804,10 @@ impl Error {
         let mut message = message.into();
         message.push_str(": ");
         message.push_str(source.message());
+        let wire = source.wire_facts().collect::<BTreeMap<_, _>>();
         let facts = CLIENT_FACTS
             .iter()
-            .filter_map(|key| source.fact_value(key).map(|value| format!("{key}={value}")))
+            .filter_map(|key| wire.get(key).map(|value| format!("{key}={value}")))
             .collect::<Vec<_>>();
         if !facts.is_empty() {
             message.push_str(" [");
@@ -1575,6 +1576,7 @@ mod tests {
                     1024,
                     1024,
                     1024,
+                    512,
                     512,
                     4096,
                     1,

@@ -15,6 +15,10 @@ void set_error(std::string const& msg);
 
 void set_error(char const* msg);
 
+// Records `status` in the copyable error detail. Nonthrowing producers use it
+// when the returned or recorded status, not the message, classifies a failure.
+void set_error(cudf_status_t status, char const* msg) noexcept;
+
 cudf_status_t translate_exception();
 
 cudf_status_t translate_io_exception();

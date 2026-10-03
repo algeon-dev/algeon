@@ -102,9 +102,6 @@ pub enum ErrorCode {
     IoFailure,
     /// I/O cleanup could not proceed because operations are still active.
     IoBusy,
-    /// A libcudf I/O path reported a CUDA copy/memset failure signature that
-    /// is known to be transient in concurrent reader/writer workloads.
-    TransientIoFailure,
 
     // -- Domestic soft-panic leaf --------------------------------------------
     /// An invariant in our own code was violated (soft-panic replacement).
@@ -130,7 +127,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every error code variant, in declaration order.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 32] = [
         Self::MissingColumn,
         Self::DuplicateColumnName,
         Self::DuplicateKey,
@@ -157,7 +154,6 @@ impl ErrorCode {
         Self::FatalCuda,
         Self::IoFailure,
         Self::IoBusy,
-        Self::TransientIoFailure,
         Self::InvariantViolation,
         Self::ForeignInvalidArgument,
         Self::ForeignTransientDependencyFailure,
@@ -196,7 +192,6 @@ impl fmt::Display for ErrorCode {
             ErrorCode::FatalCuda => "FatalCuda",
             ErrorCode::IoFailure => "IoFailure",
             ErrorCode::IoBusy => "IoBusy",
-            ErrorCode::TransientIoFailure => "TransientIoFailure",
             ErrorCode::InvariantViolation => "InvariantViolation",
             ErrorCode::ForeignInvalidArgument => "ForeignInvalidArgument",
             ErrorCode::ForeignTransientDependencyFailure => "ForeignTransientDependencyFailure",
@@ -309,7 +304,6 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::CudaRuntime
         | ErrorCode::FatalCuda
         | ErrorCode::IoFailure
-        | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
         | ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::DependencyFailure,
 
@@ -326,7 +320,6 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         ErrorCode::OutOfMemory
         | ErrorCode::IoBusy
         | ErrorCode::CudaRuntime
-        | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
         | ErrorCode::ForeignResourceExhausted => ErrorStatus::Temporary,
 

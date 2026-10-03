@@ -4,8 +4,8 @@ use cudf::interop::arrow_host::all_null_list_series;
 
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
-    QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, cudf_unsupported_type_error, timestamp_unit_to_cudf_resolution,
+    QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
+    timestamp_unit_to_cudf_resolution,
 };
 use crate::{
     datatypes::{arrow_decimal_scale_to_cudf_scale, is_supported_list_carry_type},
@@ -171,7 +171,7 @@ pub(super) fn coerce_local_parquet_source_schema(
         frame = match token {
             Some(token) => budgeted_value(
                 frame.cast_column_with_budget(field_name.as_str(), expected_dtype, token).map_err(|error| {
-                    cudf_query_error_with_budget_details(
+                    cudf_query_error(
                         "query_engine.local_parquet_source.schema_coerce",
                         "failed to cast bounded native local parquet source column to declared schema type",
                         error,
@@ -180,7 +180,6 @@ pub(super) fn coerce_local_parquet_source_schema(
                     .with_fact("field_index", field_index)
                     .with_fact("actual_dtype", format!("{actual_dtype:?}"))
                     .with_fact("expected_type", format!("{:?}", field.data_type()))
-                    .with_fact_if_absent("budget_operation", "dataframe::cast_column_with_budget")
                 })?,
                 metrics,
                 "query_engine.local_parquet_source.schema_coerce",

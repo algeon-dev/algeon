@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    CommittedPartial, DataFrame, ExecutionMetrics, GpuDataFrame, LimitNode, LimitSpec, Result,
-    cudf_query_error_with_budget_details, limit_keeps_all_rows, limit_slice,
+    CommittedPartial, DataFrame, ExecutionMetrics, GpuDataFrame, LimitNode, LimitSpec, Result, cudf_query_error,
+    limit_keeps_all_rows, limit_slice,
 };
 use crate::exec::operators::attach_budget_token_failure_facts;
 
@@ -63,10 +63,9 @@ pub(super) fn execute_limit_spec_on_frame_with_token(
     let timer = Instant::now();
     let output = frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
         attach_budget_token_failure_facts(
-            cudf_query_error_with_budget_details(operation, "failed to execute bounded native final sort limit", error),
+            cudf_query_error(operation, "failed to execute bounded native final sort limit", error),
             token,
         )
-        .with_fact_if_absent("budget_operation", "dataframe::slice")
     })?;
     metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
@@ -83,15 +82,10 @@ pub(super) fn concat_committed_frames_with_token(
     let output =
         first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to concatenate bounded native final sort candidates",
-                    error,
-                ),
+                cudf_query_error(operation, "failed to concatenate bounded native final sort candidates", error),
                 token,
             )
             .with_fact("candidate_count", frames.len())
-            .with_fact_if_absent("budget_operation", "dataframe::concat_many")
         })?;
     Ok(GpuDataFrame::new(output))
 }

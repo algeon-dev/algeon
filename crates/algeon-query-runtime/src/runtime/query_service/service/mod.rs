@@ -152,10 +152,10 @@ impl QueryServiceInner {
         // could otherwise race between the first and final closure and start
         // work on a fleet whose fault isolation is unknown.
         let _fleet_admission = self.fleet_admission.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        let reason = format!("unknown-isolation backend failure: {}", detail.as_ref());
+        let detail = detail.as_ref();
         if let Some(resources) = &self.resources {
             for context in resources.devices.contexts() {
-                if let Err(error) = context.ledger().close_admission(reason.clone()) {
+                if let Err(error) = context.ledger().close_admission_for_unknown_isolation(detail) {
                     eprintln!(
                         "[query-engine] warning: failed to close device admission after unknown-isolation failure: {error}"
                     );
@@ -163,7 +163,7 @@ impl QueryServiceInner {
             }
         }
         if let Some(ledger) = &self.fallback_device_ledger
-            && let Err(error) = ledger.close_admission(reason)
+            && let Err(error) = ledger.close_admission_for_unknown_isolation(detail)
         {
             eprintln!(
                 "[query-engine] warning: failed to close fallback admission ledger after unknown-isolation failure: {error}"

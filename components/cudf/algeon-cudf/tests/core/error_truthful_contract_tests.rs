@@ -44,11 +44,6 @@ fn status_projection_is_defined_for_every_public_error_code() {
     }
 }
 
-fn transient_io_failure_is_a_temporary_dependency_leaf() {
-    assert_eq!(kind_for_code(ErrorCode::TransientIoFailure), ErrorKind::DependencyFailure);
-    assert_eq!(status_for_code(ErrorCode::TransientIoFailure), ErrorStatus::Temporary);
-}
-
 fn deterministic_host_materialization_size_failures_are_permanent_resource_leaves() {
     for code in [ErrorCode::SizeOverflow, ErrorCode::HostMaterializationLimitExceeded] {
         assert_eq!(kind_for_code(code), ErrorKind::ResourceExhausted);
@@ -56,16 +51,16 @@ fn deterministic_host_materialization_size_failures_are_permanent_resource_leave
     }
 }
 
-fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
-    let transient = ffi_io_status_error_for_test(
+fn ffi_io_status_stays_permanent_whatever_its_message_says() {
+    // CUDA-looking text proves no transience: only a typed status could.
+    let cuda_copy_text = ffi_io_status_error_for_test(
         "CUDA error encountered at: cudf/cpp/src/utilities/cuda_memcpy.cu:43: 1 cudaErrorInvalidValue invalid argument",
         "testing::ffi_status_error_for_test",
     );
-    assert_eq!(transient.code(), ErrorCode::TransientIoFailure);
-    assert_eq!(transient.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(transient.status(), ErrorStatus::Temporary);
-    assert!(transient.is_retryable());
-    assert_eq!(transient.detail_values("transient_promotion").collect::<Vec<_>>(), vec!["cuda_invalid_value_copy"]);
+    assert_eq!(cuda_copy_text.code(), ErrorCode::IoFailure);
+    assert_eq!(cuda_copy_text.status(), ErrorStatus::Permanent);
+    assert!(!cuda_copy_text.is_retryable());
+    assert_eq!(cuda_copy_text.detail_values("transient_promotion").count(), 0);
 
     let ordinary = ffi_io_status_error_for_test(
         "Failed to open local parquet file: No such file or directory",
@@ -246,14 +241,13 @@ fn error_truthful_contract_tests_cases() {
             "status_projection_is_defined_for_every_public_error_code",
             status_projection_is_defined_for_every_public_error_code,
         ),
-        ("transient_io_failure_is_a_temporary_dependency_leaf", transient_io_failure_is_a_temporary_dependency_leaf),
         (
             "deterministic_host_materialization_size_failures_are_permanent_resource_leaves",
             deterministic_host_materialization_size_failures_are_permanent_resource_leaves,
         ),
         (
-            "ffi_io_status_promotes_only_known_cuda_copy_transients",
-            ffi_io_status_promotes_only_known_cuda_copy_transients,
+            "ffi_io_status_stays_permanent_whatever_its_message_says",
+            ffi_io_status_stays_permanent_whatever_its_message_says,
         ),
         (
             "truthful_error_hook_exposes_typed_facts_without_string_parsing",

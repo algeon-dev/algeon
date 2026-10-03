@@ -20,7 +20,7 @@ use crate::{
             compiled::{
                 ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid,
             },
-            execute_bounded_unary, execute_bounded_unary_from_frame,
+            run_budgeted,
         },
         operators::execute_filter_with_budget,
         util::record_batch_memory_size,
@@ -495,36 +495,22 @@ impl CompiledGpuTaskExecutor<'_> {
             );
             self.execution.metrics().record_dynamic_filter_applied(route, &filter, source_snapshot, source_snapshot);
             frame = Some(match frame.take() {
-                Some(frame) => execute_bounded_unary(
+                Some(frame) => run_budgeted(
                     &mut self.execution,
                     source_node_id,
                     "compiled_dynamic_filter_source_post_decode",
-                    frame,
-                    true,
+                    frame.frame,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &filter_node,
-                            input,
-                            token.expect("budget token is created for compiled source dynamic-filter stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
                     },
                 )?,
-                None => execute_bounded_unary_from_frame(
+                None => run_budgeted(
                     &mut self.execution,
                     source_node_id,
                     "compiled_dynamic_filter_source_post_decode",
                     input.take().expect("first source dynamic filter consumes the cloned shared input"),
-                    true,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &filter_node,
-                            input,
-                            token.expect("budget token is created for compiled source dynamic-filter stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
                     },
                 )?,
             });
@@ -567,20 +553,13 @@ impl CompiledGpuTaskExecutor<'_> {
             };
             let filter_node = FilterNode { input: probe_input, predicate };
             let rows_before = frame.frame.num_rows() as u64;
-            frame = execute_bounded_unary(
+            frame = run_budgeted(
                 &mut self.execution,
                 join_node_id,
                 "compiled_dynamic_filter_join_probe",
-                frame,
-                true,
+                frame.frame,
                 |context, input, token, metrics| {
-                    execute_filter_with_budget(
-                        context,
-                        &filter_node,
-                        input,
-                        token.expect("budget token is created for compiled dynamic-filter probe stages"),
-                        metrics,
-                    )
+                    execute_filter_with_budget(context, &filter_node, input, token, metrics)
                 },
             )?;
             self.execution.metrics().record_dynamic_filter_applied_post_decode(
@@ -612,20 +591,13 @@ impl CompiledGpuTaskExecutor<'_> {
             };
             let dynamic_filter_node = FilterNode { input: filter.input, predicate };
             let rows_before = frame.frame.num_rows() as u64;
-            frame = execute_bounded_unary(
+            frame = run_budgeted(
                 &mut self.execution,
                 filter_node_id,
                 "compiled_dynamic_filter_filter",
-                frame,
-                true,
+                frame.frame,
                 |context, input, token, metrics| {
-                    execute_filter_with_budget(
-                        context,
-                        &dynamic_filter_node,
-                        input,
-                        token.expect("budget token is created for compiled dynamic-filter filter stages"),
-                        metrics,
-                    )
+                    execute_filter_with_budget(context, &dynamic_filter_node, input, token, metrics)
                 },
             )?;
             self.execution.metrics().record_dynamic_filter_applied_post_decode(
@@ -663,36 +635,22 @@ impl CompiledGpuTaskExecutor<'_> {
                 |frame| Some(frame.frame.num_rows() as u64),
             );
             frame = Some(match frame.take() {
-                Some(frame) => execute_bounded_unary(
+                Some(frame) => run_budgeted(
                     &mut self.execution,
                     filter_node_id,
                     "compiled_dynamic_filter_filter",
-                    frame,
-                    true,
+                    frame.frame,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &dynamic_filter_node,
-                            input,
-                            token.expect("budget token is created for compiled dynamic-filter filter stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &dynamic_filter_node, input, token, metrics)
                     },
                 )?,
-                None => execute_bounded_unary_from_frame(
+                None => run_budgeted(
                     &mut self.execution,
                     filter_node_id,
                     "compiled_dynamic_filter_filter",
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    true,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &dynamic_filter_node,
-                            input,
-                            token.expect("budget token is created for compiled dynamic-filter filter stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &dynamic_filter_node, input, token, metrics)
                     },
                 )?,
             });
@@ -769,36 +727,22 @@ impl CompiledGpuTaskExecutor<'_> {
                 |frame| Some(frame.frame.num_rows() as u64),
             );
             frame = Some(match frame.take() {
-                Some(frame) => execute_bounded_unary(
+                Some(frame) => run_budgeted(
                     &mut self.execution,
                     join_node_id,
                     "compiled_dynamic_filter_join_probe",
-                    frame,
-                    true,
+                    frame.frame,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &filter_node,
-                            input,
-                            token.expect("budget token is created for compiled dynamic-filter probe stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
                     },
                 )?,
-                None => execute_bounded_unary_from_frame(
+                None => run_budgeted(
                     &mut self.execution,
                     join_node_id,
                     "compiled_dynamic_filter_join_probe",
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    true,
                     |context, input, token, metrics| {
-                        execute_filter_with_budget(
-                            context,
-                            &filter_node,
-                            input,
-                            token.expect("budget token is created for compiled dynamic-filter probe stages"),
-                            metrics,
-                        )
+                        execute_filter_with_budget(context, &filter_node, input, token, metrics)
                     },
                 )?,
             });

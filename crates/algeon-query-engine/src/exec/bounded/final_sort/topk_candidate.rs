@@ -1,9 +1,6 @@
 use std::time::Instant;
 
-use super::{
-    CudfSortOptions, ExecutionMetrics, GpuDataFrame, Result, SortNode, cudf_query_error_with_budget_details,
-    lower_sort_spec,
-};
+use super::{CudfSortOptions, ExecutionMetrics, GpuDataFrame, Result, SortNode, cudf_query_error, lower_sort_spec};
 
 pub(super) fn sort_topk_candidate_with_budget(
     sort: &SortNode,
@@ -19,7 +16,7 @@ pub(super) fn sort_topk_candidate_with_budget(
         .into_frame()
         .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, work_token)
         .map_err(|error| {
-            cudf_query_error_with_budget_details(
+            cudf_query_error(
                 "query_engine.final_sort.topk_prepare",
                 "failed to prepare bounded native final sort top-k candidate",
                 error,
@@ -29,7 +26,7 @@ pub(super) fn sort_topk_candidate_with_budget(
         })?;
     metrics.record_budgeted_execution("query_engine.final_sort.topk_prepare", prepared.report());
     let materialized = prepared.into_value().materialize_with_budget(work_token).map_err(|error| {
-        cudf_query_error_with_budget_details(
+        cudf_query_error(
             "query_engine.final_sort.topk_materialize",
             "failed to materialize bounded native final sort top-k candidate",
             error,

@@ -538,14 +538,24 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
         .expect_err("one-byte budget should not cover prepared sort allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("final_sort"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"),);
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"),);
-    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
-    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "final_sort");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
+    assert_eq!(err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").peak_bytes, 0);
+    assert_eq!(err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").current_bytes, 0);
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").failed_allocation_count,
+        1
+    );
+    assert!(
+        err.budget_exhaustion()
+            .and_then(|budget| budget.usage())
+            .expect("member usage")
+            .largest_failed_allocation_bytes
+            > 0
+    );
 }
 
 #[test]

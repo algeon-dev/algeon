@@ -1,5 +1,6 @@
 #include "cudf_rust/stream.h"
 
+#include "cudf_rust/error_boundary.hpp"
 #include "execution_context_internal.hpp"
 #include "handle_access.hpp"
 #include "shim_common.h"
@@ -94,14 +95,16 @@ std::vector<rmm::cuda_stream_view> attempt_stream_provider_fork(rmm::cuda_stream
     std::lock_guard<std::mutex> const lock(attempt_stream_routes_mutex);
     auto const it = attempt_stream_routes.find(parent.value());
     if (it == attempt_stream_routes.end()) {
-      throw cudf::logic_error{
+      throw cudf::rust::invariant_error{
         "stream routing invariant: fork parent is not attached to an admitted attempt"};
     }
     served = resolve_fork_stream(*it->second.route, parent.value());
   }
 
-  CUDF_EXPECTS(served != nullptr,
-               "stream routing invariant: admitted attempt has no auxiliary streams");
+  if (served == nullptr) {
+    throw cudf::rust::invariant_error{
+      "stream routing invariant: admitted attempt has no auxiliary streams"};
+  }
   std::vector<rmm::cuda_stream_view> result;
   result.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {

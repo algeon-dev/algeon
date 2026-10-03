@@ -11,7 +11,7 @@ use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt, ptr::NonNull};
 
 use rapids_interop::{InteropError, InteropErrorKind};
 
-use crate::runtime;
+use crate::{core::memory::ReservationUsage, runtime};
 
 mod ffi;
 
@@ -54,72 +54,41 @@ struct ErrorInner {
     source: Option<BoxedSourceError>,
 }
 
-/// Typed budget-exhaustion counters attached by budget-token execution.
+/// Budget scope an operation ran in when it failed, attached by budget-token
+/// execution.
+///
+/// The member usage is a snapshot of the scope the error passed through; it
+/// does not prove that the query cap rejected an allocation. `usage` is absent
+/// when the scope could not be sampled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetExhaustionDetail {
-    hard_budget_bytes: usize,
-    peak_bytes: usize,
-    peak_aligned_bytes: usize,
-    current_bytes: usize,
-    largest_failed_allocation_bytes: usize,
-    failed_allocation_count: usize,
     boundary: Cow<'static, str>,
     operation: &'static str,
+    usage: Option<ReservationUsage>,
 }
 
 impl BudgetExhaustionDetail {
     pub(crate) fn new(
-        hard_budget_bytes: usize,
-        peak_bytes: usize,
-        peak_aligned_bytes: usize,
-        current_bytes: usize,
-        largest_failed_allocation_bytes: usize,
-        failed_allocation_count: usize,
         boundary: impl Into<Cow<'static, str>>,
         operation: &'static str,
+        usage: Option<ReservationUsage>,
     ) -> Self {
-        Self {
-            hard_budget_bytes,
-            peak_bytes,
-            peak_aligned_bytes,
-            current_bytes,
-            largest_failed_allocation_bytes,
-            failed_allocation_count,
-            boundary: boundary.into(),
-            operation,
-        }
+        Self { boundary: boundary.into(), operation, usage }
     }
 
-    pub fn hard_budget_bytes(&self) -> usize {
-        self.hard_budget_bytes
-    }
-
-    pub fn peak_bytes(&self) -> usize {
-        self.peak_bytes
-    }
-
-    pub fn peak_aligned_bytes(&self) -> usize {
-        self.peak_aligned_bytes
-    }
-
-    pub fn current_bytes(&self) -> usize {
-        self.current_bytes
-    }
-
-    pub fn largest_failed_allocation_bytes(&self) -> usize {
-        self.largest_failed_allocation_bytes
-    }
-
-    pub fn failed_allocation_count(&self) -> usize {
-        self.failed_allocation_count
-    }
-
+    /// Stage boundary label of the budget request.
     pub fn boundary(&self) -> &str {
         &self.boundary
     }
 
+    /// Budgeted operation the error passed through.
     pub fn operation(&self) -> &'static str {
         self.operation
+    }
+
+    /// Member counters, including the allocation limit the allocator enforced.
+    pub fn usage(&self) -> Option<&ReservationUsage> {
+        self.usage.as_ref()
     }
 }
 
@@ -670,49 +639,23 @@ pub(crate) fn usize_to_i32(value: usize, operation: &'static str, field: &'stati
     i32::try_from(value).map_err(|_| range_limit_error(operation, field, "i32::MAX", value))
 }
 
-fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> ErrorCode {
-    if status == cudf_sys::CUDF_ERROR_INVALID_OPERATION
-        && message.contains("device memory manager already exists with different physical-base options")
-    {
-        return ErrorCode::RuntimeBindingMismatch;
-    }
-    if status == cudf_sys::CUDF_ERROR_INVALID_OPERATION
-        && (message.contains("stream routing invariant")
-            || message.contains("device allocation stream has no query domain or explicit backend owner")
-            || message.contains("unknown or already-freed device allocation pointer")
-            || message.contains("unknown or already-freed query memory domain pointer")
-            || message.contains("query memory domain is frozen to new allocations"))
-    {
-        return ErrorCode::ForeignInvariantViolation;
-    }
+fn leaf_code_for_status(status: cudf_sys::cudf_status_t) -> ErrorCode {
     match status {
         cudf_sys::CUDF_ERROR_INVALID_ARGUMENT | cudf_sys::CUDF_ERROR_INVALID_OPERATION | cudf_sys::CUDF_ERROR_TYPE => {
             ErrorCode::ForeignInvalidArgument
         },
+        cudf_sys::CUDF_ERROR_INVARIANT_VIOLATION => ErrorCode::ForeignInvariantViolation,
+        cudf_sys::CUDF_ERROR_RUNTIME_BINDING_MISMATCH => ErrorCode::RuntimeBindingMismatch,
         cudf_sys::CUDF_ERROR_CUDA => ErrorCode::CudaRuntime,
         cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorCode::FatalCuda,
         cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorCode::OutOfMemory,
         cudf_sys::CUDF_ERROR_SIZE_OVERFLOW => ErrorCode::SizeOverflow,
         cudf_sys::CUDF_ERROR_UNSUPPORTED => ErrorCode::UnsupportedOperation,
-        cudf_sys::CUDF_ERROR_IO if is_transient_cuda_io_message(message) => ErrorCode::TransientIoFailure,
         cudf_sys::CUDF_ERROR_IO => ErrorCode::IoFailure,
         cudf_sys::CUDF_ERROR_NULL => ErrorCode::NullUnexpected,
         cudf_sys::CUDF_ERROR_INDEX => ErrorCode::IndexOutOfBounds,
         _ => ErrorCode::ForeignInvariantViolation,
     }
-}
-
-fn is_transient_cuda_io_message(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    let invalid_value = normalized.contains("cudaerrorinvalidvalue") && normalized.contains("invalid argument");
-    let copy_context = normalized.contains("cuda_memcpy.cu")
-        || normalized.contains("cudamemsetasync")
-        || normalized.contains("device_buffer.cpp")
-        || normalized.contains("h2d ctor")
-        || normalized.contains("d->h")
-        || normalized.contains("thrust");
-
-    invalid_value && copy_context
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -726,16 +669,10 @@ fn error_for_ffi_status_with_detail(
     message: String,
     ffi_detail: Option<CudfErrorDetail>,
 ) -> Error {
-    let code = leaf_code_for_status(status, &message);
-    let error = Error::new_with(code, operation, message);
-    let error = match ffi_detail {
+    let error = Error::new_with(leaf_code_for_status(status), operation, message);
+    match ffi_detail {
         Some(detail) => error.with_ffi_detail(detail),
         None => error,
-    };
-    if code == ErrorCode::TransientIoFailure {
-        error.with_detail("transient_promotion", "cuda_invalid_value_copy")
-    } else {
-        error
     }
 }
 

@@ -157,13 +157,14 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
     let err = df.slice_with_budget(0, 5, &token).expect_err("one-byte budget should not cover the gathered slice copy");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("partition_slice"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "partition_slice");
     // The member accounting this path previously dropped by taking a raw
     // execution lease instead of the caller's budget token.
-    assert!(error_context_value(&err, "budget_peak_bytes").is_some());
-    assert!(error_context_value(&err, "budget_current_bytes").is_some());
-    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
+    assert!(err.budget_exhaustion().and_then(|budget| budget.usage()).is_some(), "the member was sampled");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").failed_allocation_count,
+        1
+    );
 }
 
 fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
