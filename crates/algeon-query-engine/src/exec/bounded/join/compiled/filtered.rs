@@ -246,7 +246,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
     })?;
     let output = if let Some(mark_column_name) = node.spec.join_type.mark_column() {
         // Mark join: estimate reservation as probe size (all rows kept) + mark column overhead.
-        let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
+        let output_reservation_bytes = Some(probe.bytes.saturating_add(probe.rows.saturating_mul(1)));
         let output = materialize_mark_join_output_projection(
             execution.context(),
             &probe.frame,
@@ -324,7 +324,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         )
     })?;
     let output = if let Some(mark_column_name) = node.spec.join_type.mark_column() {
-        let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
+        let output_reservation_bytes = Some(probe.bytes.saturating_add(probe.rows.saturating_mul(1)));
         let output = materialize_mark_join_output_projection(
             execution.context(),
             &probe.frame,
@@ -398,7 +398,7 @@ fn record_filtered_join_output_metrics(
     probe: &BoundedJoinSideFrame,
     probe_state_bytes: u64,
     gather_map_bytes: u64,
-    output_reservation_bytes: u64,
+    output_reservation_bytes: Option<u64>,
     output_rows: u64,
     output_bytes: u64,
 ) {

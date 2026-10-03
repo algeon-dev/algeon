@@ -36,7 +36,7 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let shape = if aggregate.spec.group_exprs.is_empty() {
         PartialAggregateShape::Global
     } else if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
@@ -46,8 +46,11 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     } else {
         PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 }
     };
-    let columns =
-        partial_aggregate_upper_bound_columns(execution, aggregate, input_schema, aggregate_output_schema, input)?;
+    let Some(columns) =
+        partial_aggregate_upper_bound_columns(execution, aggregate, input_schema, aggregate_output_schema, input)?
+    else {
+        return Ok(None);
+    };
     partial_aggregate_upper_bound_bytes(shape, &columns)
 }
 
@@ -57,7 +60,7 @@ fn partial_aggregate_upper_bound_columns(
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+) -> Result<Option<Vec<JoinOutputColumnUpperBoundInput>>> {
     if aggregate.spec.group_exprs.is_empty() {
         return global_partial_aggregate_upper_bound_columns(
             execution,
@@ -82,7 +85,7 @@ fn global_partial_aggregate_upper_bound_columns(
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+) -> Result<Option<Vec<JoinOutputColumnUpperBoundInput>>> {
     let partial_schema = partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)?;
     let mut fields_by_name =
         partial_schema.fields().iter().map(|field| (field.name().as_str(), field.as_ref())).collect::<BTreeMap<_, _>>();
@@ -117,14 +120,8 @@ fn global_partial_aggregate_upper_bound_columns(
                     "global aggregate valid-count state",
                 )?));
             },
-            AggregateFunction::Median => {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedOperator,
-                    "query_engine.bounded.aggregate.global_partial_sizing",
-                    "median aggregate does not have a native partial/final state contract",
-                )
-                .with_fact("alias", expr.alias.as_str()));
-            },
+            // A median has no partial state, so no partial size bounds it.
+            AggregateFunction::Median => return Ok(None),
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
@@ -149,7 +146,7 @@ fn global_partial_aggregate_upper_bound_columns(
         }
     }
 
-    Ok(columns)
+    Ok(Some(columns))
 }
 
 fn grouped_partial_aggregate_upper_bound_columns(
@@ -158,7 +155,7 @@ fn grouped_partial_aggregate_upper_bound_columns(
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
+) -> Result<Option<Vec<JoinOutputColumnUpperBoundInput>>> {
     // State sizing reads output types; input expressions are materialized by
     // the operator owner before kernel lowering (including COUNT literals).
     let mut columns = Vec::with_capacity(spec.group_exprs.len() + spec.aggr_exprs.len().saturating_mul(2));
@@ -247,14 +244,7 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     input,
                 )?);
             },
-            AggregateFunction::Median => {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedOperator,
-                    "query_engine.bounded.aggregate.partial_sizing",
-                    "median aggregate does not have a native partial/final state contract",
-                )
-                .with_fact("alias", expr.alias.as_str()));
-            },
+            AggregateFunction::Median => return Ok(None),
             AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop
             | AggregateFunction::VarSamp
@@ -279,7 +269,7 @@ fn grouped_partial_aggregate_upper_bound_columns(
         }
     }
 
-    Ok(columns)
+    Ok(Some(columns))
 }
 
 fn take_partial_field<'a>(

@@ -331,7 +331,7 @@ fn join_strategy_rows_preserve_planned_strategy_while_counting_runtime_execution
             probe_rows: 1_000_000,
             probe_bytes: 512 * 1024 * 1024,
             gather_map_bytes: 2048,
-            output_reservation_bytes: 4096,
+            output_reservation_bytes: Some(4096),
             output_rows: 100,
             output_bytes: 8192,
             ..Default::default()

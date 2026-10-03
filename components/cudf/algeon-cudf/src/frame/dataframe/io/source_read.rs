@@ -536,20 +536,30 @@ pub(super) fn read_parquet_source_chunk_with_budget_input(
         .device_allocated_size_bytes()
         .map_err(|error| error.reanchor(operation))
         .map_err(|error| token.annotate_error(error, operation))?;
-    let preflight = DataFrame::parquet_source_chunk_exact_preflight(source, chunk, mode)?;
-    let mut report = token
+    let report = token
         .reservation_enforced_report()
         .with_retained_bytes(output_bytes)
         .with_output_bytes(output_bytes)
         .with_output_rows(output_rows)
         .with_context_facts(parquet_source_budget_context(source, chunk, mode));
-    if let Some(preflight) = preflight {
-        report = report.with_context_facts([
+    // The preflight only describes the finished read in the report. When the
+    // byte model cannot bound it, the frame stays and the report says so; the
+    // read itself already passed the source validation the preflight repeats.
+    let report = match DataFrame::parquet_source_chunk_exact_preflight(source, chunk, mode) {
+        Ok(Some(preflight)) => report.with_context_facts([
             ("source_read_preflight_contract", "exact_retained_output_upper_bound".to_string()),
             ("source_read_preflight_retained_output_bytes", preflight.retained_output_bytes().to_string()),
             ("source_read_preflight_required_budget_bytes", preflight.required_budget_bytes().to_string()),
-        ]);
-    }
+        ]),
+        Ok(None) => report.with_context_facts([("source_read_preflight_contract", "unavailable".to_string())]),
+        Err(error) => report.with_context_facts([
+            ("source_read_preflight_contract", "unavailable".to_string()),
+            (
+                "source_read_preflight_unavailable_reason",
+                error.detail_value("reason").map_or_else(|| error.code().to_string(), str::to_string),
+            ),
+        ]),
+    };
 
     Ok(BudgetedExecutionOutcome::new(output, report))
 }

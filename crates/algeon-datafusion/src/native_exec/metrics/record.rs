@@ -986,7 +986,10 @@ impl AlgeonNativeMetrics {
                 )
                 .with_new_label("one_shot_join_output_bytes", runtime.one_shot_join_output_bytes.to_string())
                 .with_new_label("join_gather_map_bytes", join.gather_map_bytes.to_string())
-                .with_new_label("join_output_reservation_bytes", join.output_reservation_bytes.to_string())
+                .with_new_label(
+                    "join_output_reservation_bytes",
+                    join.output_reservation_bytes.map_or_else(|| "none".to_string(), |bytes| bytes.to_string()),
+                )
                 .with_new_label("join_output_rows", join.output_rows.to_string())
                 .with_new_label("join_output_bytes", join.output_bytes.to_string());
             builder.global_counter(metric_name::native_join_strategy_rows()).add(1);
@@ -1436,7 +1439,8 @@ fn join_runtime_counters(join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
         "one_shot_equi" => JoinRuntimeCounters {
             one_shot_join_count: 1,
             one_shot_join_index_bytes: join.gather_map_bytes,
-            one_shot_join_materialization_bytes: join.output_reservation_bytes,
+            // Counters sum the bounds that exist; an unbounded output adds none.
+            one_shot_join_materialization_bytes: join.output_reservation_bytes.unwrap_or_default(),
             one_shot_join_output_bytes: join.output_bytes,
             ..Default::default()
         },

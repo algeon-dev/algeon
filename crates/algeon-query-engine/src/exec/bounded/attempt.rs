@@ -1,4 +1,4 @@
-use super::{ExecutionContext, ExecutionMetrics, Result};
+use super::{ExecutionContext, ExecutionMetrics};
 use crate::observability::SourceReadFact;
 
 /// One admitted bounded execution attempt.
@@ -16,8 +16,8 @@ impl<'a> BoundedExecutionAttempt<'a> {
         context: &'a ExecutionContext,
         device_budget_bytes: u64,
         metrics: &'a ExecutionMetrics,
-    ) -> Result<Self> {
-        Ok(Self { context, device_budget_bytes, metrics })
+    ) -> Self {
+        Self { context, device_budget_bytes, metrics }
     }
 
     pub(in crate::exec) const fn context(&self) -> &'a ExecutionContext {

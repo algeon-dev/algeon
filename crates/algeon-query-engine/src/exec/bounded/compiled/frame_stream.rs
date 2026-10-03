@@ -15,12 +15,13 @@ use crate::{
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// Advisory device bytes for one yielded frame. Eager payloads carry
     /// their largest observed frame; producers derive the hint from their
-    /// inputs. Join probe sizing and `from_producer` chains read it.
-    max_frame_bytes_hint: u64,
-    /// Aggregate byte hint for the whole stream. Lazy transformations retain
-    /// their input's hint until output frames are observed; this is not an
-    /// exact final-output allocation measurement.
-    total_bytes_hint: u64,
+    /// inputs, and `None` when their byte model cannot bound the output.
+    /// Join probe sizing and `from_producer` chains read it.
+    max_frame_bytes_hint: Option<u64>,
+    /// Aggregate byte hint for the whole stream, `None` when unknown. Lazy
+    /// transformations retain their input's hint until output frames are
+    /// observed; this is not an exact final-output allocation measurement.
+    total_bytes_hint: Option<u64>,
     aggregate_num_rows: u64,
     num_columns: usize,
     frames: VecDeque<ResidentGpuFrame>,
@@ -96,8 +97,8 @@ impl ResidentFrameStreamPayload {
             frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.frame.num_rows() as u64));
         let num_columns = frames.first().map_or(0, |frame| frame.frame.num_columns());
         Self {
-            max_frame_bytes_hint,
-            total_bytes_hint,
+            max_frame_bytes_hint: Some(max_frame_bytes_hint),
+            total_bytes_hint: Some(total_bytes_hint),
             aggregate_num_rows,
             num_columns,
             frames: frames.into(),
@@ -106,8 +107,8 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn from_producer(
-        max_frame_bytes_hint: u64,
-        total_bytes_hint: u64,
+        max_frame_bytes_hint: Option<u64>,
+        total_bytes_hint: Option<u64>,
         aggregate_num_rows: u64,
         num_columns: usize,
         source: Box<dyn ResidentFrameStreamSource>,
@@ -122,11 +123,11 @@ impl ResidentFrameStreamPayload {
         }
     }
 
-    pub(in crate::exec::bounded) fn max_frame_bytes_hint(&self) -> u64 {
+    pub(in crate::exec::bounded) fn max_frame_bytes_hint(&self) -> Option<u64> {
         self.max_frame_bytes_hint
     }
 
-    pub(in crate::exec::bounded) fn total_bytes_hint(&self) -> u64 {
+    pub(in crate::exec::bounded) fn total_bytes_hint(&self) -> Option<u64> {
         self.total_bytes_hint
     }
 

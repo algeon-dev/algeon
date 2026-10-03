@@ -242,7 +242,10 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         let probe_partitioned =
             hash_partition_join_side(execution, probe_side, probe, &probe_keys, partition_count, &overrides)?;
         let probe_partitioned_bytes = probe_partitioned.device_bytes();
-        summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
+        // A chunk that fails here is re-read in smaller pieces by the leaf
+        // stream, so its outputs and summary are kept only after every
+        // partition succeeds; a failed chunk's outputs drop before the retry.
+        let mut chunk_outputs = Vec::new();
         for partition in 0..partition_count {
             let (left_partitioned, right_partitioned) = match build_side {
                 JoinSide::Left => (&build_partitioned, &probe_partitioned),
@@ -256,12 +259,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
                 partition,
                 &mut materialize_partitioned_hash_equi_join_partition,
             ) {
-                Ok(partition_outputs) => {
-                    for output in partition_outputs {
-                        summary.record_output(&output);
-                        outputs.push(output.frame);
-                    }
-                },
+                Ok(partition_outputs) => chunk_outputs.extend(partition_outputs),
                 Err(error) => {
                     release_partitioned_join_side(probe_partitioned);
                     return Err(error);
@@ -269,6 +267,11 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             }
         }
         release_partitioned_join_side(probe_partitioned);
+        summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
+        for output in chunk_outputs {
+            summary.record_output(&output);
+            outputs.push(output.frame);
+        }
         Ok(())
     });
     match stream_result {
@@ -319,7 +322,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let probe_side = probe_side(build_side);
     let build_rows = build.input.rows;
     let build_bytes = build.input.bytes;
-    let probe_estimated_bytes = inputs.max_frame_bytes_hint();
+    // An unknown probe size leaves the build size to decide the partitions.
+    let probe_estimated_bytes = inputs.max_frame_bytes_hint().unwrap_or(0);
     let partition_count =
         partitioned_join_partition_count(execution.context(), build.input.bytes, probe_estimated_bytes)
             .max(BoundedPartitionRowPolicy::default().hash_frame_stream_min_partitions());
@@ -433,7 +437,7 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
     node: &JoinNode,
     probe: PartitionedHashEquiJoinFrameStreamProbeState,
 ) -> ResidentFrameStreamPayload {
-    let max_frame_bytes_hint = probe.partition_target_bytes;
+    let max_frame_bytes_hint = Some(probe.partition_target_bytes);
     let total_bytes_hint = probe.inputs.total_bytes_hint();
     let aggregate_num_rows = probe.inputs.num_rows();
     let num_columns = node.spec.output_projection.len();

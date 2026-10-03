@@ -1,7 +1,8 @@
 use std::{
     fs,
     sync::{Arc, Barrier},
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 
 use ::object_store::{ObjectStoreExt, memory::InMemory, path::Path};
@@ -327,6 +328,23 @@ fn cache_fill_byte_budget_tracks_acquire_grow_and_release() {
 }
 
 #[test]
+fn execution_cancellation_sleep_ends_at_cancellation_or_deadline() {
+    let cancellation = ExecutionCancellation::new();
+    let canceller = cancellation.clone();
+    let started = Instant::now();
+    let cancel = thread::spawn(move || canceller.cancel());
+    let error = cancellation.sleep(Duration::from_secs(600), "query_engine.test.sleep").unwrap_err();
+    cancel.join().unwrap();
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(60));
+
+    let expiring = ExecutionCancellation::with_deadline(Some(Instant::now() + Duration::from_millis(10)));
+    let error = expiring.sleep(Duration::from_secs(600), "query_engine.test.sleep").unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(60));
+}
+
+#[test]
 fn cache_fill_byte_budget_grow_reports_saturation_without_waiting() {
     let budget = CacheFillByteBudget::new(1024).unwrap();
     let mut first = budget.try_acquire(768).unwrap().unwrap();
@@ -353,7 +371,7 @@ fn cache_fill_byte_budget_two_holders_growing_past_the_remainder_never_deadlock(
     let barrier = Arc::new(Barrier::new(2));
     let first_gate = Arc::clone(&barrier);
     let second_gate = Arc::clone(&barrier);
-    let (first_grew, second_grew) = std::thread::scope(|scope| {
+    let (first_grew, second_grew) = thread::scope(|scope| {
         let first_handle = scope.spawn(move || {
             first_gate.wait();
             // Return the permit so its release cannot land before the other fill tries to grow.

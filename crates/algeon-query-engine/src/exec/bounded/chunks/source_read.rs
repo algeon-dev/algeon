@@ -1,15 +1,18 @@
 use std::time::Instant;
 
 use super::{
-    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetSource,
-    MemoryControlPolicy, NodeId, QueryError, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk,
-    chunk_retry_facts, cudf_query_error,
+    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetSource, NodeId,
+    QueryError, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk, chunk_retry_facts,
+    cudf_query_error,
     execution::{reported_source_chunk_read_row_groups, source_chunk_batch_static_read_row_groups},
     execution_overrides, is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches,
     read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error, split_retryable_chunk,
 };
 use crate::{
-    chunk::SourceChunkBatch, exec::retry::backoff_before_retry, observability::SourceReadFact, policy::PlanningPolicy,
+    chunk::SourceChunkBatch,
+    exec::retry::{RetryLimits, backoff_before_retry},
+    observability::SourceReadFact,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -88,7 +91,8 @@ fn read_local_parquet_source_batch_or_split(
     memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk_batch_retry")?;
-    let (max_attempts, min_retry_chunk_row_groups) = source_read_retry_policy(execution.context());
+    let RetryLimits { max_attempts, min_split_row_groups: min_retry_chunk_row_groups } =
+        RetryLimits::of(execution.context());
     if batch.is_singleton() {
         let chunk = batch.chunks.first().expect("singleton source batch has one chunk").clone();
         return read_local_parquet_chunk_required_only_or_split(
@@ -127,11 +131,6 @@ fn read_local_parquet_source_batch_or_split(
         },
         Err(error) => Err(error),
     }
-}
-
-fn source_read_retry_policy(context: &ExecutionContext) -> (usize, usize) {
-    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
-    (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
 }
 
 fn read_local_parquet_chunk_required_only_or_split(
@@ -303,7 +302,7 @@ mod tests {
     use crate::{
         chunk::SourceChunkBatch,
         expr::{BinaryOp, Expr, LiteralValue},
-        runtime::{SourceChunkPlanningMode, StandaloneConfig},
+        runtime::{MemoryControlPolicy, SourceChunkPlanningMode, StandaloneConfig},
         source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
 
@@ -360,23 +359,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(shape, vec![(vec![0, 1, 2], "batched"), (vec![3], "ineligible_scan_limit")]);
-    }
-
-    #[test]
-    fn serial_source_chunk_retry_policy_uses_bounded_context() {
-        let context = ExecutionContext::standalone(StandaloneConfig {
-            memory_control_policy: MemoryControlPolicy {
-                device_budget_bytes: 64 * 1024 * 1024 * 1024,
-                max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
-                max_row_groups_per_chunk: 1024,
-                max_retry_attempts: 4,
-                min_retry_chunk_row_groups: 8,
-            },
-            ..StandaloneConfig::default()
-        })
-        .expect("valid bounded context");
-
-        assert_eq!(source_read_retry_policy(&context), (4, 8));
     }
 
     fn test_source(with_reader_predicate: bool) -> LocalParquetSource {

@@ -1,7 +1,7 @@
 use super::{
     BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, Result, release_bounded_join_side_frame,
     stream::{proportional_join_stream_bytes, reusable_hash_join_stream_chunk_rows},
-    validate_executable_join_subset,
+    sum_bounds, validate_executable_join_subset,
 };
 
 // Reusable build artifact plus its observed native allocation.
@@ -29,28 +29,30 @@ pub(in crate::exec::bounded) struct BoundedRootHashJoinProbeState {
     pub(in crate::exec::bounded::join::hash) probe: BoundedJoinSideFrame,
     pub(in crate::exec::bounded::join::hash) indices: cudf::DataFrameHashJoinPairIndices,
     pub(in crate::exec::bounded::join::hash) gather_map_bytes: u64,
-    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
-    pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: u64,
+    pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
+    pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: Option<u64>,
 }
 
 impl BoundedRootHashJoinProbeState {
-    pub(in crate::exec::bounded) fn materialize_admission_bytes(&self, stream_target_bytes: u64) -> u64 {
+    /// Device bytes one materialized slice can need, or `None` when the output
+    /// has no byte bound.
+    pub(in crate::exec::bounded) fn materialize_admission_bytes(&self, stream_target_bytes: u64) -> Option<u64> {
         let output_rows = self.indices.build().len() as u64;
         if output_rows == 0 {
-            return 0;
+            return Some(0);
         }
         let chunk_rows = reusable_hash_join_stream_chunk_rows(
             output_rows,
             self.output_reservation_bytes,
             stream_target_bytes.max(1),
         );
-        let chunk_output_bytes =
-            proportional_join_stream_bytes(self.output_reservation_bytes, chunk_rows as u64, output_rows)
-                .saturating_add(self.minimum_output_reservation_bytes);
-        let slice_gather_map_bytes = cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(chunk_rows)
-            .map(|bytes| bytes as u64)
-            .unwrap_or(64);
-        chunk_output_bytes.saturating_add(slice_gather_map_bytes)
+        let chunk_output_bytes = sum_bounds(
+            proportional_join_stream_bytes(self.output_reservation_bytes, chunk_rows as u64, output_rows),
+            self.minimum_output_reservation_bytes,
+        );
+        let slice_gather_map_bytes =
+            cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(chunk_rows).ok().map(|bytes| bytes as u64);
+        sum_bounds(chunk_output_bytes, slice_gather_map_bytes)
     }
 }
 

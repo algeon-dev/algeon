@@ -120,12 +120,21 @@ fn cache_fill_reserve_bytes(
     estimated_fetch_bytes.unwrap_or(budget_bytes).max(1)
 }
 
+/// Charges the fetched payload to the host cache-fill budget. Growth never
+/// waits, since two fills each holding part of the budget would deadlock, so a
+/// payload the remaining budget cannot cover is refused. The caller then
+/// drops the payload with its permit instead of publishing unaccounted bytes.
 fn account_cache_fill_payload_bytes(permit: &mut CacheFillBytePermit, actual_bytes: u64) -> Result<()> {
-    // The payload is already fetched, so a saturated budget abandons the
-    // extra charge instead of waiting for it: the read proceeds with the
-    // original reservation, which releases after publish.
-    permit.try_grow(actual_bytes.max(1))?;
-    Ok(())
+    if permit.try_grow(actual_bytes.max(1))? {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        "query_engine.lakehouse_cache.maintenance.fill_budget",
+        "cache maintenance payload exceeds the available host cache-fill budget",
+    )
+    .with_fact("reason", "cache_fill_budget_exhausted")
+    .with_fact("reserved_bytes", permit.bytes()))
 }
 
 fn attach_cache_maintenance_budget_facts(
@@ -169,7 +178,40 @@ fn cache_fill_concurrency_timeout_error(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::runtime::{ExecutionCancellation, LakehouseCacheFillConfig, StandaloneConfig};
+
+    #[test]
+    fn a_payload_the_fill_budget_cannot_cover_is_refused_and_its_reservation_returns() {
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            lakehouse_cache_fill: LakehouseCacheFillConfig {
+                budget_bytes: Some(10),
+                ..LakehouseCacheFillConfig::default()
+            },
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
+        let budget = context.lakehouse_cache_fill_budget();
+        let acquire =
+            |bytes| budget.acquire_with_timeout(&ExecutionCancellation::new(), bytes, Duration::ZERO, "test").unwrap();
+        let held = acquire(6).expect("the first fill reserves 6 of 10 bytes");
+        let mut refused = acquire(2).expect("the second fill reserves 2 bytes");
+
+        // Five payload bytes need three more than the 2-byte reservation, and only two are free.
+        let error = account_cache_fill_payload_bytes(&mut refused, 5).expect_err("growth beyond the budget is refused");
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("cache_fill_budget_exhausted"));
+        drop(refused);
+        assert!(acquire(5).is_none(), "the refused fill must not leave its payload charged");
+        let mut accepted = acquire(2).expect("the refused fill returned its reservation");
+
+        account_cache_fill_payload_bytes(&mut accepted, 4).expect("a payload within the free budget is charged");
+        assert_eq!(accepted.bytes(), 4);
+        drop((held, accepted));
+        assert!(acquire(10).is_some(), "both fills return their whole charge");
+    }
 
     #[test]
     fn unknown_fetch_size_reserves_full_budget() {

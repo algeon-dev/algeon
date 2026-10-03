@@ -322,7 +322,7 @@ impl AggregateLaneDispatch {
                     move || {
                         let context = lease.context();
                         let mut execution =
-                            BoundedExecutionAttempt::new(context, context.device_budget_bytes(), &metrics)?;
+                            BoundedExecutionAttempt::new(context, context.device_budget_bytes(), &metrics);
                         let result = work(&mut execution, input);
                         let output = finish_lane_work(&execution, result, observation_scope.as_ref())?;
                         #[cfg(feature = "test-hooks")]

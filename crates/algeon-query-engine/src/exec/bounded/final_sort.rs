@@ -22,7 +22,7 @@ use topk_level::*;
 
 use super::compiled::lanes::AggregateLaneDispatch;
 use crate::{
-    exec::retry::{ResourceFailureRecovery, backoff_before_retry, resource_failure_recovery},
+    exec::retry::{ResourceFailureRecovery, RetryLimits, backoff_before_retry, resource_failure_recovery},
     observability::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
@@ -36,8 +36,7 @@ pub(super) fn execute_final_sort_node_with_retry(
     input: CommittedPartial,
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CommittedPartial> {
-    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
-    let max_attempts = max_retry_attempts.max(1);
+    let RetryLimits { max_attempts, .. } = RetryLimits::of(execution.context());
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
     let input_rows = input.frame.num_rows() as u64;
@@ -140,8 +139,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     sort: &SortNode,
     input_frame: GpuDataFrame,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
-    let max_attempts = max_retry_attempts.max(1);
+    let RetryLimits { max_attempts, .. } = RetryLimits::of(execution.context());
     let timer = Instant::now();
     // Full sorts without a limit stay serial on the coordinator: chunk-local
     // sorts cannot replace a global sort, so no lane fan-out applies here.
@@ -174,8 +172,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     mut input_stream: ResidentFrameStreamPayload,
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
-    let max_attempts = max_retry_attempts.max(1);
+    let RetryLimits { max_attempts, .. } = RetryLimits::of(execution.context());
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
     let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);

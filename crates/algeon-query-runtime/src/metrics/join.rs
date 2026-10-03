@@ -60,8 +60,9 @@ pub struct JoinOperatorMetrics {
     /// This is a direct cudf observation over the returned device index
     /// columns, not a row-count estimate.
     pub gather_map_bytes: u64,
-    /// Bytes reserved for join output materialization.
-    pub output_reservation_bytes: u64,
+    /// Upper bound of the join output's materialized bytes, `None` when the
+    /// byte model cannot bound one of its columns.
+    pub output_reservation_bytes: Option<u64>,
     /// Join output row count.
     pub output_rows: u64,
     /// Join output bytes.

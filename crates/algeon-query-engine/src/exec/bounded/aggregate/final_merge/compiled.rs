@@ -14,7 +14,9 @@ use super::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
     reduce_merge_fan_in, validate_aggregate_output_names,
 };
-use crate::exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error};
+use crate::exec::retry::{
+    RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error,
+};
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -61,8 +63,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
         );
     }
 
-    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
-    let max_attempts = max_retry_attempts.max(1);
+    let RetryLimits { max_attempts, .. } = RetryLimits::of(execution.context());
 
     if should_execute_compiled_partitioned_final_aggregate_merge(
         execution.context(),

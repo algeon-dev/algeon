@@ -2,8 +2,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
-    CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
+    CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, NodeId, ResidentFrameStreamPayload,
+    ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
     attach_budget_token_failure_facts, bounded_invariant_violation, cudf_query_error, execute_aggregate_with_budget,
     execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
@@ -25,7 +25,7 @@ use crate::exec::{
         execute_gpu_native_statistical_partial_aggregate_with_budget, partial_aggregate_source_chunk_fingerprint,
         should_execute_gpu_native_statistical_partial_aggregate,
     },
-    retry::backoff_before_retry,
+    retry::RetryLimits,
     source::observed_chunk_row_group_count,
 };
 
@@ -783,8 +783,9 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         },
     };
     if should_split_compiled_aggregate_stream_frame(execution, &input, upper_bound_bytes, retry_budget) {
-        execution.metrics().record_retry_resource_exhausted();
-        backoff_before_retry(execution.context(), "query_engine.exec.bounded.compiled_aggregate_stream_frame_retry")?;
+        // A proactive split has no allocation failure behind it: no retry
+        // counter, no backoff, only the cancellation boundary.
+        execution.context().check_cancellation("query_engine.exec.bounded.compiled_aggregate_stream_frame_split")?;
         let (left, right) = split_compiled_aggregate_stream_frame(execution, node_id, input)?;
         let mut partials = match execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
             execution,
@@ -881,18 +882,21 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_evidence(
     Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
+/// Splits a frame proactively when its partial state can outgrow the budget.
+/// Without a bound the frame runs whole.
 fn should_split_compiled_aggregate_stream_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     input: &ResidentGpuFrame,
-    upper_bound_bytes: u64,
+    upper_bound_bytes: Option<u64>,
     retry_budget: usize,
 ) -> bool {
-    retry_budget > 0 && input.frame.num_rows() > 1 && upper_bound_bytes > execution.device_budget_bytes()
+    retry_budget > 0
+        && input.frame.num_rows() > 1
+        && upper_bound_bytes.is_some_and(|bytes| bytes > execution.device_budget_bytes())
 }
 
 fn compiled_aggregate_frame_retry_budget(context: &ExecutionContext) -> usize {
-    let MemoryControlPolicy { max_retry_attempts, .. } = context.memory_control_policy();
-    max_retry_attempts.saturating_sub(1)
+    RetryLimits::of(context).max_attempts - 1
 }
 
 fn split_compiled_aggregate_stream_frame(

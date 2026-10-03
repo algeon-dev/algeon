@@ -501,3 +501,71 @@ impl CompiledTaskExecutor for CancelAfterFinalAggregateConsumer<'_, '_> {
         self.executor.cleanup_after_error()
     }
 }
+
+#[test]
+fn bounded_grouped_aggregate_splits_wide_partials_without_resource_retries() {
+    let dir = unique_temp_dir("query-engine-bounded-proactive-partial-split");
+    let path = dir.join("input.parquet");
+    let rows_per_row_group = 1024;
+    let rows = 3 * rows_per_row_group;
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int32Array::from((0..rows as i32).map(|row| row % 4).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from(vec![1_i64; rows])),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(&path, Arc::clone(&input_schema), batch, rows_per_row_group);
+    let repeated_sums = 256;
+    let mut fields = vec![Field::new("key", DataType::Int32, false)];
+    fields.extend((0..repeated_sums).map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true)));
+    let aggregated_schema = Arc::new(Schema::new(fields));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        (0..repeated_sums)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), format!("sum_m00_{index}")))
+            .collect::<Vec<_>>(),
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+
+    // Each 1024-row chunk bounds its 256-sum partial state at about 2.1 MB,
+    // above this cap, so every chunk splits once before allocating. The four
+    // groups keep the real partials far below the cap.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 1_500_000,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.partial_aggregate_count, 6, "each chunk splits into two partials");
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.retry_resource_exhausted_count, 0, "a proactive split is not an allocation failure");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    for index in 1..=repeated_sums {
+        assert!(int64_array(batch, index).iter().all(|sum| sum == Some(768)));
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}

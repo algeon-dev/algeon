@@ -78,7 +78,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a ExecutionMetrics,
     ) -> Result<Self> {
-        let execution = BoundedExecutionAttempt::new(context, context.device_budget_bytes(), metrics)?;
+        let execution = BoundedExecutionAttempt::new(context, context.device_budget_bytes(), metrics);
         let gpu_inputs = gpu_inputs.clone();
         Ok(Self {
             execution,

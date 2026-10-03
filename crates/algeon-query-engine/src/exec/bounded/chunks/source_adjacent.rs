@@ -11,7 +11,9 @@ use super::{
     read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
 };
 use crate::{
-    exec::retry::backoff_before_retry, observability::SourceReadFact, rapids_backend::rapids_analysis_context,
+    exec::retry::{RetryLimits, backoff_before_retry},
+    observability::SourceReadFact,
+    rapids_backend::rapids_analysis_context,
     util::sum_optional_u64,
 };
 
@@ -114,9 +116,7 @@ fn execute_source_adjacent_batch_retry(
 ) -> Result<SourceAdjacentBatchOutput> {
     use super::execution::read_bounded_chunk_source;
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
-    let super::MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } =
-        execution.context().memory_control_policy();
-    let max_attempts = max_retry_attempts.max(1);
+    let RetryLimits { max_attempts, min_split_row_groups } = RetryLimits::of(execution.context());
     let source = if batch.is_singleton() {
         read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0]).map_err(|error| {
             attach_chunk_resource_facts(
@@ -146,17 +146,15 @@ fn execute_source_adjacent_batch_retry(
             };
             let children = if batch.is_singleton() {
                 if attempt < max_attempts {
-                    super::split_retryable_chunk(&batch.chunks[0], min_retry_chunk_row_groups.max(1)).map(
-                        |(left, right)| {
-                            let child = |chunk| SourceChunkBatch {
-                                batch_index: batch.batch_index,
-                                chunks: vec![chunk],
-                                estimated_source_read_bytes: None,
-                                source_batching_reason: "retry_split".to_string(),
-                            };
-                            (child(left), child(right), attempt + 1)
-                        },
-                    )
+                    super::split_retryable_chunk(&batch.chunks[0], min_split_row_groups).map(|(left, right)| {
+                        let child = |chunk| SourceChunkBatch {
+                            batch_index: batch.batch_index,
+                            chunks: vec![chunk],
+                            estimated_source_read_bytes: None,
+                            source_batching_reason: "retry_split".to_string(),
+                        };
+                        (child(left), child(right), attempt + 1)
+                    })
                 } else {
                     None
                 }

@@ -1,13 +1,16 @@
 //! Cooperative cancellation token for native query execution.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use tokio::time::sleep_until;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use super::ExecutionContext;
-use crate::observability::{PlanExecutionId, RuntimeExecutionStageContext, RuntimeObservationHandle, RuntimeSpanId};
+use crate::{
+    observability::{PlanExecutionId, RuntimeExecutionStageContext, RuntimeObservationHandle, RuntimeSpanId},
+    runtime::deadline::block_until,
+};
 
 /// Shared cooperative cancellation token for native query execution.
 ///
@@ -74,6 +77,16 @@ impl ExecutionCancellation {
     /// [`Self::deadline`].
     pub(crate) fn cancel_requested(&self) -> WaitForCancellationFuture<'_> {
         self.token.cancelled()
+    }
+
+    /// Blocks the calling thread for `duration`. Cancellation or an elapsed
+    /// deadline ends the wait early with the typed error [`Self::check`]
+    /// reports.
+    pub fn sleep(&self, duration: Duration, operation: &'static str) -> Result<()> {
+        let until = Instant::now() + duration;
+        let until = self.deadline.map_or(until, |deadline| deadline.min(until));
+        block_until(self.cancel_requested(), Some(until));
+        self.check(operation)
     }
 
     /// Returns whether this execution must stop at its next cooperative safe

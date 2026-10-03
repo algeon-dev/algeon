@@ -236,7 +236,7 @@ pub query_runtime::metrics::JoinOperatorMetrics::key_count: usize
 pub query_runtime::metrics::JoinOperatorMetrics::mixed_size_data_bytes: u64
 pub query_runtime::metrics::JoinOperatorMetrics::null_equality: alloc::string::String
 pub query_runtime::metrics::JoinOperatorMetrics::output_bytes: u64
-pub query_runtime::metrics::JoinOperatorMetrics::output_reservation_bytes: u64
+pub query_runtime::metrics::JoinOperatorMetrics::output_reservation_bytes: core::option::Option<u64>
 pub query_runtime::metrics::JoinOperatorMetrics::output_rows: u64
 pub query_runtime::metrics::JoinOperatorMetrics::probe_bytes: u64
 pub query_runtime::metrics::JoinOperatorMetrics::probe_rows: u64
@@ -1739,6 +1739,7 @@ pub fn query_runtime::runtime::ExecutionCancellation::deadline(&self) -> core::o
 pub fn query_runtime::runtime::ExecutionCancellation::is_cancelled(&self) -> bool
 pub fn query_runtime::runtime::ExecutionCancellation::is_expired(&self) -> bool
 pub fn query_runtime::runtime::ExecutionCancellation::new() -> Self
+pub fn query_runtime::runtime::ExecutionCancellation::sleep(&self, core::time::Duration, &'static str) -> query_planning::error::Result<()>
 pub async fn query_runtime::runtime::ExecutionCancellation::terminated(&self, &'static str) -> query_planning::error::QueryError
 pub fn query_runtime::runtime::ExecutionCancellation::with_deadline(core::option::Option<std::time::Instant>) -> Self
 impl core::default::Default for query_runtime::runtime::ExecutionCancellation

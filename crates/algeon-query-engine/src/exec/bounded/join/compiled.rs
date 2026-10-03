@@ -6,7 +6,7 @@ use std::{
 use super::{
     common::{
         BoundedJoinSideFrame, join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
-        projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
+        projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, sum_bounds,
     },
     cudf_query_error, *,
 };
@@ -173,8 +173,8 @@ pub(in crate::exec::bounded) struct StreamedOneShotJoinSummary {
     probe_rows: u64,
     probe_bytes: u64,
     index_bytes: u64,
-    materialization_bytes: u64,
-    output_reservation_bytes: u64,
+    materialization_bytes: Option<u64>,
+    output_reservation_bytes: Option<u64>,
     output_rows: u64,
     output_bytes: u64,
 }
@@ -185,8 +185,8 @@ struct OneShotJoinChunkMetrics {
     probe_rows: u64,
     probe_bytes: u64,
     index_bytes: u64,
-    materialization_bytes: u64,
-    output_reservation_bytes: u64,
+    materialization_bytes: Option<u64>,
+    output_reservation_bytes: Option<u64>,
     output_rows: u64,
     output_bytes: u64,
 }
@@ -201,7 +201,7 @@ pub(in crate::exec::bounded) struct StreamedPartitionedJoinSummary {
     probe_bytes: u64,
     index_bytes: u64,
     mixed_size_data_bytes: u64,
-    output_reservation_bytes: u64,
+    output_reservation_bytes: Option<u64>,
     output_rows: u64,
     output_bytes: u64,
 }
@@ -241,7 +241,7 @@ struct PartitionedJoinPartitionOutput {
     frame: ResidentGpuFrame,
     index_bytes: u64,
     mixed_size_data_bytes: u64,
-    output_reservation_bytes: u64,
+    output_reservation_bytes: Option<u64>,
     output_bytes: u64,
     output_rows: u64,
 }
@@ -258,8 +258,8 @@ impl StreamedOneShotJoinSummary {
             probe_rows: 0,
             probe_bytes: 0,
             index_bytes: 0,
-            materialization_bytes: 0,
-            output_reservation_bytes: 0,
+            materialization_bytes: Some(0),
+            output_reservation_bytes: Some(0),
             output_rows: 0,
             output_bytes: 0,
         }
@@ -274,16 +274,16 @@ impl StreamedOneShotJoinSummary {
         probe_rows: u64,
         probe_bytes: u64,
         index_bytes: u64,
-        materialization_bytes: u64,
-        output_reservation_bytes: u64,
+        materialization_bytes: Option<u64>,
+        output_reservation_bytes: Option<u64>,
         output_rows: u64,
         output_bytes: u64,
     ) {
         self.probe_rows = self.probe_rows.saturating_add(probe_rows);
         self.probe_bytes = self.probe_bytes.saturating_add(probe_bytes);
         self.index_bytes = self.index_bytes.saturating_add(index_bytes);
-        self.materialization_bytes = self.materialization_bytes.saturating_add(materialization_bytes);
-        self.output_reservation_bytes = self.output_reservation_bytes.saturating_add(output_reservation_bytes);
+        self.materialization_bytes = sum_bounds(self.materialization_bytes, materialization_bytes);
+        self.output_reservation_bytes = sum_bounds(self.output_reservation_bytes, output_reservation_bytes);
         self.output_rows = self.output_rows.saturating_add(output_rows);
         self.output_bytes = self.output_bytes.saturating_add(output_bytes);
     }
@@ -313,7 +313,7 @@ impl StreamedPartitionedJoinSummary {
             probe_bytes: 0,
             index_bytes: 0,
             mixed_size_data_bytes: 0,
-            output_reservation_bytes: 0,
+            output_reservation_bytes: Some(0),
             output_rows: 0,
             output_bytes: 0,
         }
@@ -329,7 +329,7 @@ impl StreamedPartitionedJoinSummary {
     fn record_output(&mut self, output: &PartitionedJoinPartitionOutput) {
         self.index_bytes = self.index_bytes.saturating_add(output.index_bytes);
         self.mixed_size_data_bytes = self.mixed_size_data_bytes.saturating_add(output.mixed_size_data_bytes);
-        self.output_reservation_bytes = self.output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+        self.output_reservation_bytes = sum_bounds(self.output_reservation_bytes, output.output_reservation_bytes);
         self.output_rows = self.output_rows.saturating_add(output.output_rows);
         self.output_bytes = self.output_bytes.saturating_add(output.output_bytes);
     }
@@ -1304,7 +1304,7 @@ impl CompiledJoinIndices {
         right: &DataFrame,
         expected_output_rows: u64,
         projection: &[JoinOutputColumn],
-    ) -> Result<u64> {
+    ) -> Result<Option<u64>> {
         match self {
             Self::Pair { .. } => {
                 let left_projection = projected_output_columns_for_retained_sizing(projection, JoinSide::Left);
@@ -1325,7 +1325,7 @@ impl CompiledJoinIndices {
                     &right_projection,
                     JoinSide::Right,
                 )?;
-                Ok(left_bytes.saturating_add(right_bytes))
+                Ok(sum_bounds(left_bytes, right_bytes))
             },
             Self::LeftOnly(_) => {
                 let left_projection = projected_output_columns_for_retained_sizing(projection, JoinSide::Left);
@@ -1436,7 +1436,9 @@ fn materialize_compiled_indices_output(
     if let Some(index_bytes) = one_shot_index_bytes {
         execution.metrics().record_one_shot_join();
         execution.metrics().record_one_shot_join_index_bytes(index_bytes);
-        execution.metrics().record_one_shot_join_materialization_bytes(output_reservation_bytes);
+        if let Some(bytes) = output_reservation_bytes {
+            execution.metrics().record_one_shot_join_materialization_bytes(bytes);
+        }
     }
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
