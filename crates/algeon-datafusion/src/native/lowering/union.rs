@@ -5,7 +5,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use query_engine::plan::QueryPlanBuilder as NativeQueryPlanBuilder;
 
 use super::{
-    FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, lower_native_input,
+    Demand, FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, lower_native_input,
     project_bindings_to_schema,
 };
 use crate::{
@@ -30,7 +30,8 @@ pub(super) fn lower_union_input(
         .inputs
         .iter()
         .map(|input| {
-            let lowered = lower_native_input(input, builder, required_output_fields, source_reads)?;
+            let lowered =
+                lower_native_input(input, builder, &Demand::fields(required_output_fields.clone()), source_reads)?;
             project_union_child_to_output_schema(builder, lowered, Arc::clone(&schema), &bindings)
         })
         .collect::<Result<Vec<_>, _>>()?;

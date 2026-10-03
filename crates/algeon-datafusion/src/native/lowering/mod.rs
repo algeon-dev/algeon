@@ -6,7 +6,6 @@ mod join;
 mod join_output;
 mod join_residual;
 mod naming;
-mod root;
 mod sort;
 mod source;
 mod unary;
@@ -15,7 +14,9 @@ mod window;
 
 use std::{collections::BTreeSet, sync::Arc};
 
+pub(in crate::native) use aggregate::aggregate_input_demand;
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+pub(in crate::native) use bindings::Demand;
 use bindings::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, rename_field};
 use datafusion::{datasource::memory::MemorySourceConfig, physical_plan::ExecutionPlan};
 #[cfg(test)]
@@ -31,30 +32,26 @@ use query_engine::{
         SourceNode as NativeSourceNode,
     },
 };
+pub(in crate::native) use source::{parquet_column_requirements, parquet_reads_row_count_only};
 
-use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
+use super::normalize::{NormalizedNativeInput, NormalizedNativePlan};
 use crate::{
     capability::CapabilityReason,
     native::{LoweringFailure, ParquetReadStrategyConfig},
 };
 
-/// Lowers a normalized native tree into the DataFusion-free query IR.
-///
-/// Aggregate roots over `single_source_input` use the slice1 path so source
-/// pruning, filter pushdown, zero-column count, aggregate, sort, and limit can
-/// be planned together. All other aggregate roots lower their input tree first,
-/// which covers joins and recursive unary/aggregate inputs.
+/// Lowers a normalized native tree into the DataFusion-free query IR. The
+/// root output is the host sink in the frontend schema; `ordered` says whether
+/// the plan declares an output ordering.
 pub(super) fn lower_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
+    ordered: bool,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeQueryPlan, LoweringFailure> {
-    match &normalized.root {
-        NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
-            root::lower_slice1_plan(normalized, root, source_reads)
-        },
-        NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root, source_reads),
-        NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root, source_reads),
-    }
+    let mut builder = NativeQueryPlanBuilder::new();
+    let demand = Demand { ordered, ..Demand::all() };
+    let output = lower_native_input(&normalized.input, &mut builder, &demand, source_reads)?;
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?)?)
 }
 
 pub(super) fn projection_outputs(
@@ -91,88 +88,50 @@ fn project_bindings_to_schema(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
-/// Recursively lowers a normalized input subtree.
-///
-/// `required_output_fields` is the set of output field identities requested by
-/// the parent lowering step. `All` means no explicit parent pruning. `Only({})`
-/// means the parent explicitly needs zero output fields.
+/// Recursively lowers a normalized input subtree for what its parent
+/// demands. `demand.fields` of `All` means no explicit parent pruning, and
+/// `Only({})` means the parent needs zero output fields.
 fn lower_native_input(
     input: &NormalizedNativeInput<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_fields: &RequiredFields,
+    demand: &Demand,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    lower_native_input_with_scan_limit(input, builder, required_output_fields, None, source_reads)
-}
-
-fn lower_native_input_with_scan_limit(
-    input: &NormalizedNativeInput<'_>,
-    builder: &mut NativeQueryPlanBuilder,
-    required_output_fields: &RequiredFields,
-    source_scan_limit: Option<usize>,
-    source_reads: &ParquetReadStrategyConfig,
-) -> Result<LoweredNativeInput, LoweringFailure> {
+    let fields = &demand.fields;
     let output = match input {
-        NormalizedNativeInput::Source(source) => {
-            source::lower_source_input(source, builder, required_output_fields, source_scan_limit, source_reads)
-        },
-        NormalizedNativeInput::GpuResidentSource(source) => {
-            lower_gpu_resident_source_input(source, builder, required_output_fields)
-        },
-        NormalizedNativeInput::LiteralSource(source) => {
-            lower_literal_source_input(source, builder, required_output_fields)
-        },
-        NormalizedNativeInput::Filter(filter) => {
-            unary::lower_filter_input(filter, builder, required_output_fields, source_reads)
-        },
+        NormalizedNativeInput::Source(source) => source::lower_source_input(source, builder, demand, source_reads),
+        NormalizedNativeInput::GpuResidentSource(source) => lower_gpu_resident_source_input(source, builder, fields),
+        NormalizedNativeInput::LiteralSource(source) => lower_literal_source_input(source, builder, fields),
+        NormalizedNativeInput::Filter(filter) => unary::lower_filter_input(filter, builder, demand, source_reads),
         NormalizedNativeInput::Projection(projection) => {
-            unary::lower_projection_input(projection, builder, required_output_fields, source_reads)
+            unary::lower_projection_input(projection, builder, demand, source_reads)
         },
         NormalizedNativeInput::Limit(limit) => {
-            let pushed_scan_limit = source_scan_limit_through_limit(limit.spec, source_scan_limit);
-            let input = lower_native_input_with_scan_limit(
-                &limit.input,
-                builder,
-                required_output_fields,
-                pushed_scan_limit,
-                source_reads,
-            )?;
+            let input_demand = Demand {
+                fields: fields.clone(),
+                row_count_only: false,
+                row_limit: source_scan_limit_through_limit(limit.spec, demand.row_limit),
+                extra_fields_allowed: demand.extra_fields_allowed,
+                ordered: demand.ordered || limit.input_ordered,
+            };
+            let input = lower_native_input(&limit.input, builder, &input_demand, source_reads)?;
             let node = builder.add_limit(input.node, limit.spec)?;
             Ok(LoweredNativeInput::with_bindings(node, input.schema, input.bindings))
         },
         NormalizedNativeInput::Aggregate(aggregate) => {
-            aggregate::lower_aggregate_input(aggregate, builder, required_output_fields, source_reads)
+            aggregate::lower_aggregate_input(aggregate, builder, fields, source_reads)
         },
-        NormalizedNativeInput::Sort(sort) => {
-            window::lower_sort_input(sort, builder, required_output_fields, source_reads)
-        },
-        NormalizedNativeInput::Window(window) => {
-            window::lower_window_input(window, builder, required_output_fields, source_reads)
-        },
-        NormalizedNativeInput::HashJoin(join) => {
-            join::lower_hash_join_input(join, builder, required_output_fields, source_reads)
-        },
-        NormalizedNativeInput::CrossJoin(join) => {
-            join::lower_cross_join_input(join, builder, required_output_fields, source_reads)
-        },
+        NormalizedNativeInput::Sort(sort) => window::lower_sort_input(sort, builder, fields, source_reads),
+        NormalizedNativeInput::Window(window) => window::lower_window_input(window, builder, fields, source_reads),
+        NormalizedNativeInput::HashJoin(join) => join::lower_hash_join_input(join, builder, fields, source_reads),
+        NormalizedNativeInput::CrossJoin(join) => join::lower_cross_join_input(join, builder, fields, source_reads),
         NormalizedNativeInput::NestedLoopJoin(join) => {
-            join::lower_nested_loop_join_input(join, builder, required_output_fields, source_reads)
+            join::lower_nested_loop_join_input(join, builder, fields, source_reads)
         },
-        NormalizedNativeInput::Union(union) => {
-            union::lower_union_input(union, builder, required_output_fields, source_reads)
-        },
+        NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, fields, source_reads),
     }?;
     advisory::attach_input(builder, input, &output)?;
     Ok(output)
-}
-
-pub(super) fn source_scan_limit_from_limit_spec(limit: Option<NativeLimitSpec>) -> Option<usize> {
-    let limit = limit?;
-    let fetch = limit.fetch?;
-    if fetch == 0 {
-        return Some(0);
-    }
-    limit.skip.checked_add(fetch)
 }
 
 fn source_scan_limit_through_limit(limit: NativeLimitSpec, downstream_scan_limit: Option<usize>) -> Option<usize> {

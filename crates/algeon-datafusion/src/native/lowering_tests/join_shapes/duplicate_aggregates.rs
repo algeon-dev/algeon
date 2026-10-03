@@ -12,7 +12,7 @@ fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_hos
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let aggregate_node = native_plan
         .nodes()
         .iter()
@@ -51,7 +51,7 @@ fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_hos
 }
 
 #[test]
-fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection() {
+fn duplicate_group_alias_root_aggregate_reads_input_columns_under_unique_output_names() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-duplicate-root-group-aliases");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -61,7 +61,7 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let aggregate_node = native_plan
         .nodes()
         .iter()
@@ -70,46 +70,22 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
     let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
         panic!("native plan should contain root aggregate node");
     };
-    let projection_node = native_plan.node(aggregate.input).expect("aggregate input projection should exist");
-    let PlanNode::Projection(projection) = &projection_node.kind else {
-        panic!("aggregate input should be the synthetic projection");
-    };
-    assert_eq!(
-        projection_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        vec!["dup", "__algeon_native_group_expr_1_dup", "__algeon_native_aggregate_arg_0"]
-    );
-    assert!(
-        projection.expressions().any(|expr| {
+    for (group_expr, (input, output)) in aggregate
+        .spec
+        .group_exprs
+        .iter()
+        .zip([("key", "__algeon_native_field_0_dup"), ("payload", "__algeon_native_field_1_dup")])
+    {
+        assert!(
             matches!(
-                expr,
+                group_expr,
                 Expr::Alias { expr, alias }
-                    if alias == "__algeon_native_group_expr_1_dup"
-                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "payload")
-            )
-        }),
-        "second duplicate group alias should be materialized under a unique executable name: {:?}",
-        projection.expressions().collect::<Vec<_>>()
-    );
-    assert!(
-        matches!(
-            &aggregate.spec.group_exprs[0],
-            Expr::Alias { expr, alias }
-                if alias == "__algeon_native_field_0_dup"
-                    && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "dup")
-        ),
-        "first group key should read the first synthetic group column and output its executable aggregate name: {:?}",
-        aggregate.spec.group_exprs
-    );
-    assert!(
-        matches!(
-            &aggregate.spec.group_exprs[1],
-            Expr::Alias { expr, alias }
-                if alias == "__algeon_native_field_1_dup"
-                    && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "__algeon_native_group_expr_1_dup")
-        ),
-        "second group key should read the unique synthetic group column and output its executable aggregate name: {:?}",
-        aggregate.spec.group_exprs
-    );
+                    if alias == output && matches!(expr.as_ref(), Expr::Column(column) if column.name() == input)
+            ),
+            "each duplicate group alias should read its own input column under a unique executable name: {:?}",
+            aggregate.spec.group_exprs
+        );
+    }
     assert_eq!(
         aggregate_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
         vec!["__algeon_native_field_0_dup", "__algeon_native_field_1_dup", "sum_m00"]
@@ -144,7 +120,7 @@ fn duplicate_group_alias_recursive_aggregate_input_renames_aggregate_spec_output
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let inner_aggregate_node = native_plan
         .nodes()
         .iter()

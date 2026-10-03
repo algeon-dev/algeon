@@ -293,10 +293,7 @@ const EXISTING_COVERAGE_CASES: &[GpuGapCase] = &[
         id: "order_limit_offset",
         feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id, payload FROM bench ORDER BY payload ASC NULLS LAST LIMIT 2 OFFSET 1",
-        expected: ExpectedGpuCoverageOutcome::NotSupported {
-            reason: CapabilityReason::NativeOrderedOutputUnsupported,
-            unsupported_category: "operator_ordering",
-        },
+        expected: ExpectedGpuCoverageOutcome::Selected,
     },
     GpuGapCase {
         id: "intersect_rewrite",
@@ -395,11 +392,11 @@ fn assert_planning_report(case: &GpuGapCase, lowering: &NativeLoweringResult) {
         ExpectedGpuCoverageOutcome::Selected => {
             assert_eq!(lowering.selected_count(), 1, "{} outcomes={:?}", case.id, lowering.report.outcomes());
             assert_eq!(lowering.not_selected_count(), 0, "{} outcomes={:?}", case.id, lowering.report.outcomes());
-            assert_eq!(lowering.plans.len(), 1, "{}", case.id);
+            assert!(lowering.plan.is_some(), "{}", case.id);
             assert!(matches!(lowering.report.outcomes()[0], CandidateOutcome::Selected { .. }), "{}", case.id);
         },
         ExpectedGpuCoverageOutcome::NotSupported { reason, .. } => {
-            assert!(lowering.plans.is_empty(), "{}", case.id);
+            assert!(lowering.plan.is_none(), "{}", case.id);
             assert_eq!(lowering.selected_count(), 0, "{} outcomes={:?}", case.id, lowering.report.outcomes());
             assert_eq!(lowering.not_selected_count(), 1, "{} outcomes={:?}", case.id, lowering.report.outcomes());
             assert!(
@@ -415,7 +412,7 @@ fn assert_planning_report(case: &GpuGapCase, lowering: &NativeLoweringResult) {
 fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) {
     match case.id {
         "window_row_number" => {
-            let plan = lowering.plans.first().expect("row_number case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("row_number case should lower to a native plan");
             assert!(
                 plan.nodes().iter().any(|node| {
                     matches!(
@@ -432,7 +429,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             );
         },
         "window_lag" => {
-            let plan = lowering.plans.first().expect("lag case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("lag case should lower to a native plan");
             let observed = collect_lag_lead_functions(plan);
             assert!(
                 observed.iter().any(|function| matches!(
@@ -443,7 +440,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             );
         },
         "window_lag_offset_default" => {
-            let plan = lowering.plans.first().expect("LAG(payload, 2, 0) case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("LAG(payload, 2, 0) case should lower to a native plan");
             let observed = collect_lag_lead_functions(plan);
             assert!(
                 observed.iter().any(|function| matches!(
@@ -459,7 +456,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             );
         },
         "window_lead" => {
-            let plan = lowering.plans.first().expect("lead case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("lead case should lower to a native plan");
             let observed = collect_lag_lead_functions(plan);
             assert!(
                 observed.iter().any(|function| matches!(
@@ -470,7 +467,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             );
         },
         "offset_without_limit" => {
-            let plan = lowering.plans.first().expect("offset case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("offset case should lower to a native plan");
             assert!(
                 matches!(
                     &plan.root_node().kind,
@@ -480,7 +477,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             );
         },
         "literal_only_projection" | "values_table" => {
-            let plan = lowering.plans.first().expect("literal source case should lower to a native plan");
+            let plan = lowering.plan.as_ref().expect("literal source case should lower to a native plan");
             assert!(
                 plan.nodes().iter().any(|node| {
                     matches!(

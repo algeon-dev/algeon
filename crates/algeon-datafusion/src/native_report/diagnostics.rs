@@ -6,18 +6,8 @@
 use std::sync::Arc;
 
 use super::{
-    AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, DataSourceExec, EmptyExec, ExecutionPlan,
-    GpuCandidate, HashJoinExec, MemorySourceConfig, NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE, NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
+    AggregateExec, BoundedWindowAggExec, CandidateShape, CapabilityReason, CrossJoinExec, DataSourceExec, EmptyExec,
+    ExecutionPlan, GpuCandidate, HashJoinExec, MemorySourceConfig,
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeJoinDiagnosticSummary,
     NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NestedLoopJoinExec, PlaceholderRowExec,
     PlainAggregateWindowExpr, ScalarValue, SlidingAggregateWindowExpr, StandardWindowExpr, WindowAggExec, WindowExpr,
@@ -145,7 +135,7 @@ pub(super) fn unsupported_category(
         }),
         CapabilityReason::UnsupportedOperator => first_aggregate_category(plan)
             .or_else(|| first_window_category(plan))
-            .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
+            .or_else(|| first_unsupported_operator_category(plan, &candidate.shape))
             .or_else(|| first_global_aggregate_category(plan)),
         CapabilityReason::UnsupportedType => first_literal_source_type_category(plan),
         CapabilityReason::NativeDistributedAggregateUnsupported => first_aggregate_category(plan),
@@ -155,7 +145,7 @@ pub(super) fn unsupported_category(
     Some(refined.unwrap_or_else(|| reason.facts().tsv_category.to_string()))
 }
 
-fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape: &str) -> Option<String> {
+fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape: &CandidateShape) -> Option<String> {
     let name = plan.name();
     if !native_report_operator_is_supported(name, candidate_shape) {
         return Some(format!("operator_{}", stable_operator_identifier(name)));
@@ -183,7 +173,7 @@ fn first_join_operator_category(plan: &dyn ExecutionPlan) -> Option<String> {
     None
 }
 
-fn native_report_operator_is_supported(name: &str, candidate_shape: &str) -> bool {
+fn native_report_operator_is_supported(name: &str, candidate_shape: &CandidateShape) -> bool {
     if name == "SortExec" || name.starts_with("SortExec(") {
         return true;
     }
@@ -200,7 +190,7 @@ fn native_report_operator_is_supported(name: &str, candidate_shape: &str) -> boo
             | "AlgeonNativeComposedExec"
             | "AlgeonNativeGpuProducerExec"
             | "NativeAdmissionExec"
-    ) || (name == "RepartitionExec" && candidate_shape.contains("RepartitionExec"))
+    ) || (name == "RepartitionExec" && candidate_shape.contains_operator("RepartitionExec"))
 }
 
 fn stable_operator_identifier(name: &str) -> String {

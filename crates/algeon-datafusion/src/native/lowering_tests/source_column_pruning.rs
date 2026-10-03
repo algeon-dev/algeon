@@ -50,7 +50,7 @@ fn adapter_validation_lowers_date64_projection() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["event_date64".to_string(), "m00".to_string()]);
     assert!(source.diagnostics.rejected_features.is_empty());
 
@@ -88,7 +88,7 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
     assert_eq!(source.diagnostics.read_column_count, 3);
@@ -108,7 +108,7 @@ async fn scalar_expression_filter_predicate_required_source_columns_are_exact() 
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
     assert_eq!(source.projected_output_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert_eq!(source.pure_filter_columns, vec!["label".to_string()]);
@@ -134,7 +134,7 @@ async fn scalar_expression_pre_aggregate_projection_required_source_columns_are_
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(source.pure_filter_columns.is_empty());
     for unused in ["payload", "amount", "shipdate", "event_ts"] {
@@ -160,9 +160,9 @@ async fn scalar_expression_aggregate_argument_required_source_columns_are_exact(
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
-    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    let aggregate_exprs = native_aggregate_exprs(result.selected_plan());
     assert_eq!(aggregate_exprs.len(), 1);
     assert!(matches!(
         &aggregate_exprs[0].expr,
@@ -186,7 +186,7 @@ async fn nullif_aggregate_argument_reads_both_operand_columns() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
 
@@ -205,7 +205,7 @@ async fn scalar_expression_group_expression_required_source_columns_are_exact() 
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
     for unused in ["key", "payload", "m01", "amount", "event_ts"] {
         assert!(!source.read_columns.contains(&unused.to_string()));
@@ -230,7 +230,7 @@ async fn pushed_scan_projection_prunes_payload_for_nested_scalar_expression_scal
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let source = native_local_parquet_source(&result.plans[0]);
+    let source = native_local_parquet_source(result.selected_plan());
     assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
     assert_eq!(source.read_column_file_indices, vec![4, 2, 6]);
     assert!(!source.read_columns.contains(&"payload".to_string()));

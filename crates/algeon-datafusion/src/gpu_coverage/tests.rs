@@ -285,7 +285,7 @@ fn candidate_outcomes_retain_selected_candidates_without_selection_reasons() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].selection, CandidateOutcomeKind::Selected);
     assert_eq!(outcomes[0].detail, "ProjectionExec");
-    assert_eq!(outcomes[0].candidate_family, "other_local_parquet_input");
+    assert_eq!(outcomes[0].candidate_family, "other_other_input");
     assert_eq!(outcomes[0].reason_code, None);
     assert_eq!(outcomes[0].reason_kind, None);
     assert_eq!(outcomes[0].category, None);

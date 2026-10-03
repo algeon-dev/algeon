@@ -26,7 +26,7 @@ async fn shadow_advisory_binds_projection_and_final_aggregate_outputs() {
     .await;
     let lowered = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(lowered.selected_count(), 1, "{:?}", lowered.report.outcomes());
-    let native = &lowered.plans[0];
+    let native = lowered.selected_plan();
     let aggregate = native.nodes().iter().find(|node| matches!(node.kind, PlanNode::Aggregate(_))).unwrap();
     let binding = native
         .advisory_outputs()
@@ -40,7 +40,7 @@ async fn shadow_advisory_binds_projection_and_final_aggregate_outputs() {
         sql_plan(&path, direct_friendly_sql_session_config(), "SELECT payload + 1 AS value FROM bench").await;
     let lowered = lower_physical_plan_to_native(projected, &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(lowered.selected_count(), 1, "{:?}", lowered.report.outcomes());
-    let native = &lowered.plans[0];
+    let native = lowered.selected_plan();
     let binding = native
         .advisory_outputs()
         .iter()
@@ -62,12 +62,12 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     };
     let lowered = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(lowered.selected_count(), 1, "{:?}", lowered.report.outcomes());
-    assert!(!lowered.plans[0].advisory_outputs().is_empty(), "q03 lowering attaches frontend statistics");
+    assert!(!lowered.selected_plan().advisory_outputs().is_empty(), "q03 lowering attaches frontend statistics");
 
     // The estimate is composed over the schedule that actually executes, so the
     // advisory volumes must survive the optimizer rewrites that produce it.
     let native = &optimize_query_plan(
-        lowered.plans[0].clone(),
+        lowered.selected_plan().clone(),
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),

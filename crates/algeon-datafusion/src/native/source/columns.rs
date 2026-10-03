@@ -7,7 +7,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
-    physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
+    physical_plan::filter::FilterExec,
 };
 use parquet::arrow::parquet_to_arrow_schema;
 use query_engine::{
@@ -26,7 +26,7 @@ use crate::{
             local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
             scan_predicate_without_dynamic_filter_hints,
         },
-        validate::{collect_required_columns, native_zero_column_count_source_is_safe},
+        validate::collect_required_columns,
     },
 };
 
@@ -41,7 +41,7 @@ use crate::{
 /// only to evaluate filters. This struct keeps those roles separate so lowering
 /// can remove filter-only columns after filters while still emitting them from
 /// the source when needed.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(in crate::native) struct NativeParquetColumnRequirements {
     /// Physical Parquet columns that the native source must read and emit.
     ///
@@ -82,6 +82,13 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     pub(in crate::native) scan_output_columns: Vec<String>,
 }
 
+impl NativeParquetColumnRequirements {
+    /// Requirements of a scan that counts rows without reading a column.
+    pub(in crate::native) fn row_count_only() -> Self {
+        Self::default()
+    }
+}
+
 /// Computes source column roles for aggregate-root native lowering.
 ///
 /// Required/projected roles are derived from the aggregate, optional
@@ -90,125 +97,6 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
 /// omitted from the columns expected to survive the source-adjacent native
 /// projection. When the aggregate can be answered as a zero-column count, no
 /// file or partition columns are required.
-pub(in crate::native) fn required_parquet_column_requirements(
-    file_scan: &FileScanConfig,
-    parquet_source: &ParquetSource,
-    filter: Option<&FilterExec>,
-    pre_aggregate_projection: Option<&ProjectionExec>,
-    aggregate: &AggregateExec,
-) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
-    let file_schema = native_physical_file_schema(file_scan)?;
-    let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
-    if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate)
-        && !parquet_source_has_row_level_predicate(parquet_source)
-    {
-        return Ok(NativeParquetColumnRequirements {
-            read_columns: Vec::new(),
-            read_column_file_indices: Vec::new(),
-            projected_output_columns: Vec::new(),
-            projected_output_column_source_refs: Vec::new(),
-            pure_filter_columns: Vec::new(),
-            pure_filter_column_source_refs: Vec::new(),
-            predicate_columns: Vec::new(),
-            partition_columns: Vec::new(),
-            partition_column_indices: Vec::new(),
-            missing_columns: Vec::new(),
-            scan_output_columns: Vec::new(),
-        });
-    }
-
-    let mut filter_columns: BTreeSet<String> = BTreeSet::new();
-    let mut output_columns: BTreeSet<String> = BTreeSet::new();
-    let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
-
-    let scan_projection = file_scan.file_source().projection();
-    let scan_output_schema = file_scan.projected_schema().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-
-    if filter.is_none() {
-        collect_scan_predicate_source_columns(parquet_source, scan_projection, &table_schema, &mut filter_columns)?;
-    }
-    if let Some(filter) = filter {
-        collect_source_required_columns(filter.predicate(), scan_projection, &table_schema, &mut filter_columns)?;
-        collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
-    }
-    if let Some(filter_projection) = filter.and_then(|filter| filter.projection().as_ref()) {
-        collect_source_projection_indices(
-            filter_projection,
-            scan_projection,
-            &scan_output_schema,
-            &table_schema,
-            &mut output_columns,
-        )?;
-        collect_scan_projection_indices(filter_projection, &scan_output_schema, &mut scan_output_columns)?;
-    } else if let Some(projection) = pre_aggregate_projection {
-        for projection_expr in projection.expr() {
-            collect_source_required_columns(
-                &projection_expr.expr,
-                scan_projection,
-                &table_schema,
-                &mut output_columns,
-            )?;
-            collect_required_columns(&projection_expr.expr, &projection.input().schema(), &mut scan_output_columns)?;
-        }
-    } else {
-        for aggregate_expr in aggregate.aggr_expr() {
-            for expr in aggregate_expr.expressions() {
-                collect_source_required_columns(&expr, scan_projection, &table_schema, &mut output_columns)?;
-                collect_required_columns(&expr, &aggregate.input().schema(), &mut scan_output_columns)?;
-            }
-        }
-        for filter in aggregate.filter_expr().iter().flatten() {
-            collect_source_required_columns(filter, scan_projection, &table_schema, &mut output_columns)?;
-            collect_required_columns(filter, &aggregate.input().schema(), &mut scan_output_columns)?;
-        }
-        for (group_expr, _alias) in aggregate.group_expr().expr() {
-            collect_source_required_columns(group_expr, scan_projection, &table_schema, &mut output_columns)?;
-            collect_required_columns(group_expr, &aggregate.input().schema(), &mut scan_output_columns)?;
-        }
-    }
-
-    let mut read_columns: BTreeSet<String> = BTreeSet::new();
-    read_columns.extend(filter_columns.iter().cloned());
-    read_columns.extend(output_columns.iter().cloned());
-
-    let mut read_columns =
-        read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<BTreeSet<_>>();
-    let mut pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
-    let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
-
-    if read_columns.is_empty() && required_source_columns.is_empty() {
-        let carrier = first_supported_physical_file_column(&file_schema)?;
-        read_columns.insert(carrier.clone());
-        pure_filter_columns.push(carrier);
-    }
-
-    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
-    let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
-    let (partition_columns, partition_column_indices) =
-        native_required_partition_columns(file_scan, &required_source_columns)?;
-    let missing_columns =
-        native_required_missing_columns(file_scan, &file_schema, &required_source_columns, &partition_columns)?;
-    let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
-    let projected_output_column_source_refs =
-        column_source_refs(&file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
-    let pure_filter_column_source_refs =
-        column_source_refs(&file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
-
-    Ok(NativeParquetColumnRequirements {
-        read_columns,
-        read_column_file_indices,
-        projected_output_columns,
-        projected_output_column_source_refs,
-        pure_filter_columns,
-        pure_filter_column_source_refs,
-        predicate_columns: filter_columns.into_iter().collect(),
-        partition_columns,
-        partition_column_indices,
-        missing_columns,
-        scan_output_columns: scan_output_columns.into_iter().collect(),
-    })
-}
-
 /// Computes source column roles when lowering starts from required scan-output columns.
 ///
 /// This path is used by native shapes that already know which DataFusion scan
@@ -292,18 +180,6 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     })
 }
 
-fn collect_scan_projection_indices(
-    projection: &[usize],
-    scan_output_schema: &SchemaRef,
-    required: &mut BTreeSet<String>,
-) -> Result<(), CapabilityReason> {
-    for index in projection {
-        let field = scan_output_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
-        required.insert(field.name().clone());
-    }
-    Ok(())
-}
-
 pub(in crate::native) fn parquet_source_has_row_level_predicate(parquet_source: &ParquetSource) -> bool {
     parquet_source.filter().is_some_and(|predicate| !scan_predicate_is_dynamic_filter_hint(predicate.as_ref()))
 }
@@ -322,21 +198,6 @@ fn collect_scan_predicate_source_columns(
     };
     collect_required_columns(&predicate, table_schema, required)
         .or_else(|_| collect_source_required_columns(&predicate, scan_projection, table_schema, required))
-}
-
-fn collect_source_projection_indices(
-    projection: &[usize],
-    scan_projection: Option<&ProjectionExprs>,
-    scan_output_schema: &SchemaRef,
-    table_schema: &SchemaRef,
-    required: &mut BTreeSet<String>,
-) -> Result<(), CapabilityReason> {
-    for index in projection {
-        let field = scan_output_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
-        collect_source_required_columns(&expr, scan_projection, table_schema, required)?;
-    }
-    Ok(())
 }
 
 fn collect_source_required_columns(

@@ -788,12 +788,12 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
     let first_row = planning
         .rows
         .iter()
-        .find(|row| row.native_candidate_shape.as_deref() == Some(first_candidate.shape.as_str()))
+        .find(|row| row.native_candidate_shape == Some(first_candidate.shape.to_string()))
         .expect("first join row should exist");
     let second_row = planning
         .rows
         .iter()
-        .find(|row| row.native_candidate_shape.as_deref() == Some(second_candidate.shape.as_str()))
+        .find(|row| row.native_candidate_shape == Some(second_candidate.shape.to_string()))
         .expect("second join row should exist");
 
     assert!(first_row.capability_decision_rows.is_empty());

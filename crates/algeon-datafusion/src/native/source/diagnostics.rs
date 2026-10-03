@@ -15,17 +15,17 @@ use query_engine::source::{
 use super::{
     NativeParquetColumnRequirements, native_declared_output_ordering_scan_is_supported,
     native_parquet_file_reader_factory_is_supported, native_parquet_object_store_scan_is_supported,
-    native_preserve_order_scan_is_supported, partition_column_disposition, required_parquet_column_requirements,
+    native_preserve_order_scan_is_supported, partition_column_disposition,
 };
 use crate::native::{
     footers::parquet_footer,
-    normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
+    lowering::{aggregate_input_demand, parquet_column_requirements, parquet_reads_row_count_only},
+    normalize::{NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
     pruning::{
         CoalescedLocalParquetFile, LocalParquetByteRangeRepresentation, coalesced_local_parquet_scan_files,
         explicit_row_group_selection, has_row_level_selection, local_object_path_to_filesystem,
         metadata_row_group_selections, parquet_predicate_disposition, selected_row_groups_from_access_plans,
     },
-    validate::native_zero_column_count_source_is_safe,
 };
 
 /// Collects native source diagnostics for every source in a normalized plan.
@@ -36,56 +36,58 @@ pub(in crate::native) fn source_diagnostics_for_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
 ) -> Vec<NativeSourceDiagnostics> {
     let mut diagnostics = Vec::new();
-    collect_source_diagnostics_for_input(normalized.root_input(), normalized, &mut diagnostics);
+    collect_source_diagnostics_for_input(&normalized.input, None, &mut diagnostics);
     diagnostics
 }
 
+/// `aggregate` is the aggregate directly above `input`, whose demand decides
+/// which columns a source below it reads.
 fn collect_source_diagnostics_for_input(
     input: &NormalizedNativeInput<'_>,
-    normalized: &NormalizedNativePlan<'_>,
+    aggregate: Option<&NormalizedNativeAggregate<'_>>,
     diagnostics: &mut Vec<NativeSourceDiagnostics>,
 ) {
     match input {
         NormalizedNativeInput::Source(source) => {
-            if let Some(diagnostic) = source_diagnostics_for_source(source, normalized) {
+            if let Some(diagnostic) = source_diagnostics_for_source(source, aggregate) {
                 diagnostics.push(diagnostic);
             }
         },
         NormalizedNativeInput::GpuResidentSource(_) => {},
         NormalizedNativeInput::LiteralSource(_) => {},
         NormalizedNativeInput::Filter(filter) => {
-            collect_source_diagnostics_for_input(&filter.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&filter.input, None, diagnostics);
         },
         NormalizedNativeInput::Projection(projection) => {
-            collect_source_diagnostics_for_input(&projection.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&projection.input, None, diagnostics);
         },
         NormalizedNativeInput::Limit(limit) => {
-            collect_source_diagnostics_for_input(&limit.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&limit.input, None, diagnostics);
         },
         NormalizedNativeInput::Aggregate(aggregate) => {
-            collect_source_diagnostics_for_input(&aggregate.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&aggregate.input, Some(aggregate), diagnostics);
         },
         NormalizedNativeInput::Sort(sort) => {
-            collect_source_diagnostics_for_input(&sort.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&sort.input, None, diagnostics);
         },
         NormalizedNativeInput::Window(window) => {
-            collect_source_diagnostics_for_input(&window.input, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&window.input, None, diagnostics);
         },
         NormalizedNativeInput::HashJoin(join) => {
-            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
-            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.left, None, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, None, diagnostics);
         },
         NormalizedNativeInput::CrossJoin(join) => {
-            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
-            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.left, None, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, None, diagnostics);
         },
         NormalizedNativeInput::NestedLoopJoin(join) => {
-            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
-            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.left, None, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, None, diagnostics);
         },
         NormalizedNativeInput::Union(union) => {
             for input in &union.inputs {
-                collect_source_diagnostics_for_input(input, normalized, diagnostics);
+                collect_source_diagnostics_for_input(input, None, diagnostics);
             }
         },
     }
@@ -93,37 +95,41 @@ fn collect_source_diagnostics_for_input(
 
 fn source_diagnostics_for_source(
     source: &NormalizedNativeSource<'_>,
-    normalized: &NormalizedNativePlan<'_>,
+    aggregate: Option<&NormalizedNativeAggregate<'_>>,
 ) -> Option<NativeSourceDiagnostics> {
     let source_exec = source.scan;
     let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
-    let aggregate_root = normalized.aggregate_root();
-    let column_requirements = aggregate_root.and_then(|root| {
-        required_parquet_column_requirements(
-            file_scan,
-            parquet_source,
-            source.filter,
-            normalized.single_source_input().and(root.pre_aggregate_projection),
-            root.aggregate,
-        )
-        .ok()
-    });
+    let demand = aggregate.and_then(|aggregate| aggregate_input_demand(aggregate).ok());
+    let column_requirements =
+        demand.as_ref().and_then(|demand| parquet_column_requirements(source_exec, source.filter, demand).ok());
     Some(local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
         source.filter,
         table_schema,
         column_requirements.as_ref(),
-        false,
-        aggregate_root.is_some_and(|root| {
-            native_zero_column_count_source_is_safe(
-                source.filter,
-                normalized.single_source_input().and(root.pre_aggregate_projection),
-                root.aggregate,
-            ) && column_requirements.as_ref().is_some_and(|requirements| requirements.read_columns.is_empty())
-        }),
+        SourceRead {
+            reader_pushdown: false,
+            row_count_only: demand
+                .as_ref()
+                .is_some_and(|demand| parquet_reads_row_count_only(parquet_source, source.filter, demand)),
+            // Outside an aggregate this walk does not know what the parent reads.
+            ordered: demand.as_ref().is_none_or(|demand| demand.ordered),
+        },
     ))
+}
+
+/// How lowering reads a scan, which decides the dispositions its diagnostics
+/// report.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::native) struct SourceRead {
+    /// The source evaluates a reader predicate.
+    pub(in crate::native) reader_pushdown: bool,
+    /// The source counts rows without reading a column.
+    pub(in crate::native) row_count_only: bool,
+    /// The scan's parent reads its rows in their declared order.
+    pub(in crate::native) ordered: bool,
 }
 
 /// Builds native diagnostics for a DataFusion local Parquet scan.
@@ -136,9 +142,9 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: Option<&NativeParquetColumnRequirements>,
-    reader_pushdown: bool,
-    zero_column_count_safe: bool,
+    read: SourceRead,
 ) -> NativeSourceDiagnostics {
+    let SourceRead { reader_pushdown, row_count_only: zero_column_count_safe, ordered } = read;
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     let coalesced_files = coalesced_local_parquet_scan_files(&files);
     let diagnostic_files = coalesced_files
@@ -211,14 +217,14 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     if !native_parquet_file_reader_factory_is_supported(parquet_source) {
         rejected_features.push(NativeRejectedSourceFeature::ParquetFileReaderFactory);
     }
-    let scan_limit_disposition = scan_limit_disposition(file_scan);
+    let scan_limit_disposition = scan_limit_disposition(file_scan, ordered);
     if scan_limit_disposition == NativeScanLimitDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::ScanLimit);
     }
-    if !native_preserve_order_scan_is_supported(file_scan) {
+    if !native_preserve_order_scan_is_supported(file_scan, ordered) {
         rejected_features.push(NativeRejectedSourceFeature::PreserveOrder);
     }
-    if !native_declared_output_ordering_scan_is_supported(file_scan) {
+    if !native_declared_output_ordering_scan_is_supported(file_scan, ordered) {
         rejected_features.push(NativeRejectedSourceFeature::OutputOrdering);
     }
     let predicate_disposition = parquet_predicate_disposition(parquet_source, filter, &source_schema, reader_pushdown);
@@ -239,8 +245,8 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         && partition_column_disposition != NativePartitionColumnDisposition::Rejected
         && file_scan.expr_adapter_factory.is_none()
         && scan_limit_disposition != NativeScanLimitDisposition::Rejected
-        && native_preserve_order_scan_is_supported(file_scan)
-        && native_declared_output_ordering_scan_is_supported(file_scan)
+        && native_preserve_order_scan_is_supported(file_scan, ordered)
+        && native_declared_output_ordering_scan_is_supported(file_scan, ordered)
         && coalesced_files.is_ok();
     for file in &files {
         if partition_column_disposition == NativePartitionColumnDisposition::Rejected
@@ -283,12 +289,12 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     }
 }
 
-fn scan_limit_disposition(file_scan: &FileScanConfig) -> NativeScanLimitDisposition {
+fn scan_limit_disposition(file_scan: &FileScanConfig, ordered: bool) -> NativeScanLimitDisposition {
     if file_scan.limit.is_none() {
         return NativeScanLimitDisposition::Absent;
     }
-    if !native_preserve_order_scan_is_supported(file_scan)
-        || !native_declared_output_ordering_scan_is_supported(file_scan)
+    if !native_preserve_order_scan_is_supported(file_scan, ordered)
+        || !native_declared_output_ordering_scan_is_supported(file_scan, ordered)
     {
         NativeScanLimitDisposition::Rejected
     } else {

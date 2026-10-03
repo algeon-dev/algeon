@@ -20,11 +20,18 @@ pub(super) struct LoweredNativeInput {
     /// Adapter-side mapping from the DataFusion physical output schema to the
     /// executable native schema above.
     pub(super) bindings: Vec<FieldBinding>,
+    /// The node emits row-count weights instead of the input's rows, which
+    /// only a parent that demanded the row count alone reads.
+    pub(super) row_count_weights: bool,
 }
 
 impl LoweredNativeInput {
     pub(super) fn with_bindings(node: NativeNodeId, schema: SchemaRef, bindings: Vec<FieldBinding>) -> Self {
-        Self { node, schema, bindings }
+        Self { node, schema, bindings, row_count_weights: false }
+    }
+
+    pub(super) fn row_count_weights(node: NativeNodeId, schema: SchemaRef) -> Self {
+        Self { node, schema, bindings: Vec::new(), row_count_weights: true }
     }
 
     pub(super) fn binding_for_column(&self, column: &Column) -> Result<&FieldBinding, CapabilityReason> {
@@ -59,6 +66,37 @@ pub(super) struct FieldBinding {
     pub(super) frontend_index: usize,
     pub(super) frontend_name: String,
     pub(super) native_name: String,
+}
+
+/// What a parent reads from the input it lowers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::native) struct Demand {
+    /// Output fields the parent reads.
+    pub(super) fields: RequiredFields,
+    /// The parent reads only how many rows the input has. A Parquet scan that
+    /// needs no column to produce its rows answers with row-count weights.
+    pub(super) row_count_only: bool,
+    /// The parent keeps at most this many rows of the input, and any rows
+    /// satisfy it.
+    pub(super) row_limit: Option<usize>,
+    /// The parent selects `fields` from its input itself, so the input may
+    /// also emit fields the parent does not read instead of adding a
+    /// projection that only drops them.
+    pub(super) extra_fields_allowed: bool,
+    /// The parent reads the input's rows in the order DataFusion reports for
+    /// the input. A scan of several sorted runs, which native lowering reads
+    /// one after another, does not reproduce that order.
+    pub(in crate::native) ordered: bool,
+}
+
+impl Demand {
+    pub(super) fn all() -> Self {
+        Self::fields(RequiredFields::all())
+    }
+
+    pub(super) fn fields(fields: RequiredFields) -> Self {
+        Self { fields, row_count_only: false, row_limit: None, extra_fields_allowed: false, ordered: false }
+    }
 }
 
 /// Frontend field set required by a parent plan fragment.

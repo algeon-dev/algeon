@@ -111,8 +111,8 @@ use datafusion::{
 };
 use lowering::lower_normalized_plan;
 use normalize::{
-    NormalizedNativeInput, NormalizedNativeLiteralSource, make_declared_ordered_hash_join_fetch_explicit,
-    normalize_native_plan,
+    NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
+    make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
 };
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_engine::{
@@ -142,11 +142,12 @@ use crate::{
     report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
 };
 
-const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
+pub(in crate::native) const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeLoweringResult {
-    pub(crate) plans: Vec<NativeQueryPlan>,
+    /// The lowered plan of the one candidate, when it was selected.
+    pub(crate) plan: Option<NativeQueryPlan>,
     pub(crate) report: PlanningReport,
     pub(crate) source_diagnostics: Vec<NativeSourceDiagnostics>,
 }
@@ -157,8 +158,14 @@ impl NativeLoweringResult {
         self.report.outcomes().len()
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_count(&self) -> usize {
         self.report.selected_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_plan(&self) -> &NativeQueryPlan {
+        self.plan.as_ref().expect("lowering selected a native plan")
     }
 
     #[cfg(test)]
@@ -197,20 +204,18 @@ fn lower_physical_plan_to_native_with_mode(
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<NativeLoweringResult> {
     let _footers = FooterScope::enter();
-    let normalized = normalize_native_plan(plan.as_ref()).map(|mut normalized| {
-        if mode == NativeLoweringMode::Final {
-            make_declared_ordered_hash_join_fetch_explicit(
-                &mut normalized,
-                plan.properties().output_ordering(),
-                plan.schema(),
-            );
-        }
-        normalized
+    let normalized = normalize_native_plan(plan.as_ref()).map(|normalized| match mode {
+        NativeLoweringMode::Final => make_declared_ordered_hash_join_fetch_explicit(
+            normalized,
+            plan.properties().output_ordering(),
+            plan.schema(),
+        ),
+        NativeLoweringMode::CountOnly => normalized,
     });
     match normalized {
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
-                && !normalized.aggregate_root().is_some_and(|root| match &root.input {
+                && !root_aggregate(&normalized.input).is_some_and(|root| match root.input.as_ref() {
                     NormalizedNativeInput::Source(source) => native_zero_column_count_source_is_safe(
                         source.filter,
                         root.pre_aggregate_projection,
@@ -225,108 +230,52 @@ fn lower_physical_plan_to_native_with_mode(
             let mut report = PlanningReport::new();
             report.push_not_supported(normalized.candidate.clone(), CapabilityReason::UnsupportedOperator);
             Ok(NativeLoweringResult {
-                plans: Vec::new(),
+                plan: None,
                 report,
                 source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
             })
         },
-        Ok(normalized) => match lower_normalized_plan(&normalized, source_reads) {
-            Err(LoweringFailure::Invalid(error)) => Err(Error::from_native(
-                "algeon_datafusion.native.lower",
-                "native lowering built a malformed native plan",
-                error,
-            )),
-            Err(LoweringFailure::Rejected(rejection)) => {
-                let reason = rejection.reason();
-                let column = (reason == CapabilityReason::UnsupportedType)
-                    .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
-                    .flatten();
-                let detail = NotSupportedDetail { column, expression: rejection.into_expression(), admission: None };
-                let mut report = PlanningReport::new();
-                report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
-                Ok(NativeLoweringResult {
-                    plans: Vec::new(),
-                    report,
-                    source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
-                })
-            },
-            Ok(mut native_plan) => {
-                // The Arrow schema at the DataFusion boundary can carry
-                // schema-level metadata. Preserve that contract at the host
-                // sink while keeping the native IR itself DataFusion-free.
-                native_plan = native_plan.with_host_sink_schema(Arc::clone(&plan.schema())).map_err(|error| {
-                    Error::from_native(
-                        "algeon_datafusion.native.lower",
-                        "native lowering built a host sink that differs from the DataFusion schema",
-                        error,
-                    )
-                })?;
-                let mut candidate = normalized.candidate.clone();
-                if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
+        Ok(normalized) => {
+            match lower_normalized_plan(&normalized, plan.properties().output_ordering().is_some(), source_reads) {
+                Err(LoweringFailure::Invalid(error)) => Err(Error::from_native(
+                    "algeon_datafusion.native.lower",
+                    "native lowering built a malformed native plan",
+                    error,
+                )),
+                Err(LoweringFailure::Rejected(rejection)) => {
+                    let reason = rejection.reason();
+                    let column = (reason == CapabilityReason::UnsupportedType)
+                        .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
+                        .flatten();
+                    let detail =
+                        NotSupportedDetail { column, expression: rejection.into_expression(), admission: None };
                     let mut report = PlanningReport::new();
-                    report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
-                    return Ok(NativeLoweringResult {
-                        plans: Vec::new(),
+                    report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
+                    Ok(NativeLoweringResult {
+                        plan: None,
                         report,
-                        source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                    });
-                }
-                let mut appended_declared_output_sort = false;
-                if let Some(ordering) = plan.properties().output_ordering()
-                    && !native_plan_reproduces_declared_output_ordering(&native_plan)
-                {
-                    if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
-                        let mut report = PlanningReport::new();
-                        report.push_not_supported(
-                            candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
-                            CapabilityReason::NativeOrderedOutputUnsupported,
-                        );
-                        return Ok(NativeLoweringResult {
-                            plans: Vec::new(),
-                            report,
-                            source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                        });
-                    }
-                    let sort_spec = match declared_output_ordering_sort_spec(ordering, native_plan.root_node()) {
-                        Ok(sort_spec) => sort_spec,
-                        Err(reason) => {
-                            let mut report = PlanningReport::new();
-                            report.push_not_supported(
-                                candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
-                                reason,
-                            );
-                            return Ok(NativeLoweringResult {
-                                plans: Vec::new(),
-                                report,
-                                source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                            });
-                        },
-                    };
-                    native_plan = native_plan.with_appended_sort(sort_spec);
-                    appended_declared_output_sort = true;
-                }
-                if plan.properties().output_ordering().is_some()
-                    && !native_plan_reproduces_declared_output_ordering(&native_plan)
-                {
+                        source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
+                    })
+                },
+                Ok(mut native_plan) => {
+                    // The Arrow schema at the DataFusion boundary can carry
+                    // schema-level metadata. Preserve that contract at the host
+                    // sink while keeping the native IR itself DataFusion-free.
+                    native_plan = native_plan.with_host_sink_schema(Arc::clone(&plan.schema())).map_err(|error| {
+                        Error::from_native(
+                            "algeon_datafusion.native.lower",
+                            "native lowering built a host sink that differs from the DataFusion schema",
+                            error,
+                        )
+                    })?;
+                    // The declared output ordering is enforced after the native
+                    // optimizer, which may change what the plan reproduces.
+                    let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
                     let mut report = PlanningReport::new();
-                    if appended_declared_output_sort {
-                        candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
-                    }
-                    report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
-                    return Ok(NativeLoweringResult {
-                        plans: Vec::new(),
-                        report,
-                        source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                    });
-                }
-                let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
-                let mut report = PlanningReport::new();
-                if appended_declared_output_sort {
-                    candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
-                }
-                report.push_selected(candidate);
-                Ok(NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics })
-            },
+                    report.push_selected(normalized.candidate.clone());
+                    Ok(NativeLoweringResult { plan: Some(native_plan), report, source_diagnostics })
+                },
+            }
         },
         Err(rejection) => {
             let column = (rejection.reason == CapabilityReason::UnsupportedType)
@@ -338,7 +287,7 @@ fn lower_physical_plan_to_native_with_mode(
                 rejection.reason,
                 NotSupportedDetail { column, expression: None, admission: None },
             );
-            Ok(NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() })
+            Ok(NativeLoweringResult { plan: None, report, source_diagnostics: Vec::new() })
         },
     }
 }
@@ -348,7 +297,18 @@ fn unsupported_column_for_normalized_plan(
     output_schema: ArrowSchemaRef,
 ) -> Option<UnsupportedColumnDetail> {
     unsupported_column_for_schema(&output_schema, "projected")
-        .or_else(|| unsupported_column_for_input(normalized.root_input()))
+        .or_else(|| unsupported_column_for_input(&normalized.input))
+}
+
+/// The aggregate below the root projections, sorts and limits.
+fn root_aggregate<'n, 'a>(input: &'n NormalizedNativeInput<'a>) -> Option<&'n NormalizedNativeAggregate<'a>> {
+    match input {
+        NormalizedNativeInput::Aggregate(aggregate) => Some(aggregate),
+        NormalizedNativeInput::Projection(projection) => root_aggregate(&projection.input),
+        NormalizedNativeInput::Sort(sort) => root_aggregate(&sort.input),
+        NormalizedNativeInput::Limit(limit) => root_aggregate(&limit.input),
+        _ => None,
+    }
 }
 
 fn unsupported_column_for_input(input: &NormalizedNativeInput<'_>) -> Option<UnsupportedColumnDetail> {
@@ -433,16 +393,19 @@ fn unsupported_column_detail(field: &ArrowFieldRef, role: &'static str) -> Unsup
     UnsupportedColumnDetail::new(field.name(), diagnostic_arrow_type(field.data_type()), role)
 }
 
+/// Enforces the orderings an optimized native plan must keep: every
+/// order-sensitive operator reads ordered input, and the output reproduces
+/// the plan's declared ordering, by an appended sort when needed.
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
     ordering: Option<&LexOrdering>,
 ) -> std::result::Result<(NativeQueryPlan, bool), CapabilityReason> {
-    let Some(ordering) = ordering else {
-        return Ok((native_plan, false));
-    };
     if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
         return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
+    let Some(ordering) = ordering else {
+        return Ok((native_plan, false));
+    };
     if native_plan_reproduces_declared_output_ordering(&native_plan) {
         return Ok((native_plan, false));
     }

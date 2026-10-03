@@ -48,7 +48,7 @@ use crate::{
     native::lower_physical_plan_to_native,
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     planner::{NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics},
-    report::{CandidateOutcome, GpuCandidate},
+    report::{CandidateOutcome, CandidateShape, GpuCandidate},
 };
 
 mod dataset;

@@ -41,7 +41,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
-    let direct_plan = &lowering.plans[0];
+    let direct_plan = lowering.selected_plan();
     let direct_left_semi = native_join_ids(direct_plan, NativeJoinType::LeftSemi);
     assert_eq!(direct_left_semi.len(), 1, "direct SQL lowering should expose one left-semi candidate");
     assert!(

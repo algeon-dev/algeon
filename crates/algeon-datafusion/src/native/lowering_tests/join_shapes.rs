@@ -24,7 +24,8 @@ async fn physical_cross_join_exec_lowers_to_native_cross_join() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let join = result.plans[0]
+    let join = result
+        .selected_plan()
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -89,7 +90,7 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
     assert_eq!(expected_rows.len(), 2);
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q03 outcomes={:?}", result.report.outcomes());
-    let mut advisory_rows = native_join_advisory_rows(&result.plans[0]);
+    let mut advisory_rows = native_join_advisory_rows(result.selected_plan());
     advisory_rows.sort_unstable();
     expected_rows.sort_unstable();
     assert_eq!(advisory_rows, expected_rows);
@@ -105,7 +106,7 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan), &ParquetReadStrategyConfig::default()).unwrap();
     assert_eq!(result.selected_count(), 1, "q03 outcomes={:?}", result.report.outcomes());
-    let joins = native_joins(&result.plans[0]);
+    let joins = native_joins(result.selected_plan());
     assert_eq!(joins.len(), 2);
     assert!(joins.iter().all(|join| join.spec.advisory_output_statistics.is_none()), "{joins:?}");
 
@@ -125,7 +126,7 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let join = native_plan
         .nodes()
         .iter()
@@ -194,7 +195,7 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let join = native_plan
         .nodes()
         .iter()
@@ -250,7 +251,7 @@ fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(join, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
@@ -292,9 +293,9 @@ fn hash_join_fetch_lowers_to_native_limit_above_join() {
     let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("hash join with fetch should lower to native");
     };
-    assert_eq!(candidate.shape, "HashJoinExec(fetch)(LocalParquetScan,LocalParquetScan)");
-    assert_eq!(candidate.operator_count, 3);
-    let native_plan = &result.plans[0];
+    assert_eq!(candidate.shape.to_string(), "HashJoinExec(fetch)(LocalParquetScan,LocalParquetScan)");
+    assert_eq!(candidate.operator_count(), 3);
+    let native_plan = result.selected_plan();
     let PlanNode::Limit(limit) = &native_plan.root_node().kind else {
         panic!("native root should preserve HashJoinExec.fetch as a limit:\n{native_plan}");
     };
@@ -476,7 +477,7 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}, join_schema={join_schema:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     let join = native_joins(native_plan).into_iter().next().expect("native plan should contain a join");
     let join_output_names =
         join.spec.output_projection.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
@@ -559,7 +560,7 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let native_plan = &result.plans[0];
+    let native_plan = result.selected_plan();
     assert_eq!(
         native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
         vec!["n_name", "n_name"]
@@ -593,12 +594,12 @@ fn recursive_hash_join_input_filters_lower_to_native_filters() {
         panic!("filtered recursive hash-join inputs should lower to native");
     };
     assert_eq!(
-        candidate.shape,
-        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan))))))"
+        candidate.shape.to_string(),
+        "SortExec(fetch)(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan)))))"
     );
-    assert_eq!(candidate.operator_count, 9);
+    assert_eq!(candidate.operator_count(), 8);
 
-    let filters = native_filter_exprs(&result.plans[0]);
+    let filters = native_filter_exprs(result.selected_plan());
     assert_eq!(filters.len(), 2);
     assert!(filters.iter().any(|filter| {
         matches!(
@@ -617,7 +618,7 @@ fn recursive_hash_join_input_filters_lower_to_native_filters() {
         )
     }));
 
-    let sources = native_local_parquet_sources(&result.plans[0]);
+    let sources = native_local_parquet_sources(result.selected_plan());
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0].pure_filter_columns, vec!["l_payload".to_string()]);
     assert_eq!(sources[1].pure_filter_columns, vec!["r_payload".to_string()]);
@@ -644,11 +645,11 @@ fn post_join_filter_lowers_to_native_filter_input() {
         panic!("post-join filter should lower as a native input filter");
     };
     assert_eq!(
-        candidate.shape,
-        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))"
+        candidate.shape.to_string(),
+        "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))))"
     );
 
-    let filters = native_filter_exprs(&result.plans[0]);
+    let filters = native_filter_exprs(result.selected_plan());
     assert_eq!(filters.len(), 1);
     assert!(matches!(
         filters[0],
@@ -768,18 +769,18 @@ fn hash_join_aggregate_inputs_lower_to_native_aggregate_inputs() {
         panic!("aggregate join inputs should lower as native aggregate input nodes");
     };
     assert_eq!(
-        candidate.shape,
-        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(HashJoinExec(AggregateExec(LocalParquetScan),AggregateExec(LocalParquetScan))))))"
+        candidate.shape.to_string(),
+        "SortExec(fetch)(AggregateExec(ProjectionExec(HashJoinExec(AggregateExec(LocalParquetScan),AggregateExec(LocalParquetScan)))))"
     );
-    assert_eq!(candidate.operator_count, 9);
+    assert_eq!(candidate.operator_count(), 8);
 
-    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    let aggregates = native_aggregate_nodes(result.selected_plan());
     assert_eq!(aggregates.len(), 3);
     assert_eq!(aggregates[0].spec.aggr_exprs[0].alias, "l_m00");
     assert_eq!(aggregates[1].spec.aggr_exprs[0].alias, "r_m01");
     assert_eq!(aggregates[2].spec.aggr_exprs[0].alias, "sum_x00");
 
-    let sources = native_local_parquet_sources(&result.plans[0]);
+    let sources = native_local_parquet_sources(result.selected_plan());
     assert_eq!(sources.len(), 2);
     assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string()]);
     assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string()]);

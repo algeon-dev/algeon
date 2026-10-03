@@ -8,7 +8,7 @@ use datafusion::{
 use query_engine::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder};
 
 use super::{
-    LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+    Demand, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{
         alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings,
         lower_validated_physical_expr_with_bindings,
@@ -21,15 +21,17 @@ use crate::{
         LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_physical_expr_contract,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
+        validate::validate_schema,
     },
 };
 
 pub(super) fn lower_filter_input(
     filter: &NormalizedNativeFilter<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_fields: &RequiredFields,
+    demand: &Demand,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
+    let required_output_fields = &demand.fields;
     let validated_predicate =
         validate_physical_expr_contract(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
@@ -49,18 +51,18 @@ pub(super) fn lower_filter_input(
     }
     let mut child_required = predicate_required.clone();
     child_required.extend(selection.child_required_indices.iter().copied());
-    let input = lower_native_input(
-        &filter.input,
-        builder,
-        &RequiredFields::only_with_predicates(child_required, predicate_required),
-        source_reads,
-    )?;
+    let input_demand = Demand {
+        fields: RequiredFields::only_with_predicates(child_required, predicate_required),
+        ordered: demand.ordered,
+        ..Demand::all()
+    };
+    let input = lower_native_input(&filter.input, builder, &input_demand, source_reads)?;
     let filtered_node = builder.add_filter(
         input.node,
         lower_validated_physical_expr_with_bindings(&validated_predicate, Some(&input.bindings))?,
     )?;
     if !selection.requires_projection_from(&input) {
-        return Ok(LoweredNativeInput { node: filtered_node, schema: input.schema, bindings: input.bindings });
+        return Ok(LoweredNativeInput::with_bindings(filtered_node, input.schema, input.bindings));
     }
     let expressions = selection
         .child_required_indices
@@ -119,12 +121,17 @@ fn required_filter_output_selection(
     Ok(FilterOutputSelection { schema, bindings, child_required_indices })
 }
 
+/// A projection keeps every input row, so the row limit of a limit above it
+/// reaches its input.
 pub(super) fn lower_projection_input(
     projection: &NormalizedNativeProjection<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_fields: &RequiredFields,
+    demand: &Demand,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
+    let required_output_fields = &demand.fields;
+    let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
+    validate_schema(Arc::clone(&schema))?;
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
     let mut validated_projection = Vec::with_capacity(required_projection.len());
@@ -142,13 +149,13 @@ pub(super) fn lower_projection_input(
             &mut child_predicate_required,
         )?;
     }
-    let input = lower_native_input(
-        &projection.input,
-        builder,
-        &RequiredFields::only_with_predicates(child_required, child_predicate_required),
-        source_reads,
-    )?;
-    let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
+    let input_demand = Demand {
+        fields: RequiredFields::only_with_predicates(child_required, child_predicate_required),
+        row_limit: demand.row_limit,
+        ordered: demand.ordered,
+        ..Demand::all()
+    };
+    let input = lower_native_input(&projection.input, builder, &input_demand, source_reads)?;
     let expressions = required_projection
         .iter()
         .copied()

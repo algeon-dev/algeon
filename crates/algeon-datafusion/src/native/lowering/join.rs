@@ -22,7 +22,7 @@ use query_engine::{
 };
 
 use super::{
-    LoweredNativeInput, RequiredFields,
+    Demand, LoweredNativeInput, RequiredFields,
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings, physical_expr_field},
     join_output::{
         JoinOutputRequests, cross_join_output_requests, datafusion_join_output_side, hash_join_output_requests,
@@ -453,13 +453,13 @@ pub(super) fn lower_hash_join_input(
     let left = lower_native_input(
         &join.left,
         builder,
-        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(left_required, left_predicate_required)),
         source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
-        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(right_required, right_predicate_required)),
         source_reads,
     )?;
     let residual = if join.join.filter().is_some() {
@@ -586,13 +586,13 @@ pub(super) fn lower_nested_loop_join_input(
     let left = lower_native_input(
         &join.left,
         builder,
-        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(left_required, left_predicate_required)),
         source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
-        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(right_required, right_predicate_required)),
         source_reads,
     )?;
     let residual = match join.join.filter() {
@@ -652,13 +652,13 @@ pub(super) fn lower_cross_join_input(
     let left = lower_native_input(
         &join.left,
         builder,
-        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(left_required, left_predicate_required)),
         source_reads,
     )?;
     let right = lower_native_input(
         &join.right,
         builder,
-        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+        &Demand::fields(RequiredFields::only_with_predicates(right_required, right_predicate_required)),
         source_reads,
     )?;
     let output_columns = output_requests.lower(&left, &right, canonical)?;

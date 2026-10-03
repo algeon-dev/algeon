@@ -32,7 +32,7 @@ use datafusion::{
         joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode},
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
-        sorts::sort::SortExec,
+        sorts::{partial_sort::PartialSortExec, sort::SortExec},
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
@@ -324,6 +324,18 @@ pub(super) fn aggregate_sort_limit_plan(
     .unwrap();
     let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
     Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+/// A partial sort, which has no native counterpart, over `child`, whose
+/// output is ordered by `sum_x00` as `aggregate_sort_limit_plan` leaves it.
+pub(super) fn partial_sort_parent_plan(child: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let schema = child.schema();
+    let ordering = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &schema).unwrap(), ArrowSortOptions::new(true, false)),
+    ])
+    .unwrap();
+    Arc::new(PartialSortExec::new(ordering, child, 1))
 }
 
 pub(super) fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {

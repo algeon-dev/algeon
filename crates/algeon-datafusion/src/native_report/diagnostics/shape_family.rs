@@ -1,150 +1,151 @@
-use super::{
-    GpuCandidate, NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE, NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN,
-};
+use super::{CandidateShape, GpuCandidate, NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN};
+use crate::report::UNSUPPORTED_NATIVE_PLAN_OPERATOR;
 
+/// Family of a candidate shape, `{root}_{input}_{body}`.
+///
+/// `body` is the first operator below the projections, sorts and limits at
+/// the top of the shape: `aggregate`, `distributed_aggregate`, or `input`.
+/// `root` is the outermost sort or limit above the body; without one, an
+/// aggregate body is `global`, or `projected_global` under a projection, and
+/// any other body is `other`. `input` names the joins the shape covers, or
+/// else a union, or else the kind of its leaf sources.
 pub(crate) fn candidate_shape_family(candidate: &GpuCandidate) -> String {
-    let shape = candidate.shape.as_str();
-    if shape == "UnsupportedNativePhysicalPlan" {
+    let shape = &candidate.shape;
+    if shape.operator() == UNSUPPORTED_NATIVE_PLAN_OPERATOR {
         return NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN.to_string();
     }
 
-    let root = if shape.starts_with("SortPreservingMergeExec(fetch)") {
-        "sort_preserving_merge_fetch"
-    } else if shape.starts_with("SortPreservingMergeExec") {
-        "sort_preserving_merge"
-    } else if shape.starts_with("LocalLimitExec") {
-        "local_limit_sort"
-    } else if shape.starts_with("SortExec(fetch)") {
-        "sort_fetch"
-    } else if shape.starts_with("SortExec") {
-        "sort"
-    } else if shape.starts_with("ProjectionExec(AggregateExec")
-        || shape.starts_with("ProjectionExec(FinalAggregateExec")
-    {
-        "projected_global"
-    } else if shape.starts_with("AggregateExec") {
-        "global"
-    } else {
-        "other"
+    let mut root = None;
+    let mut projected = false;
+    let mut body = Some(shape);
+    while let Some(node) = body {
+        match node.operator() {
+            "ProjectionExec" => projected = true,
+            operator => match ordering_or_limit_root(operator) {
+                Some(kind) => {
+                    root.get_or_insert(kind);
+                },
+                None => break,
+            },
+        }
+        body = match node.inputs() {
+            [input] => Some(input),
+            _ => None,
+        };
+    }
+    let body = match body.map(CandidateShape::operator) {
+        Some("AggregateExec") => "aggregate",
+        Some("FinalAggregateExec") => "distributed_aggregate",
+        _ => "input",
     };
-    let input = match (shape.contains("HashJoinExec"), shape.contains("NestedLoopJoinExec")) {
-        (true, true) => "mixed_hash_nested_loop_join",
-        (true, false) => "hash_join",
-        (false, true) => "nested_loop_join",
-        (false, false) => "local_parquet",
-    };
-    let distribution = if root_is_aggregate_shape(shape)
-        && (shape.contains("FinalAggregateExec") || shape.contains("PartialAggregateExec"))
-    {
-        "distributed_aggregate"
-    } else if root_is_aggregate_shape(shape) {
-        "aggregate"
-    } else {
-        "input"
-    };
+    let root = root.unwrap_or(match (body, projected) {
+        ("input", _) => "other",
+        (_, true) => "projected_global",
+        (_, false) => "global",
+    });
+    format!("{root}_{}_{body}", input_family(shape))
+}
 
-    match (root, input, distribution) {
-        ("sort", "local_parquet", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE.to_string()
-        },
-        ("sort_fetch", "local_parquet", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE.to_string()
-        },
-        ("sort_preserving_merge_fetch", "local_parquet", "distributed_aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE.to_string()
-        },
-        ("projected_global", "local_parquet", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE.to_string()
-        },
-        ("projected_global", "local_parquet", "distributed_aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE.to_string()
-        },
-        ("sort_fetch", "hash_join", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE.to_string()
-        },
-        ("sort", "hash_join", "aggregate") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE.to_string(),
-        ("projected_global", "hash_join", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE.to_string()
-        },
-        ("sort", "mixed_hash_nested_loop_join", "aggregate") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE.to_string()
-        },
-        ("sort_fetch", "hash_join", "input") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT.to_string(),
-        ("sort", "hash_join", "input") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT.to_string(),
-        ("sort", "mixed_hash_nested_loop_join", "input") => {
-            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT.to_string()
-        },
-        _ => format!("{root}_{input}_{distribution}"),
+fn ordering_or_limit_root(operator: &str) -> Option<&'static str> {
+    match operator {
+        "SortPreservingMergeExec(fetch)" => Some("sort_preserving_merge_fetch"),
+        "SortPreservingMergeExec" => Some("sort_preserving_merge"),
+        "SortExec(fetch)" => Some("sort_fetch"),
+        "SortExec" => Some("sort"),
+        "GlobalLimitExec" | "LocalLimitExec" => Some("limit"),
+        _ => None,
     }
 }
 
-fn root_is_aggregate_shape(shape: &str) -> bool {
-    shape.starts_with("AggregateExec")
-        || shape.starts_with("FinalAggregateExec")
-        || shape.starts_with("ProjectionExec(AggregateExec")
-        || shape.starts_with("ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortExec(AggregateExec")
-        || shape.starts_with("SortExec(FinalAggregateExec")
-        || shape.starts_with("SortExec(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortExec(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortExec(fetch)(AggregateExec")
-        || shape.starts_with("SortExec(fetch)(FinalAggregateExec")
-        || shape.starts_with("SortExec(fetch)(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortExec(fetch)(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("LocalLimitExec(SortExec(AggregateExec")
-        || shape.starts_with("LocalLimitExec(SortExec(FinalAggregateExec")
-        || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(AggregateExec")
-        || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(SortExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(SortExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(SortExec(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(SortExec(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(ProjectionExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(FinalAggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec")
-        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec")
+fn input_family(shape: &CandidateShape) -> &'static str {
+    let hash = shape.contains_operator("HashJoinExec") || shape.contains_operator("HashJoinExec(fetch)");
+    let nested_loop = shape.contains_operator("NestedLoopJoinExec");
+    let cross = shape.contains_operator("CrossJoinExec");
+    match (hash, nested_loop, cross) {
+        (true, true, false) => return "mixed_hash_nested_loop_join",
+        (true, false, false) => return "hash_join",
+        (false, true, false) => return "nested_loop_join",
+        (false, false, true) => return "cross_join",
+        (false, false, false) => {},
+        _ => return "mixed_join",
+    }
+    if shape.contains_operator("UnionExec") {
+        return "union";
+    }
+    let mut sources = Vec::new();
+    collect_leaf_source_kinds(shape, &mut sources);
+    sources.dedup();
+    match sources.as_slice() {
+        [kind] => kind,
+        _ => "mixed_source",
+    }
+}
+
+fn collect_leaf_source_kinds(shape: &CandidateShape, sources: &mut Vec<&'static str>) {
+    if shape.inputs().is_empty() {
+        let kind = match shape.operator() {
+            "LocalParquetScan" => "local_parquet",
+            "MemorySource" | "PlaceholderRowExec" | "EmptyExec" => "literal",
+            "GpuResidentSource" => "gpu_resident",
+            _ => "other",
+        };
+        if !sources.contains(&kind) {
+            sources.push(kind);
+        }
+    }
+    for input in shape.inputs() {
+        collect_leaf_source_kinds(input, sources);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn sort_preserving_merge_shapes_keep_aggregate_family() {
-        for shape in [
-            "SortPreservingMergeExec(AggregateExec(LocalParquetScan))",
-            "SortPreservingMergeExec(SortExec(AggregateExec(LocalParquetScan)))",
-        ] {
-            let candidate = GpuCandidate::with_operator_count(shape, 2, 3);
+    fn unary(operator: &str, input: CandidateShape) -> CandidateShape {
+        CandidateShape::new(operator, vec![input])
+    }
 
-            assert_eq!(candidate_shape_family(&candidate), "sort_preserving_merge_local_parquet_aggregate", "{shape}");
-        }
+    fn family(shape: CandidateShape) -> String {
+        candidate_shape_family(&GpuCandidate::new(shape, 1))
     }
 
     #[test]
-    fn sort_preserving_merge_fetch_without_child_sort_keeps_aggregate_family() {
-        let candidate =
-            GpuCandidate::with_operator_count("SortPreservingMergeExec(fetch)(AggregateExec(LocalParquetScan))", 2, 2);
+    fn root_is_the_outermost_sort_above_projections() {
+        let aggregate = unary("AggregateExec", CandidateShape::leaf("LocalParquetScan"));
+        assert_eq!(
+            family(unary("ProjectionExec", unary("SortExec", aggregate.clone()))),
+            "sort_local_parquet_aggregate"
+        );
+        assert_eq!(
+            family(unary("SortPreservingMergeExec", unary("SortExec", aggregate.clone()))),
+            "sort_preserving_merge_local_parquet_aggregate"
+        );
+        assert_eq!(family(unary("ProjectionExec", aggregate)), "projected_global_local_parquet_aggregate");
+    }
 
-        assert_eq!(candidate_shape_family(&candidate), "sort_preserving_merge_fetch_local_parquet_aggregate");
+    #[test]
+    fn input_names_the_sources_the_shape_reads() {
+        assert_eq!(family(unary("ProjectionExec", CandidateShape::leaf("MemorySource"))), "other_literal_input");
+        assert_eq!(
+            family(unary(
+                "SortExec",
+                CandidateShape::new(
+                    "UnionExec",
+                    vec![CandidateShape::leaf("LocalParquetScan"), CandidateShape::leaf("MemorySource")]
+                )
+            )),
+            "sort_union_input"
+        );
+        assert_eq!(
+            family(unary(
+                "AggregateExec",
+                CandidateShape::new(
+                    "CrossJoinExec",
+                    vec![CandidateShape::leaf("LocalParquetScan"), CandidateShape::leaf("LocalParquetScan")]
+                )
+            )),
+            "global_cross_join_aggregate"
+        );
     }
 }

@@ -1,0 +1,23 @@
+-- SELECT COUNT(*) FROM bench
+QueryPlan root=n2 sink=host_arrow dynamic_filter_routes=0
+  n0 LocalParquetSource files=1 path=<dir>/input.parquet format=Parquet direct_device_read=true known_bytes=1269 selected_row_groups=all row_group_stats=1/1 selected_bytes=0 total_bytes=0 read_columns=0 projected_output_columns=0 pure_filter_columns=0 predicate=absent byte_range=full_files partition_columns=absent zero_column_count=represented scan_limit=absent max_rows=unknown schema_mapping=direct_by_name rejected_features=
+  n1 Aggregate input=n0 group_count=0 aggr_count=1 grouping_set_count=0 grouping_id_alias=none grouping_sets=none groups=none aggrs=Sum(__algeon_native_zero_column_row_count) AS count(Int64(1))
+  n2 Projection input=n1 output_count=1 expressions=count(Int64(1)) AS count(*)
+  Sink id=sink input=n2 mode=host_arrow materialization=device_to_host schema_fields=1
+
+-- SELECT key, SUM(m00 + m01) AS total FROM bench WHERE payload > 5 GROUP BY key
+QueryPlan root=n4 sink=host_arrow dynamic_filter_routes=0
+  n0 LocalParquetSource files=1 path=<dir>/input.parquet format=Parquet direct_device_read=true known_bytes=1269 selected_row_groups=all row_group_stats=1/1 selected_bytes=207 total_bytes=207 read_columns=4 projected_output_columns=3 pure_filter_columns=1 predicate=pruning_only byte_range=full_files partition_columns=absent zero_column_count=not_required scan_limit=absent max_rows=unknown schema_mapping=direct_by_name rejected_features=
+  n1 Filter input=n0 predicate=(payload > 5)
+  n2 Projection input=n1 output_count=2 expressions=key,(m00 + m01) AS __algeon_native_aggregate_arg_0
+  n3 Aggregate input=n2 group_count=1 aggr_count=1 grouping_set_count=0 grouping_id_alias=none grouping_sets=none groups=key aggrs=Sum(__algeon_native_aggregate_arg_0) AS sum(bench.m00 + bench.m01)
+  n4 Projection input=n3 output_count=2 expressions=key,sum(bench.m00 + bench.m01) AS total
+  Sink id=sink input=n4 mode=host_arrow materialization=device_to_host schema_fields=2
+
+-- SELECT key, m00 FROM bench ORDER BY m00 DESC LIMIT 2
+QueryPlan root=n2 sink=host_arrow dynamic_filter_routes=0
+  n0 LocalParquetSource files=1 path=<dir>/input.parquet format=Parquet direct_device_read=true known_bytes=1269 selected_row_groups=all row_group_stats=1/1 selected_bytes=101 total_bytes=101 read_columns=2 projected_output_columns=2 pure_filter_columns=0 predicate=pruning_only byte_range=full_files partition_columns=absent zero_column_count=not_required scan_limit=absent max_rows=unknown schema_mapping=direct_by_name rejected_features=
+  n1 Sort input=n0 expr_count=1 expressions=m00 DESC NULLS FIRST
+  n2 Limit input=n1 skip=0 fetch=2
+  Sink id=sink input=n2 mode=host_arrow materialization=device_to_host schema_fields=2
+

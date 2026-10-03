@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use arrow::datatypes::Field;
 use datafusion::physical_expr::PhysicalExpr;
@@ -12,231 +15,172 @@ use crate::native::lowering::{
     naming::{sanitize_field_name, unique_name_with_suffix},
 };
 
-// Projection that materializes aggregate inputs into executable native columns.
-pub(super) struct SyntheticAggregateInputProjection {
-    pub(super) expressions: Vec<NativeExpr>,
-    pub(super) schema: SchemaRef,
-    pub(super) bindings: Vec<FieldBinding>,
-    pub(super) group_expr_aliases: Option<Vec<String>>,
-    pub(super) aggregate_arg_aliases: Vec<String>,
+/// An aggregate's input with every group key, argument and filter resolved
+/// to a column. `None` reads the input column through the input bindings;
+/// `Some` names a column the preparing projection computed.
+pub(in crate::native::lowering) struct PreparedAggregateInput {
+    pub(in crate::native::lowering) input: LoweredNativeInput,
+    pub(super) group_aliases: Vec<Option<String>>,
+    pub(super) arg_aliases: Vec<Option<String>>,
     pub(super) filter_aliases: Vec<Option<String>>,
 }
 
-pub(super) fn synthetic_aggregate_input_projection(
+/// Projects the columns an aggregate reads when it must compute a group key,
+/// argument or filter, because the native aggregate reads columns: the
+/// projection keeps the input columns the aggregate reads under their own
+/// names and adds the computed ones. When every key, argument and filter is
+/// an input column, the aggregate reads its input directly, so aggregates
+/// over the same input read the same columns.
+pub(in crate::native::lowering) fn prepare_aggregate_input(
+    builder: &mut NativeQueryPlanBuilder,
+    input: LoweredNativeInput,
     aggregate: &AggregateExec,
-    input: &LoweredNativeInput,
-) -> Result<SyntheticAggregateInputProjection, LoweringFailure> {
+) -> Result<PreparedAggregateInput, LoweringFailure> {
     let frontend_schema = aggregate.input().schema();
-    let mut expressions = Vec::new();
-    let mut fields = Vec::new();
-    let group_expr_aliases =
-        append_synthetic_group_expr_projections(aggregate, input, &frontend_schema, &mut expressions, &mut fields)?;
-
-    let mut aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
-    let mut filter_aliases = vec![None; aggregate.aggr_expr().len()];
-    let mut filters_by_expression = HashMap::<String, String>::new();
-    for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
-        let expressions_for_aggregate = aggregate_expr.expressions();
-        let [arg] = expressions_for_aggregate.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression.into());
-        };
-        // cuDF aggregate lowering consumes columns, so SQL aggregate arguments
-        // such as SUM(m00 + m01) are first materialized as synthetic projection columns.
-        let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &fields);
-        expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&input.bindings))?,
-            alias.as_str(),
-        ));
-        fields.push(physical_expr_field(arg, &frontend_schema, alias.as_str())?);
-        aggregate_arg_aliases.push(alias);
-        if let Some(filter) = aggregate.filter_expr().get(index).and_then(Option::as_ref) {
-            append_synthetic_filter_projection(
-                index,
-                filter,
-                input,
-                &frontend_schema,
-                &mut expressions,
-                &mut fields,
-                &mut filter_aliases,
-                &mut filters_by_expression,
-            )?;
-        }
-    }
-
-    Ok(SyntheticAggregateInputProjection {
-        expressions,
-        schema: Arc::new(Schema::new(fields)),
-        bindings: Vec::new(),
-        group_expr_aliases: Some(group_expr_aliases),
-        aggregate_arg_aliases,
-        filter_aliases,
-    })
-}
-
-pub(super) fn synthetic_aggregate_input_projection_if_needed(
-    aggregate: &AggregateExec,
-    input: &LoweredNativeInput,
-) -> Result<Option<SyntheticAggregateInputProjection>, LoweringFailure> {
-    let frontend_schema = aggregate.input().schema();
-    let needs_group_projection =
-        aggregate.group_expr().expr().iter().any(|(group_expr, _alias)| group_expr.downcast_ref::<Column>().is_none());
-    let needs_aggregate_arg_projection = aggregate.aggr_expr().iter().any(|aggregate_expr| {
-        let expressions = aggregate_expr.expressions();
-        !matches!(expressions.as_slice(), [arg] if arg.downcast_ref::<Column>().is_some())
-    });
-    let needs_filter_projection = aggregate.filter_expr().iter().any(Option::is_some);
-    let needs_projection = needs_group_projection || needs_aggregate_arg_projection || needs_filter_projection;
-    if !needs_projection {
-        return Ok(None);
-    }
-
-    let mut expressions =
-        input.schema.fields().iter().map(|field| NativeExpr::column(field.name())).collect::<Vec<_>>();
-    let mut fields = input.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
-
-    let group_expr_aliases = if needs_group_projection {
-        Some(append_synthetic_group_expr_projections(
-            aggregate,
-            input,
-            &frontend_schema,
-            &mut expressions,
-            &mut fields,
-        )?)
-    } else {
-        None
-    };
-
-    let mut aggregate_arg_aliases = Vec::new();
-    if needs_aggregate_arg_projection {
-        aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
-        for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
-            let expressions_for_aggregate = aggregate_expr.expressions();
-            let [arg] = expressions_for_aggregate.as_slice() else {
-                return Err(CapabilityReason::UnsupportedExpression.into());
-            };
-            let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &fields);
-            expressions.push(alias_if_needed(
-                lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&input.bindings))?,
-                alias.as_str(),
-            ));
-            fields.push(physical_expr_field(arg, &frontend_schema, alias.as_str())?);
-            aggregate_arg_aliases.push(alias);
-        }
-    }
-    let mut filter_aliases = vec![None; aggregate.aggr_expr().len()];
-    if needs_filter_projection {
-        append_synthetic_filter_projections(
-            aggregate,
-            input,
-            &frontend_schema,
-            &mut expressions,
-            &mut fields,
-            &mut filter_aliases,
-        )?;
-    }
-    let mut bindings = input.bindings.clone();
-    bindings.extend(aggregate_arg_aliases.iter().enumerate().map(|(index, alias)| FieldBinding {
-        frontend_index: usize::MAX - index,
-        frontend_name: alias.clone(),
-        native_name: alias.clone(),
-    }));
-
-    Ok(Some(SyntheticAggregateInputProjection {
-        expressions,
-        schema: Arc::new(Schema::new(fields)),
-        bindings,
-        group_expr_aliases,
-        aggregate_arg_aliases,
-        filter_aliases,
-    }))
-}
-
-fn append_synthetic_group_expr_projections(
-    aggregate: &AggregateExec,
-    input: &LoweredNativeInput,
-    frontend_schema: &SchemaRef,
-    expressions: &mut Vec<NativeExpr>,
-    fields: &mut Vec<Field>,
-) -> Result<Vec<String>, LoweringFailure> {
-    let mut aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
-    for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
-        let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, fields);
-        expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(group_expr, frontend_schema, Some(&input.bindings))?,
-            executable_alias.as_str(),
-        ));
-        fields.push(physical_expr_field(group_expr, frontend_schema, executable_alias.as_str())?);
-        aliases.push(executable_alias);
-    }
-    Ok(aliases)
-}
-
-fn append_synthetic_filter_projections(
-    aggregate: &AggregateExec,
-    input: &LoweredNativeInput,
-    frontend_schema: &SchemaRef,
-    expressions: &mut Vec<NativeExpr>,
-    fields: &mut Vec<Field>,
-    filter_aliases: &mut [Option<String>],
-) -> Result<(), LoweringFailure> {
-    let mut filters_by_expression = HashMap::<String, String>::new();
-    for (index, filter) in aggregate
-        .filter_expr()
+    let args = aggregate
+        .aggr_expr()
         .iter()
-        .enumerate()
-        .filter_map(|(index, filter)| filter.as_ref().map(|filter| (index, filter)))
-    {
-        append_synthetic_filter_projection(
-            index,
-            filter,
-            input,
-            frontend_schema,
-            expressions,
-            fields,
-            filter_aliases,
-            &mut filters_by_expression,
-        )?;
+        .map(|aggregate_expr| match aggregate_expr.expressions().as_slice() {
+            [arg] => Ok(Arc::clone(arg)),
+            _ => Err(LoweringFailure::from(CapabilityReason::UnsupportedExpression)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let input_columns = aggregate
+        .group_expr()
+        .expr()
+        .iter()
+        .map(|(group_expr, _alias)| group_expr)
+        .chain(args.iter())
+        .map(|expr| input_column(&input, expr))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .map(|binding| binding.native_name.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut projection = AggregateInputProjection::default();
+    let mut group_aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
+    for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
+        if let Some(binding) = input_column(&input, group_expr)? {
+            projection.keep(&input, binding)?;
+            group_aliases.push(None);
+        } else {
+            let alias = unique_synthetic_aggregate_group_alias(index, alias, &input_columns, &projection.fields);
+            projection.compute(&input, group_expr, &frontend_schema, alias.as_str())?;
+            group_aliases.push(Some(alias));
+        }
     }
-    Ok(())
-}
+    let mut arg_aliases = Vec::with_capacity(args.len());
+    let mut filter_aliases = vec![None; args.len()];
+    let mut filters_by_expression = HashMap::<String, String>::new();
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(binding) = input_column(&input, arg)? {
+            projection.keep(&input, binding)?;
+            arg_aliases.push(None);
+        } else {
+            // cuDF aggregate lowering consumes columns, so SQL aggregate
+            // arguments such as SUM(m00 + m01) are first materialized as
+            // synthetic projection columns.
+            let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &projection.fields);
+            projection.compute(&input, arg, &frontend_schema, alias.as_str())?;
+            arg_aliases.push(Some(alias));
+        }
+        if let Some(filter) = aggregate.filter_expr().get(index).and_then(Option::as_ref) {
+            let key = filter.to_string();
+            let alias = match filters_by_expression.get(&key) {
+                Some(alias) => alias.clone(),
+                None => {
+                    let alias = unique_synthetic_aggregate_filter_alias(
+                        filters_by_expression.len(),
+                        &input.schema,
+                        &projection.fields,
+                    );
+                    projection.compute(&input, filter, &frontend_schema, alias.as_str())?;
+                    filters_by_expression.insert(key, alias.clone());
+                    alias
+                },
+            };
+            filter_aliases[index] = Some(alias);
+        }
+    }
 
-#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
-fn append_synthetic_filter_projection(
-    index: usize,
-    filter: &Arc<dyn PhysicalExpr>,
-    input: &LoweredNativeInput,
-    frontend_schema: &SchemaRef,
-    expressions: &mut Vec<NativeExpr>,
-    fields: &mut Vec<Field>,
-    filter_aliases: &mut [Option<String>],
-    filters_by_expression: &mut HashMap<String, String>,
-) -> Result<(), LoweringFailure> {
-    let key = filter.to_string();
-    let alias = if let Some(alias) = filters_by_expression.get(&key) {
-        alias.clone()
+    let input = if projection.computes_nothing() {
+        input
     } else {
-        let alias = unique_synthetic_aggregate_filter_alias(filters_by_expression.len(), &input.schema, fields);
-        expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(filter, frontend_schema, Some(&input.bindings))?,
-            alias.as_str(),
-        ));
-        fields.push(physical_expr_field(filter, frontend_schema, alias.as_str())?);
-        filters_by_expression.insert(key, alias.clone());
-        alias
+        let schema = Arc::new(Schema::new(projection.fields));
+        let node = builder.add_projection(input.node, projection_outputs(projection.expressions, &schema)?)?;
+        LoweredNativeInput::with_bindings(node, schema, projection.bindings)
     };
-    let slot = filter_aliases.get_mut(index).ok_or(CapabilityReason::UnsupportedExpression)?;
-    *slot = Some(alias);
-    Ok(())
+    Ok(PreparedAggregateInput { input, group_aliases, arg_aliases, filter_aliases })
 }
 
-fn unique_synthetic_aggregate_group_alias(index: usize, alias: &str, fields: &[Field]) -> String {
-    if fields.iter().all(|field| field.name() != alias) {
+fn input_column<'i>(
+    input: &'i LoweredNativeInput,
+    expr: &Arc<dyn PhysicalExpr>,
+) -> Result<Option<&'i FieldBinding>, LoweringFailure> {
+    Ok(expr.downcast_ref::<Column>().map(|column| input.binding_for_column(column)).transpose()?)
+}
+
+#[derive(Default)]
+struct AggregateInputProjection {
+    expressions: Vec<NativeExpr>,
+    fields: Vec<Field>,
+    bindings: Vec<FieldBinding>,
+}
+
+impl AggregateInputProjection {
+    fn keep(&mut self, input: &LoweredNativeInput, binding: &FieldBinding) -> Result<(), LoweringFailure> {
+        if self.bindings.iter().any(|kept| kept.native_name == binding.native_name) {
+            return Ok(());
+        }
+        let field = input
+            .schema
+            .field_with_name(binding.native_name.as_str())
+            .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
+        self.expressions.push(NativeExpr::column(binding.native_name.as_str()));
+        self.fields.push(field.clone());
+        self.bindings.push(binding.clone());
+        Ok(())
+    }
+
+    fn compute(
+        &mut self,
+        input: &LoweredNativeInput,
+        expr: &Arc<dyn PhysicalExpr>,
+        frontend_schema: &SchemaRef,
+        alias: &str,
+    ) -> Result<(), LoweringFailure> {
+        self.expressions.push(alias_if_needed(
+            lower_physical_expr_with_bindings(expr, frontend_schema, Some(&input.bindings))?,
+            alias,
+        ));
+        self.fields.push(physical_expr_field(expr, frontend_schema, alias)?);
+        Ok(())
+    }
+
+    /// Every projected column is an input column, which the aggregate reads
+    /// by name without a projection.
+    fn computes_nothing(&self) -> bool {
+        self.expressions.len() == self.bindings.len()
+    }
+}
+
+/// A computed group key keeps its output name unless an input column the
+/// aggregate reads, or an earlier projected column, already has it.
+fn unique_synthetic_aggregate_group_alias(
+    index: usize,
+    alias: &str,
+    input_columns: &BTreeSet<String>,
+    fields: &[Field],
+) -> String {
+    let available =
+        |candidate: &str| !input_columns.contains(candidate) && fields.iter().all(|field| field.name() != candidate);
+    if available(alias) {
         return alias.to_string();
     }
-
     let sanitized = sanitize_field_name(alias);
     let base = format!("__algeon_native_group_expr_{index}_{sanitized}");
-    unique_name_with_suffix(base.as_str(), |candidate| fields.iter().all(|field| field.name() != candidate))
+    unique_name_with_suffix(base.as_str(), available)
 }
 
 fn unique_synthetic_aggregate_arg_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
@@ -251,64 +195,4 @@ fn unique_synthetic_aggregate_filter_alias(index: usize, input_schema: &SchemaRe
 
 fn synthetic_alias_is_available(alias: &str, input_schema: &SchemaRef, fields: &[Field]) -> bool {
     input_schema.index_of(alias).is_err() && fields.iter().all(|field| field.name() != alias)
-}
-
-pub(in crate::native::lowering) struct PreparedAggregateInput {
-    pub(in crate::native::lowering) input: LoweredNativeInput,
-    pub(super) group_expr_aliases: Option<Vec<String>>,
-    pub(super) aggregate_arg_aliases: Option<Vec<String>>,
-    pub(super) filter_aliases: Option<Vec<Option<String>>>,
-}
-
-impl PreparedAggregateInput {
-    pub(in crate::native::lowering) fn new(input: LoweredNativeInput) -> Self {
-        Self { input, group_expr_aliases: None, aggregate_arg_aliases: None, filter_aliases: None }
-    }
-}
-
-pub(in crate::native::lowering) fn prepare_aggregate_input_with_full_synthetic_projection(
-    builder: &mut NativeQueryPlanBuilder,
-    input: LoweredNativeInput,
-    aggregate: &AggregateExec,
-) -> Result<PreparedAggregateInput, LoweringFailure> {
-    let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &input)?;
-    let projection_node = builder.add_projection(
-        input.node,
-        projection_outputs(synthetic_projection.expressions, &synthetic_projection.schema)?,
-    )?;
-    Ok(PreparedAggregateInput {
-        input: LoweredNativeInput::with_bindings(
-            projection_node,
-            synthetic_projection.schema,
-            synthetic_projection.bindings,
-        ),
-        group_expr_aliases: synthetic_projection.group_expr_aliases,
-        aggregate_arg_aliases: Some(synthetic_projection.aggregate_arg_aliases),
-        filter_aliases: Some(synthetic_projection.filter_aliases),
-    })
-}
-
-pub(in crate::native::lowering) fn prepare_aggregate_input_with_optional_synthetic_args(
-    builder: &mut NativeQueryPlanBuilder,
-    input: LoweredNativeInput,
-    aggregate: &AggregateExec,
-) -> Result<PreparedAggregateInput, LoweringFailure> {
-    if let Some(synthetic_projection) = synthetic_aggregate_input_projection_if_needed(aggregate, &input)? {
-        let synthetic_projection_node = builder.add_projection(
-            input.node,
-            projection_outputs(synthetic_projection.expressions, &synthetic_projection.schema)?,
-        )?;
-        Ok(PreparedAggregateInput {
-            input: LoweredNativeInput::with_bindings(
-                synthetic_projection_node,
-                synthetic_projection.schema,
-                synthetic_projection.bindings,
-            ),
-            group_expr_aliases: synthetic_projection.group_expr_aliases,
-            aggregate_arg_aliases: Some(synthetic_projection.aggregate_arg_aliases),
-            filter_aliases: Some(synthetic_projection.filter_aliases),
-        })
-    } else {
-        Ok(PreparedAggregateInput::new(input))
-    }
 }

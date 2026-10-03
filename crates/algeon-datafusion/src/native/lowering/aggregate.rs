@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     logical_expr::AggregateUDF,
-    physical_expr::{expressions::Column, projection::ProjectionExprs},
-    physical_plan::{ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
+    physical_expr::expressions::Column,
+    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec},
 };
 use query_engine::{
     expr::{
@@ -16,40 +16,24 @@ use query_engine::{
 };
 
 use super::{
-    FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+    Demand, FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input, projection_outputs,
-    source::required_scan_projection,
+    unary::add_projection_node_with_input,
 };
 use crate::{
     capability::CapabilityReason,
     native::{
         LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::{native_aggregate_function_kind, validate_physical_expr_contract},
-        normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
+        normalize::NormalizedNativeAggregate,
         validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
     },
 };
 
 mod synthetic;
 
-pub(super) use synthetic::{
-    PreparedAggregateInput, prepare_aggregate_input_with_full_synthetic_projection,
-    prepare_aggregate_input_with_optional_synthetic_args,
-};
-
-pub(super) fn validate_joined_aggregate_scalar_expressions(
-    root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<(), LoweringFailure> {
-    if let Some(projection) = root.pre_aggregate_projection {
-        validate_projection_scalar_expressions(projection)?;
-    }
-    validate_aggregate_scalar_expressions(root.aggregate)?;
-    if let Some(projection) = root.post_aggregate_projection {
-        validate_projection_scalar_expressions(projection)?;
-    }
-    Ok(())
-}
+use synthetic::{PreparedAggregateInput, prepare_aggregate_input};
 
 pub(super) fn required_aggregate_input_fields(
     aggregate: &AggregateExec,
@@ -90,40 +74,57 @@ pub(super) fn required_aggregate_input_fields(
     Ok(RequiredFields::only_with_predicates(required, predicate_required))
 }
 
+/// What an aggregate reads from its input: the fields its group keys,
+/// arguments and filters use, or only the row count for a `COUNT(*)` without
+/// a projection below it. The aggregate selects those fields itself.
+pub(in crate::native) fn aggregate_input_demand(
+    aggregate: &NormalizedNativeAggregate<'_>,
+) -> Result<Demand, LoweringFailure> {
+    Ok(Demand {
+        fields: required_aggregate_input_fields(aggregate.aggregate, aggregate.pre_aggregate_projection)?,
+        row_count_only: aggregate.pre_aggregate_projection.is_none()
+            && aggregate_is_count_star_only(aggregate.aggregate),
+        row_limit: None,
+        extra_fields_allowed: true,
+        ordered: false,
+    })
+}
+
+/// Lowers an aggregate with its input and the projection below it.
 pub(super) fn lower_aggregate_input(
     aggregate: &NormalizedNativeAggregate<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
+    if let Some(projection) = aggregate.pre_aggregate_projection {
+        validate_schema(projection.schema())?;
+        validate_projection_scalar_expressions(projection)?;
+    }
+    if !aggregate.aggregate_allows_partial {
+        validate_schema(aggregate.aggregate.schema())?;
+    }
     validate_schema(Arc::clone(&aggregate.aggregate_output_schema))?;
     validate_aggregate_for_native_lowering(aggregate.aggregate, aggregate.aggregate_allows_partial)?;
     validate_aggregate_scalar_expressions(aggregate.aggregate)?;
-    let child_required = required_aggregate_input_fields(aggregate.aggregate, None)?;
-    let input = lower_native_input(&aggregate.input, builder, &child_required, source_reads)?;
-    let (aggregate_schema, aggregate_bindings) =
+    let input = lower_native_input(&aggregate.input, builder, &aggregate_input_demand(aggregate)?, source_reads)?;
+    let zero_column_count = input.row_count_weights;
+    let (output_schema, output_bindings) =
         executable_schema_and_bindings(&aggregate.aggregate_output_schema, &RequiredFields::all())?;
-    let aggregate_node =
-        add_native_aggregate_node(builder, input, aggregate.aggregate, &aggregate_schema, &aggregate_bindings)?;
-    project_required_output_columns(
-        builder,
-        aggregate_node,
-        aggregate_schema,
-        aggregate_bindings,
-        required_output_fields,
-    )
-}
-
-pub(super) fn add_native_aggregate_node(
-    builder: &mut NativeQueryPlanBuilder,
-    input: LoweredNativeInput,
-    aggregate: &AggregateExec,
-    output_schema: &SchemaRef,
-    output_bindings: &[FieldBinding],
-) -> Result<NativeNodeId, LoweringFailure> {
-    let prepared = prepare_aggregate_input_with_optional_synthetic_args(builder, input, aggregate)?;
-    let aggregate_spec = rename_aggregate_spec_outputs(lower_aggregate_spec(aggregate, &prepared)?, output_bindings)?;
-    Ok(builder.add_aggregate(prepared.input.node, aggregate_spec, Arc::clone(output_schema))?)
+    let input = match aggregate.pre_aggregate_projection {
+        Some(projection) => add_projection_node_with_input(builder, input, projection)?,
+        None => input,
+    };
+    let (input_node, spec) = if zero_column_count {
+        (input.node, lower_zero_column_count_aggregate_spec(aggregate.aggregate)?)
+    } else {
+        let prepared = prepare_aggregate_input(builder, input, aggregate.aggregate)?;
+        let spec = lower_aggregate_spec(aggregate.aggregate, &prepared)?;
+        (prepared.input.node, spec)
+    };
+    let spec = rename_aggregate_spec_outputs(spec, &output_bindings)?;
+    let node = builder.add_aggregate(input_node, spec, Arc::clone(&output_schema))?;
+    project_required_output_columns(builder, node, output_schema, output_bindings, required_output_fields)
 }
 
 fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<(), LoweringFailure> {
@@ -179,60 +180,6 @@ pub(super) fn project_required_output_columns(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
-pub(super) fn validate_aggregate_root_operator_schemas(
-    root: &NormalizedNativeAggregateRoot<'_>,
-    pre_aggregate_projection: Option<&ProjectionExec>,
-    post_aggregate_projection: Option<&ProjectionExec>,
-    sort: Option<&NormalizedNativeSortExprs<'_>>,
-) -> Result<(), LoweringFailure> {
-    if let Some(projection) = pre_aggregate_projection {
-        validate_schema(projection.schema())?;
-    }
-    if !root.aggregate_allows_partial {
-        validate_schema(root.aggregate.schema())?;
-    }
-    validate_schema(Arc::clone(&root.aggregate_output_schema))?;
-    if let Some(projection) = post_aggregate_projection {
-        validate_schema(projection.schema())?;
-    }
-    if let Some(sort) = sort {
-        validate_schema(Arc::clone(sort.output_schema()))?;
-    }
-    Ok(())
-}
-
-// Aggregate admission inputs whose scalar expressions must be validated together.
-pub(super) struct RequiredScalarExpressions<'a> {
-    pub(super) scan_projection: Option<&'a ProjectionExprs>,
-    pub(super) table_schema: &'a SchemaRef,
-    pub(super) required_scan_output_columns: &'a [String],
-    pub(super) filter: Option<&'a FilterExec>,
-    pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
-    pub(super) aggregate: &'a AggregateExec,
-    pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,
-}
-
-pub(super) fn validate_required_scalar_expressions(
-    inputs: RequiredScalarExpressions<'_>,
-) -> Result<(), LoweringFailure> {
-    if let Some(scan_projection) = inputs.scan_projection {
-        for projection_expr in required_scan_projection(scan_projection, inputs.required_scan_output_columns) {
-            validate_physical_expr_contract(projection_expr.expr, inputs.table_schema)?;
-        }
-    }
-    if let Some(filter) = inputs.filter {
-        validate_physical_expr_contract(filter.predicate(), &filter.input().schema())?;
-    }
-    if let Some(projection) = inputs.pre_aggregate_projection {
-        validate_projection_scalar_expressions(projection)?;
-    }
-    validate_aggregate_scalar_expressions(inputs.aggregate)?;
-    if let Some(projection) = inputs.post_aggregate_projection {
-        validate_projection_scalar_expressions(projection)?;
-    }
-    Ok(())
-}
-
 pub(super) fn lower_aggregate_spec(
     aggregate: &AggregateExec,
     prepared: &PreparedAggregateInput,
@@ -244,7 +191,7 @@ pub(super) fn lower_aggregate_spec(
         .iter()
         .enumerate()
         .map(|(index, (expr, alias))| {
-            let native_expr = prepared.group_expr_aliases.as_ref().and_then(|aliases| aliases.get(index)).map_or_else(
+            let native_expr = prepared.group_aliases.get(index).and_then(Option::as_ref).map_or_else(
                 || {
                     lower_physical_expr_with_bindings(expr, &frontend_schema, Some(&prepared.input.bindings))
                         .map_err(LoweringFailure::from)
@@ -264,17 +211,15 @@ pub(super) fn lower_aggregate_spec(
             let [arg] = expressions.as_slice() else {
                 return Err(LoweringFailure::from(CapabilityReason::UnsupportedExpression));
             };
-            let lowered_arg =
-                prepared.aggregate_arg_aliases.as_deref().and_then(|aliases| aliases.get(index)).map_or_else(
-                    || lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&prepared.input.bindings)),
-                    |alias| Ok(NativeExpr::column(alias)),
-                )?;
+            let lowered_arg = prepared.arg_aliases.get(index).and_then(Option::as_ref).map_or_else(
+                || lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&prepared.input.bindings)),
+                |alias| Ok(NativeExpr::column(alias)),
+            )?;
             let lowered_filter =
                 aggregate.filter_expr().get(index).and_then(Option::as_ref).map_or(Ok(None), |filter| {
                     prepared
                         .filter_aliases
-                        .as_ref()
-                        .and_then(|aliases| aliases.get(index))
+                        .get(index)
                         .and_then(Option::as_ref)
                         .map_or_else(
                             || {
