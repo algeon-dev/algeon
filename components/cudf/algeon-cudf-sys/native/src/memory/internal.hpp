@@ -127,7 +127,6 @@ void fill_failure_info(cudf_memory_failure_info_t& out,
                        std::uint32_t callback_attempt,
                        std::uint32_t trim_retry_count);
 void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value);
-void update_peak(std::size_t& peak, std::size_t value);
 void fill_usage(cudf_memory_resource_usage_t& out,
                 std::size_t allocation_limit,
                 std::size_t current_bytes,
@@ -293,8 +292,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
   [[nodiscard]] operation_guard begin_operation() noexcept;
 
-  bool resize_grant(std::size_t grant_bytes, std::string& error);
-
   bool freeze(std::string& error);
 
   bool pool_usage(cudf_memory_pool_usage_t& out) const noexcept;
@@ -413,8 +410,6 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
 
   void detach() noexcept;
 
-  bool resize(std::size_t limit_bytes) noexcept;
-
  private:
   void* do_allocate(std::size_t bytes,
                     rmm::cuda_stream_view stream,
@@ -456,53 +451,9 @@ class shared_query_domain_member_resource final : public rmm::mr::device_memory_
   cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
 };
 
-struct reservation_state {
-  std::uint64_t id             = 0;
-  std::size_t allocation_limit = 0;
-  void* stream_key             = nullptr;
-  bool attached                = true;
-  std::shared_ptr<struct reservation_arena_state> arena;
-  std::size_t current_bytes                   = 0;
-  std::size_t peak_bytes                      = 0;
-  std::size_t total_bytes                     = 0;
-  std::size_t current_aligned_bytes           = 0;
-  std::size_t peak_aligned_bytes              = 0;
-  std::size_t total_allocations               = 0;
-  std::size_t current_allocations             = 0;
-  std::size_t peak_allocations                = 0;
-  std::size_t failed_allocation_count         = 0;
-  std::size_t largest_failed_allocation_bytes = 0;
-};
-
-struct reservation_arena_state {
-  std::uint64_t id                            = 0;
-  std::size_t allocation_limit                = 0;
-  bool active                                 = true;
-  std::size_t active_members                  = 0;
-  std::size_t current_bytes                   = 0;
-  std::size_t peak_bytes                      = 0;
-  std::size_t total_bytes                     = 0;
-  std::size_t current_aligned_bytes           = 0;
-  std::size_t peak_aligned_bytes              = 0;
-  std::size_t total_allocations               = 0;
-  std::size_t current_allocations             = 0;
-  std::size_t peak_allocations                = 0;
-  std::size_t failed_allocation_count         = 0;
-  std::size_t largest_failed_allocation_bytes = 0;
-};
-
 class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_resource {
  public:
   explicit reservation_aware_resource_adaptor(rmm::mr::device_memory_resource* upstream);
-
-  std::shared_ptr<reservation_state> attach(rmm::cuda_stream_view stream,
-                                            std::uint64_t reservation_id,
-                                            std::size_t limit_bytes,
-                                            std::shared_ptr<reservation_arena_state> arena,
-                                            std::string& error);
-
-  std::shared_ptr<reservation_arena_state> create_arena(std::uint64_t arena_id,
-                                                        std::size_t limit_bytes);
 
   std::shared_ptr<query_domain_state> create_query_domain(
     std::uint64_t domain_id,
@@ -529,11 +480,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void detach_current_resource_route(
     std::shared_ptr<struct current_resource_route_state> const& state);
 
-  void detach(std::shared_ptr<reservation_state> const& state);
-
   void detach_query_domain_member(std::shared_ptr<query_domain_member_state> const& state);
-
-  void destroy_arena(std::shared_ptr<reservation_arena_state> const& state);
 
   void destroy_query_domain(std::shared_ptr<query_domain_state> const& state);
 
@@ -542,10 +489,6 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
   [[nodiscard]] std::vector<std::pair<void*, query_domain_allocation_record>>
   live_query_domain_allocations(std::shared_ptr<query_domain_state> const& state);
-
-  cudf_memory_resource_usage_t usage(std::shared_ptr<reservation_state> const& state);
-
-  cudf_memory_resource_usage_t arena_usage(std::shared_ptr<reservation_arena_state> const& state);
 
   cudf_memory_resource_usage_t query_domain_usage(std::shared_ptr<query_domain_state> const& state);
 
@@ -557,33 +500,10 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   [[nodiscard]] std::optional<std::size_t> query_domain_effective_device_memory(
     rmm::cuda_stream_view stream);
 
-  bool resize(std::shared_ptr<reservation_state> const& state,
-              std::size_t limit_bytes,
-              std::string& error);
-
-  bool resize_arena(std::shared_ptr<reservation_arena_state> const& state,
-                    std::size_t limit_bytes,
-                    std::string& error);
-
-  bool resize_query_domain(std::shared_ptr<query_domain_state> const& state,
-                           std::size_t grant_bytes,
-                           std::string& error);
-
-  bool resize_query_domain_member(std::shared_ptr<query_domain_member_state> const& state,
-                                  std::size_t limit_bytes,
-                                  std::string& error);
-
  private:
   struct query_domain_member_route {
     std::shared_ptr<query_domain_member_state> member;
     query_domain_resource::operation_guard operation;
-  };
-
-  struct allocation_record {
-    std::size_t bytes         = 0;
-    std::size_t aligned_bytes = 0;
-    std::shared_ptr<reservation_state> reservation;
-    std::shared_ptr<reservation_arena_state> arena;
   };
 
   static void* stream_key(rmm::cuda_stream_view stream);
@@ -602,30 +522,6 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void cleanup_retired_query_domain_member(
     std::shared_ptr<query_domain_member_state> const& member);
 
-  template <typename State>
-  void record_failed_allocation(State& state, std::size_t bytes);
-
-  std::shared_ptr<reservation_state> reservation_for_stream(rmm::cuda_stream_view stream);
-
-  template <typename State>
-  void reserve_allocation(State& state,
-                          std::size_t bytes,
-                          std::size_t aligned_bytes,
-                          char const* limit_message,
-                          memory_failure_domain_identity identity);
-
-  template <typename State>
-  void commit_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes);
-
-  template <typename State>
-  void release_reserved_alignment(State& state, std::size_t aligned_bytes);
-
-  template <typename State>
-  void rollback_reserved_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes);
-
-  template <typename State>
-  void release_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes);
-
   void* do_allocate(std::size_t bytes,
                     rmm::cuda_stream_view stream,
                     std::size_t alignment) override;
@@ -639,7 +535,6 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     rmm::mr::device_memory_resource const& other) const noexcept override;
 
   cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
-  std::mutex mutex_;
   std::shared_mutex query_domain_mutex_;
   std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
     query_domain_members_by_stream_;
@@ -653,8 +548,6 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     current_resource_routes_by_stream_;
   std::unordered_map<void*, std::shared_ptr<struct current_resource_allocation_record>>
     current_resource_routes_by_pointer_;
-  std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
-  std::unordered_map<void*, allocation_record> allocations_;
 };
 
 class budget_tracking_resource_adaptor;
@@ -728,13 +621,7 @@ struct current_resource_route_handle_state {
 
 struct reservation_handle_state {
   std::shared_ptr<device_memory_manager_state> manager;
-  std::shared_ptr<reservation_state> reservation;
   std::shared_ptr<query_domain_member_state> query_domain_member;
-};
-
-struct reservation_arena_handle_state {
-  std::shared_ptr<device_memory_manager_state> manager;
-  std::shared_ptr<reservation_arena_state> arena;
 };
 
 struct query_domain_handle_state {

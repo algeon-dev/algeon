@@ -16,14 +16,12 @@
 //! constructors through the resolved allocator for the active runtime/override
 //! context.
 //!
-//! Query-style bounded execution should use the device-level manager plus
-//! stream-bound reservations: allocate a [`crate::Runtime`], create an
-//! [`crate::ExecutionBudgetToken`] or [`StreamReservationLease`], and execute
-//! with the lease's stream and manager resource. Query engines that need one
-//! hard cap across several streams can create a [`ReservationArena`] and attach
-//! stream leases as members under it. This keeps one long-lived allocator
-//! adaptor per device while charging allocations to the active stream-bound
-//! reservation and, when present, its parent arena.
+//! Query-style bounded execution uses one [`QueryMemoryDomain`] per query,
+//! with one shared [`StreamReservationLease`] per CUDA stream. The domain and
+//! its member limits are immutable. [`crate::ExecutionBudgetToken`] shares a
+//! member for stage execution without changing the cap. Ordinary allocations
+//! through the device manager route to the attached member; execution overrides
+//! use its direct resource. Both paths charge the same query domain.
 //!
 //! Explicit CUDA and pool resources remain available for advanced library use,
 //! diagnostics, tests, and non-query workflows. Use
@@ -38,8 +36,8 @@
 //!
 //! ```no_run
 //! use cudf::{
-//!     DeviceId, ExecutionOverrides, Runtime, SortOptions,
-//!     core::memory::DeviceMemoryResource,
+//!     DeviceId, ExecutionOverrides, QueryMemoryDomainOptions, Runtime,
+//!     SortOptions, core::memory::DeviceMemoryResource,
 //! };
 //!
 //! let device = DeviceId::new(0).unwrap();
@@ -47,7 +45,11 @@
 //! // Default query-backend path: use the device-level manager resource.
 //! let runtime = Runtime::builder().with_device(device).build().unwrap();
 //! let manager = runtime.device_memory_manager().unwrap();
-//! let lease = runtime.stream_reservation(7, 64 * 1024 * 1024).unwrap();
+//! let domain = manager
+//!     .query_memory_domain(7, QueryMemoryDomainOptions::new(64 * 1024 * 1024))
+//!     .unwrap();
+//! let lease =
+//!     domain.reserve_stream(runtime.stream(), 1, 64 * 1024 * 1024).unwrap();
 //!
 //! assert_eq!(runtime.memory_resource().device(), device);
 //! assert_eq!(manager.resource().device(), device);
@@ -98,7 +100,7 @@ mod usage;
 #[cfg(test)]
 mod tests;
 
-pub use domain::{QueryMemoryDomain, RawStreamReservationLease, ReservationArena, StreamReservationLease};
+pub use domain::{QueryMemoryDomain, RawStreamReservationLease, StreamReservationLease};
 pub use failure::{
     AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity, AllocatorEventRead,
     AllocatorEventRingBounds, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo, DeviceMemoryFailureSource,
@@ -115,5 +117,5 @@ pub use options::{DeviceMemoryManagerBase, DeviceMemoryManagerOptions, QueryMemo
 pub use resource::DeviceMemoryResource;
 pub use usage::{
     DeviceMemoryPoolUsage, DeviceMemoryResourceUsage, QueryMemoryDomainAllocation, QueryMemoryDomainIdentity,
-    QueryMemoryDomainUsage, ReservationArenaUsage, ReservationUsage,
+    QueryMemoryDomainUsage, ReservationUsage,
 };

@@ -3,6 +3,8 @@
 //! This suite intentionally keeps one representative test per operation
 //! family. The goal is to protect provenance, execution, and synchronization
 //! contracts without locking the library into an API-by-API matrix.
+use std::sync::Arc;
+
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, GroupByAgg, Runtime, Series, SortOptions, TypeId,
     core::{
@@ -97,7 +99,8 @@ fn private_pool_teardown_fences_its_registered_stream_before_resource_release() 
 fn private_pool_adaptor_teardown_inherits_the_registered_stream_fence() {
     let _event_observation = lock_event_observation();
     let pool = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
-    let runtime = Runtime::builder().with_memory_resource(pool.limiting(16 * 1024 * 1024).unwrap()).build().unwrap();
+    let runtime =
+        Runtime::builder().with_memory_resource(pool.with_failure_callback(Arc::new(|_| {})).unwrap()).build().unwrap();
     let stream = runtime.stream().testing_raw_handle_value();
     let memory_resource = runtime.memory_resource().testing_raw_handle_value();
     let output = runtime.series(&[1_i32, 2, 3]).unwrap();

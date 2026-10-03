@@ -16,8 +16,8 @@ use cudf::{
 
 use crate::common::{
     arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice,
-    dataframe_from_columns, error_context_value, last_exec_mr_value, reset_exec_observation, run_named_cases,
-    with_test_runtime,
+    dataframe_from_columns, error_context_value, execution_budget_token, last_exec_mr_value, reset_exec_observation,
+    run_named_cases, with_test_runtime,
 };
 
 fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -103,8 +103,7 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
     let expected = df.groupby(["key"]).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 
@@ -118,7 +117,7 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
     assert_eq!(report.request().boundary(), "grouped_sum");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.output_rows(), Some(result.num_rows()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.retained_bytes(), Some(output_bytes));
@@ -142,11 +141,11 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
     let expected = df.groupby(["key"]).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("prepared_sort_groupby"),
-            )
-            .unwrap()
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("prepared_sort_groupby"),
+        )
+        .unwrap()
     });
 
     reset_exec_observation();
@@ -160,7 +159,7 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     assert!(facts.grouped_key_output_bytes > 0);
     assert_eq!(facts.max_group_size, 2);
     assert_eq!(report.request().boundary(), "prepared_sort_groupby");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.output_rows(), Some(facts.num_groups));
     assert_eq!(report.output_bytes(), None);
     assert_eq!(report.retained_bytes(), None);
@@ -192,7 +191,7 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     let output_bytes = dataframe_device_allocated_size_bytes(result);
     assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
     assert_eq!(agg_report.request().boundary(), "prepared_sort_groupby");
-    assert_eq!(agg_report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(agg_report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(agg_report.output_rows(), Some(result.num_rows()));
     assert_eq!(agg_report.output_bytes(), Some(output_bytes));
     assert_eq!(agg_report.retained_bytes(), Some(output_bytes));
@@ -218,8 +217,7 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
             .unwrap();
     let specs = [AggSpec::new("l_quantity", GroupByAgg::Mean)];
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_grouped_avg"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_grouped_avg"))
             .unwrap()
     });
 
@@ -246,7 +244,7 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("grouped_sum")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("grouped_sum")).unwrap()
     });
 
     let err = df
@@ -258,7 +256,7 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("grouped_sum"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
@@ -271,8 +269,7 @@ fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 
@@ -292,8 +289,7 @@ fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budg
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 
@@ -312,8 +308,7 @@ fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_d
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 
@@ -337,8 +332,7 @@ fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budge
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 

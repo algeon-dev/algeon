@@ -3,7 +3,7 @@
 use rapids_interop::{ExecutionBinding, InteropError};
 
 use super::{CudaStream, DeviceId, ExecutionOverrides, ExecutionPlacement, Runtime};
-use crate::core::memory::{DeviceMemoryManager, DeviceMemoryResource, StreamReservationLease};
+use crate::core::memory::{DeviceMemoryManager, DeviceMemoryResource};
 
 /// Borrowed query execution context over a [`Runtime`].
 ///
@@ -68,17 +68,6 @@ impl<'a> QueryExecutionContext<'a> {
     /// Resolve the device-level reservation-aware memory manager for this query context.
     pub fn device_memory_manager(&self) -> crate::Result<DeviceMemoryManager> {
         DeviceMemoryManager::for_device(self.device())
-    }
-
-    /// Attach a hard memory reservation to this query context's runtime stream.
-    ///
-    /// The returned lease supplies execution overrides whose stream is this
-    /// context's stream and whose memory resource is the device-level
-    /// reservation-aware adaptor. Dropping the lease detaches the reservation
-    /// from the stream while retained allocations remain accounted to the
-    /// reservation identity that created them.
-    pub fn reserve_stream(&self, reservation_id: u64, limit_bytes: usize) -> crate::Result<StreamReservationLease> {
-        self.device_memory_manager()?.reserve_stream(self.stream(), reservation_id, limit_bytes)
     }
 
     /// Borrow the runtime's explicit execution binding for cross-crate interop.

@@ -62,7 +62,7 @@ const STREAM_COMPACTION_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/stream_compaction.cpp"));
 const STRINGS_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/strings.h"));
 const STRINGS_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/strings.cpp"));
-const RESERVATION_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/memory/reservation.cpp"));
+const QUERY_DOMAIN_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/memory/query_domain.cpp"));
 const RESERVATION_ACCOUNTING_HPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/reservation_accounting.hpp"));
 const TABLE_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/table.h"));

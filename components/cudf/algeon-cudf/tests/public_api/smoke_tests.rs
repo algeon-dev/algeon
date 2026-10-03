@@ -23,7 +23,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
         StreamReservationLease,
     };
 
-    let _ = cudf::ExecutionBudgetToken::resize;
+    let _ = cudf::ExecutionBudgetToken::from_shared_lease;
     let _ = DeviceMemoryResource::with_failure_callback;
     let _ = DeviceMemoryManager::allocator_event_ring_bounds;
     let _ = DeviceMemoryManager::read_allocator_event;
@@ -33,7 +33,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ = DeviceMemoryManager::failure_callback_state_for_device;
     let _ = DeviceMemoryManager::options_for_device;
     let _: Option<DeviceMemoryFailureInfo> = None;
-    let _ = DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id: 1 };
+    let _ = DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id: 1, member_id: 1 };
     let _ = DeviceMemoryFailureSource::Physical;
     let _: Option<DeviceMemoryManagerFailureCallbackState> = None;
     let _: Option<AllocatorEvent> = None;
@@ -43,13 +43,11 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _: Option<AllocatorEventRead> = None;
     let _: Option<AllocatorEventRingBounds> = None;
     let _: Option<QueryMemoryDomainIdentity> = None;
-    let _ = StreamReservationLease::resize;
     let _: Option<DeviceMemoryManager> = None;
     let _: Option<StreamReservationLease> = None;
     let _: Option<ReservationUsage> = None;
-    let _ =
-        (Runtime::device_memory_manager, Runtime::stream_reservation, cudf::RuntimeBuilder::with_device_memory_manager);
-    let _ = ExecutionBudgetEnforcement::StreamBoundReservation;
+    let _ = (Runtime::device_memory_manager, cudf::RuntimeBuilder::with_device_memory_manager);
+    let _ = ExecutionBudgetEnforcement::QueryDomainMember;
 }
 
 #[test]

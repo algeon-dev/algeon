@@ -9,7 +9,8 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, dataframe_from_columns, error_context_value, run_named_cases, with_test_runtime,
+    column_from_slice, dataframe_from_columns, error_context_value, execution_budget_token, run_named_cases,
+    with_test_runtime,
 };
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
@@ -150,7 +151,7 @@ fn test_slice_offset_beyond_end() {
 fn test_slice_with_budget_reports_member_accounting_on_rejection() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("partition_slice")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("partition_slice")).unwrap()
     });
 
     let err = df.slice_with_budget(0, 5, &token).expect_err("one-byte budget should not cover the gathered slice copy");

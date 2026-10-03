@@ -7,7 +7,7 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
     super::{AttemptWorkLease, StreamLease},
-    AttemptAuxiliaryPermit, ExecutionContext, StreamBinding, validate_service_stream_pool_device,
+    AttemptAuxiliaryPermit, ExecutionContext, QueryScope, StreamBinding, validate_service_stream_pool_device,
 };
 use crate::observability::{RuntimeTaskId, RuntimeWorkerId};
 
@@ -147,15 +147,18 @@ impl ExecutionContext {
 
     /// Binds `runtime`'s stream as work of this context's query. For an
     /// attempt: a member of its allocation domain, then an alias on the route
-    /// of its root stream. A standalone context's work stream is its runtime.
+    /// of its root stream. Standalone work attaches a member of the same query
+    /// domain for the lifetime of the work context.
     fn work_stream(
         &self,
         runtime: Arc<CudfRuntime>,
         owned: Option<(StreamLease, AttemptAuxiliaryPermit)>,
     ) -> Result<StreamBinding> {
-        let (Some(attempt), Some(route)) = (self.admitted(), self.stream.route()) else {
-            return Ok(StreamBinding::Standalone { runtime });
-        };
+        if let QueryScope::Standalone(query) = &self.query {
+            return query.bind_work(runtime);
+        }
+        let attempt = self.admitted().expect("an admitted query scope has an admitted owner");
+        let route = self.stream.route().expect("an admitted stream owns its attempt route");
         let member = attempt.allocation_domain.create_member(runtime.stream())?;
         let alias = Arc::new(route.attach(runtime.stream())?);
         Ok(StreamBinding::AttemptWork { runtime, alias, member, route: Arc::clone(route), owned })

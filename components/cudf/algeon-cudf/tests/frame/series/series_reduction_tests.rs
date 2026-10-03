@@ -9,8 +9,8 @@ use cudf::{
 };
 
 use crate::common::{
-    error_context_value, last_exec_mr_value, nullable_series, reset_exec_observation, run_named_cases, series,
-    with_test_runtime,
+    error_context_value, execution_budget_token, last_exec_mr_value, nullable_series, reset_exec_observation,
+    run_named_cases, series, with_test_runtime,
 };
 
 fn assert_no_budget_error_details(err: &cudf::Error) {
@@ -141,8 +141,7 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     let s = series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q15_scalar_max"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q15_scalar_max"))
             .unwrap()
     });
 
@@ -155,7 +154,7 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
     assert_eq!(report.request().boundary(), "q15_scalar_max");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.output_rows(), Some(1));
     assert_eq!(report.retained_bytes(), None);
     assert_eq!(report.output_bytes(), None);
@@ -170,8 +169,7 @@ fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagno
     let s = series::<f64>("l_extendedprice", &[1000.0, 1250.5, 749.5]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Sum).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_global_sum"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_global_sum"))
             .unwrap()
     });
 
@@ -190,7 +188,7 @@ fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     let s = series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("q15_scalar_max")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("q15_scalar_max")).unwrap()
     });
 
     let err = expect_cudf_err(
@@ -202,7 +200,7 @@ fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     assert_eq!(err.operation(), "series::prepared_scalar_reduction::execute_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("q15_scalar_max"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
@@ -233,8 +231,7 @@ fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details(
     let s = series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Std { ddof: u32::MAX }).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("std_validation"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("std_validation"))
             .unwrap()
     });
 

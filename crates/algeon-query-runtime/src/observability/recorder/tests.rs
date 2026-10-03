@@ -582,7 +582,7 @@ fn budget_detail_cannot_crowd_out_later_strategy_decisions() {
         operation: "groupby".to_string(),
         boundary: "partial".to_string(),
         budget_bytes: 64,
-        enforcement: "stream_bound_reservation".to_string(),
+        enforcement: "query_domain_member".to_string(),
         status: "within_budget".to_string(),
         allocator_high_water_bytes: Some(32),
         retained_bytes: None,

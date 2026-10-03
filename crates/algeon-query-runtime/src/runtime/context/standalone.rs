@@ -4,10 +4,13 @@ use std::{
     error::Error as StdError,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-use cudf::Runtime as CudfRuntime;
+use cudf::{QueryMemoryDomainOptions, Runtime as CudfRuntime};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -36,14 +39,22 @@ use crate::{
 };
 
 /// Settings for a standalone [`ExecutionContext`]: one that no query service
-/// admitted, so it carries no grant, allocation domain, or attempt identity.
+/// admitted, so it carries no admission grant or attempt identity. Its device
+/// budget is enforced by one immutable query allocation domain.
 ///
 /// Without `runtime`, construction builds a cudf runtime on the default CUDA
-/// device from `memory_policy`; with it, `memory_policy` is unused.
+/// device from `memory_policy`; with it, `memory_policy` is unused. Context
+/// operations use the device manager's routing allocator under their domain
+/// member, including when the supplied runtime owns a separate pool.
 #[derive(Debug)]
 pub struct StandaloneConfig {
-    /// Runtime shared with the caller; its stream, device, and allocator run
-    /// every GPU operation of the context.
+    /// Runtime supplying the context's device, stream, and retained provenance.
+    ///
+    /// Context derivation preserves its affinity and lifetime owners while
+    /// replacing the effective allocator with the device manager's member
+    /// routing resource. The original runtime and its allocator remain usable
+    /// outside the context. A raw stream cannot belong to independent live
+    /// domains; reuse one context or provide another stream for another query.
     pub runtime: Option<Arc<CudfRuntime>>,
     /// Memory resource of a runtime built by construction.
     pub memory_policy: MemoryResourcePolicy,
@@ -260,9 +271,8 @@ fn adopt_or_validate_runtime_observation_identity(
 /// A standalone context's validated scopes, before its observation is bound.
 struct StandaloneScopes {
     device: DeviceRuntime,
-    runtime: Arc<CudfRuntime>,
-    memory_control_policy: MemoryControlPolicy,
-    cancellation: ExecutionCancellation,
+    query: StandaloneQuery,
+    stream: StreamBinding,
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
 }
@@ -319,6 +329,28 @@ impl StandaloneScopes {
             runtime.device().ordinal(),
             service_stream_pool.pool_size() + RESERVED_LIFECYCLE_WORKERS,
         )?;
+        let operation = "query_engine.runtime.standalone.create_domain";
+        let cap = usize::try_from(memory_control_policy.device_budget_bytes).map_err(|_| {
+            QueryError::new(QueryErrorCode::InvalidPlan, operation, "standalone query cap exceeds usize")
+        })?;
+        static NEXT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
+        let domain = runtime
+            .device_memory_manager()
+            .and_then(|manager| {
+                manager.query_memory_domain(
+                    NEXT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed),
+                    QueryMemoryDomainOptions::new(cap).with_ceiling_bytes(cap),
+                )
+            })
+            .map_err(|error| cudf_query_error(operation, "failed to create standalone query domain", error))?;
+        let query = StandaloneQuery {
+            allocation_domain: domain,
+            next_member_id: AtomicU64::new(1),
+            memory_control_policy,
+            cancellation,
+            observation_owner: None,
+        };
+        let stream = query.bind_root(runtime)?;
         Ok(Self {
             device: DeviceRuntime {
                 gpu_execution_pool,
@@ -338,9 +370,8 @@ impl StandaloneScopes {
                 aggregate_strategy_execution_options: Default::default(),
                 planning_policy: Default::default(),
             },
-            runtime,
-            memory_control_policy,
-            cancellation,
+            query,
+            stream,
             query_id,
             trace_id,
         })
@@ -358,12 +389,8 @@ impl StandaloneScopes {
                 runtime_observation,
                 RuntimeStreamLeaseScope::default(),
             )),
-            query: QueryScope::Standalone(Arc::new(StandaloneQuery {
-                memory_control_policy: self.memory_control_policy,
-                cancellation: self.cancellation,
-                observation_owner,
-            })),
-            stream: Arc::new(StreamBinding::Standalone { runtime: self.runtime }),
+            query: QueryScope::Standalone(Arc::new(StandaloneQuery { observation_owner, ..self.query })),
+            stream: Arc::new(self.stream),
             device: Arc::new(self.device),
         }
     }
@@ -396,4 +423,133 @@ fn runtime_observation_identity_error(
     .with_fact("identity_kind", identity_kind)
     .with_fact("context_identity", context_value)
     .with_fact("observation_identity", observation_value)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use cudf::{
+        CudfAllocationAttribution, ExecutionBudgetRequest, QueryMemoryDomain, Runtime, allocation_attribution,
+        testing::RawHandleTestingExt,
+    };
+
+    use super::{ExecutionContext, QueryScope, StandaloneConfig};
+
+    struct RetainedProbe(Arc<AtomicBool>);
+
+    impl Drop for RetainedProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn domain(context: &ExecutionContext) -> QueryMemoryDomain {
+        match &context.query {
+            QueryScope::Standalone(query) => query.allocation_domain.clone(),
+            QueryScope::Admitted(_) => panic!("the fixture creates a standalone context"),
+        }
+    }
+
+    fn context(runtime: Arc<Runtime>, cap: u64) -> ExecutionContext {
+        let mut config = StandaloneConfig { runtime: Some(runtime), ..StandaloneConfig::default() };
+        config.memory_control_policy.device_budget_bytes = cap;
+        ExecutionContext::standalone(config).unwrap()
+    }
+
+    #[test]
+    fn standalone_pool_allocations_share_a_capped_member_and_outputs_retain_it() {
+        let released = Arc::new(AtomicBool::new(false));
+        let supplied = Arc::new(
+            Runtime::builder()
+                .with_pool_memory_resource(1024 * 1024, Some(16 * 1024 * 1024))
+                .build()
+                .unwrap()
+                .with_retained_lifetime(Arc::new(RetainedProbe(Arc::clone(&released))))
+                .unwrap(),
+        );
+        let context = context(Arc::clone(&supplied), 4096);
+        let domain = domain(&context);
+        let runtime = context.shared_runtime().unwrap();
+        assert_eq!(runtime.device(), supplied.device());
+        assert_eq!(runtime.stream().testing_raw_handle_value(), supplied.stream().testing_raw_handle_value());
+        assert_eq!(runtime.affinity_id(), supplied.affinity_id());
+        assert_ne!(runtime.binding_id(), supplied.binding_id());
+        assert_eq!(
+            runtime.memory_resource().testing_raw_handle_value(),
+            runtime.device_memory_manager().unwrap().resource().testing_raw_handle_value()
+        );
+        assert_ne!(
+            runtime.memory_resource().testing_raw_handle_value(),
+            supplied.memory_resource().testing_raw_handle_value()
+        );
+        assert_eq!(context.attempt_allocation_domain_id(), None);
+        assert!(context.memory_grant().unwrap().is_none());
+
+        let first = context.execution_budget_token(ExecutionBudgetRequest::new(1)).unwrap();
+        let second = context.execution_budget_token(ExecutionBudgetRequest::new(8192)).unwrap();
+        assert_eq!(
+            first.reservation_usage().unwrap().reservation_id,
+            second.reservation_usage().unwrap().reservation_id
+        );
+        assert_eq!(first.member_limit_bytes().unwrap(), 4096);
+        assert_eq!(second.member_limit_bytes().unwrap(), 4096);
+        let output = runtime.series(&[7i32; 128]).unwrap();
+        assert!(first.reservation_usage().unwrap().routed_total_allocations > 0);
+        let error = runtime.series(&[9i32; 2048]).unwrap_err();
+        assert_eq!(allocation_attribution(&error), CudfAllocationAttribution::ConfirmedQueryLimit);
+        drop(first);
+        drop(second);
+        drop(runtime);
+        drop(supplied);
+        drop(context);
+
+        assert_eq!(domain.usage().unwrap().active_members, 1);
+        assert!(!released.load(Ordering::SeqCst));
+        assert_eq!(output.to_vec_strict::<i32>().unwrap(), vec![7; 128]);
+        drop(output);
+        assert_eq!(domain.usage().unwrap().active_members, 0);
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn standalone_work_stream_shares_the_aggregate_cap_and_detaches_with_its_context() {
+        let context = context(Arc::new(Runtime::builder().build().unwrap()), 4096);
+        let domain = domain(&context);
+        let lease = context.service_stream_pool().acquire().unwrap();
+        let work = context.with_stream_lease(&lease).unwrap();
+        let root_runtime = context.shared_runtime().unwrap();
+        let work_runtime = work.shared_runtime().unwrap();
+        assert_ne!(root_runtime.stream().testing_raw_handle_value(), work_runtime.stream().testing_raw_handle_value());
+        let root = root_runtime.series(&[3i32; 512]).unwrap();
+        let output = work_runtime.series(&[5i32; 512]).unwrap();
+        assert_eq!(domain.usage().unwrap().active_members, 2);
+        let token = work.execution_budget_token(ExecutionBudgetRequest::new(1)).unwrap();
+        assert_eq!(token.member_limit_bytes().unwrap(), 4096);
+        assert!(token.reservation_usage().unwrap().routed_total_allocations > 0);
+        let error = work_runtime.series(&[6i32; 128]).unwrap_err();
+        assert_eq!(allocation_attribution(&error), CudfAllocationAttribution::ConfirmedQueryLimit);
+        drop(token);
+        drop(work_runtime);
+        drop(work);
+        let usage = domain.usage().unwrap();
+        assert_eq!(usage.active_members, 1);
+        assert_eq!(usage.current_allocations, 2, "the detached member's output stays charged to the domain");
+
+        // The pooled stream joins the domain again while that output lives.
+        let rebound = context.with_stream_lease(&lease).unwrap();
+        assert_eq!(domain.usage().unwrap().active_members, 2);
+        drop(rebound);
+        assert_eq!(output.to_vec_strict::<i32>().unwrap(), vec![5; 512]);
+        drop(output);
+        assert_eq!(domain.usage().unwrap().current_allocations, 1);
+        drop(lease);
+        drop(root);
+        drop(root_runtime);
+        drop(context);
+        assert_eq!(domain.usage().unwrap().active_members, 0);
+    }
 }

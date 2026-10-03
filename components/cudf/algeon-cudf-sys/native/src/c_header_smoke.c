@@ -55,7 +55,8 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_failure_callback_state, int32_t, int32_t*, int32_t*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_memory_manager_route_current_resource, cudf_memory_manager_handle, cudf_stream_handle, cudf_memory_resource_handle, cudf_current_resource_route_handle*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_current_resource_route_destroy, cudf_current_resource_route_handle);
-  SMOKE_CHECK_FN(cudf_status_t, cudf_reservation_resize, cudf_reservation_handle, size_t);
+  SMOKE_CHECK_FN(cudf_status_t, cudf_reservation_usage, cudf_reservation_handle, cudf_memory_resource_usage_t*);
+  SMOKE_CHECK_FN(cudf_status_t, cudf_reservation_detach, cudf_reservation_handle);
 
   // Types, views, and buffer adoption
   SMOKE_CHECK_FN(cudf_status_t, cudf_data_type_create, cudf_type_id_t, cudf_data_type_handle*);

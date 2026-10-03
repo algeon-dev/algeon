@@ -90,16 +90,6 @@ impl Drop for RawMemoryResource {
     }
 }
 
-fn create_limiting_memory_resource(
-    upstream: cudf_sys::cudf_memory_resource_handle,
-    allocation_limit: usize,
-) -> RawMemoryResource {
-    let mut raw = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_memory_resource_create_limiting(upstream, allocation_limit, &mut raw) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    RawMemoryResource::from_raw(raw)
-}
-
 fn create_budget_tracking_memory_resource(
     upstream: cudf_sys::cudf_memory_resource_handle,
     allocation_limit: usize,
@@ -269,25 +259,6 @@ fn failure_callback_memory_resource_allows_null_callback_arg() {
     let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
     let _callback_mr =
         create_failure_callback_memory_resource(upstream.raw(), Some(stateless_decline_callback), ptr::null_mut());
-}
-
-#[test]
-fn failure_callback_memory_resource_observes_once_until_limit_failure() {
-    let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
-    let limiting = create_limiting_memory_resource(upstream.raw(), 1);
-    let calls = AtomicUsize::new(0);
-    let callback_mr = create_failure_callback_memory_resource(
-        limiting.raw(),
-        Some(record_failure_callback),
-        &calls as *const AtomicUsize as *mut c_void,
-    );
-    let borrowed = callback_mr.borrowed();
-
-    let (status, out) = try_make_i32_column_with_memory_resource(&[1, 2, 3], &borrowed);
-
-    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
-    assert!(out.is_null());
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]

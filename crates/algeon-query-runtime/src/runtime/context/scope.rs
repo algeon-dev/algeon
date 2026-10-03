@@ -5,12 +5,18 @@
 //! per-caller overlay replaces only its [`PlanScope`], so neither can drop a
 //! field of the other scopes.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-use cudf::{Runtime as CudfRuntime, StreamReservationLease};
+use cudf::{QueryMemoryDomain, Runtime as CudfRuntime, StreamReservationLease};
 use query_planning::{
-    capability::AggregateStrategyExecutionOptions, chunk::SourceChunkPlanningOptions,
-    mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy,
+    capability::AggregateStrategyExecutionOptions,
+    chunk::SourceChunkPlanningOptions,
+    error::{QueryError, QueryErrorCode, Result},
+    mode::StatisticalAggregateExecutionMode,
+    policy::PlanningPolicy,
 };
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -34,6 +40,7 @@ use super::{
 use crate::{
     attempt::AttemptHandle,
     metrics::{QueryId, TraceId},
+    native_error::cudf_query_error,
     observability::{
         AttemptId, RuntimeExecutionObservationScope, RuntimeObservationHandle, RuntimeObservationOwner,
         RuntimeStreamLeaseScope,
@@ -81,15 +88,56 @@ pub(super) enum QueryScope {
     Admitted(Arc<AdmittedAttempt>),
 }
 
-/// A query that no service admitted: no grant, domain, or attempt identity.
+/// A query that no service admitted, with its own immutable allocator domain.
 #[derive(Debug)]
 pub(super) struct StandaloneQuery {
+    pub(super) allocation_domain: QueryMemoryDomain,
+    pub(super) next_member_id: AtomicU64,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) cancellation: ExecutionCancellation,
     /// Present when the standalone context owns its runtime observation; the
     /// context then terminalizes the query itself.
     pub(super) observation_owner: Option<RuntimeObservationOwner>,
 }
+
+impl StandaloneQuery {
+    /// Binds the context's own runtime. Runtimes and outputs derived from it
+    /// retain the root member, so callers may keep allocating through
+    /// `shared_runtime()` under the same cap after the context drops.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn bind_root(&self, runtime: Arc<CudfRuntime>) -> Result<StreamBinding> {
+        let (member, derived) = self.attach_member(&runtime)?;
+        let derived = derived
+            .with_retained_lifetime(Arc::new(member.clone()))
+            .map_err(|error| cudf_query_error(STANDALONE_BIND, "failed to retain standalone root member", error))?;
+        Ok(StreamBinding::Standalone { member, runtime: Arc::new(derived) })
+    }
+
+    /// Binds a leased work stream for the lifetime of the work context, as an
+    /// attempt binds its work members: the member detaches when the binding
+    /// drops, and allocations it made stay charged to the domain until they
+    /// are freed. The pooled stream can then join this or another domain.
+    pub(super) fn bind_work(&self, runtime: Arc<CudfRuntime>) -> Result<StreamBinding> {
+        let (member, derived) = self.attach_member(&runtime)?;
+        Ok(StreamBinding::Standalone { member, runtime: Arc::new(derived) })
+    }
+
+    fn attach_member(&self, runtime: &CudfRuntime) -> Result<(StreamReservationLease, CudfRuntime)> {
+        let limit = usize::try_from(self.memory_control_policy.device_budget_bytes).map_err(|_| {
+            QueryError::new(QueryErrorCode::InvalidPlan, STANDALONE_BIND, "standalone member limit exceeds usize")
+        })?;
+        let member = self
+            .allocation_domain
+            .reserve_stream(runtime.stream(), self.next_member_id.fetch_add(1, Ordering::Relaxed), limit)
+            .map_err(|error| cudf_query_error(STANDALONE_BIND, "failed to attach standalone stream member", error))?;
+        let derived = runtime
+            .with_memory_resource_override(member.manager().resource(), STANDALONE_BIND)
+            .map_err(|error| cudf_query_error(STANDALONE_BIND, "failed to route standalone stream member", error))?;
+        Ok((member, derived))
+    }
+}
+
+const STANDALONE_BIND: &str = "query_engine.runtime.standalone.bind_stream";
 
 /// The admitted binding of one attempt: its epochs, immutable grant, and the
 /// allocation domain and auxiliary slots that grant backs.
@@ -133,7 +181,7 @@ pub(in crate::runtime) struct AdmittedAttempt {
 #[derive(Debug)]
 pub(in crate::runtime) enum StreamBinding {
     /// A standalone context's runtime: its own, or a leased stream's.
-    Standalone { runtime: Arc<CudfRuntime> },
+    Standalone { member: StreamReservationLease, runtime: Arc<CudfRuntime> },
     /// The admitted attempt's root stream, its root domain member, and the
     /// fork-stream route registered on it.
     AttemptRoot {
@@ -158,16 +206,17 @@ pub(in crate::runtime) enum StreamBinding {
 impl StreamBinding {
     pub(super) fn runtime(&self) -> &Arc<CudfRuntime> {
         match self {
-            Self::Standalone { runtime } | Self::AttemptRoot { runtime, .. } | Self::AttemptWork { runtime, .. } => {
-                runtime
-            },
+            Self::Standalone { runtime, .. }
+            | Self::AttemptRoot { runtime, .. }
+            | Self::AttemptWork { runtime, .. } => runtime,
         }
     }
 
-    pub(super) fn member(&self) -> Option<&StreamReservationLease> {
+    pub(super) fn member(&self) -> &StreamReservationLease {
         match self {
-            Self::Standalone { .. } => None,
-            Self::AttemptRoot { member, .. } | Self::AttemptWork { member, .. } => Some(member),
+            Self::Standalone { member, .. } | Self::AttemptRoot { member, .. } | Self::AttemptWork { member, .. } => {
+                member
+            },
         }
     }
 

@@ -10,6 +10,8 @@ use cudf::{
     QueryMemoryDomainOptions, Runtime, testing::prelude::*,
 };
 
+use crate::common::{execution_budget_token, execution_budget_token_in_domain, query_domain_member};
+
 #[test]
 fn manager_installed_failure_callback_observes_reservation_failures_and_preserves_stream_contract() {
     let device = DeviceId::current().unwrap();
@@ -43,9 +45,9 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
         manager.resource().testing_raw_handle_value()
     );
 
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("manager_failure_callback"))
-        .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("manager_failure_callback"))
+            .unwrap();
     let err = runtime.series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
@@ -56,9 +58,9 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
     );
     drop(token);
 
-    let first = runtime.stream_reservation(101, 64 * 1024 * 1024).unwrap();
+    let first = query_domain_member(&runtime, 101, 64 * 1024 * 1024).unwrap();
 
-    let err = runtime.stream_reservation(102, 64 * 1024 * 1024).unwrap_err();
+    let err = query_domain_member(&runtime, 102, 64 * 1024 * 1024).unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert!(first.usage().unwrap().attached);
@@ -68,7 +70,7 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
         manager.resource().with_failure_callback_details(Arc::new(|_| panic!("observation delivery failed"))).unwrap();
     let panicking_runtime =
         Runtime::builder().with_device(device).with_memory_resource(panicking_resource).build().unwrap();
-    let _panicking_lease = manager.reserve_stream(panicking_runtime.stream(), 103, 1).unwrap();
+    let _panicking_lease = query_domain_member(&panicking_runtime, 103, 1).unwrap();
     let err = panicking_runtime.series(&[1i32, 2, 3]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     let detail = err.ffi_detail().expect("canonical allocation error survives callback delivery failure");
@@ -78,7 +80,7 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
     let domain = manager
         .query_memory_domain(90_001, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
         .unwrap();
-    let direct = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let direct = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(1).with_boundary("direct_domain_failure_callback"),
         &domain,

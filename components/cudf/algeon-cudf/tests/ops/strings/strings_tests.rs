@@ -9,8 +9,8 @@
 use cudf::{DataType, ExecutionOverrides, StringSliceOptions, StripSide, TypeId, testing::RawHandleTestingExt};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, nullable_series, reset_exec_observation,
-    run_named_cases, sample_runtime, series,
+    execution_budget_token, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, nullable_series,
+    reset_exec_observation, run_named_cases, sample_runtime, series,
 };
 
 // ===========================================================================
@@ -404,12 +404,12 @@ fn test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute(
     assert!(preflight.required_budget_bytes() > 0);
 
     {
-        let token = runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(preflight.required_budget_bytes())
-                    .with_boundary("replace_backrefs_preflight_exact"),
-            )
-            .unwrap();
+        let token = execution_budget_token(
+            &runtime,
+            ExecutionBudgetRequest::new(preflight.required_budget_bytes())
+                .with_boundary("replace_backrefs_preflight_exact"),
+        )
+        .unwrap();
         let (prepared, _) =
             s.str().prepare_replace_with_backrefs_with_budget(pattern, replacement, &token).unwrap().into_parts();
         let (out, _) = prepared.execute_with_budget(&token).unwrap().into_parts();
@@ -418,12 +418,12 @@ fn test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute(
 
     // The aligned bound is exact for this focused case: one byte less must
     // fail closed in prepare or execute.
-    let token = runtime
-        .execution_budget_token(
-            ExecutionBudgetRequest::new(preflight.required_budget_bytes() - 1)
-                .with_boundary("replace_backrefs_preflight_minus_one"),
-        )
-        .unwrap();
+    let token = execution_budget_token(
+        &runtime,
+        ExecutionBudgetRequest::new(preflight.required_budget_bytes() - 1)
+            .with_boundary("replace_backrefs_preflight_minus_one"),
+    )
+    .unwrap();
     match s.str().prepare_replace_with_backrefs_with_budget(pattern, replacement, &token) {
         Err(_) => {},
         Ok(prepared) => {
@@ -451,11 +451,11 @@ fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
     let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
     let facts = prepared.output_size_facts();
     {
-        let token = runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("prepared_replace_execute"),
-            )
-            .unwrap();
+        let token = execution_budget_token(
+            &runtime,
+            ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("prepared_replace_execute"),
+        )
+        .unwrap();
         let (out, report) = prepared.execute_with_budget(&token).unwrap().into_parts();
         assert_eq!(out.to_strings_strict().unwrap(), vec!["123/abc", "456/def"]);
         assert_eq!(report.output_bytes(), Some(out.device_allocated_size_bytes().unwrap()));
@@ -467,11 +467,11 @@ fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
     // The previous token must be dropped first because stream reservations are exclusive.
     let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
     let required = prepared.output_size_facts().required_budget_bytes();
-    let tiny = runtime
-        .execution_budget_token(
-            ExecutionBudgetRequest::new(required - 1).with_boundary("prepared_replace_execute_minus_one"),
-        )
-        .unwrap();
+    let tiny = execution_budget_token(
+        &runtime,
+        ExecutionBudgetRequest::new(required - 1).with_boundary("prepared_replace_execute_minus_one"),
+    )
+    .unwrap();
     let err = prepared.execute_with_budget(&tiny).unwrap_err();
     assert_eq!(err.operation(), "series::prepared_replace_with_backrefs::execute_with_budget");
 }

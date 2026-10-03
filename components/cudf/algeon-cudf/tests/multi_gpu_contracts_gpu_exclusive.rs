@@ -5,7 +5,9 @@
 //! explicitly.
 use cudf::{core::Table, testing::prelude::*};
 
-use crate::common::{column_from_device_buffer_nullable, dataframe_from_columns, error_context_value, series};
+use crate::common::{
+    column_from_device_buffer_nullable, dataframe_from_columns, error_context_value, query_domain_member, series,
+};
 
 mod common;
 
@@ -1778,7 +1780,7 @@ fn concurrent_per_device_pipelines_share_no_state() {
     let worker = |device: DeviceId, pipeline_id: u64| {
         std::thread::spawn(move || {
             let rt = Runtime::builder().with_device(device).build().unwrap();
-            let _lease = rt.stream_reservation(pipeline_id, 256 * 1024 * 1024).unwrap();
+            let _lease = query_domain_member(&rt, pipeline_id, 256 * 1024 * 1024).unwrap();
             for _ in 0..20 {
                 let data: Vec<i32> = (0..4096).rev().collect();
                 let series = rt.series(&data).unwrap();

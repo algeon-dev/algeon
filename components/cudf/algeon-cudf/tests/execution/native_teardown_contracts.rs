@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cudf::{
     DataFrame, ErrorCode, Runtime,
     core::Table,
@@ -55,7 +57,7 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
     assert_eq!(parquet_error.code(), ErrorCode::FatalCuda);
     let memory_resource_error = runtime
         .memory_resource()
-        .limiting(1024)
+        .with_failure_callback(Arc::new(|_| {}))
         .expect_err("unhealthy device must reject later memory-resource creation before FFI");
     assert_eq!(memory_resource_error.code(), ErrorCode::FatalCuda);
     assert_eq!(scope.health_snapshot(device).rejected_operation_count(), 4);

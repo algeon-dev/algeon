@@ -125,14 +125,10 @@
 //!   memory management of the devices it uses;
 //!   services should claim devices explicitly at startup via
 //!   [`DeviceMemoryManager::install`].
-//! - **Pipeline**: one pipeline = one [`Runtime`] (its own CUDA stream),
-//!   plus a [`StreamReservationLease`] when the pipeline needs its own memory
-//!   budget. Query engines can create a [`ReservationArena`] as a parent
-//!   budget and attach multiple stream leases as members under it. Pipelines
-//!   on the same device share the physical pool and are partitioned logically
-//!   by reservation accounting. Anti-pattern: do **not** share one `Runtime`
-//!   across pipelines; they would serialize on its stream and their budget
-//!   accounting would blur together.
+//! - **Query**: one immutable [`QueryMemoryDomain`] caps allocations across
+//!   its streams. Each stream has one shared [`StreamReservationLease`].
+//!   Ordinary manager allocations route to that member, and stage tokens
+//!   share its direct allocation resource without changing the cap.
 //! - **Operation**: every operation executes with explicit
 //!   device + stream + memory resource. The memory resource governs
 //!   **outputs only**, exactly like upstream libcudf's `mr` parameter;
@@ -140,7 +136,10 @@
 //!   operation's stream.
 //!
 //! ```no_run
-//! use cudf::{DeviceId, DeviceMemoryManager, InstallSpec, Runtime};
+//! use cudf::{
+//!     DeviceId, DeviceMemoryManager, InstallSpec, QueryMemoryDomainOptions,
+//!     Runtime,
+//! };
 //!
 //! // Service startup: one explicit memory-domain install per device.
 //! DeviceMemoryManager::install(
@@ -149,11 +148,14 @@
 //! )
 //! .unwrap();
 //!
-//! // Each pipeline: its own Runtime (own stream) + a budget reservation.
+//! // One query domain owns its cap; streams attach shared members.
 //! let rt = Runtime::builder().build().unwrap();
-//! let lease = rt
-//!     .stream_reservation(/* pipeline id */ 7, /* bytes */ 1 << 30)
+//! let domain = rt
+//!     .device_memory_manager()
+//!     .unwrap()
+//!     .query_memory_domain(7, QueryMemoryDomainOptions::new(1 << 30))
 //!     .unwrap();
+//! let lease = domain.reserve_stream(rt.stream(), 1, 1 << 30).unwrap();
 //! # drop(lease);
 //! ```
 //!
@@ -250,7 +252,7 @@ pub use core::{
         DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, DeviceMemoryPoolUsage, DeviceMemoryResource,
         DeviceMemoryResourceUsage, InstallSpec, QueryMemoryDomain, QueryMemoryDomainAllocation,
         QueryMemoryDomainIdentity, QueryMemoryDomainOptions, QueryMemoryDomainUsage, RawCurrentResourceRouteLease,
-        RawStreamReservationLease, ReservationArena, ReservationArenaUsage, ReservationUsage, StreamReservationLease,
+        RawStreamReservationLease, ReservationUsage, StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},

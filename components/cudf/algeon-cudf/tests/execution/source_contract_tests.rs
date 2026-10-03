@@ -55,7 +55,6 @@ const VALIDATION_RS: &str = include_str!("../../src/ops/validation.rs");
 const MATRIX_RS: &str = include_str!("../../src/runtime/matrix.rs");
 
 const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
-    ("cudf_memory_manager_attach_reservation_to_arena_raw", "reservation attachment lifecycle and accounting"),
     ("cudf_query_memory_domain_attach_raw_stream", "reservation attachment lifecycle and accounting"),
     ("cudf_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_aggregation_create_count", "descriptor-only aggregation factory"),
@@ -143,17 +142,13 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_resource_create_cuda", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_failure_callback", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_cuda_async", "runtime memory-resource lifecycle"),
-    ("cudf_memory_resource_create_limiting", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_pool", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_destroy", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_pool_usage", "metadata-only memory-resource async-pool accounting"),
     ("cudf_memory_resource_raw", "raw-pointer-only memory-resource accessor"),
     ("cudf_memory_resource_trim_to", "runtime memory-resource async-pool trim hook"),
     ("cudf_memory_resource_usage", "metadata-only memory-resource accounting"),
-    ("cudf_memory_manager_attach_reservation", "runtime stream-reservation lifecycle"),
-    ("cudf_memory_manager_attach_reservation_to_arena", "runtime stream-reservation lifecycle"),
     ("cudf_memory_manager_create_query_memory_domain", "runtime query-memory-domain lifecycle"),
-    ("cudf_memory_manager_create_reservation_arena", "runtime reservation-arena lifecycle"),
     ("cudf_memory_manager_allocator_event_ring_bounds", "metadata-only allocator-event ring bounds"),
     ("cudf_memory_manager_install", "runtime device memory-manager installation lifecycle"),
     ("cudf_memory_manager_installation_record", "runtime device memory-manager state query"),
@@ -171,13 +166,8 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_query_memory_domain_identity", "metadata-only query-memory-domain identity"),
     ("cudf_query_memory_domain_live_allocations", "metadata-only query-memory-domain allocation registry read"),
     ("cudf_query_memory_domain_pool_usage", "metadata-only query-memory-domain pool accounting"),
-    ("cudf_query_memory_domain_resize_grant", "runtime query-memory-domain accounting update"),
     ("cudf_query_memory_domain_usage", "metadata-only query-memory-domain accounting"),
-    ("cudf_reservation_arena_destroy", "runtime reservation-arena lifecycle"),
-    ("cudf_reservation_arena_resize", "runtime reservation-arena lifecycle"),
-    ("cudf_reservation_arena_usage", "metadata-only reservation-arena accounting"),
     ("cudf_reservation_detach", "runtime stream-reservation lifecycle"),
-    ("cudf_reservation_resize", "runtime stream-reservation lifecycle"),
     ("cudf_reservation_usage", "metadata-only stream-reservation accounting"),
     ("cudf_mixed_join_size_data_destroy", "provenance-bound lifecycle"),
     ("cudf_mixed_join_size_data_device_allocated_size", "metadata-only cached join planning accessor"),
@@ -338,17 +328,16 @@ fn binary_helpers_require_explicit_execution_options() {
     }
 }
 
-fn execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource() {
-    for required in [
-        "DeviceMemoryManager::for_device(runtime.device())",
-        "manager.reserve_stream(runtime.stream()",
-        "StreamBoundReservation",
-        "reservation_usage",
-    ] {
+fn execution_budget_token_shares_a_query_domain_member_without_allocator_construction() {
+    for required in
+        ["pub fn from_shared_lease(", "lease: StreamReservationLease", "QueryDomainMember", "reservation_usage"]
+    {
         assert!(RUNTIME_BUDGET_RS.contains(required), "budget token must retain `{required}`");
     }
 
     for forbidden in [
+        "pub fn from_runtime",
+        "pub fn resize(",
         "budget_tracking_limit",
         "ExecutionBudgetToken::new(upstream",
         "HardMemoryResourceLimit",
@@ -1178,8 +1167,8 @@ fn source_contract_tests_cases() {
         ),
         ("binary_helpers_require_explicit_execution_options", binary_helpers_require_explicit_execution_options),
         (
-            "execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource",
-            execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource,
+            "execution_budget_token_shares_a_query_domain_member_without_allocator_construction",
+            execution_budget_token_shares_a_query_domain_member_without_allocator_construction,
         ),
         ("copying_helpers_require_explicit_execution_options", copying_helpers_require_explicit_execution_options),
         ("unary_helpers_require_explicit_execution_options", unary_helpers_require_explicit_execution_options),

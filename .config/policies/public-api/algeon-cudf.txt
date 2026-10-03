@@ -599,11 +599,6 @@ pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::CacheAllocationScop
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain::domain_id: u64
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain::member_id: u64
-pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::ReservationArena
-pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::ReservationArena::arena_id: u64
-pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::ReservationArena::reservation_id: u64
-pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::StreamReservation
-pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::StreamReservation::reservation_id: u64
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::Unknown
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::Unknown::kind: u64
 pub cudf::core::memory::DeviceMemoryFailureAllocationDomain::Unknown::primary_id: u64
@@ -695,8 +690,6 @@ pub fn cudf::DeviceMemoryManager::options_for_device(cudf::runtime::device::Devi
 pub fn cudf::DeviceMemoryManager::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
 pub fn cudf::DeviceMemoryManager::query_memory_domain(&self, u64, cudf::QueryMemoryDomainOptions) -> cudf::core::error::Result<cudf::QueryMemoryDomain>
 pub fn cudf::DeviceMemoryManager::read_allocator_event(&self, u64) -> cudf::core::error::Result<cudf::AllocatorEventRead>
-pub fn cudf::DeviceMemoryManager::reservation_arena(&self, u64, usize) -> cudf::core::error::Result<cudf::ReservationArena>
-pub fn cudf::DeviceMemoryManager::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::DeviceMemoryManager::resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::DeviceMemoryManager::route_current_resource(&self, &cudf::runtime::stream::CudaStream, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::CurrentResourceRouteLease>
 pub unsafe fn cudf::DeviceMemoryManager::route_current_resource_raw(&self, *mut core::ffi::c_void, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::RawCurrentResourceRouteLease>
@@ -759,7 +752,6 @@ pub fn cudf::DeviceMemoryResource::cuda_async(core::option::Option<usize>, core:
 pub fn cudf::DeviceMemoryResource::cuda_async_on(cudf::runtime::device::DeviceId, core::option::Option<usize>, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::cuda_on(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::device(&self) -> cudf::runtime::device::DeviceId
-pub fn cudf::DeviceMemoryResource::limiting(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool(usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_on(cudf::runtime::device::DeviceId, usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
@@ -797,7 +789,6 @@ pub fn cudf::QueryMemoryDomain::live_allocations(&self) -> cudf::core::error::Re
 pub fn cudf::QueryMemoryDomain::manager(&self) -> &cudf::DeviceMemoryManager
 pub fn cudf::QueryMemoryDomain::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
 pub fn cudf::QueryMemoryDomain::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
-pub fn cudf::QueryMemoryDomain::resize_grant(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::QueryMemoryDomain::usage(&self) -> cudf::core::error::Result<cudf::QueryMemoryDomainUsage>
 pub struct cudf::core::memory::QueryMemoryDomainAllocation
 pub cudf::core::memory::QueryMemoryDomainAllocation::aligned_bytes: u64
@@ -841,32 +832,7 @@ pub struct cudf::core::memory::RawStreamReservationLease
 impl cudf::RawStreamReservationLease
 pub fn cudf::RawStreamReservationLease::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::RawStreamReservationLease::raw_stream(&self) -> *mut core::ffi::c_void
-pub fn cudf::RawStreamReservationLease::resize(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::RawStreamReservationLease::usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
-pub struct cudf::core::memory::ReservationArena
-impl cudf::ReservationArena
-pub fn cudf::ReservationArena::device(&self) -> cudf::runtime::device::DeviceId
-pub fn cudf::ReservationArena::manager(&self) -> &cudf::DeviceMemoryManager
-pub fn cudf::ReservationArena::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
-pub fn cudf::ReservationArena::resize(&self, usize) -> cudf::core::error::Result<()>
-pub fn cudf::ReservationArena::usage(&self) -> cudf::core::error::Result<cudf::ReservationArenaUsage>
-pub struct cudf::core::memory::ReservationArenaUsage
-pub cudf::core::memory::ReservationArenaUsage::active: bool
-pub cudf::core::memory::ReservationArenaUsage::active_members: u64
-pub cudf::core::memory::ReservationArenaUsage::allocation_limit_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::arena_id: u64
-pub cudf::core::memory::ReservationArenaUsage::current_aligned_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::current_allocations: u64
-pub cudf::core::memory::ReservationArenaUsage::current_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::failed_allocation_count: u64
-pub cudf::core::memory::ReservationArenaUsage::largest_failed_allocation_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::peak_aligned_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::peak_allocations: u64
-pub cudf::core::memory::ReservationArenaUsage::peak_bytes: u64
-pub cudf::core::memory::ReservationArenaUsage::total_allocations: u64
-pub cudf::core::memory::ReservationArenaUsage::total_bytes: u64
-impl core::convert::From<cudf_sys::bindings::cudf_memory_resource_usage_t> for cudf::ReservationArenaUsage
-pub fn cudf::ReservationArenaUsage::from(cudf_sys::bindings::cudf_memory_resource_usage_t) -> Self
 pub struct cudf::core::memory::ReservationUsage
 pub cudf::core::memory::ReservationUsage::allocation_limit_bytes: u64
 pub cudf::core::memory::ReservationUsage::attached: bool
@@ -893,8 +859,6 @@ pub unsafe fn cudf::StreamReservationLease::attach_sibling_raw_stream(&self, *mu
 pub fn cudf::StreamReservationLease::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
 pub fn cudf::StreamReservationLease::manager(&self) -> &cudf::DeviceMemoryManager
 pub fn cudf::StreamReservationLease::memory_resource(&self) -> &cudf::DeviceMemoryResource
-pub fn cudf::StreamReservationLease::reservation_arena(&self) -> core::option::Option<&cudf::ReservationArena>
-pub fn cudf::StreamReservationLease::resize(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::StreamReservationLease::stream(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::StreamReservationLease::usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
 pub mod cudf::core::scalar
@@ -1430,7 +1394,6 @@ pub fn cudf::DeviceMemoryResource::cuda_async(core::option::Option<usize>, core:
 pub fn cudf::DeviceMemoryResource::cuda_async_on(cudf::runtime::device::DeviceId, core::option::Option<usize>, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::cuda_on(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::device(&self) -> cudf::runtime::device::DeviceId
-pub fn cudf::DeviceMemoryResource::limiting(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool(usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_on(cudf::runtime::device::DeviceId, usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
@@ -6289,8 +6252,6 @@ pub cudf::runtime::DeviceHealthStatus::Healthy
 pub cudf::runtime::DeviceHealthStatus::Unhealthy
 #[non_exhaustive] pub enum cudf::runtime::ExecutionBudgetEnforcement
 pub cudf::runtime::ExecutionBudgetEnforcement::QueryDomainMember
-pub cudf::runtime::ExecutionBudgetEnforcement::ReservationArenaMember
-pub cudf::runtime::ExecutionBudgetEnforcement::StreamBoundReservation
 impl cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetEnforcement::as_str(self) -> &'static str
 pub enum cudf::runtime::StreamDependencyOutcome
@@ -6464,16 +6425,11 @@ pub struct cudf::runtime::ExecutionBudgetToken
 impl cudf::ExecutionBudgetToken
 pub fn cudf::ExecutionBudgetToken::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetToken::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
-pub fn cudf::ExecutionBudgetToken::from_runtime(&cudf::Runtime, cudf::ExecutionBudgetRequest) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_runtime_in_arena(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::ReservationArena) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::QueryMemoryDomain) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease, cudf::ExecutionBudgetEnforcement) -> Self
+pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease) -> Self
 pub fn cudf::ExecutionBudgetToken::member_limit_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::ExecutionBudgetToken::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::ExecutionBudgetToken::request(&self) -> &cudf::ExecutionBudgetRequest
-pub fn cudf::ExecutionBudgetToken::reservation_arena_usage(&self) -> cudf::core::error::Result<core::option::Option<cudf::ReservationArenaUsage>>
 pub fn cudf::ExecutionBudgetToken::reservation_usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
-pub fn cudf::ExecutionBudgetToken::resize(&mut self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::ExecutionBudgetToken::stream(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::ExecutionBudgetToken::stream_reservation(&self) -> &cudf::StreamReservationLease
 pub struct cudf::runtime::ExecutionOverrides<'a>
@@ -6514,7 +6470,6 @@ pub fn cudf::QueryExecutionContext<'a>::execution_binding(&self) -> core::result
 pub fn cudf::QueryExecutionContext<'a>::memory_resource(&self) -> &'a cudf::DeviceMemoryResource
 pub fn cudf::QueryExecutionContext<'a>::overrides(&self) -> &cudf::runtime::execution_context::ExecutionOverrides<'a>
 pub fn cudf::QueryExecutionContext<'a>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::QueryExecutionContext<'a>::reserve_stream(&self, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::QueryExecutionContext<'a>::runtime(&self) -> &'a cudf::Runtime
 pub fn cudf::QueryExecutionContext<'a>::stream(&self) -> &'a cudf::runtime::stream::CudaStream
 impl core::fmt::Debug for cudf::QueryExecutionContext<'_>
@@ -6548,7 +6503,6 @@ pub fn cudf::Runtime::empty_dataframe(&self) -> cudf::DataFrame
 pub fn cudf::Runtime::empty_series(&self, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::empty_table(&self) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::Runtime::execution_binding(&self) -> core::result::Result<rapids_interop::types::ExecutionBinding<'_>, rapids_interop::types::InteropError>
-pub fn cudf::Runtime::execution_budget_token(&self, cudf::ExecutionBudgetRequest) -> cudf::core::error::Result<cudf::ExecutionBudgetToken>
 pub fn cudf::Runtime::get_or_try_init_binding_extension<T, E>(&self, &'static str, impl core::ops::function::FnOnce() -> core::result::Result<T, E>) -> core::result::Result<cudf::runtime::BindingExtensionLease<T>, cudf::runtime::BindingExtensionInitError<E>> where T: core::any::Any + core::marker::Send + core::marker::Sync
 pub fn cudf::Runtime::inherit_affinity_from(&self, &cudf::Runtime) -> cudf::core::error::Result<Self>
 pub fn cudf::Runtime::inherit_retained_lifetime_from(&self, &cudf::Runtime) -> cudf::core::error::Result<Self>
@@ -6582,10 +6536,10 @@ pub fn cudf::Runtime::series_in<T: cudf::frame::HostColumnData>(&self, &[T], &cu
 pub fn cudf::Runtime::series_opt<T: cudf::core::types::CudfType>(&self, &[core::option::Option<T>]) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::shares_affinity(&Self, &Self) -> bool
 pub fn cudf::Runtime::stream(&self) -> &cudf::runtime::stream::CudaStream
-pub fn cudf::Runtime::stream_reservation(&self, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::Runtime::string_scalar(&self, &str) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub fn cudf::Runtime::synchronize(&self) -> cudf::core::error::Result<()>
 pub fn cudf::Runtime::timestamp_raw_scalar(&self, i64, cudf::core::types::TimestampResolution) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
+pub fn cudf::Runtime::with_memory_resource_override(&self, &cudf::DeviceMemoryResource, &'static str) -> cudf::core::error::Result<Self>
 pub fn cudf::Runtime::with_retained_lifetime(&self, alloc::sync::Arc<(dyn core::marker::Send + core::marker::Sync)>) -> cudf::core::error::Result<Self>
 impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
@@ -6695,11 +6649,6 @@ pub cudf::DeviceMemoryFailureAllocationDomain::CacheAllocationScope::scope_id: u
 pub cudf::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain
 pub cudf::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain::domain_id: u64
 pub cudf::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain::member_id: u64
-pub cudf::DeviceMemoryFailureAllocationDomain::ReservationArena
-pub cudf::DeviceMemoryFailureAllocationDomain::ReservationArena::arena_id: u64
-pub cudf::DeviceMemoryFailureAllocationDomain::ReservationArena::reservation_id: u64
-pub cudf::DeviceMemoryFailureAllocationDomain::StreamReservation
-pub cudf::DeviceMemoryFailureAllocationDomain::StreamReservation::reservation_id: u64
 pub cudf::DeviceMemoryFailureAllocationDomain::Unknown
 pub cudf::DeviceMemoryFailureAllocationDomain::Unknown::kind: u64
 pub cudf::DeviceMemoryFailureAllocationDomain::Unknown::primary_id: u64
@@ -6803,8 +6752,6 @@ impl core::fmt::Display for cudf::core::error::code::ErrorStatus
 pub fn cudf::core::error::code::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::ExecutionBudgetEnforcement
 pub cudf::ExecutionBudgetEnforcement::QueryDomainMember
-pub cudf::ExecutionBudgetEnforcement::ReservationArenaMember
-pub cudf::ExecutionBudgetEnforcement::StreamBoundReservation
 impl cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetEnforcement::as_str(self) -> &'static str
 pub enum cudf::Expr
@@ -7782,8 +7729,6 @@ pub fn cudf::DeviceMemoryManager::options_for_device(cudf::runtime::device::Devi
 pub fn cudf::DeviceMemoryManager::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
 pub fn cudf::DeviceMemoryManager::query_memory_domain(&self, u64, cudf::QueryMemoryDomainOptions) -> cudf::core::error::Result<cudf::QueryMemoryDomain>
 pub fn cudf::DeviceMemoryManager::read_allocator_event(&self, u64) -> cudf::core::error::Result<cudf::AllocatorEventRead>
-pub fn cudf::DeviceMemoryManager::reservation_arena(&self, u64, usize) -> cudf::core::error::Result<cudf::ReservationArena>
-pub fn cudf::DeviceMemoryManager::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::DeviceMemoryManager::resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::DeviceMemoryManager::route_current_resource(&self, &cudf::runtime::stream::CudaStream, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::CurrentResourceRouteLease>
 pub unsafe fn cudf::DeviceMemoryManager::route_current_resource_raw(&self, *mut core::ffi::c_void, &cudf::DeviceMemoryResource) -> cudf::core::error::Result<cudf::RawCurrentResourceRouteLease>
@@ -7846,7 +7791,6 @@ pub fn cudf::DeviceMemoryResource::cuda_async(core::option::Option<usize>, core:
 pub fn cudf::DeviceMemoryResource::cuda_async_on(cudf::runtime::device::DeviceId, core::option::Option<usize>, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::cuda_on(cudf::runtime::device::DeviceId) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::device(&self) -> cudf::runtime::device::DeviceId
-pub fn cudf::DeviceMemoryResource::limiting(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool(usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_on(cudf::runtime::device::DeviceId, usize, core::option::Option<usize>) -> cudf::core::error::Result<Self>
 pub fn cudf::DeviceMemoryResource::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
@@ -7923,16 +7867,11 @@ pub struct cudf::ExecutionBudgetToken
 impl cudf::ExecutionBudgetToken
 pub fn cudf::ExecutionBudgetToken::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetToken::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
-pub fn cudf::ExecutionBudgetToken::from_runtime(&cudf::Runtime, cudf::ExecutionBudgetRequest) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_runtime_in_arena(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::ReservationArena) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&cudf::Runtime, cudf::ExecutionBudgetRequest, &cudf::QueryMemoryDomain) -> cudf::core::error::Result<Self>
-pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease, cudf::ExecutionBudgetEnforcement) -> Self
+pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease) -> Self
 pub fn cudf::ExecutionBudgetToken::member_limit_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::ExecutionBudgetToken::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::ExecutionBudgetToken::request(&self) -> &cudf::ExecutionBudgetRequest
-pub fn cudf::ExecutionBudgetToken::reservation_arena_usage(&self) -> cudf::core::error::Result<core::option::Option<cudf::ReservationArenaUsage>>
 pub fn cudf::ExecutionBudgetToken::reservation_usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
-pub fn cudf::ExecutionBudgetToken::resize(&mut self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::ExecutionBudgetToken::stream(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::ExecutionBudgetToken::stream_reservation(&self) -> &cudf::StreamReservationLease
 pub struct cudf::ExecutionOverrides<'a>
@@ -8044,7 +7983,6 @@ pub fn cudf::QueryExecutionContext<'a>::execution_binding(&self) -> core::result
 pub fn cudf::QueryExecutionContext<'a>::memory_resource(&self) -> &'a cudf::DeviceMemoryResource
 pub fn cudf::QueryExecutionContext<'a>::overrides(&self) -> &cudf::runtime::execution_context::ExecutionOverrides<'a>
 pub fn cudf::QueryExecutionContext<'a>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::QueryExecutionContext<'a>::reserve_stream(&self, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::QueryExecutionContext<'a>::runtime(&self) -> &'a cudf::Runtime
 pub fn cudf::QueryExecutionContext<'a>::stream(&self) -> &'a cudf::runtime::stream::CudaStream
 impl core::fmt::Debug for cudf::QueryExecutionContext<'_>
@@ -8058,7 +7996,6 @@ pub fn cudf::QueryMemoryDomain::live_allocations(&self) -> cudf::core::error::Re
 pub fn cudf::QueryMemoryDomain::manager(&self) -> &cudf::DeviceMemoryManager
 pub fn cudf::QueryMemoryDomain::pool_usage(&self) -> cudf::core::error::Result<cudf::DeviceMemoryPoolUsage>
 pub fn cudf::QueryMemoryDomain::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
-pub fn cudf::QueryMemoryDomain::resize_grant(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::QueryMemoryDomain::usage(&self) -> cudf::core::error::Result<cudf::QueryMemoryDomainUsage>
 pub struct cudf::QueryMemoryDomainAllocation
 pub cudf::QueryMemoryDomainAllocation::aligned_bytes: u64
@@ -8102,7 +8039,6 @@ pub struct cudf::RawStreamReservationLease
 impl cudf::RawStreamReservationLease
 pub fn cudf::RawStreamReservationLease::memory_resource(&self) -> &cudf::DeviceMemoryResource
 pub fn cudf::RawStreamReservationLease::raw_stream(&self) -> *mut core::ffi::c_void
-pub fn cudf::RawStreamReservationLease::resize(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::RawStreamReservationLease::usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
 pub struct cudf::ReplaceWithBackrefsOutputSizePreflight
 impl cudf::ops::strings::ReplaceWithBackrefsOutputSizePreflight
@@ -8117,30 +8053,6 @@ pub fn cudf::ops::strings::ReplaceWithBackrefsPreparedOutputSizeFacts::requested
 pub fn cudf::ops::strings::ReplaceWithBackrefsPreparedOutputSizeFacts::required_budget_bytes(self) -> usize
 pub fn cudf::ops::strings::ReplaceWithBackrefsPreparedOutputSizeFacts::retained_output_bytes(self) -> usize
 pub fn cudf::ops::strings::ReplaceWithBackrefsPreparedOutputSizeFacts::retained_state_bytes(self) -> usize
-pub struct cudf::ReservationArena
-impl cudf::ReservationArena
-pub fn cudf::ReservationArena::device(&self) -> cudf::runtime::device::DeviceId
-pub fn cudf::ReservationArena::manager(&self) -> &cudf::DeviceMemoryManager
-pub fn cudf::ReservationArena::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
-pub fn cudf::ReservationArena::resize(&self, usize) -> cudf::core::error::Result<()>
-pub fn cudf::ReservationArena::usage(&self) -> cudf::core::error::Result<cudf::ReservationArenaUsage>
-pub struct cudf::ReservationArenaUsage
-pub cudf::ReservationArenaUsage::active: bool
-pub cudf::ReservationArenaUsage::active_members: u64
-pub cudf::ReservationArenaUsage::allocation_limit_bytes: u64
-pub cudf::ReservationArenaUsage::arena_id: u64
-pub cudf::ReservationArenaUsage::current_aligned_bytes: u64
-pub cudf::ReservationArenaUsage::current_allocations: u64
-pub cudf::ReservationArenaUsage::current_bytes: u64
-pub cudf::ReservationArenaUsage::failed_allocation_count: u64
-pub cudf::ReservationArenaUsage::largest_failed_allocation_bytes: u64
-pub cudf::ReservationArenaUsage::peak_aligned_bytes: u64
-pub cudf::ReservationArenaUsage::peak_allocations: u64
-pub cudf::ReservationArenaUsage::peak_bytes: u64
-pub cudf::ReservationArenaUsage::total_allocations: u64
-pub cudf::ReservationArenaUsage::total_bytes: u64
-impl core::convert::From<cudf_sys::bindings::cudf_memory_resource_usage_t> for cudf::ReservationArenaUsage
-pub fn cudf::ReservationArenaUsage::from(cudf_sys::bindings::cudf_memory_resource_usage_t) -> Self
 pub struct cudf::ReservationUsage
 pub cudf::ReservationUsage::allocation_limit_bytes: u64
 pub cudf::ReservationUsage::attached: bool
@@ -8190,7 +8102,6 @@ pub fn cudf::Runtime::empty_dataframe(&self) -> cudf::DataFrame
 pub fn cudf::Runtime::empty_series(&self, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::empty_table(&self) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::Runtime::execution_binding(&self) -> core::result::Result<rapids_interop::types::ExecutionBinding<'_>, rapids_interop::types::InteropError>
-pub fn cudf::Runtime::execution_budget_token(&self, cudf::ExecutionBudgetRequest) -> cudf::core::error::Result<cudf::ExecutionBudgetToken>
 pub fn cudf::Runtime::get_or_try_init_binding_extension<T, E>(&self, &'static str, impl core::ops::function::FnOnce() -> core::result::Result<T, E>) -> core::result::Result<cudf::runtime::BindingExtensionLease<T>, cudf::runtime::BindingExtensionInitError<E>> where T: core::any::Any + core::marker::Send + core::marker::Sync
 pub fn cudf::Runtime::inherit_affinity_from(&self, &cudf::Runtime) -> cudf::core::error::Result<Self>
 pub fn cudf::Runtime::inherit_retained_lifetime_from(&self, &cudf::Runtime) -> cudf::core::error::Result<Self>
@@ -8224,10 +8135,10 @@ pub fn cudf::Runtime::series_in<T: cudf::frame::HostColumnData>(&self, &[T], &cu
 pub fn cudf::Runtime::series_opt<T: cudf::core::types::CudfType>(&self, &[core::option::Option<T>]) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::shares_affinity(&Self, &Self) -> bool
 pub fn cudf::Runtime::stream(&self) -> &cudf::runtime::stream::CudaStream
-pub fn cudf::Runtime::stream_reservation(&self, u64, usize) -> cudf::core::error::Result<cudf::StreamReservationLease>
 pub fn cudf::Runtime::string_scalar(&self, &str) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub fn cudf::Runtime::synchronize(&self) -> cudf::core::error::Result<()>
 pub fn cudf::Runtime::timestamp_raw_scalar(&self, i64, cudf::core::types::TimestampResolution) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
+pub fn cudf::Runtime::with_memory_resource_override(&self, &cudf::DeviceMemoryResource, &'static str) -> cudf::core::error::Result<Self>
 pub fn cudf::Runtime::with_retained_lifetime(&self, alloc::sync::Arc<(dyn core::marker::Send + core::marker::Sync)>) -> cudf::core::error::Result<Self>
 impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
@@ -9197,8 +9108,6 @@ pub unsafe fn cudf::StreamReservationLease::attach_sibling_raw_stream(&self, *mu
 pub fn cudf::StreamReservationLease::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
 pub fn cudf::StreamReservationLease::manager(&self) -> &cudf::DeviceMemoryManager
 pub fn cudf::StreamReservationLease::memory_resource(&self) -> &cudf::DeviceMemoryResource
-pub fn cudf::StreamReservationLease::reservation_arena(&self) -> core::option::Option<&cudf::ReservationArena>
-pub fn cudf::StreamReservationLease::resize(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::StreamReservationLease::stream(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::StreamReservationLease::usage(&self) -> cudf::core::error::Result<cudf::ReservationUsage>
 pub struct cudf::StringSliceOptions

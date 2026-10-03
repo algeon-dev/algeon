@@ -303,8 +303,8 @@ fn replace_backrefs_reservation_preflight_is_measured_at_the_admission_boundary(
     ));
     assert!(contains_normalized(RESERVATION_ACCOUNTING_HPP, "return rmm::align_up(bytes, alignment);"));
     assert!(
-        RESERVATION_CPP.contains("cudf::rust::reservation::allocation_charge(bytes, alignment)"),
-        "reservation admission and preflight observation must share one per-allocation charge helper"
+        QUERY_DOMAIN_CPP.contains("cudf::rust::reservation::allocation_charge(bytes, alignment)"),
+        "query-domain member admission and preflight observation must share one per-allocation charge helper"
     );
 }
 

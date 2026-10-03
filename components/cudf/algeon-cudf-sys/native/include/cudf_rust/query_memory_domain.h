@@ -22,11 +22,13 @@ typedef struct {
   uint64_t reserved[4];
 } cudf_query_memory_domain_identity_t;
 
+/// Create a domain with an immutable grant and pool ceiling.
 cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager_handle manager,
                                                              uint64_t domain_id,
                                                              size_t grant_bytes,
                                                              size_t ceiling_bytes,
                                                              cudf_query_memory_domain_handle* out);
+/// Attach a member whose allocation limit remains fixed until detach.
 cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_handle domain,
                                                      cudf_stream_handle stream,
                                                      uint64_t reservation_id,
@@ -45,8 +47,6 @@ cudf_status_t cudf_query_memory_domain_identity(cudf_query_memory_domain_handle 
                                                 cudf_query_memory_domain_identity_t* out);
 cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handle domain,
                                                   cudf_memory_pool_usage_t* out);
-cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_handle domain,
-                                                    size_t grant_bytes);
 cudf_status_t cudf_query_memory_domain_freeze(cudf_query_memory_domain_handle domain);
 
 /// One surviving allocation owned by a query memory domain.

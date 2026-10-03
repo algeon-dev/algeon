@@ -8,12 +8,16 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use cudf::DataFrame;
+use cudf::{DataFrame, ReservationUsage};
 use query_engine::{
     admission::admit,
     error::{QueryError, QueryErrorCode},
-    exec::{QueryExecutionRequest, admit_query_plan, output::QueryOutput, set_vector_after_index_build_hook_for_tests},
+    exec::{
+        QueryExecutionRequest, admit_query_plan, materialize_gpu_result_to_host, output::QueryOutput,
+        set_vector_after_index_build_hook_for_tests, set_vector_pool_coverage_hook_for_tests,
+    },
     expr::{Expr, SortExpr},
+    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
@@ -25,7 +29,7 @@ use query_engine::{
     policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::{
-        ExecutionContext,
+        ExecutionContext, StandaloneConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
@@ -135,6 +139,75 @@ fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() 
     assert!(task_mappings.iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm")));
     assert!(task_mappings.iter().any(|mapping| mapping.operator_kind.as_deref() == Some("unary")));
     admitted.finish();
+    assert_standalone_knn_pool_coverage(&dataset_schema, &query_schema);
+}
+
+static STANDALONE_POOL_ROUTED_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+
+struct PoolCoverageHook;
+
+impl Drop for PoolCoverageHook {
+    fn drop(&mut self) {
+        set_vector_pool_coverage_hook_for_tests(None);
+    }
+}
+
+fn record_standalone_pool_usage(context: &ExecutionContext, usage: &[ReservationUsage]) {
+    assert!(context.attempt_allocation_domain_id().is_none(), "standalone coverage requires no attempt identity");
+    assert!(!usage.is_empty(), "RAFT pool streams have query-domain members");
+    assert!(usage.iter().all(|member| member.attached), "pool members remain attached through output assembly");
+    STANDALONE_POOL_ROUTED_ALLOCATIONS
+        .store(usage.iter().map(|member| member.routed_total_allocations).sum(), Ordering::SeqCst);
+}
+
+fn assert_standalone_knn_pool_coverage(dataset_schema: &SchemaRef, query_schema: &SchemaRef) {
+    let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("standalone vector context");
+    let runtime = context.shared_runtime().expect("standalone vector runtime");
+    let plan = knn_plan(Arc::clone(dataset_schema), Arc::clone(query_schema), VectorFixtureShape::Columns, 65);
+    let dataset = RecordBatch::try_new(
+        Arc::clone(dataset_schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..96)),
+            Arc::new(Float32Array::from_iter_values((0..96).map(|value| value as f32))),
+        ],
+    )
+    .expect("standalone dataset fixture");
+    let queries = RecordBatch::try_new(
+        Arc::clone(query_schema),
+        vec![Arc::new(Int64Array::from(vec![101, 102])), Arc::new(Float32Array::from(vec![10.0, 70.0]))],
+    )
+    .expect("standalone queries fixture");
+    let mut inputs = GpuResidentInputMap::new();
+    for (name, schema, batch) in [("dataset", dataset_schema, dataset), ("queries", query_schema, queries)] {
+        inputs.insert(
+            name.into(),
+            GpuResultHandle::new(
+                &context,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).expect("standalone upload")),
+                Arc::clone(schema),
+            )
+            .expect("standalone input owner"),
+        );
+    }
+    // k > 64 selects tiled cuVS search, whose temporary buffers allocate on a pool stream.
+    STANDALONE_POOL_ROUTED_ALLOCATIONS.store(0, Ordering::SeqCst);
+    set_vector_pool_coverage_hook_for_tests(Some(record_standalone_pool_usage));
+    let _hook = PoolCoverageHook;
+    let admitted = admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+        .expect("standalone kNN admission");
+    let outcome =
+        execute_query_plan_direct(&context, QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&inputs));
+    let output = outcome.into_parts().0.expect("standalone kNN executes");
+    let QueryOutput::GpuResident(output) = output else {
+        panic!("standalone kNN retains its resident output");
+    };
+    let batch = materialize_gpu_result_to_host(output, &mut QueryMetrics::default())
+        .expect("standalone kNN output materializes");
+    assert_eq!(batch.num_rows(), 130, "both queries return every requested rank");
+    assert!(
+        STANDALONE_POOL_ROUTED_ALLOCATIONS.load(Ordering::SeqCst) > 0,
+        "the actual RAFT pool allocation is charged to a sibling member"
+    );
 }
 
 #[test]

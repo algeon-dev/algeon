@@ -37,8 +37,8 @@ use parquet::{
 use tempfile::TempDir;
 
 use crate::common::{
-    column_from_slice, column_from_strs, error_context_value, last_exec_mr_value, reset_exec_observation,
-    sample_runtime,
+    column_from_slice, column_from_strs, error_context_value, execution_budget_token, last_exec_mr_value,
+    reset_exec_observation, sample_runtime,
 };
 
 fn dtype(id: TypeId) -> DataType {
@@ -389,9 +389,9 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     assert_eq!(second.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![3, 4]);
     assert_eq!(second.series("m00").unwrap().null_count(), 2);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_batch_read"))
+            .unwrap();
     let batch = DataFrame::read_parquet_source_chunks_with_budget(
         &rt,
         &source,
@@ -422,9 +422,9 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     .unwrap();
     let null_only_plan =
         plan_local_parquet_source_chunks(&null_only_source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_read"))
+            .unwrap();
     let null_only = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
         &rt,
         &null_only_source,
@@ -440,9 +440,9 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     drop(null_only);
     drop(token);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_batch"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_batch"))
+            .unwrap();
     let null_only_batch = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
         &rt,
         &null_only_source,
@@ -503,9 +503,11 @@ fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups(
     let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
     assert_eq!(plan.chunks().len(), 2);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("mixed_all_null_batch"))
-        .unwrap();
+    let token = execution_budget_token(
+        &rt,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("mixed_all_null_batch"),
+    )
+    .unwrap();
     let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
         &rt,
         &source,
@@ -781,9 +783,9 @@ fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: Ty
             SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
         ),
     );
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_source_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_source_read"))
+            .unwrap();
     let ge_outcome =
         DataFrame::read_parquet_source_chunk_with_budget(&rt, &ge_source, chunk, SourceReadMode::FinalOutput, &token)
             .unwrap();
@@ -808,9 +810,9 @@ fn decimal_reader_batch_predicate_reads_decimal32_backed_chunks() {
     );
     let predicate = build_local_parquet_reader_batch_predicate(&rt, &source, plan.chunks(), &predicate).unwrap();
     let source = source.with_reader_predicate(std::sync::Arc::new(predicate)).unwrap();
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_batch_read"))
+            .unwrap();
 
     let outcome = DataFrame::read_parquet_source_chunks_with_budget(
         &rt,
@@ -1014,9 +1016,9 @@ fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_inpu
     let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
     assert_eq!(plan.chunks().len(), 5);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+            .unwrap();
     let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
         &rt,
         &source,
@@ -1071,9 +1073,9 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     assert_eq!(plan.chunks().len(), 2);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+            .unwrap();
     let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
         &rt,
         &source,
@@ -1139,9 +1141,9 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     assert_eq!(plan.chunks().len(), 2);
     assert!(plan.chunks().iter().all(SourceChunk::selects_all_known_file_row_groups));
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+            .unwrap();
     let outcome = DataFrame::read_parquet_source_chunks_with_budget(
         &rt,
         &source,
@@ -1185,9 +1187,9 @@ fn read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_read
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     assert_eq!(plan.chunks().len(), 2);
 
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("remote_batch_read"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("remote_batch_read"))
+            .unwrap();
     let error = DataFrame::read_parquet_source_chunks_with_budget(
         &rt,
         &source,
@@ -1349,7 +1351,6 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
         &rt,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("source_read"),
         lease,
-        ExecutionBudgetEnforcement::QueryDomainMember,
     );
 
     reset_exec_observation();
@@ -1432,9 +1433,11 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("host_buffer_source_read"))
-        .unwrap();
+    let token = execution_budget_token(
+        &rt,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("host_buffer_source_read"),
+    )
+    .unwrap();
 
     reset_exec_observation();
     let outcome = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
@@ -1533,8 +1536,8 @@ fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_
     assert_eq!(error_context_value(&err, "expected_path").as_deref(), Some(source_b_path.to_str().unwrap()));
     assert_eq!(error_context_value(&err, "actual_path").as_deref(), Some(source_a_path.to_str().unwrap()));
 
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
+        .unwrap();
     let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
         &source_b,
@@ -1606,8 +1609,8 @@ fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_fi
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
 
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
+        .unwrap();
     let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
         &source_b,
@@ -1714,8 +1717,8 @@ fn read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_sourc
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("partition_null_for_non_nullable_column"));
     assert_eq!(error_context_value(&err, "partition_column").as_deref(), Some("part"));
 
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
+        .unwrap();
     let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
         &non_nullable_source,
@@ -1796,8 +1799,8 @@ fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values(
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
+        .unwrap();
 
     let outcome = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
@@ -1888,7 +1891,7 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token = rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(1).with_boundary("source_read")).unwrap();
 
     let err = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
@@ -1902,7 +1905,7 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("source_read"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
@@ -1939,7 +1942,7 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budge
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("host_buffer_source_read")).unwrap();
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(1).with_boundary("host_buffer_source_read")).unwrap();
 
     let err = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
         &rt,
@@ -1978,12 +1981,12 @@ fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token = rt
-        .execution_budget_token(
-            ExecutionBudgetRequest::new(DataFrame::minimum_parquet_source_read_budget_bytes())
-                .with_boundary("source_read_minimum"),
-        )
-        .unwrap();
+    let token = execution_budget_token(
+        &rt,
+        ExecutionBudgetRequest::new(DataFrame::minimum_parquet_source_read_budget_bytes())
+            .with_boundary("source_read_minimum"),
+    )
+    .unwrap();
 
     let outcome = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
@@ -2017,9 +2020,9 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read_strings"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read_strings"))
+            .unwrap();
 
     let outcome = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
@@ -2066,9 +2069,11 @@ fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadat
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     let chunk = &plan.chunks()[0];
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("estimated_source_read"))
-        .unwrap();
+    let token = execution_budget_token(
+        &rt,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("estimated_source_read"),
+    )
+    .unwrap();
 
     assert!(plan.row_group_metadata_available());
     assert!(!plan.size_estimate_based());
@@ -2217,8 +2222,8 @@ fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_row_group_rows_metadata_mismatch"));
 
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
+        .unwrap();
     let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
         &rt,
         &source_b,
