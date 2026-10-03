@@ -77,8 +77,7 @@ pub(in crate::exec) fn assemble_knn_output(
     require_series_contract_for(&VECTOR_OPERATIONS, &distances_f32, TypeId::Float32, output_rows, "distances")?;
 
     let runtime = context.runtime()?;
-    let execution =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let execution = runtime.exec();
     let k_u64 = u64::try_from(params.k).map_err(|_| {
         QueryError::new(
             QueryErrorCode::SizeOverflow,
@@ -94,20 +93,21 @@ pub(in crate::exec) fn assemble_knn_output(
         output_rows,
         "failed to construct kNN output ordinals on device",
     )?;
-    let query_ordinal = output_ordinal.div_scalar_in(k_u64, &execution).map_err(|error| {
+    let query_ordinal = output_ordinal.on(execution).div_scalar(k_u64).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN query ordinals on device", error)
     })?;
-    let query_gather_map = query_ordinal.astype_in(TypeId::Int32, &execution).map_err(|error| {
+    let query_gather_map = query_ordinal.on(execution).astype(TypeId::Int32).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN query gather map on device", error)
     })?;
     let query_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.queries.row_id, queries, "queries")?
-        .gather_in(&query_gather_map, &execution)
+        .on(execution)
+        .gather(&query_gather_map)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN query ids on device", error))?;
 
     let is_sentinel = params
         .missing_neighbor
         .map(|missing| {
-            neighbor_ordinals_i64.eq_scalar_in(missing, &execution).map_err(|error| {
+            neighbor_ordinals_i64.on(execution).eq_scalar(missing).map_err(|error| {
                 cudf_query_error(ASSEMBLY_OPERATION, "failed to identify missing kNN neighbors on device", error)
             })
         })
@@ -136,7 +136,7 @@ pub(in crate::exec) fn assemble_knn_output(
     keys.extend(["distance", "neighbor_ordinal"]);
     descending.extend([descending_distance, false]);
     let sorted = unsorted
-        .with_execution(&execution)
+        .on(execution)
         .sort_values(
             keys,
             CudfSortOptions::new()
@@ -148,9 +148,10 @@ pub(in crate::exec) fn assemble_knn_output(
             cudf_query_error(ASSEMBLY_OPERATION, "failed to deterministically order kNN neighbors on device", error)
         })?;
     let rank = output_ordinal
-        .rem_scalar_in(k_u64, &execution)
-        .and_then(|rank| rank.add_scalar_in(1_u64, &execution))
-        .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
+        .on(execution)
+        .rem_scalar(k_u64)
+        .and_then(|rank| rank.on(execution).add_scalar(1_u64))
+        .and_then(|rank| rank.on(execution).astype(TypeId::UInt32))
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN ranks on device", error))?;
     let ranked = sorted
         .with_column("rank", rank)
@@ -158,9 +159,9 @@ pub(in crate::exec) fn assemble_knn_output(
     let filtered = if params.missing_neighbor.is_some() {
         let valid = ranked
             .series("is_sentinel")
-            .and_then(|sentinel| sentinel.eq_scalar_in(false, &execution))
+            .and_then(|sentinel| sentinel.on(execution).eq_scalar(false))
             .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to mask missing kNN neighbors", error))?;
-        ranked.filter(&valid).map_err(|error| {
+        ranked.on(Exec::RETAINED).filter(&valid).map_err(|error| {
             cudf_query_error(ASSEMBLY_OPERATION, "failed to omit missing kNN neighbors on device", error)
         })?
     } else {
@@ -169,13 +170,14 @@ pub(in crate::exec) fn assemble_knn_output(
     let neighbor_ordinals_i64 = filtered
         .series("neighbor_ordinal")
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to read valid kNN neighbor ordinals", error))?;
-    let neighbor_gather_map = neighbor_ordinals_i64.astype_in(TypeId::Int32, &execution).map_err(|error| {
+    let neighbor_gather_map = neighbor_ordinals_i64.on(execution).astype(TypeId::Int32).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
     })?;
     let neighbor_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.dataset.row_id, dataset, "dataset")?
-        .gather_in(&neighbor_gather_map, &execution)
+        .on(execution)
+        .gather(&neighbor_gather_map)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error))?;
-    let neighbor_ordinal = neighbor_ordinals_i64.astype_in(TypeId::UInt64, &execution).map_err(|error| {
+    let neighbor_ordinal = neighbor_ordinals_i64.on(execution).astype(TypeId::UInt64).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to cast kNN neighbor ordinals on device", error)
     })?;
     let output = filtered
@@ -204,29 +206,34 @@ pub(in crate::exec) fn assemble_pairwise_distance_output(
     require_libcudf_row_count(rows, "pairwise_distance")?;
     require_series_contract_for(&VECTOR_OPERATIONS, &distances, distance_type, rows, "distances")?;
     let runtime = context.runtime()?;
-    let execution =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let execution = runtime.exec();
     let sequence =
         relation_row_ordinals_for(&VECTOR_OPERATIONS, &runtime, rows, "failed to create pairwise output ordinals")?;
     // An empty axis has no valid divisor; the output still carries the stable five-column schema.
     let divisor = y.num_rows().max(1) as u64;
     let x_ordinal = sequence
-        .div_scalar_in(divisor, &execution)
+        .on(execution)
+        .div_scalar(divisor)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive x ordinals", error))?;
     let y_ordinal = sequence
-        .rem_scalar_in(divisor, &execution)
+        .on(execution)
+        .rem_scalar(divisor)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive y ordinals", error))?;
     let x_map = x_ordinal
-        .astype_in(TypeId::Int32, &execution)
+        .on(execution)
+        .astype(TypeId::Int32)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast x ordinals", error))?;
     let y_map = y_ordinal
-        .astype_in(TypeId::Int32, &execution)
+        .on(execution)
+        .astype(TypeId::Int32)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast y ordinals", error))?;
     let x_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.x.row_id, x, "x")?
-        .gather_in(&x_map, &execution)
+        .on(execution)
+        .gather(&x_map)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather x ids", error))?;
     let y_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.y.row_id, y, "y")?
-        .gather_in(&y_map, &execution)
+        .on(execution)
+        .gather(&y_map)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather y ids", error))?;
     let output = runtime
         .empty_dataframe()
@@ -255,23 +262,25 @@ pub(in crate::exec) fn assemble_top_k_output(
     require_series_contract_for(&VECTOR_OPERATIONS, &positions, TypeId::Int64, rows, "positions")?;
     require_series_contract_for(&VECTOR_OPERATIONS, &values, TypeId::Float32, rows, "values")?;
     let runtime = context.runtime()?;
-    let execution =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let execution = runtime.exec();
     let sequence = relation_row_ordinals_for(&VECTOR_OPERATIONS, &runtime, rows, "failed to create Top-K ordinals")?;
     let row_ordinal = sequence
-        .div_scalar_in(params.k as u64, &execution)
+        .on(execution)
+        .div_scalar(params.k as u64)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive Top-K row ordinals", error))?;
     let gather_map = row_ordinal
-        .astype_in(TypeId::Int32, &execution)
+        .on(execution)
+        .astype(TypeId::Int32)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast Top-K ordinals", error))?;
     let id = relation_id_series_for(&VECTOR_OPERATIONS, &params.input.row_id, input, "input")?
-        .gather_in(&gather_map, &execution)
+        .on(execution)
+        .gather(&gather_map)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather Top-K ids", error))?;
     let sorted = runtime
         .empty_dataframe()
         .assign([("row_ordinal", row_ordinal), ("id", id), ("position", positions), ("value", values)])
         .and_then(|frame| {
-            frame.with_execution(&execution).sort_values(
+            frame.on(execution).sort_values(
                 ["row_ordinal", "value", "position"],
                 CudfSortOptions::new()
                     .with_descending(vec![false, !params.select_min, false])
@@ -281,9 +290,10 @@ pub(in crate::exec) fn assemble_top_k_output(
         })
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to order Top-K output", error))?;
     let rank = sequence
-        .rem_scalar_in(params.k as u64, &execution)
-        .and_then(|rank| rank.add_scalar_in(1_u64, &execution))
-        .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
+        .on(execution)
+        .rem_scalar(params.k as u64)
+        .and_then(|rank| rank.on(execution).add_scalar(1_u64))
+        .and_then(|rank| rank.on(execution).astype(TypeId::UInt32))
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive Top-K ranks", error))?;
     let output = sorted
         .with_column("rank", rank)

@@ -28,7 +28,7 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     // it instead of attaching a second member, and their outputs stay valid
     // after the producing token drops.
     let outcome =
-        admitted_context.context().runtime().unwrap().series_from_value_with_budget(7i32, 1024, &token).unwrap();
+        token.run("runtime::series_from_value", |exec| admitted_context.context().runtime().unwrap().on(exec)?.series_from_value(7i32, 1024)).unwrap();
     let usage_after_alloc = admitted_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
     assert!(usage_after_alloc.peak_bytes > 0);
     assert!(usage_after_alloc.active_members >= 1);
@@ -39,11 +39,10 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
             cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_admission_policy_second_stage"),
         )
         .expect("the shared member accepts the next stage token on the same stream");
-    let second = admitted_context
+    let second = shared_member_token.run("runtime::series_from_value", |exec| admitted_context
         .context()
         .runtime()
-        .unwrap()
-        .series_from_value_with_budget(9i32, 1024, &shared_member_token)
+        .unwrap().on(exec)?.series_from_value(9i32, 1024))
         .unwrap();
     drop(second);
     drop(outcome);
@@ -587,10 +586,9 @@ fn query_service_handle_binds_secondary_context_to_dedicated_stream() {
     // Secondary acquires keep the same admitted device while binding a dedicated
     // CUDA stream so concurrent native fragments can each create a live
     // query-domain budget token (cuDF rejects two live tokens on one stream).
-    assert_eq!(first_runtime.placement().device, second_runtime.placement().device);
+    assert_eq!(first_runtime.device(), second_runtime.device());
     assert!(!Arc::ptr_eq(&first_runtime, &second_runtime));
-    let lease = first_runtime.lease_anchor();
-    assert!(!second_runtime.matches_lease_anchor(&lease));
+    assert_ne!(first_runtime.binding_id(), second_runtime.binding_id());
     assert_ne!(first_runtime.placement().stream_debug, second_runtime.placement().stream_debug);
 
     // Concurrent live query-domain budget tokens must succeed on both contexts.

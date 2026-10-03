@@ -2,9 +2,9 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use super::{CudaStream, ExecutionOverrides, Runtime};
+use super::{CudaStream, Exec, Runtime};
 use crate::core::{
-    error::{BudgetExhaustionDetail, Error, ErrorCode, Result},
+    error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, Result},
     memory::{DeviceMemoryResource, ReservationUsage, StreamReservationLease},
 };
 
@@ -165,6 +165,21 @@ impl ExecutionBudgetReport {
     }
 }
 
+/// Completes a budgeted operation's report from its output.
+///
+/// Only cuDF types implement it, so every report comes from the token's
+/// allocator snapshot and the output that produced it.
+pub trait CompleteReport {
+    fn complete_report(&self, report: ExecutionBudgetReport) -> Result<ExecutionBudgetReport>;
+}
+
+/// The output of an operation [`ExecutionBudgetToken::run`] runs: a
+/// `DataFrame`, `Series`, `Column`, or prepared sort. Its device footprint
+/// and rows complete the operation's report.
+pub trait BudgetedOutput: CompleteReport {}
+
+impl<T: CompleteReport> BudgetedOutput for T {}
+
 /// Result wrapper for an operation that executed with a budget token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedExecutionOutcome<T> {
@@ -191,6 +206,11 @@ impl<T> BudgetedExecutionOutcome<T> {
 
     pub fn into_parts(self) -> (T, ExecutionBudgetReport) {
         (self.value, self.report)
+    }
+
+    /// Convert the value, keeping the report.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> BudgetedExecutionOutcome<U> {
+        BudgetedExecutionOutcome { value: f(self.value), report: self.report }
     }
 }
 
@@ -270,8 +290,26 @@ impl ExecutionBudgetToken {
     }
 
     /// Borrow this token as an execution override for one operation.
-    pub fn execution_overrides(&self) -> ExecutionOverrides<'_> {
-        self.lease.execution_overrides()
+    pub fn exec(&self) -> Exec<'_> {
+        self.lease.exec()
+    }
+
+    /// Runs `f` on this token's stream and memory resource, then reports the
+    /// member's allocator usage with the output's footprint and rows.
+    ///
+    /// The member lease enforces the allocation limit; the report records
+    /// what the operation used. A resource or dependency failure carries this
+    /// token's budget detail.
+    pub fn run<T: BudgetedOutput>(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(Exec<'_>) -> Result<T>,
+    ) -> Result<BudgetedExecutionOutcome<T>> {
+        let value = f(self.exec()).map_err(|error| self.annotate_execution_error(error, operation))?;
+        let report = value
+            .complete_report(self.reservation_enforced_report())
+            .map_err(|error| error.reanchor_if_needed(operation))?;
+        Ok(BudgetedExecutionOutcome::new(value, report))
     }
 
     pub(crate) fn reservation_enforced_report(&self) -> ExecutionBudgetReport {
@@ -290,5 +328,14 @@ impl ExecutionBudgetToken {
 
     pub(crate) fn annotate_error(&self, err: Error, operation: &'static str) -> Error {
         err.reanchor_if_needed(operation).with_budget_exhaustion_if_absent(self.budget_detail(operation))
+    }
+
+    /// `error` from an operation under this token, with the budget detail
+    /// when the failure is a resource or dependency failure.
+    pub(crate) fn annotate_execution_error(&self, error: Error, operation: &'static str) -> Error {
+        match error.kind() {
+            ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => self.annotate_error(error, operation),
+            _ => error.reanchor_if_needed(operation),
+        }
     }
 }

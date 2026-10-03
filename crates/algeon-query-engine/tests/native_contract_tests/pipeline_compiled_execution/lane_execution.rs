@@ -380,8 +380,8 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         panic!("single chunk aggregate retains its output");
     };
     assert_eq!(
-        handle.frame().placement().bundle_id,
-        handle.runtime().placement().bundle_id,
+        (handle.frame().placement().stream_debug, handle.frame().placement().memory_resource_debug),
+        (handle.runtime().placement().stream_debug, handle.runtime().placement().memory_resource_debug),
         "a lane-produced resident frame must be adopted onto the root runtime"
     );
     let handle = handle.clone();
@@ -1332,8 +1332,8 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         panic!("resident join retains its output");
     };
     assert_eq!(
-        handle.frame().placement().bundle_id,
-        handle.runtime().placement().bundle_id,
+        (handle.frame().placement().stream_debug, handle.frame().placement().memory_resource_debug),
+        (handle.runtime().placement().stream_debug, handle.runtime().placement().memory_resource_debug),
         "a resident join output is adopted onto the root runtime"
     );
     let handle = handle.clone();

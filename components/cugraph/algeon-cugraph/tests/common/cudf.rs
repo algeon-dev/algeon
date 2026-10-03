@@ -146,7 +146,11 @@ pub fn write_parquet_dataframe(df: &cudf::DataFrame, path: &Path) {
 }
 
 pub fn read_parquet_dataframe(path: &Path, runtime: &cudf::Runtime) -> cudf::DataFrame {
-    cudf::DataFrame::read_parquet(runtime, path).expect("read parquet")
+    cudf::DataFrame::read_parquet(
+        cudf::ParquetReadOptions::builder().filepath(path).with_runtime(runtime).build(),
+        cudf::Exec::RETAINED,
+    )
+    .expect("read parquet")
 }
 
 pub struct TempParquetFixture {

@@ -14,7 +14,7 @@ use arrow::{
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use cudf::{
-    DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, ExecutionPlacement,
+    DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, DeviceId, ExecutionPlacement,
     frame::dataframe::{
         ColumnMemoryIdentity, GpuRecordBatch, HostBatchCursor as CudfHostBatchCursor, HostBatchCursorConfig,
         InfoDetail, PreparedHostBatch as CudfPreparedHostBatch,
@@ -222,6 +222,11 @@ impl GpuDataFrame {
     /// Execution placement observed when the frame entered the engine.
     pub fn placement(&self) -> ExecutionPlacement {
         self.placement
+    }
+
+    /// The CUDA device of the frame.
+    pub fn device(&self) -> DeviceId {
+        self.placement.device
     }
 
     /// Current row count reported by the cuDF frame.
@@ -441,13 +446,13 @@ impl GpuResultHandle {
         schema: SchemaRef,
         resident_owner: Option<ResidentOwnerLease>,
     ) -> Result<Self> {
-        if frame.placement().device != context.runtime()?.device() {
+        if frame.device() != context.runtime()?.device() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "query_engine.gpu_result_handle",
                 "native GPU result frame device does not match the execution context",
             )
-            .with_fact("frame_device", frame.placement().device.ordinal())
+            .with_fact("frame_device", frame.device().ordinal())
             .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
@@ -918,13 +923,13 @@ impl GpuFilteredJoinBuildHandle {
         filtered_join: DataFrameFilteredJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if filtered_join.build().placement().device != context.runtime()?.device() {
+        if filtered_join.build().device() != context.runtime()?.device() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "query_engine.gpu_filtered_join_build_handle",
                 "native GPU filtered-join build artifact device does not match the execution context",
             )
-            .with_fact("build_device", filtered_join.build().placement().device.ordinal())
+            .with_fact("build_device", filtered_join.build().device().ordinal())
             .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let device_allocated_size_bytes =
@@ -968,13 +973,13 @@ impl GpuHashJoinBuildHandle {
         hash_join: DataFrameHashJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if hash_join.build().placement().device != context.runtime()?.device() {
+        if hash_join.build().device() != context.runtime()?.device() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "query_engine.gpu_hash_join_build_handle",
                 "native GPU hash-join build artifact device does not match the execution context",
             )
-            .with_fact("build_device", hash_join.build().placement().device.ordinal())
+            .with_fact("build_device", hash_join.build().device().ordinal())
             .with_fact("runtime_device", context.runtime()?.device().ordinal()));
         }
         let device_allocated_size_bytes =
@@ -1024,7 +1029,7 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use cudf::{DataFrame, ops::expr::col};
+    use cudf::{DataFrame, Exec, ops::expr::col};
     use query_planning::error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus};
 
     use super::*;
@@ -1407,7 +1412,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
-        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let mixed = source.frame().on(Exec::RETAINED).with_columns([("fresh", col("id") + 1i32)]).unwrap();
         let fresh_only = mixed.select(["fresh"]).unwrap();
         let fresh_bytes = GpuDataFrame::new(fresh_only).device_allocated_size_bytes().unwrap();
         let mixed_bytes = GpuDataFrame::new(mixed.clone()).device_allocated_size_bytes().unwrap();
@@ -1442,7 +1447,7 @@ mod tests {
         source.resident_owner.as_ref().unwrap().record_completion(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
-        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let mixed = source.frame().on(Exec::RETAINED).with_columns([("fresh", col("id") + 1i32)]).unwrap();
         let mixed = GpuDataFrame::try_new_with_source_residency(mixed, &source).unwrap();
         let selected = mixed.frame().select(["id"]).unwrap();
         let selected = GpuDataFrame::try_new_with_source_residency(selected, &mixed).unwrap();
@@ -1471,7 +1476,7 @@ mod tests {
         source.resident_owner.as_ref().unwrap().record_completion(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
-        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let mixed = source.frame().on(Exec::RETAINED).with_columns([("fresh", col("id") + 1i32)]).unwrap();
         let mixed = GpuDataFrame::try_new_with_source_residency(mixed, &source).unwrap();
         let selected = mixed.frame().select(["fresh"]).unwrap();
         let selected = GpuDataFrame::try_new_with_source_residency(selected, &mixed).unwrap();

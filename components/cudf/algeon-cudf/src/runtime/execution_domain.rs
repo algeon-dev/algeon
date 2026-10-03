@@ -34,27 +34,16 @@
 //! operations execute on the correct GPU regardless of the calling thread's
 //! current CUDA device.
 
+use std::sync::Arc;
 #[cfg(any(test, feature = "test-hooks"))]
 use std::{
     collections::HashMap,
     sync::{Mutex, OnceLock},
 };
-use std::{
-    num::NonZeroU64,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
 
 use super::{
-    affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeAffinityOwner},
-    binding_extension::BindingExtensions,
-    device::DeviceId,
-    device_guard::DeviceGuard,
-    event::CudaEvent,
-    placement::ExecutionPlacement,
-    stream::CudaStream,
+    binding_extension::BindingExtensions, binding_id::ExecutionBindingId, device::DeviceId, device_guard::DeviceGuard,
+    device_health, event::CudaEvent, placement::ExecutionPlacement, stream::CudaStream,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::core::error;
@@ -65,29 +54,20 @@ use crate::core::{
 
 #[cfg(any(test, feature = "test-hooks"))]
 static DEBUG_EXPLICIT_DOMAINS: OnceLock<Mutex<HashMap<u64, Arc<ExecutionDomain>>>> = OnceLock::new();
-static NEXT_WORKFLOW_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_BUNDLE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct ExecutionDomain {
     device: DeviceId,
-    authority: DeviceExecutionAuthority,
     // Binding extensions are dropped before the stream and memory resource.
     // Cross-crate native owners may borrow those handles during teardown.
     binding_extensions: Arc<BindingExtensions>,
     stream: Arc<CudaStream>,
     mr: Arc<DeviceMemoryResource>,
-    workflow_id: ExecutionWorkflowId,
-    bundle_id: ExecutionBundleId,
     binding_id: ExecutionBindingId,
-    affinity_owner: Arc<RuntimeAffinityOwner>,
     retained_lifetimes: RetainedLifetimes,
-    /// Parquet read/decompression scratch limit in bytes, or 0 for no limit.
-    parquet_pass_read_limit: u64,
-}
-
-/// Immutable device authority shared by all execution-domain FFI entry.
-pub(crate) struct DeviceExecutionAuthority {
-    device: DeviceId,
+    /// Identity that test helpers report for this domain: the explicit
+    /// identity of a test domain, or the binding identity otherwise.
+    #[cfg(any(test, feature = "test-hooks"))]
+    debug_identity: u64,
 }
 
 /// Scoped execution options whose lifetime proves owner-device entry.
@@ -102,38 +82,16 @@ impl EnteredExecution {
     pub(crate) fn options(&self) -> &cudf_sys::cudf_exec_options_t {
         &self.options
     }
-}
 
-impl DeviceExecutionAuthority {
-    fn new(device: DeviceId) -> Self {
-        Self { device }
-    }
-
-    fn enter(
-        &self,
-        stream: &CudaStream,
-        mr: &DeviceMemoryResource,
-        parquet_pass_read_limit: u64,
-    ) -> Result<EnteredExecution> {
-        let entry = DeviceGuard::enter(self.device, "execution_domain::enter")?;
-        let mut flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
-        let mut reserved = [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS];
+    /// Bound the Parquet read and decompression scratch of this execution to
+    /// `limit` bytes; `None` leaves reads unbounded.
+    pub(crate) fn with_parquet_pass_read_limit(mut self, limit: Option<u64>) -> Self {
         // The shim rejects the flag paired with a zero limit.
-        if parquet_pass_read_limit > 0 {
-            flags |= cudf_sys::CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT;
-            reserved[0] = parquet_pass_read_limit;
+        if let Some(limit) = limit.filter(|limit| *limit > 0) {
+            self.options.flags |= cudf_sys::CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT;
+            self.options.reserved[0] = limit;
         }
-        Ok(EnteredExecution {
-            _entry: entry,
-            options: cudf_sys::cudf_exec_options_t {
-                struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
-                device: self.device.ordinal_raw(),
-                flags,
-                stream: stream.as_raw(),
-                mr: mr.as_raw(),
-                reserved,
-            },
-        })
+        self
     }
 }
 
@@ -186,46 +144,6 @@ impl RetainedLifetimes {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ExecutionWorkflowId(NonZeroU64);
-
-impl ExecutionWorkflowId {
-    fn new(value: u64) -> Result<Self> {
-        NonZeroU64::new(value).map(Self).ok_or_else(|| {
-            Error::new_with(
-                ErrorCode::InvariantViolation,
-                "execution_domain::ExecutionWorkflowId::new",
-                "execution workflow identity must be non-zero",
-            )
-            .with_detail("workflow_id", value.to_string())
-        })
-    }
-
-    fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ExecutionBundleId(NonZeroU64);
-
-impl ExecutionBundleId {
-    fn new(value: u64) -> Result<Self> {
-        NonZeroU64::new(value).map(Self).ok_or_else(|| {
-            Error::new_with(
-                ErrorCode::InvariantViolation,
-                "execution_domain::ExecutionBundleId::new",
-                "execution bundle identity must be non-zero",
-            )
-            .with_detail("bundle_id", value.to_string())
-        })
-    }
-
-    fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
 impl ExecutionDomain {
     fn borrowed_override_binding_mismatch(
         operation: &'static str,
@@ -245,32 +163,22 @@ impl ExecutionDomain {
             )
     }
 
-    fn next_workflow_id() -> Result<ExecutionWorkflowId> {
-        ExecutionWorkflowId::new(NEXT_WORKFLOW_ID.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn next_bundle_id() -> Result<ExecutionBundleId> {
-        ExecutionBundleId::new(NEXT_BUNDLE_ID.fetch_add(1, Ordering::Relaxed))
-    }
-
     pub(crate) fn from_handles_on_device(
         device: DeviceId,
         stream: CudaStream,
         mr: DeviceMemoryResource,
     ) -> Result<Arc<Self>> {
         mr.register_stream_for_retirement(&stream);
+        let binding_id = ExecutionBindingId::next()?;
         Ok(Arc::new(Self {
-            parquet_pass_read_limit: 0,
             device,
-            authority: DeviceExecutionAuthority::new(device),
             binding_extensions: Arc::new(BindingExtensions::default()),
             stream: Arc::new(stream),
             mr: Arc::new(mr),
-            workflow_id: Self::next_workflow_id()?,
-            bundle_id: Self::next_bundle_id()?,
-            binding_id: ExecutionBindingId::next()?,
-            affinity_owner: RuntimeAffinityOwner::new()?,
+            binding_id,
             retained_lifetimes: RetainedLifetimes::default(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            debug_identity: binding_id.get(),
         }))
     }
 
@@ -288,21 +196,17 @@ impl ExecutionDomain {
             return Ok(Arc::clone(domain));
         }
 
-        let device = DeviceId::current().unwrap_or(DeviceId::DEFAULT);
-        let stream = Arc::new(CudaStream::new()?);
-        let mr = Arc::new(DeviceMemoryResource::cuda()?);
+        let device = DeviceId::DEFAULT;
+        let stream = Arc::new(CudaStream::new_on(device)?);
+        let mr = Arc::new(DeviceMemoryResource::cuda_on(device)?);
         let domain = Arc::new(Self {
-            parquet_pass_read_limit: 0,
             device,
-            authority: DeviceExecutionAuthority::new(device),
             binding_extensions: Arc::new(BindingExtensions::default()),
             stream,
             mr,
-            workflow_id: ExecutionWorkflowId::new(identity)?,
-            bundle_id: Self::next_bundle_id()?,
             binding_id: ExecutionBindingId::next()?,
-            affinity_owner: RuntimeAffinityOwner::new()?,
             retained_lifetimes: RetainedLifetimes::default(),
+            debug_identity: identity,
         });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
@@ -313,15 +217,17 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn debug_id(&self) -> u64 {
-        self.workflow_id.get()
+        #[cfg(any(test, feature = "test-hooks"))]
+        return self.debug_identity;
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        self.binding_id.get()
     }
 
     pub(crate) fn debug_label(&self) -> String {
         format!(
-            "explicit:{}(workflow={},bundle={},device={},stream={},memory_resource={})",
-            self.workflow_id.get(),
-            self.workflow_id.get(),
-            self.bundle_id.get(),
+            "domain:{}(binding={},device={},stream={},memory_resource={})",
+            self.debug_id(),
+            self.binding_id.get(),
             self.device.ordinal(),
             self.debug_stream_value(),
             self.debug_mr_value()
@@ -329,7 +235,7 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn debug_stream_value(&self) -> usize {
-        self.stream.debug_handle_value().unwrap_or(0)
+        self.stream.__debug_raw_handle_value()
     }
 
     pub(crate) fn debug_mr_value(&self) -> usize {
@@ -347,15 +253,9 @@ impl ExecutionDomain {
     pub(crate) fn placement(&self) -> ExecutionPlacement {
         ExecutionPlacement {
             device: self.device,
-            workflow_id: self.workflow_id.get(),
-            bundle_id: self.bundle_id.get(),
             stream_debug: self.debug_stream_value(),
             memory_resource_debug: self.debug_mr_value(),
         }
-    }
-
-    pub(crate) fn affinity_id(&self) -> RuntimeAffinityId {
-        self.affinity_owner.id()
     }
 
     pub(crate) fn binding_id(&self) -> ExecutionBindingId {
@@ -364,19 +264,6 @@ impl ExecutionDomain {
 
     pub(crate) fn binding_extensions(self: &Arc<Self>) -> &BindingExtensions {
         self.binding_extensions.as_ref()
-    }
-
-    pub(crate) fn affinity_anchor(&self) -> RuntimeAffinityAnchor {
-        RuntimeAffinityAnchor::new(&self.affinity_owner)
-    }
-
-    pub(crate) fn affinity_owner(&self) -> &Arc<RuntimeAffinityOwner> {
-        &self.affinity_owner
-    }
-
-    pub(crate) fn same_affinity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
-        left.affinity_owner.id() == right.affinity_owner.id()
-            && Arc::ptr_eq(&left.affinity_owner, &right.affinity_owner)
     }
 
     /// Synchronize this domain's stream so that the host can read device memory
@@ -415,27 +302,17 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn enter_execution(&self) -> Result<EnteredExecution> {
-        self.authority.enter(&self.stream, &self.mr, self.parquet_pass_read_limit)
-    }
-
-    /// Derives a domain whose Parquet reads decode in passes bounded by
-    /// `limit` bytes of read and decompression scratch.
-    pub(crate) fn with_parquet_pass_read_limit(input: &Arc<Self>, limit: u64) -> Arc<Self> {
-        if limit == input.parquet_pass_read_limit {
-            return Arc::clone(input);
-        }
-        Arc::new(Self {
-            device: input.device,
-            authority: DeviceExecutionAuthority::new(input.device),
-            binding_extensions: Arc::clone(&input.binding_extensions),
-            stream: Arc::clone(&input.stream),
-            mr: Arc::clone(&input.mr),
-            workflow_id: input.workflow_id,
-            bundle_id: input.bundle_id,
-            binding_id: input.binding_id,
-            affinity_owner: Arc::clone(&input.affinity_owner),
-            retained_lifetimes: input.retained_lifetimes.clone(),
-            parquet_pass_read_limit: limit,
+        let entry = DeviceGuard::enter(self.device, "execution_domain::enter")?;
+        Ok(EnteredExecution {
+            _entry: entry,
+            options: cudf_sys::cudf_exec_options_t {
+                struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
+                device: self.device.ordinal_raw(),
+                flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
+                stream: self.stream.as_raw(),
+                mr: self.mr.as_raw(),
+                reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+            },
         })
     }
 
@@ -486,17 +363,14 @@ impl ExecutionDomain {
         mr.register_stream_for_retirement(stream.as_ref());
 
         Ok(Arc::new(Self {
-            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
-            authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::new(BindingExtensions::default()),
             stream,
             mr,
-            workflow_id: input.workflow_id,
-            bundle_id: Self::next_bundle_id()?,
             binding_id: ExecutionBindingId::next()?,
-            affinity_owner: Arc::clone(&input.affinity_owner),
             retained_lifetimes: input.retained_lifetimes.clone(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            debug_identity: input.debug_identity,
         }))
     }
 
@@ -508,17 +382,14 @@ impl ExecutionDomain {
             return Ok(Arc::clone(input));
         };
         Ok(Arc::new(Self {
-            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
-            authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::clone(&input.binding_extensions),
             stream: Arc::clone(&input.stream),
             mr: Arc::clone(&input.mr),
-            workflow_id: input.workflow_id,
-            bundle_id: Self::next_bundle_id()?,
             binding_id: input.binding_id,
-            affinity_owner: Arc::clone(&input.affinity_owner),
             retained_lifetimes,
+            #[cfg(any(test, feature = "test-hooks"))]
+            debug_identity: input.debug_identity,
         }))
     }
 
@@ -527,53 +398,20 @@ impl ExecutionDomain {
             return Ok(Arc::clone(input));
         };
         Ok(Arc::new(Self {
-            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
-            authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::clone(&input.binding_extensions),
             stream: Arc::clone(&input.stream),
             mr: Arc::clone(&input.mr),
-            workflow_id: input.workflow_id,
-            bundle_id: Self::next_bundle_id()?,
             binding_id: input.binding_id,
-            affinity_owner: Arc::clone(&input.affinity_owner),
             retained_lifetimes,
+            #[cfg(any(test, feature = "test-hooks"))]
+            debug_identity: input.debug_identity,
         }))
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn debug_retained_lifetime_count(&self) -> usize {
         self.retained_lifetimes.len()
-    }
-
-    pub(crate) fn inherit_affinity(input: &Arc<Self>, source: &Arc<Self>) -> Result<Arc<Self>> {
-        if input.device != source.device {
-            return Err(Error::new_with(
-                ErrorCode::RuntimeBindingMismatch,
-                "runtime::Runtime::inherit_affinity_from",
-                "runtime affinity can only be inherited between runtimes on the same CUDA device",
-            )
-            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(input.device.ordinal_raw()))
-            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(source.device.ordinal_raw()))
-            .with_detail("reason", "cross_device_runtime_affinity")
-            .with_detail("remedy", "create the companion runtime on the same CUDA device as its base runtime"));
-        }
-        if Self::same_affinity(input, source) {
-            return Ok(Arc::clone(input));
-        }
-        Ok(Arc::new(Self {
-            parquet_pass_read_limit: input.parquet_pass_read_limit,
-            device: input.device,
-            authority: DeviceExecutionAuthority::new(input.device),
-            binding_extensions: Arc::clone(&input.binding_extensions),
-            stream: Arc::clone(&input.stream),
-            mr: Arc::clone(&input.mr),
-            workflow_id: input.workflow_id,
-            bundle_id: Self::next_bundle_id()?,
-            binding_id: input.binding_id,
-            affinity_owner: Arc::clone(&source.affinity_owner),
-            retained_lifetimes: input.retained_lifetimes.clone(),
-        }))
     }
 
     pub(crate) fn same_provenance(left: &Arc<Self>, right: &Arc<Self>) -> bool {
@@ -682,7 +520,7 @@ impl ConsumerCompletionFence {
                 .with_detail("target_domain", self.output.debug_label())
         };
         let _guard = DeviceGuard::new(input.device).map_err(decorate)?;
-        let barrier = CudaEvent::new().map_err(decorate)?;
+        let barrier = CudaEvent::new_on(input.device).map_err(decorate)?;
         barrier.record(input.stream.as_ref()).map_err(decorate)?;
         self.output.stream.wait_event(&barrier).map_err(decorate)?;
 
@@ -698,7 +536,7 @@ impl ConsumerCompletionFence {
         let operation = self.operation;
         let decorate = |e: Error| e.reanchor(operation).with_detail("output_domain", self.output.debug_label());
         let _guard = DeviceGuard::new(self.output.device).map_err(decorate)?;
-        let completion = CudaEvent::new().map_err(decorate)?;
+        let completion = CudaEvent::new_on(self.output.device).map_err(decorate)?;
         completion.record(self.output.stream.as_ref()).map_err(decorate)?;
         for input in &self.inputs {
             input.stream.wait_event(&completion).map_err(|e| {
@@ -723,16 +561,8 @@ impl Drop for ConsumerCompletionFence {
             // back to a host fence: block until the consuming work on the
             // output stream completes. After that, no input stream can
             // deallocate under an in-flight consumer. Slow but safe.
-            eprintln!(
-                "[cudf::ConsumerCompletionFence] warning: failed to order cross-stream input streams after consuming operation {}; falling back to host synchronization: {error}",
-                self.operation
-            );
-            if let Err(sync_error) = self.output.synchronize_for_host_visibility(self.operation) {
-                eprintln!(
-                    "[cudf::ConsumerCompletionFence] warning: host-synchronization fallback also failed after consuming operation {}; cross-stream input buffers may be reused while the consumer is still reading them: {sync_error}",
-                    self.operation
-                );
-            }
+            let fallback = self.output.synchronize_for_host_visibility(self.operation);
+            device_health::report_completion_fence_fallback(self.output.device, self.operation, &error, &fallback);
         }
     }
 }
@@ -764,5 +594,22 @@ mod tests {
         };
         assert_eq!(error.code(), ErrorCode::FatalCuda);
         assert_eq!(scope.remaining_call_count(), 1, "rejected options must not cross CUDA FFI");
+    }
+
+    #[test]
+    fn placement_reads_cached_handles_without_querying_the_current_device() {
+        let runtime = crate::Runtime::new().expect("runtime");
+        let series = runtime.series(&[1i32, 2, 3]).expect("series");
+        let scope = DeviceSafetyTestScope::install([DeviceEntryTestCall::GetDevice {
+            status: cudf_sys::CUDF_SUCCESS,
+            device: runtime.device().ordinal_raw(),
+        }]);
+
+        let placement = series.placement();
+
+        assert_eq!(placement.device, runtime.device());
+        assert_ne!(placement.stream_debug, 0);
+        assert_ne!(placement.memory_resource_debug, 0);
+        assert_eq!(scope.remaining_call_count(), 1, "placement must not enter the owner device");
     }
 }

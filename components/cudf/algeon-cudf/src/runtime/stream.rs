@@ -2,7 +2,7 @@
 //!
 //! This is an owned `rmm::cuda_stream` wrapper used either as a
 //! [`crate::Runtime`] default or as a borrowed
-//! [`crate::ExecutionOverrides`] override for one operation.
+//! [`crate::Exec`] override for one operation.
 //! The low-level `_ex` FFI shims in `cudf-sys` accept explicit stream handles,
 //! and `cudf` routes supported operations through the resolved stream for
 //! the active runtime/override context.
@@ -13,7 +13,10 @@ use std::{
 };
 
 use super::{
-    device::DeviceId, device_guard::DeviceEntryGuard, device_health::check_device_status_in, event::CudaEvent,
+    device::DeviceId,
+    device_guard::DeviceEntryGuard,
+    device_health::{check_device_status_in, record_teardown_failure},
+    event::CudaEvent,
 };
 use crate::core::{
     error::{self, Error, ErrorCode, Result},
@@ -105,8 +108,8 @@ impl AttemptStreamProviderRegistration {
         let retained_parent = parent.clone();
         let retained_fork_streams = fork_streams.to_vec();
         let _entry = DeviceEntryGuard::enter(parent.device(), operation)?;
-        let parent_raw = parent.interop_raw_handle()?;
-        let fork_streams_raw = fork_streams.iter().map(CudaStream::interop_raw_handle).collect::<Result<Vec<_>>>()?;
+        let parent_raw = parent.interop_raw_handle();
+        let fork_streams_raw = fork_streams.iter().map(CudaStream::interop_raw_handle).collect::<Vec<_>>();
         error::check_status_in(
             // SAFETY: all pointers refer to live CUDA streams retained by the
             // returned registration and by the caller's attempt owners.
@@ -165,7 +168,7 @@ impl AttemptStreamProviderRegistration {
             .with_detail("stream_device", stream.device().ordinal().to_string()));
         }
         let _entry = DeviceEntryGuard::enter(stream.device(), operation)?;
-        let raw = stream.interop_raw_handle()?;
+        let raw = stream.interop_raw_handle();
         let mut claimed_fork_index: usize = 0;
         error::check_status_in(
             // SAFETY: `self.parent_raw` and `raw` refer to live CUDA streams
@@ -195,7 +198,7 @@ impl Drop for AttemptStreamProviderRegistration {
         let status =
             unsafe { cudf_sys::cudf_stream_provider_unregister_attempt(self.parent_raw as *mut std::ffi::c_void) };
         if let Err(error) = error::check_status_in_without_device_report(status, operation) {
-            eprintln!("[cudf] failed to remove attempt stream provider route: {error}");
+            record_teardown_failure(self.parent.device(), operation, &error);
         }
     }
 }
@@ -207,7 +210,7 @@ impl Drop for AttemptStreamProviderAlias {
         // run even if the owner device is unhealthy or unavailable.
         let status = unsafe { cudf_sys::cudf_stream_provider_detach_attempt_stream(self.raw as *mut _) };
         if let Err(error) = error::check_status_in_without_device_report(status, operation) {
-            eprintln!("[cudf] failed to remove attempt stream provider alias: {error}");
+            record_teardown_failure(self.stream.device(), operation, &error);
         }
     }
 }
@@ -222,7 +225,7 @@ impl Drop for AttemptStreamProviderAlias {
 /// handle combinations.
 ///
 /// Use this with [`crate::Runtime::builder`] to supply an explicit default
-/// stream for retained provenance, or with [`crate::ExecutionOverrides::with_stream`] to
+/// stream for retained provenance, or with [`crate::Exec::with_stream`] to
 /// override one operation.
 #[derive(Clone)]
 pub struct CudaStream {
@@ -232,6 +235,9 @@ pub struct CudaStream {
 struct CudaStreamHandle {
     raw: Option<NonNull<cudf_sys::cudf_stream_handle_state>>,
     device: DeviceId,
+    /// The `cudaStream_t` behind `raw`, read once at creation so interop and
+    /// diagnostics never enter the device to read it again.
+    cuda_stream: usize,
 }
 
 // SAFETY: CUDA streams are thread-safe by design; operations can be enqueued
@@ -244,17 +250,28 @@ unsafe impl Sync for CudaStreamHandle {}
 impl CudaStream {
     /// Create a new CUDA stream on the calling thread's current device.
     pub fn new() -> Result<Self> {
-        let device = DeviceId::current()?;
+        Self::new_on(DeviceId::current()?)
+    }
+
+    /// Create a new CUDA stream on `device`.
+    pub fn new_on(device: DeviceId) -> Result<Self> {
         let _entry = DeviceEntryGuard::enter(device, "stream::new")?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         check_device_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, device, "stream::new")?;
-        Ok(Self {
-            handle: Arc::new(CudaStreamHandle {
-                raw: Some(error::require_non_null(handle, "stream::new", "CUDA stream")?),
-                device,
-            }),
-        })
+        let mut handle = CudaStreamHandle {
+            raw: Some(error::require_non_null(handle, "stream::new", "CUDA stream")?),
+            device,
+            cuda_stream: 0,
+        };
+        let mut cuda_stream = ptr::null_mut();
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_raw(handle.raw(), &mut cuda_stream) },
+            device,
+            "stream::new",
+        )?;
+        handle.cuda_stream = cuda_stream as usize;
+        Ok(Self { handle: Arc::new(handle) })
     }
 
     /// Record a completion event on this stream on its owner device, without
@@ -265,7 +282,7 @@ impl CudaStream {
     /// stream, which also waits for whatever the stream runs in between.
     pub fn record_completion_event(&self) -> Result<CudaEvent> {
         let _entry = DeviceEntryGuard::enter(self.device(), "stream::record_completion_event")?;
-        let event = CudaEvent::new()?;
+        let event = CudaEvent::new_on(self.device())?;
         event.record(self)?;
         Ok(event)
     }
@@ -358,22 +375,13 @@ impl CudaStream {
         self.handle.raw()
     }
 
-    pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
-        let _entry = DeviceEntryGuard::enter(self.device(), "stream::interop_raw_handle")?;
-        let mut out = std::ptr::null_mut();
-        check_device_status_in(
-            unsafe { cudf_sys::cudf_stream_raw(self.handle.raw(), &mut out) },
-            self.device(),
-            "stream::interop_raw_handle",
-        )?;
-        Ok(out)
+    /// The underlying `cudaStream_t`.
+    pub(crate) fn interop_raw_handle(&self) -> *mut std::ffi::c_void {
+        self.handle.cuda_stream as *mut std::ffi::c_void
     }
 
-    pub(crate) fn debug_handle_value(&self) -> Result<usize> {
-        self.interop_raw_handle().map(|raw| raw as usize)
-    }
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
-        self.debug_handle_value().unwrap_or(0)
+        self.handle.cuda_stream
     }
 }
 

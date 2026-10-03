@@ -2,7 +2,11 @@ use std::{
     cell::{Cell, RefCell},
     marker::PhantomData,
     ptr,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -27,6 +31,27 @@ use crate::{
 };
 
 #[derive(Debug)]
+
+struct ReleaseProbe(Arc<AtomicBool>);
+
+impl Drop for ReleaseProbe {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// A runtime whose execution domains retain a probe that records when the
+/// last of them is released.
+fn probed_runtime() -> (Arc<cudf::Runtime>, Arc<AtomicBool>) {
+    let released = Arc::new(AtomicBool::new(false));
+    let runtime = cudf::Runtime::builder()
+        .build()
+        .expect("runtime")
+        .with_retained_lifetime(Arc::new(ReleaseProbe(Arc::clone(&released))))
+        .expect("probed runtime");
+    (Arc::new(runtime), released)
+}
+
 struct TestCompletionWitness {
     fail: bool,
 }
@@ -279,8 +304,7 @@ fn test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hit
 
 #[test]
 fn test_graph_last_lease_releases_runtime_owner_after_graph_drop() {
-    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-    let affinity = runtime.affinity_anchor();
+    let (runtime, released) = probed_runtime();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
     let entered = handle.enter("test_graph_last_lease_releases_runtime_owner_after_graph_drop").expect("entered");
     let graph = dummy_runtime_bound_graph(&entered, None);
@@ -288,9 +312,9 @@ fn test_graph_last_lease_releases_runtime_owner_after_graph_drop() {
     drop(entered);
     drop(handle);
     drop(runtime);
-    assert!(affinity.is_alive(), "the graph lease must retain the runtime-bound owner");
+    assert!(!released.load(Ordering::SeqCst), "the graph lease must retain the runtime-bound owner");
     drop(graph);
-    assert!(!affinity.is_alive(), "graph teardown must release the final runtime-bound owner lease");
+    assert!(released.load(Ordering::SeqCst), "graph teardown must release the final runtime-bound owner lease");
 }
 
 #[test]
@@ -396,8 +420,7 @@ fn parked_graph_event_and_runtime_chain_fail_closed_on_device_query_failure() {
 
 #[test]
 fn test_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
-    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-    let affinity = runtime.affinity_anchor();
+    let (runtime, released) = probed_runtime();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
     let graph = {
         let entered = handle.enter("test_graph_drop_recovers_poisoned_use_gate_build").expect("entered build context");
@@ -419,15 +442,14 @@ fn test_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
 
     drop(handle);
     drop(runtime);
-    assert!(affinity.is_alive(), "the graph retains the poisoned runtime-bound owner");
+    assert!(!released.load(Ordering::SeqCst), "the graph retains the poisoned runtime-bound owner");
     drop(graph);
-    assert!(!affinity.is_alive(), "Graph::drop must recover the gate and release the owner");
+    assert!(released.load(Ordering::SeqCst), "Graph::drop must recover the gate and release the owner");
 }
 
 #[test]
 fn test_parked_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
-    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-    let affinity = runtime.affinity_anchor();
+    let (runtime, released) = probed_runtime();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
     let parked = {
         let entered =
@@ -451,9 +473,9 @@ fn test_parked_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
 
     drop(handle);
     drop(runtime);
-    assert!(affinity.is_alive(), "the parked graph retains the poisoned runtime-bound owner");
+    assert!(!released.load(Ordering::SeqCst), "the parked graph retains the poisoned runtime-bound owner");
     drop(parked);
-    assert!(!affinity.is_alive(), "ParkedGraph::drop must recover the gate and release the owner");
+    assert!(released.load(Ordering::SeqCst), "ParkedGraph::drop must recover the gate and release the owner");
 }
 
 #[test]
@@ -461,8 +483,7 @@ fn runtime_bound_native_owner_runs_graph_work_across_threads_and_drops_on_anothe
     const ITERATIONS: usize = 100;
     const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
-    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-    let affinity = runtime.affinity_anchor();
+    let (runtime, released) = probed_runtime();
     let (mut parked, native_owner) = {
         let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
         let entered = handle.enter("cross_thread_native_owner_build").expect("entered build context");
@@ -498,7 +519,7 @@ fn runtime_bound_native_owner_runs_graph_work_across_threads_and_drops_on_anothe
     }
 
     drop(runtime);
-    assert!(affinity.is_alive(), "the parked graph retains the runtime-bound native owner");
+    assert!(!released.load(Ordering::SeqCst), "the parked graph retains the runtime-bound native owner");
     let (dropped_tx, dropped_rx) = mpsc::sync_channel(1);
     let drop_worker = std::thread::spawn(move || {
         drop(parked);
@@ -506,30 +527,25 @@ fn runtime_bound_native_owner_runs_graph_work_across_threads_and_drops_on_anothe
     });
     dropped_rx.recv_timeout(STEP_TIMEOUT).expect("parked graph drop timed out");
     drop_worker.join().unwrap_or_else(|payload| std::panic::resume_unwind(payload));
-    assert!(!affinity.is_alive(), "cross-thread final drop must release the runtime owner without a cycle");
+    assert!(released.load(Ordering::SeqCst), "cross-thread final drop must release the runtime owner without a cycle");
 }
 
 #[test]
-fn test_graph_rejects_same_affinity_with_different_execution_binding() {
+fn test_graph_rejects_runtime_with_different_execution_binding() {
     let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
     let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
     let build_entered =
-        build_handle.enter("test_graph_rejects_same_affinity_with_different_execution_binding_build").expect("entered");
+        build_handle.enter("test_graph_rejects_runtime_with_different_execution_binding_build").expect("entered");
     let graph = dummy_runtime_bound_graph(&build_entered, None);
 
-    let independent = cudf::Runtime::builder().build().expect("independent runtime");
-    let companion = Arc::new(independent.inherit_affinity_from(&runtime).expect("companion affinity"));
-    assert_eq!(runtime.affinity_id(), companion.affinity_id());
+    let companion = Arc::new(cudf::Runtime::builder().build().expect("independent runtime"));
     assert_ne!(runtime.binding_id(), companion.binding_id());
     let other_handle = ResourceHandle::for_runtime(companion).expect("other handle");
     let other_entered =
-        other_handle.enter("test_graph_rejects_same_affinity_with_different_execution_binding_use").expect("entered");
+        other_handle.enter("test_graph_rejects_runtime_with_different_execution_binding_use").expect("entered");
 
     let err = graph
-        .retain_runtime_bound_handle(
-            &other_entered,
-            "test_graph_rejects_same_affinity_with_different_execution_binding",
-        )
+        .retain_runtime_bound_handle(&other_entered, "test_graph_rejects_runtime_with_different_execution_binding")
         .expect_err("different execution binding must fail before graph work");
     assert_eq!(err.kind(), ErrorKind::InvalidState);
     assert_eq!(graph.resource_handle_leases.borrow().len(), 1);

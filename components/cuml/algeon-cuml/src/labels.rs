@@ -1,4 +1,4 @@
-use cudf::{Series, TypeId};
+use cudf::{Exec, Series, TypeId};
 
 use crate::{
     error::{ErrorCode, FailurePhase, Result, error, from_cudf},
@@ -6,7 +6,7 @@ use crate::{
 };
 
 pub(crate) fn adopt_labels(resources: &CumlResources, labels: &Series, op: &'static str) -> Result<Series> {
-    if labels.placement().device != resources.device() {
+    if labels.device() != resources.device() {
         return Err(error(
             ErrorCode::RuntimeBindingMismatch,
             FailurePhase::Preflight,
@@ -34,8 +34,8 @@ pub(crate) fn validate_class_labels(labels: &Series, op: &'static str) -> Result
         .with_detail("null_count", labels.null_count()));
     }
     // Only scalar reduction results cross to host; class columns remain on device.
-    let (min, max) = labels.minmax_values::<i32>().map_err(|e| from_cudf(op, e))?;
-    let classes = labels.nunique().map_err(|e| from_cudf(op, e))?;
+    let (min, max) = labels.on(Exec::RETAINED).minmax_values::<i32>().map_err(|e| from_cudf(op, e))?;
+    let classes = labels.on(Exec::RETAINED).nunique().map_err(|e| from_cudf(op, e))?;
     if classes < 2 || min != Some(0) || max != i32::try_from(classes - 1).ok() {
         return Err(error(
             ErrorCode::LabelOutOfRange,
@@ -68,8 +68,14 @@ pub(crate) fn validate_finite_targets(targets: &Series, op: &'static str) -> Res
             "regression targets must not contain nulls",
         ));
     }
-    let nan = targets.is_nan().map_err(|e| from_cudf(op, e))?.any_value().map_err(|e| from_cudf(op, e))?;
-    let (min, max) = targets.minmax_values::<f32>().map_err(|e| from_cudf(op, e))?;
+    let nan = targets
+        .on(Exec::RETAINED)
+        .is_nan()
+        .map_err(|e| from_cudf(op, e))?
+        .on(Exec::RETAINED)
+        .any_value()
+        .map_err(|e| from_cudf(op, e))?;
+    let (min, max) = targets.on(Exec::RETAINED).minmax_values::<f32>().map_err(|e| from_cudf(op, e))?;
     if nan || min.is_none_or(|v| !v.is_finite()) || max.is_none_or(|v| !v.is_finite()) {
         return Err(error(ErrorCode::NonFiniteInput, FailurePhase::Preflight, op, "regression targets must be finite"));
     }

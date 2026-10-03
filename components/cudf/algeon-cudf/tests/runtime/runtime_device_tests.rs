@@ -1,6 +1,6 @@
 //! Runtime device integration tests; single-GPU (always run).
 
-use cudf::{DataFrame, DeviceId, Runtime, SortOptions};
+use cudf::{DataFrame, DeviceId, Exec, Runtime, SortOptions};
 
 use crate::common::{run_named_cases, series};
 
@@ -17,7 +17,7 @@ fn dataframe_ops_with_device_runtime() {
     let scores = series::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
     let result: Vec<i32> = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(result, vec![1, 1, 3, 4, 5]);
 }

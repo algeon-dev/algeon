@@ -1,3 +1,5 @@
+use cudf::Exec;
+
 use super::{
     AggregateExpr, AggregateFunction, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, QueryError,
     QueryErrorCode, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error, global_count_star_expr,
@@ -56,7 +58,7 @@ fn global_count_series_impl(
                 Some((token, metrics)) => prepared.execute_with_budget(token).map(|outcome| {
                     budgeted_value(outcome, metrics, "query_engine.global_aggregate.count_distinct").into_scalar()
                 }),
-                None => prepared.execute().map(cudf::ScalarReductionOutput::into_scalar),
+                None => prepared.execute(Exec::RETAINED).map(cudf::ScalarReductionOutput::into_scalar),
             }
             .map_err(|error| {
                 cudf_query_error(
@@ -105,10 +107,10 @@ fn global_count_series_impl(
         .with_fact("alias", expr.alias.as_str())
         .with_fact("count", count)
     })?;
+    let runtime = context.runtime()?;
     match token {
-        Some((token, metrics)) => context
-            .runtime()?
-            .series_from_value_with_budget(count, 1, token)
+        Some((token, metrics)) => token
+            .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(count, 1))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.global_aggregate.count_output",
@@ -119,7 +121,7 @@ fn global_count_series_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.global_aggregate.count_output")),
         None => {
-            let scalar = context.runtime()?.scalar(count).map_err(|error| {
+            let scalar = runtime.scalar(count).map_err(|error| {
                 cudf_query_error(
                     "query_engine.global_aggregate.count",
                     "failed to construct native global count scalar",
@@ -127,7 +129,7 @@ fn global_count_series_impl(
                 )
                 .with_fact("alias", expr.alias.as_str())
             })?;
-            context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
+            runtime.series_from_scalar(&scalar, 1).map_err(|error| {
                 cudf_query_error(
                     "query_engine.global_aggregate.count_output",
                     "failed to construct native global count output column",

@@ -2,14 +2,13 @@ use std::time::Instant;
 
 use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
-    BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionMetrics, ExecutionOverrides,
-    GpuDataFrame, GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
-    attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, execution_overrides,
-    join_index_error, join_side_output_upper_bound_bytes, lower_null_equality,
-    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
-    null_aware_anti_probe_input, observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
-    projected_input_columns, projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
-    validate_executable_join_subset,
+    BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionMetrics, GpuDataFrame,
+    GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
+    attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, join_index_error,
+    join_side_output_upper_bound_bytes, lower_null_equality, materialize_left_only_join_output_projection,
+    materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input,
+    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame, projected_input_columns,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
 };
 use crate::{
     exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
@@ -56,13 +55,13 @@ fn build_filtered_join_artifact(
     let input_build_bytes = build.bytes;
     let null_aware_probe = null_aware_anti_probe(node, &build.frame, &right_keys)?;
     let build = deduplicate_filtered_join_build_keys(execution, node_id, build, &right_keys)?;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let filtered_options =
         cudf::DataFrameFilteredJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
     let timer = Instant::now();
     let filtered_join =
-        build.frame.with_execution(&overrides).build_filtered_join(&right_keys, filtered_options).map_err(|error| {
+        build.frame.on(overrides).build_filtered_join(&right_keys, filtered_options).map_err(|error| {
             cudf_query_error(
                 "query_engine.bounded.join.build_filtered_join",
                 "failed to build compiled bounded filtered join",
@@ -99,7 +98,7 @@ fn null_aware_anti_probe_side(
     execution: &mut BoundedExecutionAttempt<'_>,
     build: &BoundedCompiledFilteredJoinBuildState,
     probe: BoundedJoinSideFrame,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<BoundedJoinSideFrame> {
     let Some(frame) = null_aware_anti_probe_input(&probe.frame, &build.left_keys, build.null_aware_probe, overrides)?
     else {
@@ -131,8 +130,8 @@ fn deduplicate_filtered_join_build_keys(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let budget_overrides = token.execution_overrides();
-    let output = match build.frame.with_execution(&budget_overrides).drop_duplicates(
+    let budget_overrides = token.exec();
+    let output = match build.frame.on(budget_overrides).drop_duplicates(
         DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
     ) {
         Ok(output) => output,
@@ -169,15 +168,15 @@ pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
 ) -> Result<BoundedCompiledFilteredJoinProbeState> {
     let probe =
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &build.left_columns, JoinSide::Left)?;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let probe = null_aware_anti_probe_side(execution, &build, probe, &overrides)?;
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let probe = null_aware_anti_probe_side(execution, &build, probe, overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
         node,
         &build,
         &probe,
-        &overrides,
+        overrides,
         "failed to observe compiled bounded filtered join probe-state memory",
     )?;
     Ok(BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_bytes })
@@ -188,15 +187,15 @@ fn begin_filtered_join_probe_state(
     node: &JoinNode,
     build: &BoundedCompiledFilteredJoinBuildState,
     probe: &BoundedJoinSideFrame,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     probe_state_bytes_message: &'static str,
 ) -> Result<(cudf::DataFrameFilteredJoinProbeState, u64)> {
     let probe_state = match node.spec.join_type {
         JoinType::LeftSemi | JoinType::LeftMark { .. } => {
-            build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, overrides)
+            build.filtered_join.filtered_join().begin_left_semi_probe(&probe.frame, &build.left_keys, overrides)
         },
         JoinType::LeftAnti { .. } => {
-            build.filtered_join.filtered_join().begin_left_anti_probe_in(&probe.frame, &build.left_keys, overrides)
+            build.filtered_join.filtered_join().begin_left_anti_probe(&probe.frame, &build.left_keys, overrides)
         },
         JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::Cross => unreachable!("validated above"),
     }
@@ -219,19 +218,19 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
 ) -> Result<ResidentGpuFrame> {
     let probe =
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &build.left_columns, JoinSide::Left)?;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let probe = null_aware_anti_probe_side(execution, build, probe, &overrides)?;
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let probe = null_aware_anti_probe_side(execution, build, probe, overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
         node,
         build,
         &probe,
-        &overrides,
+        overrides,
         "failed to observe compiled streamed filtered join probe-state memory",
     )?;
 
-    let indices = match probe_state.materialize_indices_in(&overrides) {
+    let indices = match probe_state.materialize_indices(overrides) {
         Ok(indices) => indices,
         Err(error) => {
             return Err(join_index_error(error, node));
@@ -283,7 +282,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
         let output = materialize_left_only_join_output_projection(
             &probe.frame,
             &indices,
-            &overrides,
+            overrides,
             &node.spec.output_projection,
             node.spec.join_type.clone(),
         )?;
@@ -313,9 +312,9 @@ pub(super) fn execute_compiled_filtered_join_materialize(
     state: BoundedCompiledFilteredJoinProbeState,
 ) -> Result<ResidentGpuFrame> {
     let BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_bytes } = state;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let indices = probe_state.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let indices = probe_state.materialize_indices(overrides).map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.join.filtered_gather_map_bytes",
@@ -362,7 +361,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         let output = materialize_left_only_join_output_projection(
             &probe.frame,
             &indices,
-            &overrides,
+            overrides,
             &node.spec.output_projection,
             node.spec.join_type.clone(),
         )?;

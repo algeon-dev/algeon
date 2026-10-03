@@ -11,9 +11,7 @@ use crate::{
         error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 fn check_status_with_keys_count<I>(
@@ -238,99 +236,6 @@ pub(crate) fn unique_impl(
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
-}
-
-/// Drop rows from a table where key columns contain nulls.
-///
-/// Rows are kept only if at least `keep_threshold` of the specified `keys`
-/// columns are non-null. For the common "drop any null" behavior, set
-/// `keep_threshold` equal to the number of key columns.
-///
-/// # Example
-/// ```no_run
-/// use cudf::{Runtime, frame::dataframe::DropNaOptions};
-///
-/// let rt = Runtime::new().unwrap();
-/// let df = cudf::dataframe! {
-///     "value" => rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap(),
-/// }
-/// .unwrap();
-/// let result = df.dropna(DropNaOptions::new()).unwrap();
-/// assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
-/// ```
-pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::drop_nulls")?;
-    drop_nulls_impl(
-        input,
-        keys,
-        keep_threshold,
-        execution.output_domain(),
-        execution.exec_options(),
-        "stream_compaction::drop_nulls",
-    )
-}
-
-/// Create a new table with distinct rows based on key columns.
-///
-/// This is the GPU equivalent of `drop_duplicates(subset=[...])`.
-/// The order of rows in the output is **not** specified.
-///
-/// # Example
-/// ```no_run
-/// use cudf::{Runtime, frame::dataframe::DropDuplicatesOptions};
-///
-/// let rt = Runtime::new().unwrap();
-/// let df = cudf::dataframe! {
-///     "value" => rt.series(&[1i32, 2, 1, 3]).unwrap(),
-/// }
-/// .unwrap();
-/// let result = df.drop_duplicates(DropDuplicatesOptions::new()).unwrap();
-/// assert_eq!(result.num_rows(), 3);
-/// ```
-pub fn distinct(
-    input: &TableView<'_>,
-    keys: &[usize],
-    keep: DuplicateKeepOption,
-    null_equality: NullEquality,
-    nan_equality: NanEquality,
-) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::distinct")?;
-    distinct_impl(
-        input,
-        DistinctConfig::new(keys, keep, null_equality, nan_equality),
-        StreamCompactionExecution::new(
-            execution.output_domain(),
-            execution.exec_options(),
-            "stream_compaction::distinct",
-        ),
-    )
-}
-
-/// Create a new table by removing consecutive duplicate rows.
-///
-/// Rows that compare equal on `keys` must already be adjacent. Use
-/// [`distinct`] when equal rows may be separated.
-pub fn unique(
-    input: &TableView<'_>,
-    keys: &[usize],
-    keep: DuplicateKeepOption,
-    null_equality: NullEquality,
-) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::unique")?;
-    unique_impl(
-        input,
-        keys,
-        keep,
-        null_equality,
-        StreamCompactionExecution::new(
-            execution.output_domain(),
-            execution.exec_options(),
-            "stream_compaction::unique",
-        ),
-    )
 }
 
 #[cfg(test)]

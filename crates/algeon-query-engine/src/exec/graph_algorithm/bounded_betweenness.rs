@@ -1,9 +1,7 @@
 //! Runtime betweenness seed policy and validation.
 
 #[cfg(feature = "cugraph")]
-use cudf::Series;
-#[cfg(feature = "cugraph")]
-use cudf::TypeId;
+use cudf::{Exec, Series, TypeId};
 
 use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
 #[cfg(feature = "cugraph")]
@@ -265,9 +263,9 @@ fn sorted_graph_vertices_i64(
         .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
         .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
     }
-    let vertices = Series::concat(&[&source, &destination])
-        .and_then(|series| series.unique())
-        .and_then(|series| series.sort_values(CudfSortOptions::new()))
+    let vertices = Series::concat(&[&source, &destination], Exec::RETAINED)
+        .and_then(|series| series.on(Exec::RETAINED).unique())
+        .and_then(|series| series.on(Exec::RETAINED).sort_values(CudfSortOptions::new()))
         .map_err(|error| cudf_query_error(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
         TypeId::Int32 => vertices

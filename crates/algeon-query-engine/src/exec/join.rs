@@ -1,8 +1,8 @@
 use cudf::{DataFrame, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, NullEquality as CudfNullEquality};
 
 use super::{
-    ArrowDataType, BinaryOp, ExecutionContext, ExecutionOverrides, Expr, JoinNode, LiteralValue, QueryError,
-    QueryErrorCode, Result, col, cudf_query_error, timestamp_unit_to_cudf_resolution,
+    ArrowDataType, BinaryOp, Exec, ExecutionContext, Expr, JoinNode, LiteralValue, QueryError, QueryErrorCode, Result,
+    col, cudf_query_error,
 };
 use crate::plan::{JoinNullEquality, JoinSide, JoinType};
 
@@ -131,14 +131,14 @@ pub(super) fn null_aware_anti_probe_input(
     left: &DataFrame,
     left_keys: &[String],
     probe: NullAwareAntiProbe,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<Option<DataFrame>> {
     let output = match probe {
         NullAwareAntiProbe::Unchanged => return Ok(None),
-        NullAwareAntiProbe::Empty => left.with_execution(overrides).slice(0, 0),
+        NullAwareAntiProbe::Empty => left.on(overrides).slice(0, 0),
         NullAwareAntiProbe::DropNullKeys if !frame_has_null_key(left, left_keys)? => return Ok(None),
         NullAwareAntiProbe::DropNullKeys => left
-            .with_execution(overrides)
+            .on(overrides)
             .filter_all(left_keys.iter().map(|key| col(key.as_str()).is_not_null()).collect::<Vec<_>>()),
     };
     output.map(Some).map_err(|error| {

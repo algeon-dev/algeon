@@ -12,20 +12,17 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec, DataFrame, DataType, GroupByAgg, SortOptions, TimestampResolution, TypeId,
-    core::Table,
+    AggSpec, DataFrame, DataFrameJoinOptions, DataType, Exec, GroupByAgg, ScalarValue, SortOptions,
+    TimestampResolution, TypeId,
     io::source::{
-        LocalParquetFile, LocalParquetSource, SourceColumn, SourceColumnRef, SourceOutputColumn, SourceSchema,
+        LocalParquetFile, LocalParquetSource, SourceColumn, SourceColumnRef, SourceOutputColumn, SourceReadMode,
+        SourceSchema,
     },
-    ops::{
-        expr::{col, lit_decimal128_raw, lit_timestamp_raw},
-        join::{NullEquality, inner_join_indices},
-    },
-    testing::prelude::*,
+    ops::expr::{col, lit},
 };
 use tempfile::TempDir;
 
-use crate::common::{run_named_cases, sample_runtime};
+use crate::common::{read_whole_parquet_source, run_named_cases, sample_runtime};
 
 fn source_column(name: &str, dtype: DataType) -> SourceColumn {
     SourceColumn::new(name, dtype, false).unwrap()
@@ -47,7 +44,7 @@ fn read_source(runtime: &cudf::Runtime, path: &Path, stable_id: &str, columns: &
     )
     .unwrap();
 
-    DataFrame::read_parquet_source(runtime, &source).unwrap()
+    read_whole_parquet_source(runtime, &source, SourceReadMode::FinalOutput).unwrap()
 }
 
 fn decimal128_array(raw_values: Vec<i128>) -> Arc<dyn Array> {
@@ -96,10 +93,6 @@ fn write_orders_fixture(runtime: &cudf::Runtime, path: &Path) {
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
 }
 
-fn key_table(frame: &DataFrame, column: &str) -> Table {
-    Table::from_columns(vec![frame.series(column).unwrap().as_column().deep_copy().unwrap()]).unwrap()
-}
-
 fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export() {
     let dir = TempDir::new().unwrap();
     let lineitem_path = dir.path().join("lineitem.parquet");
@@ -133,27 +126,28 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
     );
 
     let filtered = lineitem
+        .on(Exec::RETAINED)
         .filter_expr(
-            col("shipdate").lt(lit_timestamp_raw(19_360, TimestampResolution::Days))
+            col("shipdate").lt(lit(ScalarValue::Timestamp { raw: 19_360, resolution: TimestampResolution::Days }))
                 & col("returnflag").str().like("R%"),
         )
         .unwrap()
-        .with_columns([(col("extendedprice") * (lit_decimal128_raw(100, -2) - col("discount"))).alias("revenue")])
+        .on(Exec::RETAINED)
+        .with_columns([(col("extendedprice")
+            * (lit(ScalarValue::Decimal128 { raw: 100, scale: -2 }) - col("discount")))
+        .alias("revenue")])
         .unwrap();
 
-    let join_keys = key_table(&filtered, "orderkey");
-    let order_keys = key_table(&orders, "orderkey");
-    let indices = inner_join_indices(
-        &join_keys.testing_view().unwrap(),
-        &order_keys.testing_view().unwrap(),
-        NullEquality::Equal,
-    )
-    .unwrap();
-    let left_indices = cudf::Series::from_column(indices.left).unwrap();
-    let right_indices = cudf::Series::from_column(indices.right).unwrap();
-    let lineitem_payload =
-        filtered.select(["orderkey", "returnflag", "revenue"]).unwrap().gather(&left_indices).unwrap();
-    let order_payload = orders.select(["custkey"]).unwrap().gather(&right_indices).unwrap();
+    let indices =
+        filtered.on(Exec::RETAINED).inner_join_indices(&orders, DataFrameJoinOptions::new().on(["orderkey"])).unwrap();
+    let lineitem_payload = filtered
+        .select(["orderkey", "returnflag", "revenue"])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .gather(indices.left().indices())
+        .unwrap();
+    let order_payload =
+        orders.select(["custkey"]).unwrap().on(Exec::RETAINED).gather(indices.right().indices()).unwrap();
 
     let joined = DataFrame::from_series([
         ("custkey", order_payload.series("custkey").unwrap()),
@@ -164,8 +158,10 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
 
     let result = joined
         .groupby(["custkey", "returnflag"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("revenue", GroupByAgg::Sum)])
         .unwrap()
+        .on(Exec::RETAINED)
         .sort_values(["custkey", "returnflag"], SortOptions::new())
         .unwrap();
     let host = result.to_record_batch().unwrap();

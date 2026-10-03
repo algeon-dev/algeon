@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::{
     CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode, Result, cudf_query_error,
-    execute_limit_with_token, execution_overrides, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
+    execute_limit_with_token, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
 };
 
 impl FinalSortExecutor<'_, '_, '_> {
@@ -27,10 +27,14 @@ impl FinalSortExecutor<'_, '_, '_> {
             let timer = Instant::now();
             let (prepared_sort, prepare_report) = {
                 let prepare_token = self.final_sort_budget_token("final_sort", attempt)?;
-                let prepared = input
-                    .frame()
-                    .clone()
-                    .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, &prepare_token)
+                let prepared = prepare_token
+                    .run("dataframe::prepare_sort_values", |exec| {
+                        input
+                            .frame()
+                            .clone()
+                            .on(exec)
+                            .prepare_sort_values(sort.columns.iter().map(String::as_str), options)
+                    })
                     .map_err(|error| {
                         cudf_query_error(
                             "query_engine.final_sort.prepare",
@@ -48,10 +52,9 @@ impl FinalSortExecutor<'_, '_, '_> {
                 .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
 
             let timer = Instant::now();
-            let materialize_overrides_lease = execution_overrides(self.execution.context())?;
-            let materialize_overrides = materialize_overrides_lease.overrides();
+            let materialize_runtime = self.execution.context().runtime()?;
             let materialized_output_bytes = prepared_sort
-                .materialized_output_reservation_size_bytes_in(&materialize_overrides)
+                .materialized_output_reservation_size_bytes(materialize_runtime.exec())
                 .map_err(|error| {
                     cudf_query_error(
                         "query_engine.final_sort.materialize_size",

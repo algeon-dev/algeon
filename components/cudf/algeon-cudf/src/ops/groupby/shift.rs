@@ -22,15 +22,13 @@ use crate::{
         scalar::Scalar,
         table::{Table, TableView},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 const GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY: usize = 8;
 
 /// Output payload of a low-level grouped shift.
-pub struct GroupByShiftOutput {
+pub(crate) struct GroupByShiftOutput {
     /// Unique key groups, one row per output values row, with rows clustered
     /// by group and inter-group order libcudf-defined.
     pub keys: Table,
@@ -41,7 +39,7 @@ pub struct GroupByShiftOutput {
 }
 
 /// A single column shift request.
-pub struct GroupByShiftRequest<'a> {
+pub(crate) struct GroupByShiftRequest<'a> {
     /// Values column to shift.
     pub values: &'a ColumnView<'a>,
     /// Row shift offset (positive shifts rows toward larger indices within
@@ -51,49 +49,6 @@ pub struct GroupByShiftRequest<'a> {
     /// data type. A null-valued scalar forces the output column to be
     /// nullable.
     pub fill_value: &'a Scalar,
-}
-
-/// Perform a per-group row shift.
-///
-/// Each request shifts one value column by its `offset`, filling output rows
-/// that fall outside the group with the request's `fill_value`. libcudf
-/// rejects columns whose data type is neither fixed-width nor string and
-/// rejects fill scalars whose data type does not match the corresponding
-/// column.
-///
-/// libcudf returns one output column per request, in the same order. The
-/// output keys and values tables have identical row counts; row order within
-/// each group matches the input row order, but inter-group order is
-/// libcudf-defined.
-pub fn groupby_shift(
-    keys: &TableView<'_>,
-    requests: &[GroupByShiftRequest<'_>],
-    null_policy: NullPolicy,
-    keys_are_sorted: bool,
-) -> Result<GroupByShiftOutput> {
-    let execution = compatible_shift_domain(keys, requests)?;
-    groupby_shift_impl(
-        keys,
-        requests,
-        null_policy,
-        keys_are_sorted,
-        execution.output_domain(),
-        execution.exec_options(),
-        "groupby::groupby_shift",
-    )
-}
-
-fn compatible_shift_domain(keys: &TableView<'_>, requests: &[GroupByShiftRequest<'_>]) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::many(
-        keys.execution_domain(),
-        requests
-            .iter()
-            .flat_map(|req| [req.values.execution_domain(), req.fill_value.execution_domain()])
-            .collect::<Vec<_>>(),
-        &ctx,
-        "groupby::groupby_shift",
-    )
 }
 
 pub(crate) fn groupby_shift_impl(

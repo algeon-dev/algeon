@@ -155,30 +155,12 @@ pub(crate) fn single_side_join_indices_impl(
     Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
 }
 
-pub fn inner_join(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinSides> {
-    let operation = "join::inner_join";
-    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
-    let execution = compatible_join_domain(tables, operation)?;
-    join_impl(
-        tables,
-        null_equality,
-        JoinType::Inner,
-        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
-    )
-}
-
 fn join_indices_with_context(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
     join_type: JoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let execution = compatible_join_indices_domain(left_keys, right_keys, ctx, operation)?;
@@ -193,66 +175,19 @@ fn join_indices_with_context(
     )
 }
 
-/// Inner join indices for matching rows in both key tables.
-///
-/// Returns `INT32` device columns that can be used as gather maps for the
-/// left and right tables. This allocates only the index columns; payload
-/// columns are not copied or gathered by this operation.
-pub fn inner_join_indices(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Inner, &ctx, "join::inner_join_indices")
-}
-
 /// Inner join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`inner_join_indices`]. This allocates only
 /// `INT32` device gather maps and does not gather or copy payload columns. See
 /// the [join module](crate::ops::join)'s shared `_in` execution-context
 /// contract.
-pub fn inner_join_indices_in(
+pub(crate) fn inner_join_indices_in(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Inner, ctx, "join::inner_join_indices_in")
-}
-
-/// Left join: all left rows are preserved; right side is null-padded
-/// for non-matching rows.
-pub fn left_join(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinSides> {
-    let operation = "join::left_join";
-    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
-    let execution = compatible_join_domain(tables, operation)?;
-    join_impl(
-        tables,
-        null_equality,
-        JoinType::Left,
-        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
-    )
-}
-
-/// Left join indices preserving all rows from the left key table.
-///
-/// Misses in `right` contain libcudf's no-match sentinel and should be used
-/// with nullifying gather behavior when materializing the right side.
-pub fn left_join_indices(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Left, &ctx, "join::left_join_indices")
 }
 
 /// Left join indices using a borrowed execution override.
@@ -261,11 +196,11 @@ pub fn left_join_indices(
 /// `INT32` device gather maps and does not gather or copy payload columns. See
 /// the [join module](crate::ops::join)'s shared `_in` execution-context
 /// contract.
-pub fn left_join_indices_in(
+pub(crate) fn left_join_indices_in(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Left, ctx, "join::left_join_indices_in")
 }
@@ -275,7 +210,7 @@ fn single_side_join_indices_with_context(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
     semi_join: bool,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let execution = compatible_join_indices_domain(left_keys, right_keys, ctx, operation)?;
@@ -290,39 +225,17 @@ fn single_side_join_indices_with_context(
     )
 }
 
-/// Left semi join indices for rows from the left key table that have a match.
-///
-/// Returns a single `INT32` device gather map indexing rows in `left_keys`.
-/// Payload columns are not copied or gathered by this operation. Duplicate
-/// matches in `right_keys` do not duplicate left rows; each matching left row
-/// appears at most once in the returned gather map.
-pub fn left_semi_join_indices(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    single_side_join_indices_with_context(
-        left_keys,
-        right_keys,
-        null_equality,
-        true,
-        &ctx,
-        "join::left_semi_join_indices",
-    )
-}
-
 /// Left semi join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`left_semi_join_indices`]. This allocates only an
 /// `INT32` device gather map and does not gather or copy payload columns. See
 /// the [join module](crate::ops::join)'s shared `_in` execution-context
 /// contract.
-pub fn left_semi_join_indices_in(
+pub(crate) fn left_semi_join_indices_in(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     single_side_join_indices_with_context(
         left_keys,
@@ -334,38 +247,17 @@ pub fn left_semi_join_indices_in(
     )
 }
 
-/// Left anti join indices for rows from the left key table that have no match.
-///
-/// Returns a single `INT32` device gather map indexing rows in `left_keys`.
-/// Payload columns are not copied or gathered by this operation. Duplicate
-/// matches in `right_keys` do not duplicate left rows.
-pub fn left_anti_join_indices(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    single_side_join_indices_with_context(
-        left_keys,
-        right_keys,
-        null_equality,
-        false,
-        &ctx,
-        "join::left_anti_join_indices",
-    )
-}
-
 /// Left anti join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`left_anti_join_indices`]. This allocates only an
 /// `INT32` device gather map and does not gather or copy payload columns. See
 /// the [join module](crate::ops::join)'s shared `_in` execution-context
 /// contract.
-pub fn left_anti_join_indices_in(
+pub(crate) fn left_anti_join_indices_in(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     single_side_join_indices_with_context(
         left_keys,
@@ -377,60 +269,19 @@ pub fn left_anti_join_indices_in(
     )
 }
 
-pub fn full_join(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinSides> {
-    let operation = "join::full_join";
-    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
-    let execution = compatible_join_domain(tables, operation)?;
-    join_impl(
-        tables,
-        null_equality,
-        JoinType::Full,
-        JoinCallContext::new(execution.output_domain(), execution.exec_options(), operation),
-    )
-}
-
-/// Full join indices preserving rows from both key tables.
-///
-/// Misses on either side contain libcudf's no-match sentinel and should be
-/// used with nullifying gather behavior when materializing either side.
-pub fn full_join_indices(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Full, &ctx, "join::full_join_indices")
-}
-
 /// Full join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`full_join_indices`]. This allocates only
 /// `INT32` device gather maps and does not gather or copy payload columns. See
 /// the [join module](crate::ops::join)'s shared `_in` execution-context
 /// contract.
-pub fn full_join_indices_in(
+pub(crate) fn full_join_indices_in(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Full, ctx, "join::full_join_indices_in")
-}
-
-fn checked_cross_join_output_rows(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    operation: &'static str,
-) -> Result<usize> {
-    let left_rows = left.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
-    let right_rows = right.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
-    checked_cross_join_output_rows_for_counts(left_rows, right_rows, operation)
 }
 
 pub(crate) fn checked_cross_join_output_rows_for_counts(
@@ -569,63 +420,7 @@ pub(crate) fn projected_cross_join_device_allocated_size_impl(
     Ok(out)
 }
 
-fn cross_join_with_context(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    ctx: &ExecutionOverrides<'_>,
-    operation: &'static str,
-) -> Result<Table> {
-    let output_rows = checked_cross_join_output_rows(left, right, operation)?;
-
-    let execution = ResolvedExecution::binary(left.execution_domain(), right.execution_domain(), ctx, operation)?;
-
-    let mut out = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_cross_join_ex(left.raw_handle(), right.raw_handle(), &mut out, execution.exec_options())
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("output_rows", output_rows.to_string()), ("execution_authority", "retained_domain".to_string())],
-    )?;
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
-}
-
-/// Cross join two tables.
-///
-/// The output cardinality is `left.num_rows() * right.num_rows()`. This
-/// operation materializes the cartesian product into a new table and copies
-/// column data into that output; it is not a zero-copy row selection. The
-/// computed row count is checked before calling libcudf and must fit in
-/// libcudf's `INT32` row-count range.
-pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    cross_join_with_context(left, right, &ctx, "join::cross_join")
-}
-
-/// Cross join two tables using a borrowed execution override.
-///
-/// Same result semantics as [`cross_join`]. The borrowed override selects the
-/// stream and/or memory resource used for the newly materialized output table
-/// when compatible with the left and right input devices.
-pub fn cross_join_in(left: &TableView<'_>, right: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<Table> {
-    cross_join_with_context(left, right, ctx, "join::cross_join_in")
-}
-
 impl HashJoin {
-    /// Return exact device bytes that must be reserved before building a
-    /// reusable hash-join artifact from this build key table.
-    ///
-    /// This is a planning contract for bounded engines. It returns the exact
-    /// retained bytes for the reusable hash table and build-key device views,
-    /// without building or allocating retained payload. Flat nullable string
-    /// keys include their retained null-payload sanitization allocation; nested
-    /// build keys are rejected by libcudf.
-    pub fn pre_build_reservation_size_bytes(build: &Table, options: HashJoinOptions) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        Self::pre_build_reservation_size_bytes_in(build, options, &ctx)
-    }
-
     /// Return exact device bytes that must be reserved before building a
     /// reusable hash-join artifact using a borrowed execution override.
     ///
@@ -635,7 +430,7 @@ impl HashJoin {
     pub fn pre_build_reservation_size_bytes_in(
         build: &Table,
         options: HashJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<usize> {
         Self::pre_build_reservation_size_bytes_with_context(
             build,
@@ -645,30 +440,19 @@ impl HashJoin {
         )
     }
 
-    /// Build a reusable hash-join artifact from an owned build key table.
-    ///
-    /// The build table is retained by the returned handle because libcudf's
-    /// hash-join state borrows build-side device memory. Construction may
-    /// allocate GPU memory for the hash table but does not copy payload
-    /// columns.
-    pub fn new(build: Table, options: HashJoinOptions) -> Result<Self> {
-        let ctx = ExecutionOverrides::new();
-        Self::new_with_context(build, options, &ctx, "hash_join::new")
-    }
-
     /// Build a reusable hash-join artifact using a borrowed execution override.
     ///
     /// Same lifetime and result semantics as [`HashJoin::new`]. The borrowed
     /// override selects the stream and/or memory resource used while building
     /// the libcudf hash table when compatible with the build table's device.
-    pub fn new_in(build: Table, options: HashJoinOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub fn new_in(build: Table, options: HashJoinOptions, ctx: Exec<'_>) -> Result<Self> {
         Self::new_with_context(build, options, ctx, "hash_join::new_in")
     }
 
     fn pre_build_reservation_size_bytes_with_context(
         build: &Table,
         options: HashJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
@@ -689,7 +473,7 @@ impl HashJoin {
     pub(crate) fn pre_build_reservation_size_bytes_for_view(
         build_view: &TableView<'_>,
         options: HashJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         let execution = ResolvedExecution::unary(build_view.execution_domain(), ctx, operation)?;
@@ -716,7 +500,7 @@ impl HashJoin {
     fn new_with_context(
         build: Table,
         options: HashJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let handle = {
@@ -751,16 +535,6 @@ impl HashJoin {
         Ok(Self { handle: Arc::new(handle), build: Arc::new(build), options })
     }
 
-    /// Returns the retained build key table.
-    pub fn build_keys(&self) -> &Table {
-        &self.build
-    }
-
-    /// Returns the options used when this hash table was built.
-    pub fn options(&self) -> HashJoinOptions {
-        self.options
-    }
-
     /// Returns bytes retained by this reusable hash-join build artifact.
     ///
     /// This is observed from the device memory resource used while constructing
@@ -775,42 +549,13 @@ impl HashJoin {
         Ok(out)
     }
 
-    /// Probe with inner-join semantics.
-    ///
-    /// The returned `left` column indexes the probe table, and `right` indexes
-    /// the retained build table.
-    pub fn inner_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_context(probe_keys, JoinType::Inner, &ctx, "hash_join::inner_join_indices")
-    }
-
-    /// Probe with inner-join semantics using an exact caller-supplied output row count.
-    pub fn inner_join_indices_with_output_size(
-        &self,
-        probe_keys: &TableView<'_>,
-        output_size: usize,
-    ) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_output_size_in(
-            probe_keys,
-            JoinType::Inner,
-            output_size,
-            &ctx,
-            "hash_join::inner_join_indices_with_output_size",
-        )
-    }
-
     /// Probe with inner-join semantics using a borrowed execution override.
     ///
     /// Same result semantics as [`HashJoin::inner_join_indices`]. This
     /// allocates only `INT32` device gather maps and does not gather or copy
     /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
     /// execution-context contract.
-    pub fn inner_join_indices_in(
-        &self,
-        probe_keys: &TableView<'_>,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<JoinIndices> {
+    pub fn inner_join_indices_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<JoinIndices> {
         self.probe_indices_with_context(probe_keys, JoinType::Inner, ctx, "hash_join::inner_join_indices_in")
     }
 
@@ -820,7 +565,7 @@ impl HashJoin {
         &self,
         probe_keys: &TableView<'_>,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<JoinIndices> {
         self.probe_indices_with_output_size_in(
             probe_keys,
@@ -831,43 +576,9 @@ impl HashJoin {
         )
     }
 
-    /// Return the exact output row count for an inner probe.
-    ///
-    /// This calls libcudf's reusable hash-join size API and does not allocate
-    /// or return join gather maps.
-    pub fn inner_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_size_with_context(probe_keys, JoinType::Inner, &ctx, "hash_join::inner_join_size")
-    }
-
     /// Return the exact output row count for an inner probe using a borrowed execution override.
-    pub fn inner_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+    pub fn inner_join_size_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, JoinType::Inner, ctx, "hash_join::inner_join_size_in")
-    }
-
-    /// Probe with left-join semantics.
-    ///
-    /// Misses in the returned `right` column contain libcudf's no-match
-    /// sentinel for nullifying gather.
-    pub fn left_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_context(probe_keys, JoinType::Left, &ctx, "hash_join::left_join_indices")
-    }
-
-    /// Probe with left-join semantics using an exact caller-supplied output row count.
-    pub fn left_join_indices_with_output_size(
-        &self,
-        probe_keys: &TableView<'_>,
-        output_size: usize,
-    ) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_output_size_in(
-            probe_keys,
-            JoinType::Left,
-            output_size,
-            &ctx,
-            "hash_join::left_join_indices_with_output_size",
-        )
     }
 
     /// Probe with left-join semantics using a borrowed execution override.
@@ -876,11 +587,7 @@ impl HashJoin {
     /// allocates only `INT32` device gather maps and does not gather or copy
     /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
     /// execution-context contract.
-    pub fn left_join_indices_in(
-        &self,
-        probe_keys: &TableView<'_>,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<JoinIndices> {
+    pub fn left_join_indices_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<JoinIndices> {
         self.probe_indices_with_context(probe_keys, JoinType::Left, ctx, "hash_join::left_join_indices_in")
     }
 
@@ -890,7 +597,7 @@ impl HashJoin {
         &self,
         probe_keys: &TableView<'_>,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<JoinIndices> {
         self.probe_indices_with_output_size_in(
             probe_keys,
@@ -901,43 +608,9 @@ impl HashJoin {
         )
     }
 
-    /// Return the exact output row count for a left probe.
-    ///
-    /// This calls libcudf's reusable hash-join size API and does not allocate
-    /// or return join gather maps.
-    pub fn left_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_size_with_context(probe_keys, JoinType::Left, &ctx, "hash_join::left_join_size")
-    }
-
     /// Return the exact output row count for a left probe using a borrowed execution override.
-    pub fn left_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+    pub fn left_join_size_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, JoinType::Left, ctx, "hash_join::left_join_size_in")
-    }
-
-    /// Probe with full-join semantics.
-    ///
-    /// Misses on either side contain libcudf's no-match sentinel for
-    /// nullifying gather.
-    pub fn full_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_context(probe_keys, JoinType::Full, &ctx, "hash_join::full_join_indices")
-    }
-
-    /// Probe with full-join semantics using an exact caller-supplied output row count.
-    pub fn full_join_indices_with_output_size(
-        &self,
-        probe_keys: &TableView<'_>,
-        output_size: usize,
-    ) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_output_size_in(
-            probe_keys,
-            JoinType::Full,
-            output_size,
-            &ctx,
-            "hash_join::full_join_indices_with_output_size",
-        )
     }
 
     /// Probe with full-join semantics using a borrowed execution override.
@@ -946,11 +619,7 @@ impl HashJoin {
     /// allocates only `INT32` device gather maps and does not gather or copy
     /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
     /// execution-context contract.
-    pub fn full_join_indices_in(
-        &self,
-        probe_keys: &TableView<'_>,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<JoinIndices> {
+    pub fn full_join_indices_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<JoinIndices> {
         self.probe_indices_with_context(probe_keys, JoinType::Full, ctx, "hash_join::full_join_indices_in")
     }
 
@@ -960,7 +629,7 @@ impl HashJoin {
         &self,
         probe_keys: &TableView<'_>,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<JoinIndices> {
         self.probe_indices_with_output_size_in(
             probe_keys,
@@ -971,17 +640,8 @@ impl HashJoin {
         )
     }
 
-    /// Return the exact output row count for a full probe.
-    ///
-    /// This calls libcudf's reusable hash-join size API and does not allocate
-    /// or return join gather maps.
-    pub fn full_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_size_with_context(probe_keys, JoinType::Full, &ctx, "hash_join::full_join_size")
-    }
-
     /// Return the exact output row count for a full probe using a borrowed execution override.
-    pub fn full_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+    pub fn full_join_size_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, JoinType::Full, ctx, "hash_join::full_join_size_in")
     }
 
@@ -989,7 +649,7 @@ impl HashJoin {
         &self,
         probe_keys: &TableView<'_>,
         join_type: JoinType,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<JoinIndices> {
         let execution =
@@ -1009,7 +669,7 @@ impl HashJoin {
         probe_keys: &TableView<'_>,
         join_type: JoinType,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<JoinIndices> {
         let execution =
@@ -1028,7 +688,7 @@ impl HashJoin {
         &self,
         probe_keys: &TableView<'_>,
         join_type: JoinType,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         let execution =
@@ -1170,62 +830,6 @@ impl HashJoin {
             left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
             right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
         })
-    }
-}
-
-/// Width of a variable-width key column's offsets buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HashJoinStringOffsetWidth {
-    I32,
-    I64,
-}
-
-/// Retained representation of one hash-join key column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HashJoinKeyStorage {
-    FixedWidth { type_id: TypeId },
-    String { payload_upper_bound_bytes: usize, offset_width: HashJoinStringOffsetWidth },
-}
-
-/// Typed metadata for one hash-join key column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HashJoinKeyMetadata {
-    storage: HashJoinKeyStorage,
-    nullable: bool,
-}
-
-impl HashJoinKeyMetadata {
-    pub fn fixed_width(type_id: TypeId, nullable: bool) -> Self {
-        Self { storage: HashJoinKeyStorage::FixedWidth { type_id }, nullable }
-    }
-
-    pub fn string(payload_upper_bound_bytes: usize, offset_width: HashJoinStringOffsetWidth, nullable: bool) -> Self {
-        Self { storage: HashJoinKeyStorage::String { payload_upper_bound_bytes, offset_width }, nullable }
-    }
-
-    pub fn storage(self) -> HashJoinKeyStorage {
-        self.storage
-    }
-
-    pub fn nullable(self) -> bool {
-        self.nullable
-    }
-}
-
-/// Retained preprocessing selected by the runtime hash-join implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HashJoinPreprocessingMode {
-    FlatKeys,
-    SanitizeNullableStringPayload,
-}
-
-impl HashJoinPreprocessingMode {
-    pub fn for_keys(keys: &[HashJoinKeyMetadata]) -> Self {
-        if keys.iter().any(|key| key.nullable && matches!(key.storage, HashJoinKeyStorage::String { .. })) {
-            Self::SanitizeNullableStringPayload
-        } else {
-            Self::FlatKeys
-        }
     }
 }
 

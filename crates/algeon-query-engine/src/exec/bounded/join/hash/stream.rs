@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy, BoundedRootHashJoinBuildState,
     BoundedRootHashJoinProbeState, ExecutionContext, ExecutionMetrics, Instant, JoinNode, JoinSide, NodeId, QueryError,
-    ResidentFrameStreamSource, ResidentGpuFrame, Result, execution_overrides, join_side_output_upper_bound_bytes,
+    ResidentFrameStreamSource, ResidentGpuFrame, Result, join_side_output_upper_bound_bytes,
     materialize::{materialize_bounded_root_hash_join_index_slice, release_root_hash_join_stream_outputs},
     probe::reusable_hash_join_execution_strategy,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
@@ -28,8 +28,8 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     gather_map_bytes: u64,
     timer: Instant,
 ) -> Result<Vec<ResidentGpuFrame>> {
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let build_side = build.build_side;
     let probe_side = build.probe_side;
     let hash_table_bytes = build.hash_table_bytes;
@@ -95,7 +95,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             &right_indices,
             0,
             0,
-            &overrides,
+            overrides,
         ) {
             Ok(slice_outputs) => {
                 for output in slice_outputs {
@@ -131,7 +131,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             &right_indices,
             offset,
             take,
-            &overrides,
+            overrides,
         ) {
             Ok(slice_outputs) => {
                 for output in slice_outputs {
@@ -248,8 +248,8 @@ impl RootHashJoinMaterializeStreamSource {
             JoinSide::Left => (&build.build, probe),
             JoinSide::Right => (probe, &build.build),
         };
-        let overrides_lease = execution_overrides(&self.context)?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = &self.context.runtime()?;
+        let overrides = exec_runtime.exec();
         let slice_outputs = materialize_bounded_root_hash_join_index_slice(
             execution,
             self.node_id,
@@ -260,7 +260,7 @@ impl RootHashJoinMaterializeStreamSource {
             right_indices,
             offset,
             take,
-            &overrides,
+            overrides,
         )?;
         for output in slice_outputs {
             self.cumulative_output_reservation_bytes =

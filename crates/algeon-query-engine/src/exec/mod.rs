@@ -22,11 +22,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, BudgetedExecutionOutcome, DataFrame, DuplicateKeepOption, ExecutionBudgetRequest,
-    ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg, ShiftSpec as CudfShiftSpec,
+    AggSpec as CudfAggSpec, BudgetedExecutionOutcome, DataFrame, DuplicateKeepOption, Exec, ExecutionBudgetRequest,
+    ExecutionBudgetToken, GroupByAgg, GroupByOptions, ReduceAgg, ShiftSpec as CudfShiftSpec,
     SortOptions as CudfSortOptions,
     core::Scalar as CudfScalar,
-    frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
+    frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions, SourceRead},
     io::source::SourceReadMode,
     ops::{col, lit, lit_null, reduction::ScanAgg, when},
 };

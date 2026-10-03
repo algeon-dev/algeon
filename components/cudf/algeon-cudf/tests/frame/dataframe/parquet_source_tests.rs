@@ -1,6 +1,6 @@
 //! Tests for high-level local Parquet source execution.
 
-use std::{collections::BTreeMap, fs, process::Command, sync::Arc};
+use std::{collections::BTreeMap, fs, process::Command, slice, sync::Arc};
 
 use arrow::{
     array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, new_null_array},
@@ -11,8 +11,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, DeviceMemoryManager, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetToken, QueryMemoryDomainOptions, TimestampResolution, TypeId,
+    DataFrame, DataType, DeviceMemoryManager, ErrorCode, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetToken, QueryMemoryDomainOptions, SourceRead, TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
@@ -38,7 +38,7 @@ use tempfile::TempDir;
 
 use crate::common::{
     column_from_slice, column_from_strs, error_context_value, execution_budget_token, last_exec_mr_value,
-    reset_exec_observation, sample_runtime,
+    read_whole_parquet_source, reset_exec_observation, sample_runtime,
 };
 
 fn dtype(id: TypeId) -> DataType {
@@ -127,7 +127,7 @@ fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<
 fn write_decimal_parquet_df(path: &std::path::Path, storage_type: TypeId) {
     let rt = sample_runtime();
     let dtype = DataType::fixed_point(storage_type, -2).unwrap();
-    let amount = rt.series(&[-5i64, 0, 1, 2]).unwrap().astype(dtype).unwrap();
+    let amount = rt.series(&[-5i64, 0, 1, 2]).unwrap().on(Exec::RETAINED).astype(dtype).unwrap();
     DataFrame::from_series([("amount", amount)]).unwrap().write_parquet(path).unwrap();
 }
 
@@ -204,8 +204,12 @@ fn single_i32_source(path: &std::path::Path, stable_id: &str) -> LocalParquetSou
 fn read_single_chunk_with_evidence(rt: &Runtime, source: &LocalParquetSource) -> ParquetSourceChunkReadOutput {
     let plan = plan_local_parquet_source_chunks(source, Default::default()).unwrap();
     assert_eq!(plan.chunks().len(), 1);
-    DataFrame::read_parquet_source_chunk_with_evidence(rt, source, &plan.chunks()[0], SourceReadMode::FinalOutput)
-        .unwrap()
+    DataFrame::read_parquet_source(
+        SourceRead::new(source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput),
+        rt,
+        Exec::RETAINED,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -320,7 +324,9 @@ fn read_parquet_source_materializes_typed_all_null_and_empty_list_columns() {
     assert_eq!(all_null.column(1).as_any().downcast_ref::<ListArray>().unwrap().values().len(), 0);
     assert_eq!(all_null.column(2).as_any().downcast_ref::<LargeListArray>().unwrap().values().len(), 0);
 
-    let empty = DataFrame::read_parquet_source(&runtime, &source(&empty_path, "typed-empty-lists")).unwrap();
+    let empty =
+        read_whole_parquet_source(&runtime, &source(&empty_path, "typed-empty-lists"), SourceReadMode::FinalOutput)
+            .unwrap();
     let empty = GpuRecordBatch::new(empty, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     assert_eq!(empty.schema(), schema);
     assert_eq!(empty.num_rows(), 0);
@@ -377,10 +383,20 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
 
     assert_eq!(plan.chunks().len(), 2);
-    let first =
-        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
-    let second =
-        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[1], SourceReadMode::FinalOutput).unwrap();
+    let first = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
+    let second = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[1]), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
 
     assert_eq!(first.num_rows(), 2);
     assert_eq!(first.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2]);
@@ -392,14 +408,16 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_batch_read"))
             .unwrap();
-    let batch = DataFrame::read_parquet_source_chunks_with_budget(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let batch = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
 
     assert_eq!(batch.value().num_rows(), 4);
     assert_eq!(batch.value().series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3, 4]);
@@ -425,14 +443,20 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_read"))
             .unwrap();
-    let null_only = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
-        &rt,
-        &null_only_source,
-        &null_only_plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let null_only = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(
+                    &null_only_source,
+                    slice::from_ref(&null_only_plan.chunks()[0]),
+                    SourceReadMode::FinalOutput,
+                )
+                .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
     assert_eq!(null_only.value().frame().series("m00").unwrap().null_count(), 2);
     let evidence = null_only.value().read_evidence().unwrap();
     assert_eq!(evidence.input_kind, "local_path");
@@ -443,14 +467,15 @@ fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_gro
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_batch"))
             .unwrap();
-    let null_only_batch = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        &rt,
-        &null_only_source,
-        null_only_plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let null_only_batch = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&null_only_source, null_only_plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
     assert_eq!(null_only_batch.value().frame().series("m00").unwrap().null_count(), 4);
     let evidence = null_only_batch.value().read_evidence().unwrap();
     assert_eq!(evidence.input_kind, "local_path_multi");
@@ -508,14 +533,15 @@ fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups(
         ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("mixed_all_null_batch"),
     )
     .unwrap();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
 
     let df = outcome.value().frame();
     assert_eq!(df.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3, 4]);
@@ -652,7 +678,7 @@ fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
         .join("../cudf/python/cudf/cudf/tests/data/parquet/mixed_card_ndv_100_bf_fpp0.1_nostats.snappy.parquet");
     let predicate = AstExpression::equal(
         AstExpression::left_column(0).unwrap(),
-        AstExpression::literal(rt.string_scalar("FINDME").unwrap()).unwrap(),
+        AstExpression::literal(rt.scalar("FINDME").unwrap()).unwrap(),
     )
     .unwrap();
     let source = LocalParquetSource::data(
@@ -711,23 +737,21 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
     )
     .unwrap();
 
-    let final_frame = DataFrame::read_parquet_source(&rt, &source).unwrap();
+    let final_frame = read_whole_parquet_source(&rt, &source, SourceReadMode::FinalOutput).unwrap();
 
     assert_eq!(final_frame.column_names(), vec!["id_alias"]);
     assert_eq!(final_frame.num_rows(), 3);
     assert_eq!(final_frame.series("id_alias").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let execution_frame =
-        DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
+    let execution_frame = read_whole_parquet_source(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
     assert_eq!(execution_frame.column_names(), vec!["id_alias", "filter_only"]);
     assert_eq!(execution_frame.series("filter_only").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let output = DataFrame::read_parquet_source_chunk_with_evidence(
+    let output = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput),
         &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
+        Exec::RETAINED,
     )
     .unwrap();
     let evidence = output.read_evidence().expect("local path reads should report Parquet read evidence");
@@ -771,7 +795,13 @@ fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: Ty
             SourceReaderPredicateLiteral::Decimal128 { raw: -500, scale: -2 },
         ),
     );
-    let eq_frame = DataFrame::read_parquet_source_chunk(&rt, &eq_source, chunk, SourceReadMode::FinalOutput).unwrap();
+    let eq_frame = DataFrame::read_parquet_source(
+        SourceRead::new(&eq_source, slice::from_ref(chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
     assert_decimal_amount_raws(&eq_frame, &[-500]);
 
     let ge_source = decimal_predicate_source(
@@ -786,9 +816,17 @@ fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: Ty
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_source_read"))
             .unwrap();
-    let ge_outcome =
-        DataFrame::read_parquet_source_chunk_with_budget(&rt, &ge_source, chunk, SourceReadMode::FinalOutput, &token)
-            .unwrap();
+    let ge_outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&ge_source, slice::from_ref(chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
     assert_decimal_amount_raws(ge_outcome.value(), &[100, 200]);
 }
 
@@ -814,14 +852,16 @@ fn decimal_reader_batch_predicate_reads_decimal32_backed_chunks() {
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_batch_read"))
             .unwrap();
 
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
 
     assert_decimal_amount_raws(outcome.value(), &[100, 200, 100, 200]);
 }
@@ -867,7 +907,13 @@ fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
     .unwrap();
     let source = decimal_predicate_source(&rt, &source, chunk, predicate);
 
-    let frame = DataFrame::read_parquet_source_chunk(&rt, &source, chunk, SourceReadMode::FinalOutput).unwrap();
+    let frame = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
     assert_decimal_amount_raws(&frame, &[-500, 200]);
 }
 
@@ -971,8 +1017,13 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
     .unwrap();
 
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let frame =
-        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
+    let frame = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
 
     assert_eq!(source.diagnostics().predicate_disposition(), PredicateDisposition::ReaderPushdown);
     assert_eq!(frame.column_names(), vec!["id", "value"]);
@@ -1007,9 +1058,17 @@ fn read_parquet_source_chunk_with_budget_keeps_the_frame_when_the_preflight_cann
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("unbounded_preflight"))
             .unwrap();
-    let outcome =
-        DataFrame::read_parquet_source_chunk_with_budget(&rt, &source, chunk, SourceReadMode::FinalOutput, &token)
-            .expect("a successful read survives its diagnostic preflight");
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect("a successful read survives its diagnostic preflight");
 
     assert_eq!(outcome.value().series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
     let facts = outcome.report().context_facts();
@@ -1059,14 +1118,15 @@ fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_inpu
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
             .unwrap();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
 
     assert_eq!(
         outcome.value().frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(),
@@ -1116,14 +1176,15 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
             .unwrap();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
 
     let evidence = outcome.value().read_evidence().expect("local batch reads should report Parquet read evidence");
     assert_eq!(evidence.input_kind, "local_path_multi");
@@ -1184,14 +1245,16 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
             .unwrap();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
 
     assert_eq!(source.diagnostics().predicate_disposition(), PredicateDisposition::ReaderPushdown);
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
@@ -1230,14 +1293,16 @@ fn read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_read
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("remote_batch_read"))
             .unwrap();
-    let error = DataFrame::read_parquet_source_chunks_with_budget(
-        &rt,
-        &source,
-        plan.chunks(),
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .expect_err("remote multi-source profile with an interior null should be rejected before libcudf opens S3");
+    let error = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, plan.chunks(), SourceReadMode::FinalOutput),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("remote multi-source profile with an interior null should be rejected before libcudf opens S3");
 
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error_context_value(&error, "resource").as_deref(), Some("aws_endpoint_url"));
@@ -1273,7 +1338,7 @@ fn read_parquet_source_materializes_string_partition_columns_across_files() {
     )
     .unwrap();
 
-    let df = DataFrame::read_parquet_source(&rt, &source).unwrap();
+    let df = read_whole_parquet_source(&rt, &source, SourceReadMode::FinalOutput).unwrap();
 
     assert_eq!(df.column_names(), vec!["id", "region"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -1308,8 +1373,13 @@ fn read_parquet_source_chunk_honors_selected_row_groups() {
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
 
-    let df =
-        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
+    let df = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap();
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4]);
@@ -1348,13 +1418,13 @@ fn read_parquet_source_chunk_from_host_buffer_honors_row_groups_and_reader_predi
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
 
-    let df = DataFrame::read_parquet_source_chunk_from_host_buffer(
+    let df = DataFrame::read_parquet_source(
+        SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+            .from_host_buffer(&filebytes),
         &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &filebytes,
+        Exec::RETAINED,
     )
+    .map(ParquetSourceChunkReadOutput::into_frame)
     .unwrap();
 
     assert_eq!(df.column_names(), vec!["id"]);
@@ -1394,14 +1464,17 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     );
 
     reset_exec_observation();
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
     let df = outcome.value();
     let report = outcome.report();
     let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
@@ -1480,15 +1553,17 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
     .unwrap();
 
     reset_exec_observation();
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &filebytes,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .from_host_buffer(&filebytes)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .unwrap();
     let evidence = outcome.value().read_evidence().expect("host-buffer reads should report Parquet read evidence");
     assert_eq!(evidence.input_kind, "host_buffer");
     assert_eq!(evidence.requested_remote_read_mode, None);
@@ -1569,8 +1644,13 @@ fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_
     let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
     let source_a_chunk = &source_a_plan.chunks()[0];
 
-    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
-        .expect_err("chunk planned from source A must not be accepted for source B");
+    let err = DataFrame::read_parquet_source(
+        SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .expect_err("chunk planned from source A must not be accepted for source B");
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_path_mismatch"));
     assert_eq!(error_context_value(&err, "expected_path").as_deref(), Some(source_b_path.to_str().unwrap()));
@@ -1578,14 +1658,17 @@ fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_
 
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
         .unwrap();
-    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source_b,
-        source_a_chunk,
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .expect_err("budgeted chunk read must reject a chunk planned from another source");
+    let budget_err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("budgeted chunk read must reject a chunk planned from another source");
     assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_path_mismatch"));
 }
@@ -1644,21 +1727,29 @@ fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_fi
     let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
     let source_a_chunk = &source_a_plan.chunks()[0];
 
-    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
-        .expect_err("chunk planned from source A must not be accepted for a superset source B");
+    let err = DataFrame::read_parquet_source(
+        SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .expect_err("chunk planned from source A must not be accepted for a superset source B");
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
 
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
         .unwrap();
-    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source_b,
-        source_a_chunk,
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .expect_err("budgeted chunk read must reject a chunk planned from a narrower row-group source");
+    let budget_err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("budgeted chunk read must reject a chunk planned from a narrower row-group source");
     assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
 }
@@ -1750,23 +1841,30 @@ fn read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_sourc
     let nullable_plan = plan_local_parquet_source_chunks(&nullable_source, Default::default()).unwrap();
     let nullable_chunk = &nullable_plan.chunks()[0];
 
-    let err =
-        DataFrame::read_parquet_source_chunk(&rt, &non_nullable_source, nullable_chunk, SourceReadMode::FinalOutput)
-            .unwrap_err();
+    let err = DataFrame::read_parquet_source(
+        SourceRead::new(&non_nullable_source, slice::from_ref(nullable_chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .unwrap_err();
     assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("partition_null_for_non_nullable_column"));
     assert_eq!(error_context_value(&err, "partition_column").as_deref(), Some("part"));
 
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
         .unwrap();
-    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &non_nullable_source,
-        nullable_chunk,
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap_err();
+    let budget_err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&non_nullable_source, slice::from_ref(nullable_chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap_err();
     assert_eq!(budget_err.code(), ErrorCode::NullUnexpected);
     assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("partition_null_for_non_nullable_column"));
     assert_eq!(error_context_value(&budget_err, "partition_column").as_deref(), Some("part"));
@@ -1842,14 +1940,17 @@ fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values(
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
         .unwrap();
 
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
     let df = outcome.value();
 
     assert_eq!(
@@ -1933,14 +2034,17 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(1).with_boundary("source_read")).unwrap();
 
-    let err = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .expect_err("one-byte budget should not cover parquet decoded output allocations");
+    let err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("one-byte budget should not cover parquet decoded output allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     let budget = err.budget_exhaustion().expect("budgeted source read should expose typed budget detail");
@@ -1953,7 +2057,7 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(usage.failed_allocation_count, 1);
     assert!(usage.largest_failed_allocation_bytes > 0);
     assert_eq!(budget.boundary(), "source_read");
-    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget");
+    assert_eq!(budget.operation(), "dataframe::read_parquet_source");
 }
 
 #[test]
@@ -1978,21 +2082,24 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_reports_exceeded_budge
     let token =
         execution_budget_token(&rt, ExecutionBudgetRequest::new(1).with_boundary("host_buffer_source_read")).unwrap();
 
-    let err = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &filebytes,
-        &token,
-    )
-    .expect_err("one-byte budget should not cover host-buffer parquet decoded output allocations");
+    let err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .from_host_buffer(&filebytes)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("one-byte budget should not cover host-buffer parquet decoded output allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     let budget = err.budget_exhaustion().expect("budgeted host-buffer read exposes its budget scope");
     assert_eq!(budget.boundary(), "host_buffer_source_read");
     assert_eq!(budget.usage().expect("the member was sampled").allocation_limit_bytes, 1);
-    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget_from_host_buffer");
+    assert_eq!(budget.operation(), "dataframe::read_parquet_source");
 }
 
 #[test]
@@ -2020,14 +2127,17 @@ fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     )
     .unwrap();
 
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
 
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
     assert_eq!(outcome.report().request().boundary(), "source_read_minimum");
@@ -2056,14 +2166,17 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read_strings"))
             .unwrap();
 
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source,
-        &plan.chunks()[0],
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(&plan.chunks()[0]), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
     let df = outcome.value();
     let report = outcome.report();
 
@@ -2115,9 +2228,17 @@ fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadat
     assert_eq!(chunk.estimated_chunk_bytes(), Some(2_048));
     assert_eq!(chunk.known_row_count(), Some(2));
 
-    let outcome =
-        DataFrame::read_parquet_source_chunk_with_budget(&rt, &source, chunk, SourceReadMode::FinalOutput, &token)
-            .unwrap();
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source, slice::from_ref(chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .unwrap();
 
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
     assert_eq!(outcome.report().request().boundary(), "estimated_source_read");
@@ -2156,13 +2277,12 @@ fn read_parquet_source_empty_row_group_selection_returns_typed_empty_output() {
     )
     .unwrap();
 
-    let final_frame = DataFrame::read_parquet_source(&rt, &source).unwrap();
+    let final_frame = read_whole_parquet_source(&rt, &source, SourceReadMode::FinalOutput).unwrap();
     assert_eq!(final_frame.column_names(), vec!["id"]);
     assert_eq!(final_frame.num_rows(), 0);
     assert_eq!(final_frame.series("id").unwrap().dtype().unwrap(), dtype(TypeId::Int32));
 
-    let execution_frame =
-        DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
+    let execution_frame = read_whole_parquet_source(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
     assert_eq!(execution_frame.column_names(), vec!["id", "filter_only"]);
     assert_eq!(execution_frame.num_rows(), 0);
     assert_eq!(execution_frame.series("filter_only").unwrap().dtype().unwrap(), dtype(TypeId::Int64));
@@ -2183,11 +2303,11 @@ fn read_parquet_zero_column_count_uses_metadata_without_reading_file() {
     ])
     .unwrap();
 
-    let df = DataFrame::read_parquet_source(&rt, &source).unwrap();
+    let df = read_whole_parquet_source(&rt, &source, SourceReadMode::FinalOutput).unwrap();
 
     assert_eq!(df.column_names(), vec![ZERO_COLUMN_COUNT_COLUMN]);
     assert_eq!(df.series(ZERO_COLUMN_COUNT_COLUMN).unwrap().to_vec_strict::<i64>().unwrap(), vec![5, 7]);
-    assert_eq!(df.series(ZERO_COLUMN_COUNT_COLUMN).unwrap().sum_value::<i64>().unwrap(), 12);
+    assert_eq!(df.series(ZERO_COLUMN_COUNT_COLUMN).unwrap().on(Exec::RETAINED).sum_value::<i64>().unwrap(), 12);
 }
 
 #[test]
@@ -2199,7 +2319,7 @@ fn read_parquet_zero_column_count_empty_selection_returns_zero_row_count_frame()
             .with_row_groups(Some(vec![]))])
         .unwrap();
 
-    let df = DataFrame::read_parquet_source(&rt, &source).unwrap();
+    let df = read_whole_parquet_source(&rt, &source, SourceReadMode::FinalOutput).unwrap();
 
     assert_eq!(df.column_names(), vec![ZERO_COLUMN_COUNT_COLUMN]);
     assert_eq!(df.num_rows(), 0);
@@ -2214,7 +2334,7 @@ fn read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts() {
             LocalParquetFile::new("missing-metadata.parquet", "missing", []).unwrap()
         ])
         .unwrap();
-    let missing_err = DataFrame::read_parquet_source(&rt, &missing_source).unwrap_err();
+    let missing_err = read_whole_parquet_source(&rt, &missing_source, SourceReadMode::FinalOutput).unwrap_err();
     assert_eq!(missing_err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(error_context_value(&missing_err, "reason").as_deref(), Some("missing_row_group_row_count_metadata"));
 
@@ -2224,7 +2344,7 @@ fn read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts() {
             .with_row_group_metadata(vec![1], vec![i64::MAX as u64 + 1])
             .unwrap()])
         .unwrap();
-    let overflow_err = DataFrame::read_parquet_source(&rt, &overflow_source).unwrap_err();
+    let overflow_err = read_whole_parquet_source(&rt, &overflow_source, SourceReadMode::FinalOutput).unwrap_err();
     assert_eq!(overflow_err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(error_context_value(&overflow_err, "reason").as_deref(), Some("row_count_exceeds_i64"));
 }
@@ -2249,21 +2369,29 @@ fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
     let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
     let source_a_chunk = &source_a_plan.chunks()[0];
 
-    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
-        .expect_err("zero-column count chunk planned from stale row-count metadata must be rejected");
+    let err = DataFrame::read_parquet_source(
+        SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput),
+        &rt,
+        Exec::RETAINED,
+    )
+    .map(ParquetSourceChunkReadOutput::into_frame)
+    .expect_err("zero-column count chunk planned from stale row-count metadata must be rejected");
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_row_group_rows_metadata_mismatch"));
 
     let token = execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read"))
         .unwrap();
-    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
-        &rt,
-        &source_b,
-        source_a_chunk,
-        SourceReadMode::FinalOutput,
-        &token,
-    )
-    .expect_err("budgeted zero-column count chunk read must reject stale row-count metadata");
+    let budget_err = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&source_b, slice::from_ref(source_a_chunk), SourceReadMode::FinalOutput)
+                    .with_pass_read_limit_for_budget(token.member_limit_bytes()?),
+                &rt,
+                exec,
+            )
+        })
+        .map(|outcome| outcome.map(ParquetSourceChunkReadOutput::into_frame))
+        .expect_err("budgeted zero-column count chunk read must reject stale row-count metadata");
     assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
     assert_eq!(
         error_context_value(&budget_err, "reason").as_deref(),

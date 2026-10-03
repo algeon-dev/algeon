@@ -12,7 +12,7 @@ use super::{
     GpuResidentInputMap, GpuResidentSource, LocalParquetSource, NodeId, ProjectionNode, QueryError, QueryErrorCode,
     ResidentGpuFrame, Result, SourceChunkPlanningPolicy, concatenate_source_read_outputs, cudf_query_error,
     execute_edge_normalize, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    execution_budget_token_for_boundary, execution_overrides, observe_device_memory_bytes,
+    execution_budget_token_for_boundary, observe_device_memory_bytes,
     plan_local_parquet_source_chunks_with_execution_context, projection_regexp_replace_prepare,
     read_gpu_resident_source, read_literal_batch_source, read_local_parquet_chunks_required_only,
     validate_local_parquet_source,
@@ -100,10 +100,10 @@ pub(in crate::exec::bounded) fn execute_bounded_union(
         }
         let first = frames.remove(0);
         let rest = frames.iter().collect::<Vec<_>>();
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         let timer = Instant::now();
-        let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
+        let output = first.on(overrides).concat_many(&rest).map_err(|error| {
             cudf_query_error(
                 "query_engine.bounded.union.concat",
                 "failed to concatenate bounded native union inputs",

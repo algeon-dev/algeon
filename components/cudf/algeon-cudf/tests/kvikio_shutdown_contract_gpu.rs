@@ -1,5 +1,5 @@
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ErrorStatus, Runtime,
+    DataFrame, ErrorCode, ErrorKind, ErrorStatus, Exec, ParquetReadOptions, Runtime,
     io::{KvikioCompatMode, drain_kvikio_bounce_buffer_pools, kvikio_compat_mode, set_kvikio_compat_mode},
 };
 use cudf_sys::test_support;
@@ -66,7 +66,11 @@ fn compat_parquet_roundtrip_drains_kvikio_bounce_pools() {
     .unwrap();
     frame.write_parquet(&path).expect("compat-mode Parquet write");
 
-    let decoded = DataFrame::read_parquet(&runtime, &path).expect("compat-mode Parquet read");
+    let decoded = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&runtime).build(),
+        Exec::RETAINED,
+    )
+    .expect("compat-mode Parquet read");
     assert_eq!(decoded.column_names(), vec!["id", "value"]);
     assert_eq!(decoded.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(decoded.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30, 40]);

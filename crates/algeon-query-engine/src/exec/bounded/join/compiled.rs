@@ -997,10 +997,10 @@ fn concatenate_streamed_hash_join_outputs(
     }
     let first_frame = frames.remove(0);
     let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
+    let output = match first_frame.on(overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
             return Err(cudf_query_error(
@@ -1129,21 +1129,17 @@ impl CompiledMixedSizeData<'_> {
         })
     }
 
-    fn materialize_indices_in(
-        self,
-        overrides: &ExecutionOverrides<'_>,
-        node: &JoinNode,
-    ) -> Result<CompiledJoinIndices> {
+    fn materialize_indices_in(self, overrides: Exec<'_>, node: &JoinNode) -> Result<CompiledJoinIndices> {
         match self {
             Self::Pair(size_data) => size_data
-                .materialize_indices_in(overrides)
+                .materialize_indices(overrides)
                 .map(|indices| CompiledJoinIndices::Pair {
                     left: indices.left().clone(),
                     right: indices.right().clone(),
                 })
                 .map_err(|error| join_index_error(error, node)),
             Self::LeftOnly(size_data) => size_data
-                .materialize_indices_in(overrides)
+                .materialize_indices(overrides)
                 .map(CompiledJoinIndices::LeftOnly)
                 .map_err(|error| join_index_error(error, node)),
         }
@@ -1168,7 +1164,7 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     build_side: JoinSide,
     left_keys: &[String],
     right_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<CompiledEqualityJoinPreflightIndices> {
     let (build, build_keys, probe, probe_keys) = match build_side {
         JoinSide::Left => (left, left_keys, right, right_keys),
@@ -1224,12 +1220,12 @@ fn compiled_hash_join_probe_size(
     hash_join: &cudf::DataFrameHashJoin,
     probe: &DataFrame,
     probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<usize> {
     match node.spec.join_type {
-        JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
-        JoinType::Left => hash_join.left_probe_size_in(probe, probe_keys, overrides),
-        JoinType::Full => hash_join.full_probe_size_in(probe, probe_keys, overrides),
+        JoinType::Inner => hash_join.inner_probe_size(probe, probe_keys, overrides),
+        JoinType::Left => hash_join.left_probe_size(probe, probe_keys, overrides),
+        JoinType::Full => hash_join.full_probe_size(probe, probe_keys, overrides),
         JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
@@ -1243,12 +1239,12 @@ fn compiled_hash_join_probe_with_output_size(
     probe: &DataFrame,
     probe_keys: &[String],
     output_size: usize,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<cudf::DataFrameHashJoinPairIndices> {
     match node.spec.join_type {
-        JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
-        JoinType::Left => hash_join.left_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
-        JoinType::Full => hash_join.full_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
+        JoinType::Inner => hash_join.inner_probe_with_output_size(probe, probe_keys, output_size, overrides),
+        JoinType::Left => hash_join.left_probe_with_output_size(probe, probe_keys, output_size, overrides),
+        JoinType::Full => hash_join.full_probe_with_output_size(probe, probe_keys, output_size, overrides),
         JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
@@ -1345,7 +1341,7 @@ impl CompiledJoinIndices {
         &self,
         left: &DataFrame,
         right: &DataFrame,
-        overrides: &ExecutionOverrides<'_>,
+        overrides: Exec<'_>,
         projection: &[JoinOutputColumn],
         join_type: JoinType,
         preserved_side: JoinSide,
@@ -1408,8 +1404,8 @@ fn materialize_compiled_indices_output(
         one_shot_index_bytes,
     } = request;
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     txn.set_indices(indices);
     let observed_gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
@@ -1444,7 +1440,7 @@ fn materialize_compiled_indices_output(
     let output = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,

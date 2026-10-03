@@ -421,6 +421,29 @@ pub(crate) fn record_teardown_failure(device: DeviceId, operation: &'static str,
     });
 }
 
+/// Write a failed cross-stream completion fence and the host-synchronization
+/// result that replaced it to the device diagnostic stream.
+///
+/// The fence's device-entry and fatal CUDA failures already record a device
+/// fault at their source, so this only reports the outcome.
+pub(crate) fn report_completion_fence_fallback(
+    device: DeviceId,
+    operation: &'static str,
+    fence_error: &dyn fmt::Display,
+    fallback: &Result<()>,
+) {
+    match fallback {
+        Ok(()) => write_diagnostic(format_args!(
+            "[cudf] completion_fence_host_fallback device={} operation={operation} reason={fence_error}",
+            device.ordinal_raw()
+        )),
+        Err(sync_error) => write_diagnostic(format_args!(
+            "[cudf] completion_fence_failed device={} operation={operation} reason={fence_error} host_fallback_error={sync_error} consequence=cross_stream_inputs_may_be_reused_before_consumer_completes",
+            device.ordinal_raw()
+        )),
+    }
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn new_test_registry() -> Arc<DeviceHealthRegistry> {
     Arc::new(DeviceHealthRegistry::default())

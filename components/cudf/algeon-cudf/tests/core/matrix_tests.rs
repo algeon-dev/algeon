@@ -12,25 +12,11 @@ use cudf::{
     CudfType, DataFrame, DenseMatrixLayout, ErrorCode, Runtime, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::GpuRecordBatch,
-    ops::reshape::interleave_columns,
-    testing::prelude::*,
 };
 
 use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, run_named_cases,
 };
-
-fn direct_interleave_columns_uses_the_public_reshape_surface() {
-    let runtime = Runtime::new().unwrap();
-    let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
-    let second = runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
-    let first_view = first.testing_view().unwrap();
-    let second_view = second.testing_view().unwrap();
-
-    let interleaved = interleave_columns(&[&first_view, &second_view]).unwrap();
-
-    assert_eq!(interleaved.to_vec::<i32>().unwrap(), vec![1, 10, 2, 20, 3, 30]);
-}
 
 fn row_major_pack_interleaves_columns_on_target_runtime() {
     let input_runtime = Runtime::new().unwrap();
@@ -264,7 +250,7 @@ fn finite_validation_rejects_nan_and_both_infinities() {
         assert_eq!(error.fact_value(FactKeyName::ExecutionBindingId), Some(&FactValue::U64(matrix.binding_id().get())));
         assert_eq!(
             error.fact_value(FactKeyName::ValidationDevice),
-            Some(&FactValue::DeviceId(matrix.placement().device.ordinal() as i32))
+            Some(&FactValue::DeviceId(matrix.device().ordinal() as i32))
         );
         assert_eq!(
             error.fact_value(FactKeyName::ValidationStream),
@@ -372,10 +358,6 @@ fn widen_packed_matrix_to_float64_is_exact_on_target_runtime() {
 #[test]
 fn matrix_tests_cases() {
     run_named_cases(&[
-        (
-            "direct_interleave_columns_uses_the_public_reshape_surface",
-            direct_interleave_columns_uses_the_public_reshape_surface,
-        ),
         ("row_major_pack_interleaves_columns_on_target_runtime", row_major_pack_interleaves_columns_on_target_runtime),
         ("column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
         (

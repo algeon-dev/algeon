@@ -3,8 +3,7 @@ use arrow::datatypes::{DECIMAL128_MAX_PRECISION, SchemaRef as ArrowSchemaRef};
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, LiteralValue, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg,
-    budgeted_value, cudf_query_error, execution_overrides, frame_column_arrow_data_type, lower_expr,
-    validate_avg_output_fields,
+    budgeted_value, cudf_query_error, frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
 };
 use crate::expr::CaseWhen;
 
@@ -72,8 +71,8 @@ fn finalize_avg_output_columns_impl(
         })
         .collect::<Result<Vec<_>>>()?;
     match token {
-        Some((token, metrics)) => frame
-            .with_columns_with_budget(avg_exprs, token)
+        Some((token, metrics)) => token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(avg_exprs))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.finalize_avg",
@@ -83,9 +82,9 @@ fn finalize_avg_output_columns_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.aggregate.finalize_avg")),
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
-            frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
+            frame.on(overrides).with_columns(avg_exprs).map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.finalize_avg",
                     "failed to finalize native avg aggregate output columns",

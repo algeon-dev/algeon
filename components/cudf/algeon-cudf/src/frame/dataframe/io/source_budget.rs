@@ -16,6 +16,7 @@ use crate::{
             SourceReadMode, SourceRequiredColumn,
         },
     },
+    runtime::{CompleteReport, ExecutionBudgetReport},
 };
 
 pub(super) const PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES: usize = 64 * 1024;
@@ -56,11 +57,17 @@ impl ParquetSourceReadPreflight {
 pub struct ParquetSourceChunkReadOutput {
     frame: DataFrame,
     read_evidence: Option<ParquetReadEvidence>,
+    report_facts: BTreeMap<String, String>,
 }
 
 impl ParquetSourceChunkReadOutput {
     pub(super) fn new(frame: DataFrame, read_evidence: Option<ParquetReadEvidence>) -> Self {
-        Self { frame, read_evidence }
+        Self { frame, read_evidence, report_facts: BTreeMap::new() }
+    }
+
+    pub(super) fn with_report_facts(mut self, facts: BTreeMap<String, String>) -> Self {
+        self.report_facts = facts;
+        self
     }
 
     /// Decoded DataFrame.
@@ -333,6 +340,56 @@ pub(super) fn parquet_source_batch_budget_context(
     }
     if all_source_read_bytes_known {
         facts.insert("estimated_source_read_bytes".to_string(), known_source_read_bytes.to_string());
+    }
+    facts
+}
+
+/// A source read retains its decoded frame; the report also records the
+/// source-read facts gathered by the read.
+impl CompleteReport for ParquetSourceChunkReadOutput {
+    fn complete_report(&self, report: ExecutionBudgetReport) -> Result<ExecutionBudgetReport> {
+        let bytes = self.frame.device_allocated_size_bytes()?;
+        Ok(report
+            .with_retained_bytes(bytes)
+            .with_output_bytes(bytes)
+            .with_output_rows(self.frame.num_rows())
+            .with_context_facts(self.report_facts.iter().map(|(key, value)| (key.clone(), value.clone()))))
+    }
+}
+
+/// Budget-report facts of a single-chunk source read: the chunk's source
+/// context plus the exact source-read preflight when cudf can prove it.
+pub(super) fn single_chunk_report_facts(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    mode: SourceReadMode,
+) -> BTreeMap<String, String> {
+    let mut facts = parquet_source_budget_context(source, chunk, mode);
+    // The preflight only describes the finished read in the report. When the
+    // byte model cannot bound it, the frame stays and the report says so; the
+    // read itself already passed the source validation the preflight repeats.
+    match DataFrame::parquet_source_chunk_exact_preflight(source, chunk, mode) {
+        Ok(Some(preflight)) => {
+            facts.insert("source_read_preflight_contract".to_string(), "exact_retained_output_upper_bound".to_string());
+            facts.insert(
+                "source_read_preflight_retained_output_bytes".to_string(),
+                preflight.retained_output_bytes().to_string(),
+            );
+            facts.insert(
+                "source_read_preflight_required_budget_bytes".to_string(),
+                preflight.required_budget_bytes().to_string(),
+            );
+        },
+        Ok(None) => {
+            facts.insert("source_read_preflight_contract".to_string(), "unavailable".to_string());
+        },
+        Err(error) => {
+            facts.insert("source_read_preflight_contract".to_string(), "unavailable".to_string());
+            facts.insert(
+                "source_read_preflight_unavailable_reason".to_string(),
+                error.detail_value("reason").map_or_else(|| error.code().to_string(), str::to_string),
+            );
+        },
     }
     facts
 }

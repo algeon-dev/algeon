@@ -6,7 +6,7 @@ use std::sync::{
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use arrow::datatypes::DataType;
-use cudf::{DenseMatrixLayout, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId};
+use cudf::{DenseMatrixLayout, Exec, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId};
 use cuml::{
     ClusterSelectionMethod, CumlResources, DeviceMatrix, ForestInferenceModel, ForestOutput, ForestOutputKind,
     ForestPrecision, HdbscanFit, HdbscanParams, LogisticRegressionModel, LogisticRegressionParams, OwnedFloat32Matrix,
@@ -1252,7 +1252,7 @@ fn execute_forest_predict(
         let sliced = if len == rows {
             None
         } else {
-            Some(GpuDataFrame::new(input.frame().slice(offset, len).map_err(|error| {
+            Some(GpuDataFrame::new(input.frame().on(Exec::RETAINED).slice(offset, len).map_err(|error| {
                 cudf_query_error(EXECUTE, "failed to slice the forest input batch", error)
                     .with_fact("offset", offset)
                     .with_fact("rows", len)
@@ -1358,9 +1358,11 @@ fn execute_forest_predict(
                 };
                 let series = match <[Series; 1]>::try_from(batches) {
                     Ok([series]) => series,
-                    Err(batches) => Series::concat(&batches.iter().collect::<Vec<_>>()).map_err(|error| {
-                        cudf_query_error(ML_OPERATIONS.assemble, "failed to concatenate forest batches", error)
-                    })?,
+                    Err(batches) => {
+                        Series::concat(&batches.iter().collect::<Vec<_>>(), Exec::RETAINED).map_err(|error| {
+                            cudf_query_error(ML_OPERATIONS.assemble, "failed to concatenate forest batches", error)
+                        })?
+                    },
                 };
                 Ok((name, series))
             })

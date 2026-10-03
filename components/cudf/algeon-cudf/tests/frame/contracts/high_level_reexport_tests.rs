@@ -6,22 +6,24 @@
 //! smoke test.
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
-use cudf::testing::{
-    arrow::trigger_numeric_to_arrow_error_for_test,
-    column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test,
-    concatenate::trigger_concatenate_column_count_limit_error_for_test,
-    core::{
-        adopt_owned_memory_resource_for_test, trigger_truthful_error_contract_for_test,
-        validity_to_host_null_mask_bytes,
+use cudf::{
+    Exec,
+    testing::{
+        arrow::trigger_numeric_to_arrow_error_for_test,
+        column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test,
+        concatenate::trigger_concatenate_column_count_limit_error_for_test,
+        core::{
+            adopt_owned_memory_resource_for_test, trigger_truthful_error_contract_for_test,
+            validity_to_host_null_mask_bytes,
+        },
+        dataframe::trigger_dataframe_row_range_overflow_error_for_test,
+        factorization::trigger_factorize_empty_row_code_dtype_error_for_test,
+        groupby::trigger_groupby_request_count_limit_error_for_test,
+        interop::trigger_interop_projection_negative_offset_for_test,
+        join::trigger_merge_reassembly_key_count_error_for_test,
+        series::trigger_series_row_range_overflow_error_for_test,
+        sorting::trigger_sort_key_count_limit_error_for_test,
     },
-    dataframe::trigger_dataframe_row_range_overflow_error_for_test,
-    dictionary::trigger_match_dictionaries_result_count_mismatch_for_test,
-    factorization::trigger_factorize_empty_row_code_dtype_error_for_test,
-    groupby::trigger_groupby_request_count_limit_error_for_test,
-    interop::trigger_interop_projection_negative_offset_for_test,
-    join::trigger_merge_reassembly_key_count_error_for_test,
-    series::trigger_series_row_range_overflow_error_for_test,
-    sorting::trigger_sort_key_count_limit_error_for_test,
 };
 
 use crate::common::{column_from_slice, series, unnamed_series};
@@ -39,8 +41,8 @@ fn crate_root_doc_workflow_smoke() {
     assert_eq!(df.num_rows(), 3);
 
     let score_series = df.series("score").unwrap();
-    assert_eq!(score_series.sum_value::<f64>().unwrap(), 60.0);
-    assert_eq!(score_series.mean_value().unwrap(), Some(20.0));
+    assert_eq!(score_series.on(Exec::RETAINED).sum_value::<f64>().unwrap(), 60.0);
+    assert_eq!(score_series.on(Exec::RETAINED).mean_value().unwrap(), Some(20.0));
 }
 
 #[test]
@@ -74,19 +76,23 @@ fn runtime_first_factories_smoke() {
 }
 
 #[test]
-fn runtime_raw_scalar_factories_smoke() {
-    use cudf::{DataType, Runtime, TimestampResolution, TypeId};
+fn runtime_scalar_covers_decimal_temporal_and_null_values_smoke() {
+    use cudf::{DataType, Runtime, ScalarValue, TimestampResolution, TypeId};
 
     let rt = Runtime::builder().build().unwrap();
-    let decimal32 = rt.decimal32_raw_scalar(12_345, -2).unwrap();
-    let decimal64 = rt.decimal64_raw_scalar(-98_765_432, -4).unwrap();
-    let decimal128 = rt.decimal128_raw_scalar(123_456_789_012_345_678_901i128, -6).unwrap();
-    let decimal = rt.decimal_raw_scalar(-77, DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap();
-    let timestamp = rt.timestamp_raw_scalar(1_700_000_123_456, TimestampResolution::Microseconds).unwrap();
-    let duration = rt.duration_raw_scalar(-42_000_000, TimestampResolution::Nanoseconds).unwrap();
-    let null_decimal = rt.null_decimal32_raw_scalar(-2).unwrap();
-    let null_timestamp = rt.null_timestamp_raw_scalar(TimestampResolution::Milliseconds).unwrap();
-    let null_duration = rt.null_duration_raw_scalar(TimestampResolution::Seconds).unwrap();
+    let decimal32 = rt.scalar(ScalarValue::Decimal32 { raw: 12_345, scale: -2 }).unwrap();
+    let decimal64 = rt.scalar(ScalarValue::Decimal64 { raw: -98_765_432, scale: -4 }).unwrap();
+    let decimal128 = rt.scalar(ScalarValue::Decimal128 { raw: 123_456_789_012_345_678_901i128, scale: -6 }).unwrap();
+    let decimal =
+        rt.scalar(ScalarValue::decimal(-77, DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap()).unwrap();
+    let timestamp = rt
+        .scalar(ScalarValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds })
+        .unwrap();
+    let duration =
+        rt.scalar(ScalarValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds }).unwrap();
+    let null_decimal = rt.scalar(ScalarValue::Null(DataType::fixed_point(TypeId::Decimal32, -2).unwrap())).unwrap();
+    let null_timestamp = rt.scalar(ScalarValue::Null(TimestampResolution::Milliseconds.type_id().into())).unwrap();
+    let null_duration = rt.scalar(ScalarValue::Null(TimestampResolution::Seconds.duration_type_id().into())).unwrap();
 
     assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
     assert_eq!(decimal32.decimal32_raw_value().unwrap(), 12_345);
@@ -109,22 +115,19 @@ fn runtime_raw_scalar_factories_smoke() {
 }
 
 #[test]
-fn ops_expr_raw_literal_functions_are_publicly_importable() {
-    use cudf::{
-        DataFrame, DataType, Expr, Runtime, TimestampResolution, TypeId,
-        ops::expr::{lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
-    };
+fn scalar_value_literals_are_publicly_importable() {
+    use cudf::{DataFrame, DataType, Expr, Runtime, ScalarValue, TimestampResolution, TypeId, ops::expr::lit};
 
     fn assert_expr(_: Expr) {}
 
-    assert_expr(lit_decimal32_raw(12_345, -2));
-    assert_expr(lit_decimal128_raw(123_456_789_012_345_678_901i128, -6));
-    assert_expr(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds));
-    assert_expr(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds));
+    assert_expr(lit(ScalarValue::Decimal32 { raw: 12_345, scale: -2 }));
+    assert_expr(lit(ScalarValue::Decimal128 { raw: 123_456_789_012_345_678_901i128, scale: -6 }));
+    assert_expr(lit(ScalarValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds }));
+    assert_expr(lit(ScalarValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds }));
 
     let rt = Runtime::builder().build().unwrap();
     let df = DataFrame::from_series([("x", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
-    let decimal = lit_decimal64_raw(-98_765_432, -4).alias("amount").eval(&df).unwrap();
+    let decimal = lit(ScalarValue::Decimal64 { raw: -98_765_432, scale: -4 }).alias("amount").eval(&df).unwrap();
 
     assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(decimal.len(), 3);
@@ -132,34 +135,31 @@ fn ops_expr_raw_literal_functions_are_publicly_importable() {
 
 #[test]
 fn datetime_extract_surface_is_publicly_importable() {
-    use cudf::{
-        TypeId,
-        ops::datetime::{DatetimeComponent, extract_component},
-        testing::prelude::*,
-    };
+    use cudf::{TypeId, ops::datetime::DatetimeComponent};
 
     fn assert_component(_: DatetimeComponent) {}
 
     let ts = series("ts", &[0i32, 10_561])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
-    let view = ts.as_column().testing_view().unwrap();
-    let year = extract_component(&view, DatetimeComponent::Year).unwrap();
-    let month = ts.dt().month().unwrap();
-    let day = ts.dt().day().unwrap();
+    let year = ts.on(Exec::RETAINED).dt().year().unwrap();
+    let month = ts.on(Exec::RETAINED).dt().month().unwrap();
+    let day = ts.on(Exec::RETAINED).dt().day().unwrap();
 
     assert_component(DatetimeComponent::Month);
-    assert_eq!(year.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![1970, 1998]);
+    assert_eq!(year.to_vec_strict::<i16>().unwrap(), vec![1970, 1998]);
     assert_eq!(month.to_vec_strict::<i16>().unwrap(), vec![1, 12]);
     assert_eq!(day.to_vec_strict::<i16>().unwrap(), vec![1, 1]);
 }
 
 #[test]
 fn string_like_and_slice_surface_is_publicly_importable() {
-    use cudf::{StringSliceOptions, TypeId, ops::strings, testing::prelude::*};
+    use cudf::{StringSliceOptions, TypeId};
 
     fn assert_options(_: StringSliceOptions) {}
 
@@ -167,12 +167,11 @@ fn string_like_and_slice_surface_is_publicly_importable() {
     assert_options(options);
 
     let s = series("s", &["abc", "axc", "abbc"]).unwrap();
-    let view = s.as_column().testing_view().unwrap();
-    let low_level = strings::like(&view, "a_c", None).unwrap();
-    let high_level = s.str().slice(options).unwrap();
+    let like = s.on(Exec::RETAINED).str().like("a_c").unwrap();
+    let slice = s.on(Exec::RETAINED).str().slice(options).unwrap();
 
-    assert_eq!(low_level.testing_view().unwrap().data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(high_level.dtype().unwrap().id(), TypeId::String);
+    assert_eq!(like.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(slice.dtype().unwrap().id(), TypeId::String);
 }
 
 #[test]
@@ -193,29 +192,8 @@ fn execution_placement_summary_is_publicly_reexported() {
     assert_eq!(series_placement, runtime_placement);
     assert_eq!(frame_placement, runtime_placement);
     assert_eq!(frame_placement.device, rt.device());
-    assert_ne!(frame_placement.workflow_id, 0);
-    assert_ne!(frame_placement.bundle_id, 0);
     assert_ne!(frame_placement.stream_debug, 0);
     assert_ne!(frame_placement.memory_resource_debug, 0);
-}
-
-#[test]
-fn query_execution_context_is_publicly_reexported() {
-    use cudf::{DataFrame, QueryExecutionContext, Runtime, SortOptions};
-
-    fn assert_query_context(_: &QueryExecutionContext<'_>) {}
-
-    let rt = Runtime::builder().build().unwrap();
-    let query = rt.query_execution();
-    assert_query_context(&query);
-    assert_eq!(query.runtime().placement(), rt.placement());
-    assert_eq!(query.placement(), rt.placement());
-    assert_eq!(query.device(), rt.device());
-
-    let df = DataFrame::from_series([("id", rt.series(&[2i32, 1, 3]).unwrap())]).unwrap();
-    let sorted = df.with_execution(query.overrides()).sort_values(["id"], SortOptions::new()).unwrap();
-
-    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -254,27 +232,29 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     assert_mixed_options(DataFrameMixedJoinOptions::new());
     assert_mixed_single_size_data(None);
 
-    let indices = left.left_semi_join_indices(&right, options).unwrap();
+    let indices = left.on(Exec::RETAINED).left_semi_join_indices(&right, options).unwrap();
     assert_indices(&indices);
     assert!(indices.device_allocated_size_bytes().unwrap() > 0);
-    let pair_indices = left.inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let pair_indices =
+        left.on(Exec::RETAINED).inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     assert_pair_indices(&pair_indices);
     assert!(pair_indices.device_allocated_size_bytes().unwrap() > 0);
-    let hash_join = right.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    let hash_join = right.on(Exec::RETAINED).build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
     assert_hash_join(&hash_join);
     assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
-    let hash_output_size = hash_join.inner_probe_size(&left, ["id"]).unwrap();
-    let hash_indices = hash_join.inner_probe(&left, ["id"]).unwrap();
-    let sized_hash_indices = hash_join.inner_probe_with_output_size(&left, ["id"], hash_output_size).unwrap();
+    let hash_output_size = hash_join.inner_probe_size(&left, ["id"], Exec::RETAINED).unwrap();
+    let hash_indices = hash_join.inner_probe(&left, ["id"], Exec::RETAINED).unwrap();
+    let sized_hash_indices =
+        hash_join.inner_probe_with_output_size(&left, ["id"], hash_output_size, Exec::RETAINED).unwrap();
     assert_hash_pair_indices(&hash_indices);
     assert!(hash_indices.device_allocated_size_bytes().unwrap() > 0);
     assert_eq!(sized_hash_indices.len(), hash_indices.len());
-    let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
-    let pair_materialized = left.materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
-    let hash_materialized = hash_join.materialize(&left, &hash_indices, ["value"], ["id"]).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["value"]).unwrap();
+    let pair_materialized = left.on(Exec::RETAINED).materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
+    let hash_materialized = hash_join.materialize(&left, &hash_indices, ["value"], ["id"], Exec::RETAINED).unwrap();
     assert_hash_materialized(&hash_materialized);
-    let semi = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let anti = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let semi = left.on(Exec::RETAINED).left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let anti = left.on(Exec::RETAINED).left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_eq!(indices.len(), 1);
     assert_eq!(pair_indices.len(), 1);
@@ -296,14 +276,16 @@ fn factorization_surface_smoke() {
     fn assert_factorized_types(_: &Factorized, _: &Codebook, _: &EncodedSeries) {}
 
     let series = series("kind", &["a", "b", "a"]).unwrap();
-    let factorized = series.factorize().unwrap();
+    let factorized = series.on(Exec::RETAINED).factorize().unwrap();
     assert_factorized_types(&factorized, factorized.codebook(), factorized.row_codes());
 
-    let decoded = factorized.decode().unwrap();
+    let decoded = factorized.decode(Exec::RETAINED).unwrap();
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "b", "a"]);
 
-    let first_seen =
-        series.factorize_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen)).unwrap();
+    let first_seen = series
+        .on(Exec::RETAINED)
+        .factorize_with(DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen))
+        .unwrap();
     assert_eq!(first_seen.codebook().keys().to_strings_strict().unwrap(), vec!["a", "b"]);
 }
 
@@ -314,7 +296,7 @@ fn scalar_reduction_prepared_surface_is_publicly_reexported() {
     let s = series::<i32>("value", &[10, 40, 30]).unwrap();
     let prepared: SeriesPreparedScalarReduction<'_> = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
     let shape: &ScalarReductionOutputShape = prepared.output_shape();
-    let output: ScalarReductionOutput = prepared.execute().unwrap();
+    let output: ScalarReductionOutput = prepared.execute(Exec::RETAINED).unwrap();
 
     assert_eq!(shape.output_type().id(), TypeId::Int32);
     assert_eq!(shape.output_rows(), 1);
@@ -324,7 +306,7 @@ fn scalar_reduction_prepared_surface_is_publicly_reexported() {
 
 #[test]
 fn scoped_control_plane_smoke() {
-    use cudf::{AggSpec, DataFrame, ExecutionOverrides, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
+    use cudf::{AggSpec, DataFrame, Exec, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
     let df = DataFrame::from_series([
@@ -334,11 +316,10 @@ fn scoped_control_plane_smoke() {
     .unwrap();
 
     let override_stream = CudaStream::new().unwrap();
-    let execution = ExecutionOverrides::new().with_stream(&override_stream);
+    let execution = Exec::RETAINED.with_stream(&override_stream);
 
-    let sorted = df.with_execution(&execution).sort_values(["id"], SortOptions::new()).unwrap();
-    let grouped =
-        sorted.groupby(["id"]).with_execution(&execution).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let sorted = df.on(execution).sort_values(["id"], SortOptions::new()).unwrap();
+    let grouped = sorted.groupby(["id"]).on(execution).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(grouped.column_names(), vec!["id", "value_sum"]);
     assert_eq!(grouped.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2]);
@@ -354,7 +335,7 @@ fn advanced_owned_and_high_level_ops_smoke() {
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
     let gather_map = cudf::Series::from_column(column_from_slice(&[2i32, 0]).unwrap()).unwrap();
 
-    let gathered = df.gather(&gather_map).unwrap();
+    let gathered = df.on(Exec::RETAINED).gather(&gather_map).unwrap();
     let id_series = gathered.series("id").unwrap();
     let score_series = gathered.series("score").unwrap();
     let id_column = id_series.as_column();
@@ -372,7 +353,7 @@ fn empty_dataframe_table_copy_smoke() {
 
     let rt = Runtime::builder().build().unwrap();
     let df = rt.empty_dataframe();
-    let table = df.to_table_copy().unwrap();
+    let table = df.on(Exec::RETAINED).to_table_copy().unwrap();
 
     assert_eq!(table.num_columns().unwrap(), 0);
     assert_eq!(table.num_rows().unwrap(), 0);
@@ -409,7 +390,6 @@ fn testing_submodules_expose_domain_scoped_hooks() {
     let _ = trigger_truthful_error_contract_for_test;
     let _ = validity_to_host_null_mask_bytes;
     let _ = trigger_dataframe_row_range_overflow_error_for_test;
-    let _ = trigger_match_dictionaries_result_count_mismatch_for_test;
     let _ = trigger_factorize_empty_row_code_dtype_error_for_test;
     let _ = trigger_groupby_request_count_limit_error_for_test;
     let _ = trigger_interop_projection_negative_offset_for_test;

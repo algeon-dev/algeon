@@ -264,7 +264,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     )
     .with_memory_failure(MemoryFailure {
         boundary: "test_boundary".into(),
-        operation: "dataframe::with_columns_with_budget".into(),
+        operation: "dataframe::with_columns".into(),
         usage: Some(MemoryUsage {
             limit_bytes: 32 * 1024 * 1024,
             peak_bytes: 8192,
@@ -317,7 +317,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         Some("query_memory_limit_exceeded")
     );
     assert_eq!(recorded.facts.get("budget_status").map(String::as_str), Some("exceeded_or_lower_layer_rejected"));
-    assert_eq!(recorded.facts.get("budget_operation").map(String::as_str), Some("dataframe::with_columns_with_budget"));
+    assert_eq!(recorded.facts.get("budget_operation").map(String::as_str), Some("dataframe::with_columns"));
     assert_eq!(recorded.facts.get("budget_peak_bytes").map(String::as_str), Some("8192"));
     assert_eq!(recorded.facts.get("budget_bytes").map(String::as_str), Some("33554432"));
     assert_eq!(recorded.facts.get("filtered_global_observed_temporary_peak_bytes").map(String::as_str), Some("8192"));

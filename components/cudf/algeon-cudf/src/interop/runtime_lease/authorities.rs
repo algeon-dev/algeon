@@ -72,6 +72,5 @@ pub(super) fn producer_readiness_binding(
 }
 
 pub(super) fn create_producer_owned_event(producer_device: DeviceId) -> Result<CudaEvent> {
-    let _guard = DeviceGuard::new(producer_device)?;
-    CudaEvent::new()
+    CudaEvent::new_on(producer_device)
 }

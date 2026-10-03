@@ -11,12 +11,8 @@ pub(crate) fn execution_binding<'a>(
         .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))?;
     let stream = domain.stream();
     let mr = domain.memory_resource();
-    let stream_ptr = stream
-        .interop_raw_handle()
-        .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))?;
-    let mr_ptr = mr
-        .interop_raw_handle()
-        .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))?;
+    let stream_ptr = stream.interop_raw_handle();
+    let mr_ptr = mr.interop_raw_handle();
     Ok(ExecutionBinding::new(
         CudaStreamHandle::from_raw_on_device(stream_ptr, options.options().device)?,
         DeviceMemoryResourceHandle::from_raw(mr_ptr)?,
@@ -31,9 +27,7 @@ pub(super) fn prepared_device_readiness<'a>(
         .enter_execution()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
     let stream = domain.stream();
-    let stream_ptr = stream
-        .interop_raw_handle()
-        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let stream_ptr = stream.interop_raw_handle();
     let device = options.options().device;
     Ok((
         device,

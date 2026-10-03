@@ -2,7 +2,7 @@ use std::panic;
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Series};
 
-use crate::common::{column_from_slice, error_context_value, string_scalar};
+use crate::common::{column_from_slice, error_context_value, scalar};
 
 #[test]
 fn dataframe_from_series_empty_iterator_returns_error_instead_of_panicking() {
@@ -27,7 +27,7 @@ fn table_view_select_columns_out_of_bounds_returns_error_instead_of_panicking() 
 
 #[test]
 fn scalar_type_mismatch_returns_error_instead_of_panicking() {
-    let scalar = string_scalar("alice").unwrap();
+    let scalar = scalar("alice").unwrap();
 
     let result = panic::catch_unwind(|| scalar.value::<i32>());
 

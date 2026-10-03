@@ -50,7 +50,7 @@ use crate::{
 pub struct StandaloneConfig {
     /// Runtime supplying the context's device, stream, and retained provenance.
     ///
-    /// Context derivation preserves its affinity and lifetime owners while
+    /// Context derivation preserves its device, stream and lifetime owners while
     /// replacing the effective allocator with the device manager's member
     /// routing resource. The original runtime and its allocator remain usable
     /// outside the context. A raw stream cannot belong to independent live
@@ -476,7 +476,6 @@ mod tests {
         let runtime = context.shared_runtime().unwrap();
         assert_eq!(runtime.device(), supplied.device());
         assert_eq!(runtime.stream().testing_raw_handle_value(), supplied.stream().testing_raw_handle_value());
-        assert_eq!(runtime.affinity_id(), supplied.affinity_id());
         assert_ne!(runtime.binding_id(), supplied.binding_id());
         assert_eq!(
             runtime.memory_resource().testing_raw_handle_value(),

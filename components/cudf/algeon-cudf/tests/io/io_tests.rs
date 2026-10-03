@@ -6,7 +6,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, ErrorCode, ErrorKind, Runtime,
+    DataFrame, DeviceId, ErrorCode, ErrorKind, Exec, ParquetReadOptions, Runtime,
     core::{
         Table,
         error::{FactKeyName, FactValue},
@@ -115,7 +115,11 @@ fn short_lived_pool_runtimes_survive_concurrent_parquet_roundtrips() {
                     .unwrap();
                     let path = dir.path().join(format!("worker_{worker_index}_round_{round}.parquet"));
                     frame.write_parquet(&path).unwrap();
-                    let read = DataFrame::read_parquet(&runtime, &path).unwrap();
+                    let read = DataFrame::read_parquet(
+                        ParquetReadOptions::builder().filepath(&path).with_runtime(&runtime).build(),
+                        Exec::RETAINED,
+                    )
+                    .unwrap();
                     assert_eq!(read.num_rows(), ids.len());
                     assert_eq!(read.series("id").unwrap().to_vec_strict::<i32>().unwrap(), ids);
                     assert_eq!(read.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vals);

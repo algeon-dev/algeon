@@ -477,7 +477,7 @@ fn execute_segmented_filtered_global_partial_state(
         let chunk = if length == input_rows {
             frame.clone()
         } else {
-            frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
+            frame.on(token.exec()).slice(offset, length).map_err(|error| {
                 attach_budget_token_failure_facts(
                     cudf_query_error(
                         "query_engine.filtered_global_aggregate.slice",
@@ -667,8 +667,8 @@ fn prepare_filtered_global_predicates_for_chunk(
         fields.push(Field::new(alias, ArrowDataType::Boolean, true));
     }
     if !predicate_expressions.is_empty() {
-        frame = frame
-            .with_columns_with_budget(predicate_expressions, token)
+        frame = token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(predicate_expressions))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.filtered_global_aggregate.filter_predicates",
@@ -726,8 +726,8 @@ fn prepare_filtered_global_partial_segment(
         ));
     }
     if !masked_expressions.is_empty() {
-        frame = frame
-            .with_columns_with_budget(masked_expressions, token)
+        frame = token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(masked_expressions))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.filtered_global_aggregate.filter_inputs",
@@ -869,7 +869,7 @@ fn concat_partial_state_frames(
     }
     let first = partial_frames.remove(0).into_frame();
     let rest = partial_frames.iter().map(GpuDataFrame::frame).collect::<Vec<_>>();
-    first.with_execution(&token.execution_overrides()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
+    first.on(token.exec()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
         attach_budget_token_failure_facts(
             cudf_query_error(
                 "query_engine.filtered_global_aggregate.concat_partial_state",

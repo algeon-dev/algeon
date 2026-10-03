@@ -1,4 +1,4 @@
-use super::{DataFrame, ExecutionContext, ExecutionOverrides, QueryError, QueryErrorCode, Result, cudf_query_error};
+use super::{DataFrame, ExecutionContext, QueryError, QueryErrorCode, Result, cudf_query_error};
 use crate::plan::GraphAlgorithmSpec;
 
 /// Runs the runtime graph vertex-count probe on the attempt's own runtime.
@@ -51,9 +51,9 @@ fn runtime_graph_statistics_probe_in_runtime(
     let destination = destination.copy_into_runtime(runtime).map_err(|error| {
         cudf_query_error(operation, "failed to place graph destination column in budgeted runtime", error)
     })?;
-    let ctx = graph_statistics_execution_overrides(runtime);
-    let count = cudf::Series::concat_in(&[&source, &destination], &ctx)
-        .and_then(|series| series.nunique_in(&ctx))
+    let ctx = runtime.exec();
+    let count = cudf::Series::concat(&[&source, &destination], ctx)
+        .and_then(|series| series.on(ctx).nunique())
         .map_err(|error| cudf_query_error(operation, "failed to count distinct graph endpoints", error))?;
     u64::try_from(count).map_err(|error| {
         QueryError::new(QueryErrorCode::InvalidPlan, operation, "runtime graph vertex estimate does not fit u64")
@@ -63,8 +63,3 @@ fn runtime_graph_statistics_probe_in_runtime(
 
 #[cfg(feature = "cugraph")]
 const GRAPH_STATISTICS_OPERATION: &str = "query_engine.graph_algorithm.graph_memory_vertex_estimate";
-
-#[cfg(feature = "cugraph")]
-fn graph_statistics_execution_overrides(runtime: &cudf::Runtime) -> ExecutionOverrides<'_> {
-    ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource())
-}

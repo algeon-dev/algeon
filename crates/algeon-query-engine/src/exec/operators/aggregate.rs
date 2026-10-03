@@ -8,20 +8,19 @@ use query_planning::util::fnv1a64;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
-    CudfAggSpec, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext,
-    ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions,
-    LiteralValue, LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, Schema,
-    aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
-    aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
-    budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
-    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_unsupported_type_error, execute_global_aggregate, execute_global_aggregate_with_budget, execution_overrides,
-    final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns,
-    finalize_avg_output_columns_with_budget, global_count_star_expr, global_valid_count_state_alias, lit, lit_null,
-    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_final_aggregate_spec,
-    lower_named_column_expr, lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec,
-    partial_global_aggregate_output_schema, partial_global_aggregate_spec, schema_with_datafusion_order_columns,
-    sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    CudfAggSpec, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionBudgetToken, ExecutionContext,
+    ExecutionMetrics, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LiteralValue,
+    LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, Schema, aggregate_spec_has_avg,
+    aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
+    attach_budget_token_failure_facts, avg_sum_state_data_type, budgeted_value, cast_count_output_columns,
+    cast_count_output_columns_with_budget, cast_reduction_output_columns, cast_reduction_output_columns_with_budget,
+    cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, execute_global_aggregate,
+    execute_global_aggregate_with_budget, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
+    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, global_count_star_expr,
+    global_valid_count_state_alias, lit, lit_null, lower_aggregate_function, lower_aggregate_spec_keys,
+    lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
+    lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema, partial_global_aggregate_spec,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
 };
 use crate::{
     capability::{
@@ -213,11 +212,11 @@ pub(in crate::exec) fn execute_aggregate(
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let input_rows = frame.num_rows() as u64;
     let timer = Instant::now();
-    let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "query_engine.aggregate.execute")?;
+    let mut output = execute_groupby_aggregate(overrides, frame, &aggregate, "query_engine.aggregate.execute")?;
     output = finalize_avg_output_columns(context, output, &spec, output_schema)?;
     output = cast_reduction_output_columns(output, &spec, output_schema)?;
     output = cast_count_output_columns(output, &spec, output_schema)?;
@@ -505,8 +504,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let input_rows = frame.num_rows() as u64;
     let selection_timer = Instant::now();
     let mut capability_decision =
@@ -545,7 +544,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     let timer = Instant::now();
     let mut output = match execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &aggregate,
         token,
@@ -1023,13 +1022,13 @@ fn execute_partial_aggregate_with_budget_single_pass(
             metrics,
         );
     }
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let groupby_timer = Instant::now();
     let mut output = match execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &aggregate,
         token,

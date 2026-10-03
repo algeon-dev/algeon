@@ -15,19 +15,19 @@
 //! That means `col("x").agg().sum()` is appropriate in expressions like
 //! `col("x") / col("x").agg().sum()`, but broadcast reductions do not
 //! inherit an output name for
-//! [`DataFrame::with_columns`](crate::frame::dataframe::DataFrame::with_columns).
+//! [`DataFrame::with_columns`](crate::frame::dataframe::FrameOps::with_columns).
 //! Use [`.alias()`](Expr::alias) or an explicit `(name, expr)` pair when you
 //! want to materialize the broadcast result as a named column.
 //!
 //! If you want an actual scalar reduction, use the [`Series`] reduction APIs
-//! such as [`Series::sum`] or [`Series::sum_value`] instead.
+//! such as [`SeriesOps::sum`](crate::SeriesOps::sum) or
+//! [`SeriesOps::sum_value`](crate::SeriesOps::sum_value) instead.
 //!
 //! # Literal Evaluation and Memory Behavior
 //!
-//! Literal constructors such as [`lit`], [`lit_decimal32_raw`],
-//! [`lit_decimal64_raw`], [`lit_decimal128_raw`], [`lit_timestamp_raw`], and
-//! [`lit_duration_raw`] are lazy expression builders. Creating the [`Expr`]
-//! does not allocate GPU memory and does not borrow or transfer host memory.
+//! [`lit`] and [`lit_null`] are lazy expression builders over a
+//! [`ScalarValue`]. Creating the [`Expr`] does not allocate GPU memory and does
+//! not borrow or transfer host memory.
 //!
 //! During [`Expr::eval`] or [`Expr::eval_in`], each literal is materialized as
 //! a device-resident [`Scalar`] in the resolved output execution domain, then
@@ -35,7 +35,7 @@
 //! the input [`DataFrame`] row count. The returned [`Series`] owns that new
 //! column and retains the resolved provenance: by default the input frame's
 //! stream and memory resource, or the same-device borrowed stream and memory
-//! resource supplied through [`ExecutionOverrides`].
+//! resource supplied through [`Exec`].
 //!
 //! Literal evaluation enqueues libcudf work and does not intentionally
 //! synchronize the host before returning. Later host-visible reads of the
@@ -56,6 +56,7 @@
 //! let df = DataFrame::from_series([("x", x), ("y", y)]).unwrap();
 //!
 //! let df2 = df
+//!     .on(rt.exec())
 //!     .with_columns([
 //!         (col("x") + col("y")).alias("sum"),
 //!         (col("x") * 2i32).alias("doubled"),
@@ -80,14 +81,14 @@ use crate::{
     core::{
         column::Column,
         error::{Error, ErrorCode, Result},
-        scalar::Scalar,
-        types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
+        scalar::{Scalar, ScalarValue},
+        types::{DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
     hash::{FastHashMap, fast_hash_map_with_capacity},
     internal::resolve::missing_column_error,
     runtime::{
-        ExecutionOverrides,
+        Exec,
         execution_domain::{EnteredExecution, ExecutionDomain},
     },
 };
@@ -101,7 +102,7 @@ struct ExprEvalContext<'df> {
 }
 
 impl<'df> ExprEvalContext<'df> {
-    fn new(df: &'df DataFrame, overrides: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Self> {
+    fn new(df: &'df DataFrame, overrides: Exec<'_>, operation: &'static str) -> Result<Self> {
         let output_domain = overrides.resolve_output_domain(df.execution_domain())?;
         let exec_options = output_domain.enter_execution()?;
         Ok(Self {
@@ -158,8 +159,8 @@ impl<'df> ExprEvalContext<'df> {
         Ok(normalized)
     }
 
-    fn literal(&self, lit_val: &LitValue) -> Result<Series> {
-        let scalar = lit_val.to_scalar_in_domain(&self.output_domain)?;
+    fn literal(&self, value: &ScalarValue) -> Result<Series> {
+        let scalar = Scalar::from_scalar_value_in_domain(value, &self.output_domain)?;
         let col = Column::from_scalar(&scalar, self.df.num_rows())?;
         Series::from_column(col)
     }
@@ -171,7 +172,7 @@ impl<'df> ExprEvalContext<'df> {
 
 pub(crate) fn eval_many_in_context<'a, I>(
     df: &DataFrame,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     operation: &'static str,
     exprs: I,
 ) -> Result<(Arc<ExecutionDomain>, Vec<Series>)>
@@ -193,9 +194,7 @@ pub(crate) fn eval_in_output_domain(
     let ctx = ExprEvalContext::with_output_domain(df, output_domain, operation)?;
     expr.eval_with_context(&ctx)
 }
-/// A type-erased factory for creating a [`Scalar`] from a literal value.
-///
-/// Not part of the public API; use [`lit()`] to create literals.
+
 mod agg;
 mod core;
 mod datetime;
@@ -207,9 +206,6 @@ pub use core::{Expr, IntoExpr, col, concat};
 
 pub use agg::ExprAggNamespace;
 pub use datetime::ExprDatetimeNamespace;
-pub use lit::{
-    IntoLit, LitValue, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
-    lit_timestamp_raw,
-};
+pub use lit::{lit, lit_null};
 pub use strings::{ExprStringNamespace, StringOperator};
 pub use when::{ThenBuilder, WhenBuilder, when};

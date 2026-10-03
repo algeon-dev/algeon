@@ -3,8 +3,8 @@ pub use crate::core::types::NullEquality;
 /// Whether the build table or any later probe table can contain null join keys.
 ///
 /// `MaybeNull` is the conservative default. Use `NoNulls` only when every
-/// build/probe key table used with a persistent [`HashJoin`][crate::ops::join::HashJoin]
-/// is known to be non-nullable.
+/// build/probe key table used with a persistent
+/// [`DataFrameHashJoin`](crate::DataFrameHashJoin) is known to be non-nullable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NullableJoin {
     /// At least one build/probe key table may contain nulls.
@@ -25,7 +25,7 @@ impl NullableJoin {
 /// Options for reusable duplicate-key [`HashJoin`][crate::ops::join::HashJoin]
 /// build artifacts.
 #[derive(Debug, Clone, Copy)]
-pub struct HashJoinOptions {
+pub(crate) struct HashJoinOptions {
     nullable_join: NullableJoin,
     null_eq: NullEquality,
     load_factor: f64,
@@ -48,11 +48,6 @@ impl HashJoinOptions {
     pub fn nullable_join(mut self, nullable_join: NullableJoin) -> Self {
         self.nullable_join = nullable_join;
         self
-    }
-
-    /// Declare that all build/probe key tables are non-nullable.
-    pub fn no_nulls(self) -> Self {
-        self.nullable_join(NullableJoin::NoNulls)
     }
 
     /// Set how null key values are compared.
@@ -89,7 +84,7 @@ impl HashJoinOptions {
 /// Options for reusable [`FilteredJoin`][crate::ops::join::FilteredJoin]
 /// build artifacts used by equality left semi/anti probes.
 #[derive(Debug, Clone, Copy)]
-pub struct FilteredJoinOptions {
+pub(crate) struct FilteredJoinOptions {
     null_eq: NullEquality,
     load_factor: f64,
 }

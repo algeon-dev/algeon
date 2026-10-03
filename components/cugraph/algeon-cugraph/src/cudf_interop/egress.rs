@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cudf::{AggSpec, GroupByAgg, Runtime, core::Column};
+use cudf::{AggSpec, Exec, GroupByAgg, Runtime, core::Column};
 
 use super::errors::map_cudf_error_with;
 use crate::{
@@ -337,6 +337,7 @@ fn canonicalize_component_labels(
     })?;
     let mapping = frame
         .groupby(["label"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("vertex", GroupByAgg::Min).with_alias("canonical")])
         .map_err(|error| {
             map_cudf_error_with(error, operation, "failed to compute component minimum vertex ids", std::iter::empty())

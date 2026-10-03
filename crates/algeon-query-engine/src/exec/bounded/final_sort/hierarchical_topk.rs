@@ -468,7 +468,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                     .frame
                     .frame()
                     .clone()
-                    .with_execution(&work_token.execution_overrides())
+                    .on(work_token.exec())
                     .slice(slice.offset, slice.length)
                     .map(GpuDataFrame::new)
                     .map_err(|error| {

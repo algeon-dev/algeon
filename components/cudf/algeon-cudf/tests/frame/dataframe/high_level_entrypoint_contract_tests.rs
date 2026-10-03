@@ -1,19 +1,14 @@
 //! Tests for representative high-level DataFrame entrypoint contracts.
 //!
 //! These tests protect user-visible behavior for the high-level APIs that take
-//! `Series` or plain Rust values, while keeping one low-level smoke path
-//! through `view()` plus `cudf::ops::*`.
-use cudf::{
-    DataFrame, ExecutionOverrides, TypeId,
-    ops::{copying, filter as low_level_filter, search},
-    testing::prelude::*,
-};
+//! `Series` or plain Rust values.
+use cudf::{DataFrame, Exec, TypeId, testing::prelude::*};
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, dependency_wait_call_count_for_stream, error_context_value,
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
-    scalar, unnamed_nullable_series, unnamed_series,
+    assert_missing_column_error, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime, scalar, unnamed_nullable_series,
+    unnamed_series,
 };
 
 // ===========================================================================
@@ -34,7 +29,7 @@ fn sample_df() -> DataFrame {
 fn test_gather_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = unnamed_series::<i32>(&[0, 2, 4]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
     assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
@@ -58,7 +53,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let expected_exec_mr = df.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
@@ -80,7 +75,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
 fn test_filter_isin_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = unnamed_series::<i32>(&[10, 30, 50]).unwrap();
-    let result = df.filter_isin("id", &values).unwrap();
+    let result = df.on(Exec::RETAINED).filter_isin("id", &values).unwrap();
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["id", "score"]);
     let mut ids = result.series("id").unwrap().to_vec_strict::<i32>().unwrap();
@@ -98,7 +93,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
     let expected_exec_mr = df.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = df.filter_isin("id", &values).unwrap();
+    let result = df.on(Exec::RETAINED).filter_isin("id", &values).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
@@ -114,7 +109,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
 fn test_filter_isin_with_series_no_matches_preserves_schema() {
     let df = sample_df();
     let values = unnamed_series::<i32>(&[99, 100]).unwrap();
-    let result = df.filter_isin("id", &values).unwrap();
+    let result = df.on(Exec::RETAINED).filter_isin("id", &values).unwrap();
 
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -123,7 +118,7 @@ fn test_filter_isin_with_series_no_matches_preserves_schema() {
 fn test_filter_isin_with_series_rejects_missing_column() {
     let df = sample_df();
     let values = unnamed_series::<i32>(&[10]).unwrap();
-    let err = df.filter_isin("nonexistent", &values).unwrap_err();
+    let err = df.on(Exec::RETAINED).filter_isin("nonexistent", &values).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -137,7 +132,7 @@ fn test_fillna_with_plain_value() {
     let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
-    let filled = df.fillna::<i32>("id", 42).unwrap();
+    let filled = df.on(Exec::RETAINED).fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
     assert_eq!(filled.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
     // Other columns unchanged.
@@ -150,7 +145,7 @@ fn test_fillna_with_scalar_still_works() {
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let fill = scalar(42i32).unwrap();
-    let filled = df.fillna_with_scalar("id", &fill).unwrap();
+    let filled = df.on(Exec::RETAINED).fillna_with_scalar("id", &fill).unwrap();
 
     assert_eq!(filled.num_rows(), 5);
     assert_eq!(filled.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 42, 30, 42, 50]);
@@ -160,7 +155,7 @@ fn test_fillna_with_scalar_still_works() {
 fn test_fillna_rejects_missing_column() {
     let ids = unnamed_series::<i32>(&[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
-    let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
+    let err = df.on(Exec::RETAINED).fillna::<i32>("nonexistent", 42).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -171,19 +166,19 @@ fn test_fillna_rejects_missing_column() {
 
 fn test_factorize_returns_typed_result() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let factorized = df.factorize("id").unwrap();
+    let factorized = df.on(Exec::RETAINED).factorize("id").unwrap();
     assert_eq!(factorized.row_codes().len(), 5);
     assert_eq!(factorized.codebook().len(), 5); // all values are unique
 }
 
 fn test_with_encoded_and_decoded_column_workflows() {
     let df = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
-    let codebook = df.codebook("kind").unwrap();
+    let codebook = df.on(Exec::RETAINED).codebook("kind").unwrap();
 
-    let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
+    let encoded = df.on(Exec::RETAINED).with_encoded_column("kind_id", "kind", &codebook).unwrap();
     assert_eq!(encoded.series("kind_id").unwrap().dtype().unwrap().id(), TypeId::Int32);
 
-    let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+    let decoded = encoded.on(Exec::RETAINED).with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
     assert_eq!(decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(), vec!["b", "a", "c", "a"]);
 }
 
@@ -193,10 +188,10 @@ fn test_with_decoded_column_preserves_null_codes_as_null_values() {
         unnamed_nullable_series(&["b", "", "a", "b"], &[true, false, true, true]).unwrap(),
     )])
     .unwrap();
-    let codebook = df.codebook("kind").unwrap();
-    let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
+    let codebook = df.on(Exec::RETAINED).codebook("kind").unwrap();
+    let encoded = df.on(Exec::RETAINED).with_encoded_column("kind_id", "kind", &codebook).unwrap();
 
-    let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+    let decoded = encoded.on(Exec::RETAINED).with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
 
     assert_eq!(
         decoded.series("kind_roundtrip").unwrap().to_optional_strings().unwrap(),
@@ -213,15 +208,14 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
         df_runtime.series(&["segment-alpha-long", "segment-beta-long", "segment-alpha-long"]).unwrap(),
     )])
     .unwrap();
-    let codebook = df.codebook("kind").unwrap();
-    let ctx =
-        ExecutionOverrides::new().with_stream(ctx_runtime.stream()).with_memory_resource(ctx_runtime.memory_resource());
+    let codebook = df.on(Exec::RETAINED).codebook("kind").unwrap();
+    let ctx = ctx_runtime.exec();
     let expected_stream = ctx_runtime.stream().testing_raw_handle_value();
     let expected_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
 
     reset_dependency_observation();
     reset_exec_observation();
-    let encoded = df.with_execution(&ctx).with_encoded_column("kind_id", "kind", &codebook).unwrap();
+    let encoded = df.on(ctx).with_encoded_column("kind_id", "kind", &codebook).unwrap();
 
     assert_eq!(encoded.series("kind_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 1, 0]);
     assert_eq!(encoded.testing_execution_domain_stream_value(), expected_stream);
@@ -230,7 +224,7 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_exec_observation();
-    let decoded = encoded.with_execution(&ctx).with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+    let decoded = encoded.on(ctx).with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
 
     assert_eq!(
         decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(),
@@ -244,9 +238,9 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
 
 fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context() {
     let df = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
-    let codebook = df.codebook("kind").unwrap();
+    let codebook = df.on(Exec::RETAINED).codebook("kind").unwrap();
 
-    let err = df.with_encoded_column("kind_id", "missing", &codebook).unwrap_err();
+    let err = df.on(Exec::RETAINED).with_encoded_column("kind_id", "missing", &codebook).unwrap_err();
 
     assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_encoded_column");
@@ -257,10 +251,11 @@ fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context(
     let df = DataFrame::from_series([("kind_id", unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
     let codebook = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c"]).unwrap())])
         .unwrap()
+        .on(Exec::RETAINED)
         .codebook("kind")
         .unwrap();
 
-    let err = df.with_decoded_column("kind", "missing", &codebook).unwrap_err();
+    let err = df.on(Exec::RETAINED).with_decoded_column("kind", "missing", &codebook).unwrap_err();
 
     assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_decoded_column");
@@ -268,53 +263,7 @@ fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context(
 }
 
 // ===========================================================================
-// 5. Advanced gather uses view() + low-level ops::copying
-// ===========================================================================
-
-fn test_advanced_gather_still_works_via_view_and_ops() {
-    let df = sample_df(); // id: 10,20,30,40,50
-    let indices = column_from_slice(&[0i32, 2, 4]).unwrap();
-    let table_view = df.testing_view().unwrap();
-    let result = copying::gather(&table_view, &indices.testing_view().unwrap()).unwrap();
-    let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
-
-    assert_eq!(result.num_rows(), 3);
-    // Gather produces nullable output; use to_optional_vec.
-    assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(30), Some(50)]);
-    assert_eq!(
-        result.series("score").unwrap().to_optional_vec::<f64>().unwrap(),
-        vec![Some(1.0), Some(3.0), Some(5.0)]
-    );
-    // Schema preserved.
-    assert_eq!(result.column_names(), vec!["id", "score"]);
-}
-
-// ===========================================================================
-// 6. Advanced filter_isin uses view() + low-level ops
-// ===========================================================================
-
-fn test_advanced_filter_isin_still_works_via_view_and_ops() {
-    let df = sample_df(); // id: 10,20,30,40,50
-    let values = column_from_slice(&[10i32, 30, 50]).unwrap();
-    let values_view = values.testing_view().unwrap();
-    let ids = df.series("id").unwrap();
-    let ids_view = ids.testing_view().unwrap();
-    let mask = search::contains(&values_view, &ids_view).unwrap();
-    let mask_view = mask.testing_view().unwrap();
-    let table_view = df.testing_view().unwrap();
-    let result = low_level_filter::apply_boolean_mask(&table_view, &mask_view).unwrap();
-    let result = DataFrame::from_table(result, vec!["id".to_string(), "score".to_string()]).unwrap();
-
-    assert_eq!(result.num_rows(), 3);
-    let mut ids = result.series("id").unwrap().to_vec_strict::<i32>().unwrap();
-    ids.sort();
-    assert_eq!(ids, vec![10, 30, 50]);
-    // Schema preserved.
-    assert_eq!(result.column_names(), vec!["id", "score"]);
-}
-
-// ===========================================================================
-// 7. runtime.sequence(start, step, len)
+// 5. runtime.sequence(start, step, len)
 // ===========================================================================
 
 fn test_runtime_sequence_creates_device_side_fixed_width_series() {
@@ -371,11 +320,6 @@ fn high_level_entrypoint_contract_tests_cases() {
         (
             "test_with_decoded_column_rejects_missing_input_column_with_canonical_context",
             test_with_decoded_column_rejects_missing_input_column_with_canonical_context,
-        ),
-        ("test_advanced_gather_still_works_via_view_and_ops", test_advanced_gather_still_works_via_view_and_ops),
-        (
-            "test_advanced_filter_isin_still_works_via_view_and_ops",
-            test_advanced_filter_isin_still_works_via_view_and_ops,
         ),
         (
             "test_runtime_sequence_creates_device_side_fixed_width_series",

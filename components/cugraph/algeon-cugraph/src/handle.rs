@@ -632,7 +632,10 @@ impl Drop for ResourceHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::ptr;
+    use std::{
+        ptr,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     use cudf::{DeviceMemoryResource, QueryMemoryDomainOptions};
     use cugraph_sys::cugraph_create_resource_handle;
@@ -643,6 +646,26 @@ mod tests {
         DeviceArray,
         cuda::{TestCudaCall, TestCudaHooks},
     };
+
+    struct ReleaseProbe(Arc<AtomicBool>);
+
+    impl Drop for ReleaseProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A runtime whose execution domains retain a probe that records when the
+    /// last of them is released.
+    fn probed_runtime() -> (Arc<cudf::Runtime>, Arc<AtomicBool>) {
+        let released = Arc::new(AtomicBool::new(false));
+        let runtime = cudf::Runtime::builder()
+            .build()
+            .expect("runtime")
+            .with_retained_lifetime(Arc::new(ReleaseProbe(Arc::clone(&released))))
+            .expect("probed runtime");
+        (Arc::new(runtime), released)
+    }
 
     fn budgeted_runtime(capacity_bytes: usize) -> (Arc<cudf::Runtime>, DeviceMemoryResource) {
         let device = DeviceId::current().expect("current device");
@@ -741,9 +764,7 @@ mod tests {
     #[test]
     fn runtime_bound_handles_do_not_share_native_owner_across_bindings() {
         let first_runtime = Arc::new(cudf::Runtime::builder().build().expect("first runtime"));
-        let independent = cudf::Runtime::builder().build().expect("independent runtime");
-        let second_runtime = Arc::new(independent.inherit_affinity_from(&first_runtime).expect("companion affinity"));
-        assert_eq!(first_runtime.affinity_id(), second_runtime.affinity_id());
+        let second_runtime = Arc::new(cudf::Runtime::builder().build().expect("independent runtime"));
         assert_ne!(first_runtime.binding_id(), second_runtime.binding_id());
 
         let first = ResourceHandle::for_runtime(first_runtime).expect("first resource handle");
@@ -760,22 +781,23 @@ mod tests {
 
     #[test]
     fn runtime_binding_store_and_native_owner_do_not_form_a_cycle() {
-        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-        let affinity = runtime.affinity_anchor();
+        let (runtime, released) = probed_runtime();
         let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
         drop(runtime);
-        assert!(affinity.is_alive(), "the resource-handle lease retains its execution domain");
+        assert!(!released.load(Ordering::SeqCst), "the resource-handle lease retains its execution domain");
         drop(handle);
-        assert!(!affinity.is_alive(), "dropping the last native-owner lease must release the execution domain");
+        assert!(
+            released.load(Ordering::SeqCst),
+            "dropping the last native-owner lease must release the execution domain"
+        );
     }
 
     #[test]
     fn runtime_bound_owner_quarantines_before_releasing_runtime_when_device_entry_fails() {
-        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
-        let affinity = runtime.affinity_anchor();
+        let (runtime, released) = probed_runtime();
         let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
         drop(runtime);
-        assert!(affinity.is_alive(), "the runtime-bound lease retains the execution domain");
+        assert!(!released.load(Ordering::SeqCst), "the runtime-bound lease retains the execution domain");
 
         let reset = TestCudaHooks::install(vec![TestCudaCall::GetDevice {
             status: cudf_sys::CUDF_ERROR_FATAL_CUDA,
@@ -786,7 +808,10 @@ mod tests {
         drop(handle);
 
         assert!(reset.health_snapshot(DeviceId::DEFAULT).quarantined_teardown_count() > before);
-        assert!(!affinity.is_alive(), "quarantining the native owner must not retain or cycle the cudf runtime");
+        assert!(
+            released.load(Ordering::SeqCst),
+            "quarantining the native owner must not retain or cycle the cudf runtime"
+        );
     }
 
     #[test]

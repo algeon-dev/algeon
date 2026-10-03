@@ -1,12 +1,16 @@
-use std::time::Instant;
+use std::{slice, time::Instant};
 
-use cudf::io::source::{LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk};
+use cudf::{
+    Exec,
+    io::source::{LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk},
+};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::{
-    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, Result, SourceReadFact,
-    SourceReadMode, cudf_query_error, cudf_query_error_without_source, local_parquet_file_row_group_metadata_count,
-    parquet_file_path_fact, record_source_file_read_runtime, record_source_read,
+    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, Result, SourceRead,
+    SourceReadFact, SourceReadMode, cudf_query_error, cudf_query_error_without_source,
+    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, record_source_file_read_runtime,
+    record_source_read,
 };
 
 #[expect(
@@ -26,11 +30,10 @@ pub(super) fn read_local_parquet_file(
     context.check_cancellation("query_engine.local_parquet_source.read")?;
     let _io_lease = context.acquire_io_lease("query_engine.local_parquet_source.read")?;
     let read_timer = Instant::now();
-    let output = DataFrame::read_parquet_source_chunk_with_evidence(
+    let output = DataFrame::read_parquet_source(
+        SourceRead::new(cudf_source, slice::from_ref(cudf_chunk), SourceReadMode::ExecutionFrame),
         &context.runtime()?,
-        cudf_source,
-        cudf_chunk,
-        SourceReadMode::ExecutionFrame,
+        Exec::RETAINED,
     )
     .map_err(|error| {
         read_cudf_error_for_file(

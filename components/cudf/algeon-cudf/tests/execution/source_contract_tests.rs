@@ -15,7 +15,6 @@ const DICTIONARY_RS: &str = include_str!("../../src/ops/dictionary.rs");
 const FILTER_RS: &str = include_str!("../../src/ops/filter.rs");
 const GROUPBY_AGG_RS: &str = include_str!("../../src/ops/groupby/agg.rs");
 const GROUPBY_SHIFT_RS: &str = include_str!("../../src/ops/groupby/shift.rs");
-const HASHING_RS: &str = include_str!("../../src/ops/hashing.rs");
 const IO_MOD_RS: &str = include_str!("../../src/io/mod.rs");
 const IO_PARQUET_EVIDENCE_RS: &str = include_str!("../../src/io/parquet/evidence.rs");
 const IO_PARQUET_MOD_RS: &str = include_str!("../../src/io/parquet/mod.rs");
@@ -116,10 +115,6 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_event_synchronize", "runtime synchronization with explicit event handle"),
     ("cudf_filtered_join_destroy", "provenance-bound lifecycle"),
     ("cudf_filtered_join_device_allocated_size", "metadata-only cached join planning accessor"),
-    (
-        "cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size",
-        "metadata-only reservation calculator from explicit types and row count",
-    ),
     ("cudf_filtered_join_probe_destroy", "provenance-bound lifecycle"),
     ("cudf_filtered_join_probe_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_filtered_join_probe_output_size", "metadata-only cached join planning accessor"),
@@ -223,7 +218,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
 
 fn concatenate_helpers_require_explicit_execution_options() {
     for (function, end_marker) in [
-        ("concatenate_columns_with_exec", "/// Concatenate multiple tables"),
+        ("concatenate_columns_with_exec", "pub(crate) fn concatenate_tables_with_exec"),
         ("concatenate_tables_with_exec", "pub(crate) fn trigger_concatenate_column_count_limit_error_for_test"),
     ] {
         let body = function_region(CONCATENATE_RS, &format!("pub(crate) fn {function}"), end_marker);
@@ -311,7 +306,6 @@ fn binary_helpers_require_explicit_execution_options() {
         "exec_options: &cudf_sys::cudf_exec_options_t",
         "cudf_sys::cudf_binary_operation_vv_ex",
         "cudf_sys::cudf_binary_operation_vs_ex",
-        "cudf_sys::cudf_binary_operation_sv_ex",
     ] {
         assert!(BINARY_RS.contains(required), "binary helpers must retain `{required}`");
     }
@@ -355,9 +349,7 @@ fn copying_helpers_require_explicit_execution_options() {
         "exec_options: &cudf_sys::cudf_exec_options_t",
         "cudf_sys::cudf_gather_ex",
         "cudf_sys::cudf_gather_device_allocated_size_ex",
-        "cudf_sys::cudf_scatter_ex",
         "cudf_sys::cudf_copy_if_else_vv_ex",
-        "cudf_sys::cudf_shift_ex",
     ] {
         assert!(COPYING_RS.contains(required), "copying helpers must retain `{required}`");
     }
@@ -498,7 +490,6 @@ fn hash_join_helpers_require_explicit_execution_options() {
         "cudf_sys::cudf_inner_join_ex",
         "cudf_sys::cudf_left_join_ex",
         "cudf_sys::cudf_full_join_ex",
-        "cudf_sys::cudf_cross_join_ex",
         "cudf_sys::cudf_projected_cross_join_ex",
         "cudf_sys::cudf_projected_cross_join_device_allocated_size_ex",
         "cudf_sys::cudf_inner_join_indices_ex",
@@ -679,7 +670,7 @@ fn conditional_mixed_and_filter_join_helpers_require_explicit_execution_options(
 }
 
 fn sorting_helpers_require_explicit_execution_options() {
-    let body = function_region(SORTING_RS, "pub(crate) struct SortExecution", "/// Sort the rows of a table");
+    let body = function_region(SORTING_RS, "pub(crate) struct SortExecution", "pub(crate) fn sort_table_impl");
 
     assert!(
         body.contains("exec_options: &'a cudf_sys::cudf_exec_options_t"),
@@ -732,7 +723,6 @@ fn safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label(
         ("filter", FILTER_RS),
         ("groupby aggregate", GROUPBY_AGG_RS),
         ("groupby shift", GROUPBY_SHIFT_RS),
-        ("hashing", HASHING_RS),
         ("join conditional", JOIN_CONDITIONAL_RS),
         ("join filter", JOIN_FILTER_RS),
         ("join hash", JOIN_HASH_RS),
@@ -756,7 +746,11 @@ fn safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label(
 }
 
 fn stream_compaction_helpers_require_explicit_execution_options() {
-    let body = function_region(STREAM_COMPACTION_RS, "pub(crate) struct StreamCompactionExecution", "/// Drop rows");
+    let body = function_region(
+        STREAM_COMPACTION_RS,
+        "pub(crate) struct StreamCompactionExecution",
+        "pub(crate) fn distinct_impl",
+    );
 
     assert!(
         body.contains("exec_options: &'a cudf_sys::cudf_exec_options_t"),
@@ -797,26 +791,6 @@ fn filter_helpers_require_explicit_execution_options() {
         "execution_context_provided",
     ] {
         assert!(!body.contains(forbidden), "filter helpers must not retain `{forbidden}` fallback behavior");
-    }
-}
-
-fn hashing_helpers_require_explicit_execution_options() {
-    for required in [
-        "exec_options: &cudf_sys::cudf_exec_options_t",
-        "cudf_sys::cudf_hashing_murmurhash3_x86_32_ex",
-        "cudf_sys::cudf_hashing_xxhash_64_ex",
-    ] {
-        assert!(HASHING_RS.contains(required), "hashing helpers must retain `{required}`");
-    }
-
-    for forbidden in [
-        "Option<&cudf_sys::cudf_exec_options_t>",
-        "match exec_options",
-        "cudf_sys::cudf_hashing_murmurhash3_x86_32(",
-        "cudf_sys::cudf_hashing_xxhash_64(",
-        "execution_context_provided",
-    ] {
-        assert!(!HASHING_RS.contains(forbidden), "hashing helpers must not retain `{forbidden}` fallback behavior");
     }
 }
 
@@ -920,13 +894,7 @@ fn reduction_helpers_require_explicit_execution_options() {
 }
 
 fn dictionary_helpers_require_explicit_execution_options() {
-    for required in [
-        "exec_options: &cudf_sys::cudf_exec_options_t",
-        "cudf_sys::cudf_dictionary_encode_ex",
-        "cudf_sys::cudf_dictionary_decode_ex",
-        "cudf_sys::cudf_dictionary_set_keys_ex",
-        "cudf_sys::cudf_dictionary_match_dictionaries_ex",
-    ] {
+    for required in ["exec_options: &cudf_sys::cudf_exec_options_t", "cudf_sys::cudf_dictionary_encode_ex"] {
         assert!(DICTIONARY_RS.contains(required), "dictionary helpers must retain `{required}`");
     }
 
@@ -944,20 +912,6 @@ fn dictionary_helpers_require_explicit_execution_options() {
             "dictionary helpers must not retain `{forbidden}` fallback behavior"
         );
     }
-}
-
-fn sorting_is_sorted_uses_explicit_retained_execution_options() {
-    let body = function_region(SORTING_RS, "pub fn is_sorted", "\n}\n");
-
-    assert!(
-        body.contains("ResolvedExecution::unary(input.execution_domain(), &ctx, operation)"),
-        "sorting::is_sorted must derive execution options from the retained table-view domain"
-    );
-    assert!(body.contains("cudf_sys::cudf_is_sorted_ex"), "sorting::is_sorted must call the explicit FFI entry point");
-    assert!(
-        !body.contains("cudf_sys::cudf_is_sorted("),
-        "sorting::is_sorted must not call the ambient non-_ex FFI entry point"
-    );
 }
 
 fn io_write_helpers_require_explicit_execution_options() {
@@ -1193,7 +1147,6 @@ fn source_contract_tests_cases() {
             stream_compaction_helpers_require_explicit_execution_options,
         ),
         ("filter_helpers_require_explicit_execution_options", filter_helpers_require_explicit_execution_options),
-        ("hashing_helpers_require_explicit_execution_options", hashing_helpers_require_explicit_execution_options),
         ("search_helpers_require_explicit_execution_options", search_helpers_require_explicit_execution_options),
         ("replace_helpers_require_explicit_execution_options", replace_helpers_require_explicit_execution_options),
         (
@@ -1205,10 +1158,6 @@ fn source_contract_tests_cases() {
         (
             "dictionary_helpers_require_explicit_execution_options",
             dictionary_helpers_require_explicit_execution_options,
-        ),
-        (
-            "sorting_is_sorted_uses_explicit_retained_execution_options",
-            sorting_is_sorted_uses_explicit_retained_execution_options,
         ),
         ("io_write_helpers_require_explicit_execution_options", io_write_helpers_require_explicit_execution_options),
         (

@@ -3,8 +3,8 @@
 use crate::{
     core::{
         error::{Error, ErrorCode, Result},
-        scalar::Scalar,
-        types::{DataType, TimestampResolution, TypeId},
+        scalar::{Scalar, ScalarValue},
+        types::{DataType, TimestampResolution},
     },
     frame::{dataframe::owned::DataFrame, series::Series},
     hash::{FastHashSet, fast_hash_set_with_capacity},
@@ -154,57 +154,7 @@ pub(super) fn empty_parquet_source_frame(
 }
 
 fn null_source_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> {
-    match data_type.id() {
-        TypeId::Bool8 => runtime.null_scalar::<bool>(),
-        TypeId::Int8 => runtime.null_scalar::<i8>(),
-        TypeId::Int16 => runtime.null_scalar::<i16>(),
-        TypeId::Int32 => runtime.null_scalar::<i32>(),
-        TypeId::Int64 => runtime.null_scalar::<i64>(),
-        TypeId::UInt8 => runtime.null_scalar::<u8>(),
-        TypeId::UInt16 => runtime.null_scalar::<u16>(),
-        TypeId::UInt32 => runtime.null_scalar::<u32>(),
-        TypeId::UInt64 => runtime.null_scalar::<u64>(),
-        TypeId::Float32 => runtime.null_scalar::<f32>(),
-        TypeId::Float64 => runtime.null_scalar::<f64>(),
-        TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => runtime.null_decimal_raw_scalar(data_type),
-        TypeId::TimestampDays
-        | TypeId::TimestampSeconds
-        | TypeId::TimestampMilliseconds
-        | TypeId::TimestampMicroseconds
-        | TypeId::TimestampNanoseconds => {
-            let resolution = data_type.id().timestamp_resolution().ok_or_else(|| {
-                Error::new_with(
-                    ErrorCode::UnsupportedDtype,
-                    "dataframe::read_parquet_source",
-                    "source null timestamp dtype is not supported",
-                )
-                .with_detail("reason", "unsupported_source_null_dtype")
-            })?;
-            runtime.null_timestamp_raw_scalar(resolution)
-        },
-        TypeId::DurationDays
-        | TypeId::DurationSeconds
-        | TypeId::DurationMilliseconds
-        | TypeId::DurationMicroseconds
-        | TypeId::DurationNanoseconds => {
-            let resolution = data_type.id().duration_resolution().ok_or_else(|| {
-                Error::new_with(
-                    ErrorCode::UnsupportedDtype,
-                    "dataframe::read_parquet_source",
-                    "source null duration dtype is not supported",
-                )
-                .with_detail("reason", "unsupported_source_null_dtype")
-            })?;
-            runtime.null_duration_raw_scalar(resolution)
-        },
-        TypeId::String => runtime.null_string_scalar(),
-        _ => Err(Error::new_with(
-            ErrorCode::UnsupportedDtype,
-            "dataframe::read_parquet_source",
-            "source null dtype is not supported",
-        )
-        .with_detail("reason", "unsupported_source_null_dtype")),
-    }
+    runtime.scalar(ScalarValue::Null(data_type)).map_err(|error| error.reanchor("dataframe::read_parquet_source"))
 }
 
 fn empty_source_series(runtime: &Runtime, column: &SourceColumn) -> Result<Series> {
@@ -238,11 +188,19 @@ fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize
         PartitionValue::UInt64(value) => runtime.scalar(*value)?,
         PartitionValue::Float32(value) => runtime.scalar(*value)?,
         PartitionValue::Float64(value) => runtime.scalar(*value)?,
-        PartitionValue::Decimal128 { raw, scale } => runtime.decimal128_raw_scalar(*raw, *scale)?,
-        PartitionValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days)?,
-        PartitionValue::Timestamp { raw, resolution } => runtime.timestamp_raw_scalar(*raw, *resolution)?,
-        PartitionValue::Duration { raw, resolution } => runtime.duration_raw_scalar(*raw, *resolution)?,
-        PartitionValue::String(value) => runtime.string_scalar(value)?,
+        PartitionValue::Decimal128 { raw, scale } => {
+            runtime.scalar(ScalarValue::Decimal128 { raw: *raw, scale: *scale })?
+        },
+        PartitionValue::Date32(value) => {
+            runtime.scalar(ScalarValue::Timestamp { raw: i64::from(*value), resolution: TimestampResolution::Days })?
+        },
+        PartitionValue::Timestamp { raw, resolution } => {
+            runtime.scalar(ScalarValue::Timestamp { raw: *raw, resolution: *resolution })?
+        },
+        PartitionValue::Duration { raw, resolution } => {
+            runtime.scalar(ScalarValue::Duration { raw: *raw, resolution: *resolution })?
+        },
+        PartitionValue::String(value) => runtime.scalar(value)?,
     };
     runtime.series_from_scalar(&scalar, len)
 }

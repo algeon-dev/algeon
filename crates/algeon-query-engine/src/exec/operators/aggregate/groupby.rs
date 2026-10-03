@@ -1,6 +1,6 @@
 use super::{
-    DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
-    ExecutionOverrides, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
+    DataFrame, DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionBudgetToken, ExecutionContext,
+    ExecutionMetrics, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_query_error,
 };
 use crate::observability::{
@@ -8,7 +8,7 @@ use crate::observability::{
 };
 
 pub(in crate::exec) fn execute_groupby_aggregate(
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     operation: &'static str,
@@ -20,7 +20,7 @@ pub(in crate::exec) fn execute_groupby_aggregate(
     let mut output = frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
         .options(GroupByOptions::builder().include_null_keys(true).build())
-        .with_execution(overrides)
+        .on(overrides)
         .agg(&aggregate.aggregations)
         .map_err(|error| cudf_query_error(operation, "failed to execute algeon native aggregate", error))?;
     rename_groupby_key_columns(&mut output, aggregate, "query_engine.aggregate.rename_keys")?;
@@ -28,7 +28,7 @@ pub(in crate::exec) fn execute_groupby_aggregate(
 }
 
 pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
@@ -47,7 +47,7 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
 )]
 pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
     context: Option<&ExecutionContext>,
-    _overrides: &ExecutionOverrides<'_>,
+    _overrides: Exec<'_>,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
@@ -70,10 +70,14 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
             RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
         )
     });
-    let result = frame
-        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-        .options(GroupByOptions::builder().include_null_keys(true).build())
-        .agg_with_budget(&aggregate.aggregations, token)
+    let result = token
+        .run("groupby::agg", |exec| {
+            frame
+                .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+                .options(GroupByOptions::builder().include_null_keys(true).build())
+                .on(exec)
+                .agg(&aggregate.aggregations)
+        })
         .map_err(|error| cudf_query_error(operation, message, error));
     let mut output = match result {
         Ok(outcome) => {
@@ -115,14 +119,14 @@ pub(super) fn rename_groupby_key_columns(
 }
 
 fn execute_groupby_distinct(
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let key_columns = aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let output = frame
-        .with_execution(overrides)
+        .on(overrides)
         .drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
         )
@@ -131,7 +135,7 @@ fn execute_groupby_distinct(
 }
 
 fn execute_groupby_distinct_with_budget(
-    _overrides: &ExecutionOverrides<'_>,
+    _overrides: Exec<'_>,
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
@@ -139,9 +143,9 @@ fn execute_groupby_distinct_with_budget(
     message: &'static str,
 ) -> Result<DataFrame> {
     let key_columns = aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let budget_overrides = token.execution_overrides();
+    let budget_overrides = token.exec();
     let output = frame
-        .with_execution(&budget_overrides)
+        .on(budget_overrides)
         .drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
         )

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cudf::{
-    DataType as CudfDataType, Error as CudfError, TimestampResolution, TypeId,
+    DataType as CudfDataType, Error as CudfError, ScalarValue, TimestampResolution, TypeId,
     core::Scalar as CudfScalar,
     io::source::{
         LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk,
@@ -16,10 +16,12 @@ use cudf::{
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, LiteralValue, LocalParquetSource, QueryError, QueryErrorCode,
-    Result, cudf_query_error, cudf_query_error_without_source, timestamp_unit_to_cudf_resolution,
+    Result, cudf_query_error, cudf_query_error_without_source,
 };
 use crate::{
-    datatypes::{arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type},
+    datatypes::{
+        UnrepresentableLiteral, arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, cudf_scalar_value,
+    },
     rapids_backend::rapids_analysis_context,
     source::{
         ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
@@ -552,52 +554,15 @@ fn lower_source_reader_ast_literal(
     value: &LiteralValue,
     target_type: Option<CudfDataType>,
 ) -> Result<AstExpression> {
-    let runtime = context.runtime()?;
     if let Some(target_type) = target_type
         && let Some(scalar) = lower_source_reader_ast_literal_with_target(context, value, target_type)?
     {
         return AstExpression::literal(scalar)
             .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
     }
-    let scalar = match value {
-        LiteralValue::Boolean(value) => runtime.scalar(*value),
-        LiteralValue::Int8(value) => runtime.scalar(*value),
-        LiteralValue::Int16(value) => runtime.scalar(*value),
-        LiteralValue::Int32(value) => runtime.scalar(*value),
-        LiteralValue::Int64(value) => runtime.scalar(*value),
-        LiteralValue::UInt8(value) => runtime.scalar(*value),
-        LiteralValue::UInt16(value) => runtime.scalar(*value),
-        LiteralValue::UInt32(value) => runtime.scalar(*value),
-        LiteralValue::UInt64(value) => runtime.scalar(*value),
-        LiteralValue::Float32(value) => runtime.scalar(*value),
-        LiteralValue::Float64(value) => runtime.scalar(*value),
-        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value),
-        LiteralValue::Decimal128 { raw, scale, .. } => match target_type {
-            Some(target_type) if target_type.id().is_decimal() => {
-                let raw = rescale_decimal_raw_or_query_error(
-                    *raw,
-                    arrow_decimal_scale_to_cudf_scale(*scale),
-                    target_type.scale(),
-                )?;
-                runtime.decimal_raw_scalar(raw, target_type)
-            },
-            _ => runtime.decimal128_raw_scalar(*raw, arrow_decimal_scale_to_cudf_scale(*scale)),
-        },
-        LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days),
-        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, TimestampResolution::Milliseconds),
-        LiteralValue::Time32 { raw, unit } => {
-            runtime.duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Time64 { raw, unit } => {
-            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Timestamp { raw, unit } => {
-            runtime.timestamp_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Duration { raw, unit } => {
-            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::IntervalMonthDayNano { .. } => {
+    let scalar_value = match cudf_scalar_value(value) {
+        Ok(scalar_value) => scalar_value,
+        Err(UnrepresentableLiteral::Interval) => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 OP_READER_PREDICATE,
@@ -605,7 +570,7 @@ fn lower_source_reader_ast_literal(
             )
             .with_fact("literal", value));
         },
-        LiteralValue::Null(data_type) => {
+        Err(UnrepresentableLiteral::Null(data_type)) => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 OP_READER_PREDICATE,
@@ -613,8 +578,8 @@ fn lower_source_reader_ast_literal(
             )
             .with_fact("data_type", format!("{data_type:?}")));
         },
-    }
-    .map_err(|error| {
+    };
+    let scalar = context.runtime()?.scalar(scalar_value).map_err(|error| {
         cudf_query_error(OP_READER_PREDICATE, "failed to build cudf scalar for reader predicate AST literal", error)
             .with_fact("literal", value)
     })?;
@@ -662,7 +627,7 @@ fn lower_source_reader_ast_literal_with_target(
             _ => Ok(None),
         },
         TypeId::String => match value {
-            LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value).map(Some),
+            LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.scalar(value).map(Some),
             _ => Ok(None),
         },
         TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
@@ -677,12 +642,12 @@ fn lower_source_reader_ast_literal_with_target(
             } else {
                 return Ok(None);
             };
-            runtime.decimal_raw_scalar(raw, target_type).map(Some)
+            ScalarValue::decimal(raw, target_type).and_then(|value| runtime.scalar(value)).map(Some)
         },
         TypeId::TimestampDays => match value {
-            LiteralValue::Date32(value) => {
-                runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days).map(Some)
-            },
+            LiteralValue::Date32(value) => runtime
+                .scalar(ScalarValue::Timestamp { raw: i64::from(*value), resolution: TimestampResolution::Days })
+                .map(Some),
             _ => Ok(None),
         },
         _ => Ok(None),

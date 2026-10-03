@@ -1,11 +1,8 @@
 use std::thread;
 
 use cudf::{
-    Runtime,
-    core::column::DeviceSlice,
-    interop::cuda_stream_handle,
-    ops::join::{HashJoin, HashJoinOptions, JoinIndices, SingleSideJoinIndices},
-    runtime::CudaStream,
+    DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinPairIndices, Runtime,
+    core::column::DeviceSlice, interop::cuda_stream_handle, runtime::CudaStream,
 };
 use rapids_interop::{
     CompletionAuthority, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority,
@@ -18,10 +15,10 @@ assert_impl_all!(DeviceSlice<'static>: Send, Sync);
 assert_impl_all!(ProducerReadiness<'static>: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
-assert_impl_all!(HashJoin: Send, Sync);
-assert_impl_all!(HashJoinOptions: Send, Sync);
-assert_impl_all!(JoinIndices: Send, Sync);
-assert_impl_all!(SingleSideJoinIndices: Send, Sync);
+assert_impl_all!(DataFrameHashJoin: Send, Sync);
+assert_impl_all!(DataFrameHashJoinOptions: Send, Sync);
+assert_impl_all!(DataFrameJoinIndices: Send, Sync);
+assert_impl_all!(DataFrameJoinPairIndices: Send, Sync);
 
 #[test]
 fn prepared_column_export_can_activate_and_complete_on_worker_thread() {

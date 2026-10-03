@@ -267,7 +267,7 @@ fn max_string_byte_length_for_join_output_sizing(
             .with_fact("column", column));
         },
     };
-    let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
+    let byte_counts = match series.on(token.exec()).str().byte_count() {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
             return Err(cudf_query_error(
@@ -280,7 +280,7 @@ fn max_string_byte_length_for_join_output_sizing(
             .with_fact("column", column));
         },
     };
-    let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
+    let max_len = match byte_counts.on(token.exec()).max_value::<i32>() {
         Ok(max_len) => max_len,
         Err(error) => {
             return Err(cudf_query_error(

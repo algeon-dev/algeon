@@ -49,6 +49,8 @@ pub struct ParquetTableReadOptions<'a> {
     #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
     pub(super) runtime: Runtime,
     #[builder(default, setter(skip))]
+    pub(super) pass_read_limit: Option<u64>,
+    #[builder(default, setter(skip))]
     _lifetime: PhantomData<&'a [u8]>,
 }
 
@@ -65,6 +67,7 @@ pub(crate) struct ParquetMultiTableReadOptions {
     pub(crate) row_groups_per_file: Option<Vec<Vec<i32>>>,
     pub(crate) predicate: Option<Arc<AstExpression>>,
     pub(crate) runtime: Runtime,
+    pub(crate) pass_read_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,11 +100,18 @@ impl ParquetMultiTableReadOptions {
         predicate: Option<Arc<AstExpression>>,
         runtime: Runtime,
     ) -> Self {
-        Self { inputs, columns, row_groups_per_file, predicate, runtime }
+        Self { inputs, columns, row_groups_per_file, predicate, runtime, pass_read_limit: None }
     }
 }
 
 impl<'a> ParquetTableReadOptions<'a> {
+    /// Bound the read's Parquet read and decompression scratch to `limit`
+    /// bytes; `None` leaves it unbounded.
+    pub(crate) fn with_pass_read_limit(mut self, limit: Option<u64>) -> Self {
+        self.pass_read_limit = limit;
+        self
+    }
+
     pub(crate) fn from_parts(
         filepath: PathBuf,
         columns: Option<Vec<String>>,
@@ -121,6 +131,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             row_groups,
             predicate,
             runtime,
+            pass_read_limit: None,
             _lifetime: PhantomData,
         }
     }
@@ -144,6 +155,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             row_groups,
             predicate,
             runtime,
+            pass_read_limit: None,
             _lifetime: PhantomData,
         }
     }
@@ -167,6 +179,7 @@ impl<'a> ParquetTableReadOptions<'a> {
             row_groups,
             predicate,
             runtime,
+            pass_read_limit: None,
             _lifetime: PhantomData,
         }
     }

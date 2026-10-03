@@ -34,8 +34,8 @@
 //! assert_eq!(score.len(), 3);
 //!
 //! // Common reductions can materialize directly to host values.
-//! let total = score.sum_value::<f64>().unwrap();
-//! let mean = score.mean_value().unwrap();
+//! let total = score.on(rt.exec()).sum_value::<f64>().unwrap();
+//! let mean = score.on(rt.exec()).mean_value().unwrap();
 //!
 //! assert_eq!(total, 60.0);
 //! assert_eq!(mean, Some(20.0));
@@ -51,10 +51,10 @@
 //!
 //! # Root-Level Operations
 //!
-//! - [`SortOptions`] / [`DataFrame::sort_values`]: GPU-accelerated sorting.
-//! - [`MergeOptions`] / [`DataFrame::merge`]: GPU-accelerated joins.
+//! - [`SortOptions`] / [`FrameOps::sort_values`](crate::FrameOps::sort_values): GPU-accelerated sorting.
+//! - [`MergeOptions`] / [`FrameOps::merge`](crate::FrameOps::merge): GPU-accelerated joins.
 //! - [`GroupBy`] / [`DataFrame::groupby`]: GPU-accelerated groupby aggregation.
-//! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]:
+//! - [`SeriesOps::sum_value`], [`SeriesOps::mean_value`], [`SeriesOps::minmax_values`]:
 //!   high-level reductions that return host values directly.
 //!
 //! # Specialized High-Level Types
@@ -72,18 +72,17 @@
 //! The `core` types give direct control over owned GPU objects, device-memory
 //! descriptors, and import/export boundaries. Most users should not need these.
 //! Use [`Runtime`] to own default execution resources plus retained provenance
-//! for a pipeline, and [`ExecutionOverrides`] when you need a borrowed
-//! per-operation override. For `Series`, prefer explicit methods such as
-//! `series.sum_in(&ctx)` or `series.str().contains_in("x", &ctx)`; for
-//! higher-level table-style flows, use scoped surfaces such as
-//! [`DataFrame::with_execution`].
+//! for a pipeline, and [`Exec`] to select where one operation runs. For
+//! `Series`, every GPU operation runs through [`Series::on`], such as
+//! `series.on(exec).sum()` or `series.on(exec).str().contains("x")`; for
+//! table-style flows, use [`DataFrame::on`].
 //!
 //! - [`core::Column`]: An owned GPU column (analogous to `cudf::column`).
 //! - [`core::Table`]: An owned GPU table (collection of columns).
 //! - [`core::Scalar`]: A single value on the GPU. Most high-level reduction
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
-//! - [`Runtime`] / [`ExecutionOverrides`]: explicit stream and allocator control.
+//! - [`Runtime`] / [`Exec`]: explicit stream and allocator control.
 //! - [`interop::arrow_host`]: Arrow `RecordBatch` conversion through host memory.
 //! - [`interop`]: `cudf`-specific interop adapters, runtime-backed
 //!   release helpers, and CUDA handle projection. `cudf` users can import
@@ -254,7 +253,7 @@ pub use core::{
         QueryMemoryDomainIdentity, QueryMemoryDomainOptions, QueryMemoryDomainUsage, RawCurrentResourceRouteLease,
         RawStreamReservationLease, ReservationUsage, StreamReservationLease,
     },
-    scalar::IntoRuntimeScalar,
+    scalar::ScalarValue,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };
 
@@ -266,16 +265,19 @@ pub use frame::{
         DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
         DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMemoryIdentity, DataFrameMixedJoinOptions,
         DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
-        DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, ParquetSourceReadPreflight,
+        DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, FrameOps, MultiParquetReadOptions,
+        ParquetReadOptions, ParquetSourceChunkReadOutput, ParquetSourceReadPreflight, SourceRead, SourceReadInput,
     },
-    series::{IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series, SeriesPreparedScalarReduction},
+    series::{
+        IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series, SeriesDatetimeOps, SeriesOps,
+        SeriesPreparedScalarReduction, SeriesStringOps,
+    },
 };
 //; High-level operations;
 pub use ops::Expr;
 pub use ops::{
     groupby::{
-        AggSpec, GroupBy, GroupByAgg, GroupByOptions, PreparedDataFrameGroupBy, PreparedGroupBy, PreparedGroupByFacts,
-        ShiftSpec,
+        AggSpec, GroupBy, GroupByAgg, GroupByOptions, PreparedDataFrameGroupBy, PreparedGroupByFacts, ShiftSpec,
     },
     join::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState, JoinType, MergeOptions},
     reduction::ReduceAgg,
@@ -288,10 +290,9 @@ pub use ops::{
     },
 };
 pub use runtime::{
-    AttemptStreamProviderAlias, AttemptStreamProviderRegistration, BudgetedExecutionOutcome, CacheAllocationDomain,
-    CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,
-    CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId, ExecutionBudgetEnforcement, ExecutionBudgetReport,
-    ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, PackedMatrix,
-    QueryExecutionContext, Runtime, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor,
+    AttemptStreamProviderAlias, AttemptStreamProviderRegistration, BudgetedExecutionOutcome, BudgetedOutput,
+    CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,
+    CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId, Exec, ExecutionBudgetEnforcement, ExecutionBudgetReport,
+    ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionPlacement, PackedMatrix, Runtime, RuntimeBuilder,
     StreamDependencyOutcome, ValidatedPackedMatrix,
 };

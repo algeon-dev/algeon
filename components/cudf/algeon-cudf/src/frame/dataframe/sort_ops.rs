@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame};
+use super::{
+    context::FrameOps, fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame,
+};
 use crate::{
     core::{
         column::{Column, position_sequence_in_domain},
@@ -20,7 +22,7 @@ use crate::{
         stream_compaction::DuplicateKeepOption,
     },
     runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
+        BudgetedExecutionOutcome, CompleteReport, ExecutionBudgetReport, ExecutionBudgetToken, execution_context::Exec,
         execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
@@ -129,33 +131,18 @@ impl DataFramePreparedSort {
     /// sizing contract and releases any temporary result before returning. The
     /// result does not include the retained sorted-order column and does not
     /// include libcudf sort temporary workspace.
-    pub fn materialized_output_reservation_size_bytes(&self) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
+    pub fn materialized_output_reservation_size_bytes(&self, ctx: Exec<'_>) -> Result<usize> {
         self.materialized_output_reservation_size_bytes_in_context(
-            &ctx,
+            ctx,
             "dataframe::prepared_sort::materialized_output_reservation_size_bytes",
         )
     }
 
-    /// Return exact materialized output bytes using a borrowed execution
-    /// override.
-    pub fn materialized_output_reservation_size_bytes_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
-        self.materialized_output_reservation_size_bytes_in_context(
-            ctx,
-            "dataframe::prepared_sort::materialized_output_reservation_size_bytes_in",
-        )
-    }
-
     /// Gather the retained input DataFrame using the retained sorted order.
-    pub fn materialize(&self) -> Result<DataFrame> {
-        self.input.gather(&self.sorted_order).map_err(|error| error.reanchor("dataframe::prepared_sort::materialize"))
-    }
-
-    /// Gather the retained input DataFrame using a borrowed execution override.
-    pub fn materialize_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    pub fn materialize(&self, ctx: Exec<'_>) -> Result<DataFrame> {
         self.input
             .gather_in_context(&self.sorted_order, ctx)
-            .map_err(|error| error.reanchor("dataframe::prepared_sort::materialize_in"))
+            .map_err(|error| error.reanchor("dataframe::prepared_sort::materialize"))
     }
 
     /// Gather the retained input DataFrame using a hard budget token.
@@ -165,34 +152,23 @@ impl DataFramePreparedSort {
     /// sorted-order bytes and exact materialized output bytes.
     pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
         let operation = "dataframe::prepared_sort::materialize_with_budget";
-        let ctx = token.execution_overrides();
+        let ctx = token.exec();
         let retained_bytes = self
             .retained_sorted_order_device_allocated_size_bytes()
             .map_err(|error| token.annotate_error(error, operation))?;
         let output_bytes = self
-            .materialized_output_reservation_size_bytes_in(&ctx)
+            .materialized_output_reservation_size_bytes(ctx)
             .map_err(|error| token.annotate_error(error, operation))?;
-        let output = self.materialize_in(&ctx).map_err(|error| token.annotate_error(error, operation))?;
+        let output = self.materialize(ctx).map_err(|error| token.annotate_error(error, operation))?;
         let report =
             token.reservation_enforced_report().with_retained_bytes(retained_bytes).with_output_bytes(output_bytes);
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
 
-    /// Alias for [`materialize`](Self::materialize).
-    pub fn execute(&self) -> Result<DataFrame> {
-        self.materialize().map_err(|error| error.reanchor("dataframe::prepared_sort::execute"))
-    }
-
-    /// Alias for [`materialize_with_budget`](Self::materialize_with_budget).
-    pub fn execute_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
-        self.materialize_with_budget(token)
-            .map_err(|error| error.reanchor("dataframe::prepared_sort::execute_with_budget"))
-    }
-
     fn materialized_output_reservation_size_bytes_in_context(
         &self,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         self.input
@@ -208,88 +184,26 @@ impl DataFramePreparedSort {
 
 impl DataFrame {
     /// Sort using a borrowed per-operation execution override.
-    pub(crate) fn sort_values_in_context<I, S>(
-        &self,
-        by: I,
-        options: SortOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<Self>
+    pub(crate) fn sort_values_in_context<I, S>(&self, by: I, options: SortOptions, ctx: Exec<'_>) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.sort_values_impl(by, options, output_domain, "dataframe::with_execution::sort_values")
+        self.sort_values_impl(by, options, output_domain, "dataframe::sort_values")
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_sort_values_in_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         self.sort_values_in_context(by, options, ctx)
-    }
-
-    /// Sort rows using cuDF-style [`SortOptions`].
-    pub fn sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.sort_values_impl(by, options, Arc::clone(&self.domain), "dataframe::sort_values")
-    }
-
-    /// Prepare a retained sorted-order gather map for a later DataFrame sort.
-    ///
-    /// This resolves and validates keys/options with the same user-facing
-    /// rules as [`sort_values`](Self::sort_values), then retains only the INT32
-    /// sorted-order row-index column. Use
-    /// [`DataFramePreparedSort::materialized_output_reservation_size_bytes`]
-    /// to reserve the exact gathered output bytes before calling
-    /// [`DataFramePreparedSort::materialize`].
-    ///
-    /// This contract covers the retained sorted-order bytes and the
-    /// materialized gather output sizing, and retains the unresolved
-    /// libcudf sort temporary-workspace contract.
-    pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.prepare_sort_values_impl(by, options, Arc::clone(&self.domain), "dataframe::prepare_sort_values")
-    }
-
-    /// Prepare a retained sorted-order gather map using a hard budget token.
-    ///
-    /// Sorted-order creation is routed through the token's stream-bound
-    /// reservation. The returned report records the retained sorted-order
-    /// bytes and the unresolved libcudf sort temporary-workspace contract.
-    pub fn prepare_sort_values_with_budget<I, S>(
-        &self,
-        by: I,
-        options: SortOptions,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<DataFramePreparedSort>>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let operation = "dataframe::prepare_sort_values_with_budget";
-        let ctx = token.execution_overrides();
-        let prepared = self
-            .prepare_sort_values_in_context(by, options, &ctx)
-            .map_err(|error| token.annotate_error(error, operation))?;
-        let retained_bytes = prepared
-            .retained_sorted_order_device_allocated_size_bytes()
-            .map_err(|error| token.annotate_error(error, operation))?;
-        let report = token.reservation_enforced_report().with_retained_bytes(retained_bytes);
-
-        Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
 
     fn sort_values_impl<I, S>(
@@ -340,14 +254,14 @@ impl DataFrame {
         &self,
         by: I,
         options: SortOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFramePreparedSort>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.prepare_sort_values_impl(by, options, output_domain, "dataframe::with_execution::prepare_sort_values")
+        self.prepare_sort_values_impl(by, options, output_domain, "dataframe::prepare_sort_values")
     }
 
     fn prepare_sort_values_impl<I, S>(
@@ -462,18 +376,23 @@ impl DataFrame {
             TableView::from_borrowed_column_views_in_domain(views, None, operation)
         }
     }
+}
 
-    pub fn nlargest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort_values([column], SortOptions::new().with_descending(vec![true]))?.head(n)
+impl FrameOps<'_> {
+    /// The `n` rows with the largest `column` values, in descending order.
+    pub fn nlargest(&self, n: usize, column: &str) -> Result<DataFrame> {
+        self.sort_values([column], SortOptions::new().with_descending(vec![true]))?.on(Exec::RETAINED).head(n)
     }
 
-    pub fn nsmallest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort_values([column], SortOptions::new())?.head(n)
+    /// The `n` rows with the smallest `column` values, in ascending order.
+    pub fn nsmallest(&self, n: usize, column: &str) -> Result<DataFrame> {
+        self.sort_values([column], SortOptions::new())?.on(Exec::RETAINED).head(n)
     }
 
     /// Return zero-based `Int32` row positions aligned to the current frame order.
     pub fn row_positions(&self) -> Result<Series> {
-        Series::from_column(position_sequence_in_domain(self.row_count, &self.domain, "dataframe::row_positions")?)
+        let output_domain = self.ctx.resolve_output_domain(&self.df.domain)?;
+        Series::from_column(position_sequence_in_domain(self.df.row_count, &output_domain, "dataframe::row_positions")?)
     }
 
     /// Return a zero-based per-group row number for already-sorted rows.
@@ -483,19 +402,19 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let operation = "dataframe::group_cumcount";
+        let df = self.df;
         let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
             keys.into_iter().map(|key| key.as_ref().to_string()).collect();
         require_non_empty_group_keys(keys.len(), operation)?;
 
         let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
-        resolve_column_names(&self.columns, &key_refs, operation)?;
+        resolve_column_names(&df.columns, &key_refs, operation)?;
 
-        let row_idx_name = unique_temp_column_name(self, "__cudf_group_cumcount_row_idx__");
-        let group_start_name = unique_temp_column_name(self, "__cudf_group_cumcount_group_start__");
-        let row_idx = Series::from_column(position_sequence_in_domain(self.row_count, &self.domain, operation)?)?;
-        let with_row_idx = self.with_column(&row_idx_name, row_idx)?;
+        let row_idx_name = unique_temp_column_name(df, "__cudf_group_cumcount_row_idx__");
+        let group_start_name = unique_temp_column_name(df, "__cudf_group_cumcount_group_start__");
+        let with_row_idx = self.with_column(&row_idx_name, self.row_positions()?)?;
 
-        let first_rows = with_row_idx.drop_duplicates(
+        let first_rows = with_row_idx.on(Exec::RETAINED).drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepFirst).build(),
         )?;
         let mut first_row_columns: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY + 1]> = SmallVec::new();
@@ -507,11 +426,12 @@ impl DataFrame {
             .without_columns([row_idx_name.as_str()])?;
 
         let aligned = with_row_idx
+            .on(Exec::RETAINED)
             .merge(&first_rows, MergeOptions::new().how_left().on(key_refs.iter().copied()))?
+            .on(Exec::RETAINED)
             .sort_values([row_idx_name.as_str()], SortOptions::new().with_stable(true))?;
 
-        let rank = aligned.series(&row_idx_name)?.sub(&aligned.series(&group_start_name)?)?;
-        Ok(rank)
+        aligned.series(&row_idx_name)?.on(Exec::RETAINED).sub(&aligned.series(&group_start_name)?)
     }
 
     /// Return a per-group inclusive cumulative scan for already group-sorted rows.
@@ -524,24 +444,33 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let operation = "dataframe::group_scan_sorted";
+        let columns = &self.df.columns;
         let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
             keys.into_iter().map(|key| key.as_ref().to_string()).collect();
         require_non_empty_group_keys(keys.len(), operation)?;
 
         let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
-        let key_indices = resolve_column_names(&self.columns, &key_refs, operation)?;
-        let value_indices = resolve_column_names(&self.columns, &[value], operation)?;
-        let value_column = self.columns.get_index(value_indices[0]).expect("resolved scan value index remains valid");
+        let key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        let value_indices = resolve_column_names(columns, &[value], operation)?;
+        let value_column = columns.get_index(value_indices[0]).expect("resolved scan value index remains valid");
 
-        let keys_table = build_borrowed_table_view_from_columns(&self.columns, &key_indices)?;
+        let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
         let value_view = value_column.1.view()?;
         let aggregations = [agg];
         let requests = [GroupByScanRequest { values: &value_view, aggregations: &aggregations }];
-        let mut output = groupby_scan_sorted(&keys_table, &requests, NullPolicy::Include)?;
+        let mut output = groupby_scan_sorted(&keys_table, &requests, NullPolicy::Include, self.ctx)?;
         let result = output.results.pop().and_then(|mut columns| columns.pop()).ok_or_else(|| {
             error::invariant_violation(operation, "grouped scan returned no result column")
                 .with_detail("requested_aggregations", "1")
         })?;
         Series::from_column(result)
+    }
+}
+
+/// A prepared sort retains its sorted order; materializing it is a separate
+/// operation.
+impl CompleteReport for DataFramePreparedSort {
+    fn complete_report(&self, report: ExecutionBudgetReport) -> Result<ExecutionBudgetReport> {
+        Ok(report.with_retained_bytes(self.retained_sorted_order_device_allocated_size_bytes()?))
     }
 }

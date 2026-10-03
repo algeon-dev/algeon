@@ -19,7 +19,7 @@ pub fn trigger_series_row_range_overflow_error_for_test() -> Result<Series> {
     series::trigger_series_row_range_overflow_error_for_test()
 }
 
-/// Trigger the `Series::nunique` negative-distinct-count foreign-contract path
+/// Trigger the `SeriesOps::nunique` negative-distinct-count foreign-contract path
 /// used by integration tests.
 pub fn trigger_nunique_negative_distinct_count_for_test() -> Result<()> {
     reduction::trigger_nunique_negative_distinct_count_for_test()

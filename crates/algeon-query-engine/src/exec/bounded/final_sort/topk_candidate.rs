@@ -12,9 +12,10 @@ pub(super) fn sort_topk_candidate_with_budget(
     let sort = lower_sort_spec(&sort.spec)?;
     let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
     let timer = Instant::now();
-    let prepared = input
-        .into_frame()
-        .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, work_token)
+    let prepared = work_token
+        .run("dataframe::prepare_sort_values", |exec| {
+            input.into_frame().on(exec).prepare_sort_values(sort.columns.iter().map(String::as_str), options)
+        })
         .map_err(|error| {
             cudf_query_error(
                 "query_engine.final_sort.topk_prepare",

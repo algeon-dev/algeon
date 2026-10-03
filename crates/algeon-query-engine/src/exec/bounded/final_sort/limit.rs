@@ -61,7 +61,7 @@ pub(super) fn execute_limit_spec_on_frame_with_token(
     }
 
     let timer = Instant::now();
-    let output = frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
+    let output = frame.on(token.exec()).slice(offset, length).map_err(|error| {
         attach_budget_token_failure_facts(
             cudf_query_error(operation, "failed to execute bounded native final sort limit", error),
             token,
@@ -79,13 +79,12 @@ pub(super) fn concat_committed_frames_with_token(
     let first_frame = frames[0].frame.frame().clone();
     let other_frames = frames[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let output =
-        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
-            attach_budget_token_failure_facts(
-                cudf_query_error(operation, "failed to concatenate bounded native final sort candidates", error),
-                token,
-            )
-            .with_fact("candidate_count", frames.len())
-        })?;
+    let output = first_frame.on(token.exec()).concat_many(&other_frame_refs).map_err(|error| {
+        attach_budget_token_failure_facts(
+            cudf_query_error(operation, "failed to concatenate bounded native final sort candidates", error),
+            token,
+        )
+        .with_fact("candidate_count", frames.len())
+    })?;
     Ok(GpuDataFrame::new(output))
 }

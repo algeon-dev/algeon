@@ -10,7 +10,7 @@ use crate::{
     },
     frame::series::{IntoSeries, Series},
     ops::{copying, lookup},
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
+    runtime::{Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +104,7 @@ pub struct Codebook {
 impl Codebook {
     pub fn from_keys(keys: Series) -> Result<Self> {
         let operation = "codebook::from_keys";
-        let distinct_keys = keys.drop_duplicates().map_err(|e| e.reanchor(operation))?;
+        let distinct_keys = keys.on(Exec::RETAINED).drop_duplicates().map_err(|e| e.reanchor(operation))?;
         if distinct_keys.len() != keys.len() {
             return Err(Error::new_with(ErrorCode::DuplicateKey, operation, "codebook keys must be unique")
                 .with_fact(FACT_KEYS_COUNT, keys.len())
@@ -137,68 +137,54 @@ impl Codebook {
         self.keys.is_empty()
     }
 
-    pub fn encode(&self, values: &Series) -> Result<EncodedSeries> {
-        let ctx = ExecutionOverrides::new();
-        self.encode_in(values, &ctx).map_err(|e| e.reanchor("codebook::encode"))
-    }
-
-    pub fn encode_in(&self, values: &Series, ctx: &ExecutionOverrides<'_>) -> Result<EncodedSeries> {
+    pub fn encode(&self, values: &Series, ctx: Exec<'_>) -> Result<EncodedSeries> {
         let encoded = lookup::probe_prevalidated_in(
             &values.view()?,
             &self.keys.view()?,
             &self.codes.view()?,
             ctx,
-            "codebook::encode_in",
+            "codebook::encode",
         )?;
         let encoded = Series::from_column(encoded)?;
         Ok(EncodedSeries::new(encoded))
     }
 
-    pub fn decode(&self, codes: &EncodedSeries) -> Result<Series> {
-        self.decode_series(codes.as_series()).map_err(|e| e.reanchor("codebook::decode"))
+    pub fn decode(&self, codes: &EncodedSeries, ctx: Exec<'_>) -> Result<Series> {
+        self.decode_series(codes.as_series(), ctx).map_err(|e| e.reanchor("codebook::decode"))
     }
 
-    pub fn decode_in(&self, codes: &EncodedSeries, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
-        self.decode_series_in(codes.as_series(), ctx).map_err(|e| e.reanchor("codebook::decode_in"))
-    }
-
-    pub fn decode_series(&self, codes: &Series) -> Result<Series> {
-        let ctx = ExecutionOverrides::new();
-        self.decode_series_in(codes, &ctx).map_err(|e| e.reanchor("codebook::decode_series"))
-    }
-
-    pub fn decode_series_in(&self, codes: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+    pub fn decode_series(&self, codes: &Series, ctx: Exec<'_>) -> Result<Series> {
         if codes.null_count() == 0 {
-            return self.keys.gather_in(codes, ctx).map_err(|e| e.reanchor("codebook::decode_series_in"));
+            return self.keys.on(ctx).gather(codes).map_err(|e| e.reanchor("codebook::decode_series"));
         }
 
-        let filled_codes = codes.fillna_in(0i32, ctx).map_err(|e| e.reanchor("codebook::decode_series_in"))?;
+        let filled_codes = codes.on(ctx).fillna(0i32).map_err(|e| e.reanchor("codebook::decode_series"))?;
         if self.keys.is_empty() {
             return self.all_null_keys_like_in(codes.len(), ctx);
         }
 
-        let decoded = self.keys.gather_in(&filled_codes, ctx).map_err(|e| e.reanchor("codebook::decode_series_in"))?;
+        let decoded = self.keys.on(ctx).gather(&filled_codes).map_err(|e| e.reanchor("codebook::decode_series"))?;
         let nulls = null_series_like_in_domain(
             &decoded,
             decoded.len(),
             decoded.as_column().execution_domain(),
-            "codebook::decode_series_in",
+            "codebook::decode_series",
         )?;
-        let valid_codes = codes.is_not_null_in(ctx).map_err(|e| e.reanchor("codebook::decode_series_in"))?;
-        let decoded_view = decoded.view().map_err(|e| e.reanchor("codebook::decode_series_in"))?;
-        let nulls_view = nulls.view().map_err(|e| e.reanchor("codebook::decode_series_in"))?;
-        let valid_codes_view = valid_codes.view().map_err(|e| e.reanchor("codebook::decode_series_in"))?;
+        let valid_codes = codes.on(ctx).is_not_null().map_err(|e| e.reanchor("codebook::decode_series"))?;
+        let decoded_view = decoded.view().map_err(|e| e.reanchor("codebook::decode_series"))?;
+        let nulls_view = nulls.view().map_err(|e| e.reanchor("codebook::decode_series"))?;
+        let valid_codes_view = valid_codes.view().map_err(|e| e.reanchor("codebook::decode_series"))?;
         let restored = copying::copy_if_else_in(&decoded_view, &nulls_view, &valid_codes_view, ctx)
-            .map_err(|e| e.reanchor("codebook::decode_series_in"))?;
-        Series::from_column(restored).map_err(|e| e.reanchor("codebook::decode_series_in"))
+            .map_err(|e| e.reanchor("codebook::decode_series"))?;
+        Series::from_column(restored).map_err(|e| e.reanchor("codebook::decode_series"))
     }
 
     pub fn into_parts(self) -> (Series, EncodedSeries) {
         (self.keys, self.codes)
     }
 
-    fn all_null_keys_like_in(&self, len: usize, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
-        let operation = "codebook::decode_series_in";
+    fn all_null_keys_like_in(&self, len: usize, ctx: Exec<'_>) -> Result<Series> {
+        let operation = "codebook::decode_series";
         let execution = ResolvedExecution::unary(self.keys.as_column().execution_domain(), ctx, operation)?;
         null_series_like_in_domain(&self.keys, len, execution.output_domain(), operation)
     }
@@ -236,8 +222,8 @@ impl Factorized {
         &self.codebook
     }
 
-    pub fn decode(&self) -> Result<Series> {
-        self.codebook.decode(&self.row_codes)
+    pub fn decode(&self, exec: Exec<'_>) -> Result<Series> {
+        self.codebook.decode(&self.row_codes, exec)
     }
 
     pub fn into_parts(self) -> (EncodedSeries, Codebook) {

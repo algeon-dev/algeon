@@ -24,7 +24,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DenseMatrixLayout, DeviceId, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
+    DataFrame, DenseMatrixLayout, DeviceId, Exec, Runtime, TypeId,
     core::{
         DeviceMemoryResource,
         error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue},
@@ -277,9 +277,8 @@ impl Drop for BlockingBindingExtension {
 fn binding_extension_is_shared_only_by_the_exact_execution_binding() {
     let base = sample_runtime();
     let same_binding = base.with_retained_lifetime(Arc::new(())).unwrap();
-    let different_binding = sample_runtime().inherit_affinity_from(&base).unwrap();
+    let different_binding = sample_runtime();
     assert_eq!(base.binding_id(), same_binding.binding_id());
-    assert_eq!(base.affinity_id(), different_binding.affinity_id());
     assert_ne!(base.binding_id(), different_binding.binding_id());
 
     let factory_calls = Arc::new(AtomicUsize::new(0));
@@ -345,8 +344,8 @@ fn binding_extension_cold_n_way_initialization_runs_factory_exactly_once() {
 
 fn runtime_retaining_binding_extension_drops_without_a_cycle() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let runtime = sample_runtime();
-    let affinity = runtime.affinity_anchor();
+    let (sentinel, released) = retained_lifetime_sentinel();
+    let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
     let extension = runtime
         .get_or_try_init_binding_extension("runtime_retaining_binding_extension", {
             let drops = Arc::clone(&drops);
@@ -356,10 +355,10 @@ fn runtime_retaining_binding_extension_drops_without_a_cycle() {
         .unwrap();
 
     drop(runtime);
-    assert!(affinity.is_alive(), "the lease and retained Runtime keep the execution domain alive");
+    assert_eq!(released.load(Ordering::SeqCst), 0, "the lease and retained Runtime keep the execution domain alive");
     drop(extension);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
-    assert!(!affinity.is_alive(), "the extension's retained Runtime must not form a domain cycle");
+    assert_eq!(released.load(Ordering::SeqCst), 1, "the extension's retained Runtime must not form a domain cycle");
 }
 
 #[test]
@@ -884,10 +883,8 @@ fn retained_lifetime_survives_borrowed_override_until_output_drop() {
     let (sentinel, drops) = retained_lifetime_sentinel();
     let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
     let override_runtime = sample_runtime();
-    let overrides = ExecutionOverrides::new()
-        .with_stream(override_runtime.stream())
-        .with_memory_resource(override_runtime.memory_resource());
-    let output = runtime.series_in(&[1_i32, 2, 3], &overrides).unwrap();
+    let overrides = override_runtime.exec();
+    let output = runtime.on(overrides).and_then(|runtime| runtime.series(&[1_i32, 2, 3])).unwrap();
 
     assert_eq!(
         output.as_column().testing_execution_domain_stream_value(),
@@ -902,55 +899,6 @@ fn retained_lifetime_survives_borrowed_override_until_output_drop() {
 
     drop(output);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
-fn runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases() {
-    let base = Arc::new(sample_runtime());
-    let affinity_id = base.affinity_id();
-    let binding_id = base.binding_id();
-    let affinity_anchor = base.affinity_anchor();
-    let lease_anchor = base.lease_anchor();
-    let derived = Arc::new(base.with_retained_lifetime(Arc::new(())).unwrap());
-    let override_runtime = sample_runtime();
-    let overrides = ExecutionOverrides::new()
-        .with_stream(override_runtime.stream())
-        .with_memory_resource(override_runtime.memory_resource());
-    let output = derived.series_in(&[1_i32, 2, 3], &overrides).unwrap();
-
-    assert_eq!(derived.affinity_id(), affinity_id);
-    assert_eq!(derived.binding_id(), binding_id);
-    assert!(Runtime::shares_affinity(&base, &derived));
-    assert!(base.matches_lease_anchor(&lease_anchor));
-    assert!(derived.matches_lease_anchor(&lease_anchor));
-    assert!(lease_anchor.is_current());
-
-    drop(override_runtime);
-    drop(base);
-    assert!(lease_anchor.is_current(), "derived Runtime keeps the counted owner lease current");
-    drop(derived);
-
-    assert!(!lease_anchor.is_current(), "GPU outputs must not count as current Runtime leases");
-    assert!(affinity_anchor.is_alive(), "the output execution domain retains affinity identity");
-    drop(output);
-    assert!(!affinity_anchor.is_alive());
-}
-
-fn independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease() {
-    let base = Arc::new(sample_runtime());
-    let independent = Arc::new(sample_runtime());
-    assert_ne!(base.affinity_id(), independent.affinity_id());
-    assert!(!Runtime::shares_affinity(&base, &independent));
-
-    let base_lease = base.lease_anchor();
-    let companion = Arc::new(independent.inherit_affinity_from(&base).unwrap());
-    assert_eq!(companion.affinity_id(), base.affinity_id());
-    assert_ne!(companion.binding_id(), base.binding_id());
-    assert!(Runtime::shares_affinity(&base, &companion));
-    assert!(!companion.matches_lease_anchor(&base_lease));
-
-    drop(base);
-    assert!(!base_lease.is_current(), "a companion has its own counted owner lease");
-    assert!(companion.affinity_anchor().is_alive());
 }
 
 fn host_record_batch_import_and_export_keep_runtime_residency() {
@@ -977,40 +925,6 @@ fn host_record_batch_import_and_export_keep_runtime_residency() {
     assert_eq!(last_sync_stream_value(), runtime_stream);
     assert_eq!(int32_array(&exported, 0).values().as_ref(), &[1, 2, 3, 4]);
     assert_eq!(int32_array(&exported, 1).values().as_ref(), &[10, 20, 30, 40]);
-}
-
-fn query_execution_context_packages_runtime_handles_for_query_operations() {
-    let _observation_lock = lock_event_observation();
-    // Keep these as distinct same-device runtimes so the test proves the query
-    // facade replaces stream/MR without changing the input workflow provenance.
-    let data_runtime = sample_runtime();
-    let query_runtime = sample_runtime();
-    let query = query_runtime.query_execution();
-
-    fn assert_query_context(_: &QueryExecutionContext<'_>) {}
-    assert_query_context(&query);
-
-    assert_eq!(query.runtime().placement(), query_runtime.placement());
-    assert_eq!(query.placement(), query_runtime.placement());
-    assert_eq!(query.device(), query_runtime.device());
-    assert_eq!(query.stream().testing_raw_handle_value(), query_runtime.stream().testing_raw_handle_value());
-    assert_eq!(
-        query.memory_resource().testing_raw_handle_value(),
-        query_runtime.memory_resource().testing_raw_handle_value()
-    );
-    assert_eq!(query.execution_binding().unwrap().device(), query_runtime.device().ordinal() as i32);
-
-    let imported = DataFrame::from_record_batch(&data_runtime, &sample_record_batch()).unwrap();
-    reset_exec_observation();
-    let filtered = imported.with_execution(query.overrides()).filter_expr(col("id").ge(2i32)).unwrap();
-
-    assert_eq!(last_exec_stream_value(), query_runtime.stream().testing_raw_handle_value());
-    assert_eq!(last_exec_mr_value(), query_runtime.memory_resource().testing_raw_handle_value());
-    let filtered_placement = filtered.placement();
-    assert_eq!(filtered_placement.device, query_runtime.device());
-    assert_eq!(filtered_placement.workflow_id, imported.placement().workflow_id);
-    assert_eq!(filtered_placement.stream_debug, query_runtime.stream().testing_raw_handle_value());
-    assert_eq!(filtered_placement.memory_resource_debug, query_runtime.memory_resource().testing_raw_handle_value());
 }
 
 fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit() {
@@ -1074,7 +988,7 @@ fn host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result
     let schema = host.schema();
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
     let mask = runtime.series(&[false; 4]).unwrap();
-    let frame = frame.filter(&mask).unwrap();
+    let frame = frame.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(frame.num_rows(), 0);
     let gpu = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
     let mut cursor = gpu.into_host_batch_cursor(HostBatchCursorConfig::default()).unwrap();
@@ -1280,7 +1194,11 @@ fn host_batch_cursor_materializes_lists_with_zero_active_string_children() {
         for (rows, validity, slice) in cases {
             let gpu = empty_child_list_gpu_batch(&runtime, child_type.clone(), rows, validity);
             let gpu = if let Some((offset, length)) = slice {
-                GpuRecordBatch::new(gpu.frame().slice(offset, length).unwrap(), Arc::clone(gpu.schema())).unwrap()
+                GpuRecordBatch::new(
+                    gpu.frame().on(Exec::RETAINED).slice(offset, length).unwrap(),
+                    Arc::clone(gpu.schema()),
+                )
+                .unwrap()
             } else {
                 gpu
             };
@@ -1478,7 +1396,7 @@ fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime()
         &producer_runtime,
         vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
     );
-    let sliced_frame = full.frame().slice(1, 2).unwrap();
+    let sliced_frame = full.frame().on(Exec::RETAINED).slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
     let validated = sliced.try_prepare_fixed_size_list_export(0).unwrap();
 
@@ -1553,7 +1471,7 @@ fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range(
     );
     let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(item, 2), false)]));
     let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap().slice(1, 1).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap().on(Exec::RETAINED).slice(1, 1).unwrap();
     let gpu = GpuRecordBatch::new(frame, schema).unwrap();
 
     let validated = gpu.try_prepare_fixed_size_list_export(0).unwrap();
@@ -1649,7 +1567,7 @@ fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
         vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
         None,
     );
-    let sliced_frame = full.frame().slice(1, 2).unwrap();
+    let sliced_frame = full.frame().on(Exec::RETAINED).slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
     let validated = sliced.try_prepare_uniform_list_export(0).unwrap();
 
@@ -1774,7 +1692,7 @@ fn uniform_list_export_covers_only_the_sliced_active_child_range() {
         vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
         None,
     );
-    let frame = full.frame().slice(1, 2).unwrap();
+    let frame = full.frame().on(Exec::RETAINED).slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(frame, Arc::clone(full.schema())).unwrap();
 
     let validated = sliced.try_prepare_uniform_list_export(0).unwrap();
@@ -1809,11 +1727,13 @@ fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_w
             TypeId::Decimal32 => runtime
                 .series(&[123i32])
                 .unwrap()
+                .on(Exec::RETAINED)
                 .astype(cudf::DataType::fixed_point(storage_type, -2).unwrap())
                 .unwrap(),
             TypeId::Decimal64 => runtime
                 .series(&[123i64])
                 .unwrap()
+                .on(Exec::RETAINED)
                 .astype(cudf::DataType::fixed_point(storage_type, -2).unwrap())
                 .unwrap(),
             _ => unreachable!(),
@@ -1878,9 +1798,8 @@ fn host_batch_cursor_rejects_oversized_nested_list_row_before_d2h() {
 }
 
 fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
-    let runtime = sample_runtime();
-    let affinity_anchor = runtime.affinity_anchor();
-    let lease_anchor = runtime.lease_anchor();
+    let (sentinel, released) = retained_lifetime_sentinel();
+    let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
     let host = sample_record_batch();
     let schema = host.schema();
     let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), schema).unwrap();
@@ -1898,8 +1817,7 @@ fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
 
     drop(cursor);
     drop(runtime);
-    assert!(!lease_anchor.is_current(), "a host Arrow chunk must not retain a counted Runtime lease");
-    assert!(!affinity_anchor.is_alive(), "a host Arrow chunk must not retain GPU execution-domain backing");
+    assert_eq!(released.load(Ordering::SeqCst), 1, "a host Arrow chunk must not retain GPU execution-domain backing");
 
     assert_eq!(materialized.num_rows(), host.num_rows(), "the detached host chunk remains usable");
 }
@@ -2002,8 +1920,7 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     let ctx_runtime = sample_runtime();
     let ctx_stream = ctx_runtime.stream().testing_raw_handle_value();
     let ctx_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
-    let ctx =
-        ExecutionOverrides::new().with_stream(ctx_runtime.stream()).with_memory_resource(ctx_runtime.memory_resource());
+    let ctx = ctx_runtime.exec();
 
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let import_count_before = testing::arrow::arrow_host_import_call_count_for_test();
@@ -2017,13 +1934,13 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     );
 
     reset_exec_observation();
-    let filtered = imported.with_execution(&ctx).filter_expr(col("id").ge(2i32)).unwrap();
+    let filtered = imported.on(ctx).filter_expr(col("id").ge(2i32)).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&filtered, imported.testing_execution_domain_id(), ctx_stream, ctx_mr);
 
     reset_exec_observation();
-    let projected = filtered.with_execution(&ctx).with_columns([("total", col("id") + col("value"))]).unwrap();
+    let projected = filtered.on(ctx).with_columns([("total", col("id") + col("value"))]).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&projected, imported.testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -2109,20 +2026,8 @@ fn query_backend_contract_tests_cases() {
             retained_lifetime_survives_borrowed_override_until_output_drop,
         ),
         (
-            "runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases",
-            runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases,
-        ),
-        (
-            "independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease",
-            independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease,
-        ),
-        (
             "host_record_batch_import_and_export_keep_runtime_residency",
             host_record_batch_import_and_export_keep_runtime_residency,
-        ),
-        (
-            "query_execution_context_packages_runtime_handles_for_query_operations",
-            query_execution_context_packages_runtime_handles_for_query_operations,
         ),
         (
             "gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit",

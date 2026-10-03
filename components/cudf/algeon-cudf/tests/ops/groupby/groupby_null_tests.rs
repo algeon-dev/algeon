@@ -8,7 +8,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{AggSpec, DataFrame, GroupByAgg};
+use cudf::{AggSpec, DataFrame, Exec, GroupByAgg};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns, run_named_cases};
 
@@ -28,7 +28,7 @@ fn test_groupby_sum_skips_nulls_in_values() {
     let df = df_with_nullable_values();
     // key=1: [10, null] -> sum=10 (skip null)
     // key=2: [30, 40] -> sum=70
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
     let sum_data = result.series("value_sum").unwrap().to_optional_vec::<i64>().unwrap();
@@ -44,7 +44,7 @@ fn test_groupby_sum_skips_nulls_in_values() {
 
 fn test_groupby_min_skips_nulls() {
     let df = df_with_nullable_values();
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
     let min_data = result.series("value_min").unwrap().to_optional_vec::<i64>().unwrap();
@@ -58,7 +58,7 @@ fn test_groupby_min_skips_nulls() {
 
 fn test_groupby_max_skips_nulls() {
     let df = df_with_nullable_values();
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Max)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Max)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_optional_vec::<i32>().unwrap();
     let max_data = result.series("value_max").unwrap().to_optional_vec::<i64>().unwrap();
@@ -76,7 +76,7 @@ fn test_groupby_max_skips_nulls() {
 
 fn test_groupby_mean_skips_nulls() {
     let df = df_with_nullable_values();
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Mean)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Mean)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let mean_data = result.series("value_mean").unwrap().to_vec_strict::<f64>().unwrap();
@@ -95,7 +95,11 @@ fn test_groupby_mean_skips_nulls() {
 
 fn test_groupby_count_excludes_nulls_by_default() {
     let df = df_with_nullable_values();
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: false })]).unwrap();
+    let result = df
+        .groupby(["key"])
+        .on(Exec::RETAINED)
+        .agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: false })])
+        .unwrap();
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let count_data = result.series("value_count").unwrap().to_vec_strict::<i32>().unwrap();
@@ -109,7 +113,11 @@ fn test_groupby_count_excludes_nulls_by_default() {
 
 fn test_groupby_count_includes_nulls_when_requested() {
     let df = df_with_nullable_values();
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: true })]).unwrap();
+    let result = df
+        .groupby(["key"])
+        .on(Exec::RETAINED)
+        .agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: true })])
+        .unwrap();
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let count_data = result.series("value_count").unwrap().to_vec_strict::<i32>().unwrap();
@@ -131,7 +139,7 @@ fn test_groupby_sum_all_null_group() {
     let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let sum_series = result.series("value_sum").unwrap();
@@ -153,7 +161,7 @@ fn test_groupby_min_all_null_group() {
     let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
 
     let key_data = result.series("key").unwrap().to_vec_strict::<i32>().unwrap();
     let min_series = result.series("value_min").unwrap();
@@ -179,7 +187,7 @@ fn test_groupby_null_keys_excluded_by_default() {
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // Without include_null_keys, the null-key row should be dropped
     assert_eq!(result.num_rows(), 2);
@@ -203,7 +211,8 @@ fn test_groupby_null_keys_included_when_requested() {
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let options = GroupByOptions::builder().include_null_keys(true).build();
-    let result = df.groupby(["key"]).options(options).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result =
+        df.groupby(["key"]).options(options).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // With include_null_keys, the null-key group should appear
     assert_eq!(result.num_rows(), 3);

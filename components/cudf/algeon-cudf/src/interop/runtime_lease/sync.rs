@@ -83,7 +83,7 @@ pub(super) fn order_consumer_stream_after_producer_stream_raw(
 ) -> std::result::Result<CudaEvent, InteropError> {
     let _guard = DeviceGuard::new(producer_device)
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let barrier = CudaEvent::new().map_err(|error| {
+    let barrier = CudaEvent::new_on(producer_device).map_err(|error| {
         map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
             .with_context("readiness", "device_stream_ordered")
             .with_context("read_start", "consumer_stream")
@@ -152,8 +152,8 @@ pub(super) fn synchronize_producer_stream_readiness_raw(
 ) -> std::result::Result<(), InteropError> {
     let _guard = DeviceGuard::new(producer_device)
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let barrier =
-        CudaEvent::new().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let barrier = CudaEvent::new_on(producer_device)
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
     let barrier_raw = barrier
         .interop_raw_handle()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
@@ -177,13 +177,11 @@ pub(super) fn synchronize_producer_event_readiness_raw(
 ) -> std::result::Result<(), InteropError> {
     let _guard = DeviceGuard::new(producer_device)
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let stream =
-        CudaStream::new().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let stream_raw = stream
-        .interop_raw_handle()
+    let stream = CudaStream::new_on(producer_device)
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-    let barrier =
-        CudaEvent::new().map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    let stream_raw = stream.interop_raw_handle();
+    let barrier = CudaEvent::new_on(producer_device)
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
     let barrier_raw = barrier
         .interop_raw_handle()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;

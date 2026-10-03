@@ -1,7 +1,7 @@
 //! Tests for high-level fused row-predicate filtering entry points.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, StringSliceOptions, TimestampResolution, TypeId,
-    ops::expr::{col, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_timestamp_raw},
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, ScalarValue, StringSliceOptions, TimestampResolution, TypeId,
+    ops::expr::{col, lit},
     testing::prelude::*,
 };
 
@@ -86,6 +86,7 @@ fn test_filter_expr_matches_rfc_style_multi_condition_filtering() {
     let df = edge_df();
 
     let filtered = df
+        .on(Exec::RETAINED)
         .filter_expr(
             col("sourceId").is_not_null()
                 & col("targetId").is_not_null()
@@ -113,15 +114,33 @@ fn test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dat
     let df = wide_string_edge_df();
 
     let chained = {
-        let filtered = df.filter(&df.series("sourceId").unwrap().ne_scalar("").unwrap()).unwrap();
-        let filtered = filtered.filter(&filtered.series("targetId").unwrap().ne_scalar("").unwrap()).unwrap();
-        let filtered = filtered.filter(&filtered.series("relationId").unwrap().ne_scalar("").unwrap()).unwrap();
+        let filtered = df
+            .on(Exec::RETAINED)
+            .filter(&df.series("sourceId").unwrap().on(Exec::RETAINED).ne_scalar("").unwrap())
+            .unwrap();
+        let filtered = filtered
+            .on(Exec::RETAINED)
+            .filter(&filtered.series("targetId").unwrap().on(Exec::RETAINED).ne_scalar("").unwrap())
+            .unwrap();
+        let filtered = filtered
+            .on(Exec::RETAINED)
+            .filter(&filtered.series("relationId").unwrap().on(Exec::RETAINED).ne_scalar("").unwrap())
+            .unwrap();
         filtered
-            .filter(&filtered.series("sourceId").unwrap().ne(&filtered.series("targetId").unwrap()).unwrap())
+            .on(Exec::RETAINED)
+            .filter(
+                &filtered
+                    .series("sourceId")
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .ne(&filtered.series("targetId").unwrap())
+                    .unwrap(),
+            )
             .unwrap()
     };
 
     let fused_all = df
+        .on(Exec::RETAINED)
         .filter_all([
             col("sourceId").ne(""),
             col("targetId").ne(""),
@@ -131,6 +150,7 @@ fn test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dat
         .unwrap();
 
     let fused_expr = df
+        .on(Exec::RETAINED)
         .filter_expr(
             col("sourceId").ne("")
                 & col("targetId").ne("")
@@ -160,7 +180,7 @@ fn test_filter_all_empty_returns_clone_without_materializing_new_table() {
     let df = edge_df();
     let original_ptr = dataframe_device_ptr(&df, "weight");
 
-    let filtered = df.filter_all(std::iter::empty::<cudf::Expr>()).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_all(std::iter::empty::<cudf::Expr>()).unwrap();
 
     assert_eq!(filtered.num_rows(), df.num_rows());
     assert_eq!(filtered.column_names(), df.column_names());
@@ -171,7 +191,7 @@ fn test_filter_all_empty_returns_clone_without_materializing_new_table() {
 fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
     let df = edge_df();
 
-    let filtered = df.filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
     assert_eq!(filtered.column_names(), df.column_names());
@@ -182,11 +202,12 @@ fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
 fn test_filter_any_empty_preserves_full_dtype_metadata() {
     let amount = series("amount", &[100i64, 250, 999])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let df = DataFrame::from_series([("amount", amount.clone())]).unwrap();
 
-    let filtered = df.filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
     assert_eq!(filtered.column_names(), df.column_names());
@@ -196,6 +217,7 @@ fn test_filter_any_empty_preserves_full_dtype_metadata() {
 fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
     let discount = series("discount", &[4i64, 5, 6, 7, 8])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
         .unwrap();
     let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
@@ -203,7 +225,11 @@ fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
 
     reset_row_predicate_observation();
     let filtered = df
-        .filter_expr(col("discount").ge(lit_decimal128_raw(500, -2)) & col("discount").le(lit_decimal128_raw(700, -2)))
+        .on(Exec::RETAINED)
+        .filter_expr(
+            col("discount").ge(lit(ScalarValue::Decimal128 { raw: 500, scale: -2 }))
+                & col("discount").le(lit(ScalarValue::Decimal128 { raw: 700, scale: -2 })),
+        )
         .unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
@@ -215,13 +241,14 @@ fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
 fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
     let discount = series("discount", &[4i64, 5, 6, 7, 8])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
         .unwrap();
     let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
     let df = DataFrame::from_series([("id", id), ("discount", discount)]).unwrap();
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("discount").ge(5i32) & col("discount").le(7i32)).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("discount").ge(5i32) & col("discount").le(7i32)).unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3, 4]);
@@ -232,13 +259,19 @@ fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
 }
 
 fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
-    let amount =
-        series("amount", &[1i32, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal32, -2).unwrap()).unwrap();
+    let amount = series("amount", &[1i32, 2, 3])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal32, -2).unwrap())
+        .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("amount").eq(lit_decimal32_raw(2000, -3))).unwrap();
+    let filtered = df
+        .on(Exec::RETAINED)
+        .filter_expr(col("amount").eq(lit(ScalarValue::Decimal32 { raw: 2000, scale: -3 })))
+        .unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
@@ -249,13 +282,19 @@ fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
 }
 
 fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
-    let amount =
-        series("amount", &[1i64, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap();
+    let amount = series("amount", &[1i64, 2, 3])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -3).unwrap())
+        .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("amount").eq(lit_decimal64_raw(20, -1))).unwrap();
+    let filtered = df
+        .on(Exec::RETAINED)
+        .filter_expr(col("amount").eq(lit(ScalarValue::Decimal64 { raw: 20, scale: -1 })))
+        .unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
@@ -268,13 +307,17 @@ fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
 fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error() {
     let amount = series("amount", &[100i64, 250, 300])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 
     reset_row_predicate_observation();
-    let err = df.filter_expr(col("amount").eq(lit_decimal64_raw(12345, -3))).unwrap_err();
+    let err = df
+        .on(Exec::RETAINED)
+        .filter_expr(col("amount").eq(lit(ScalarValue::Decimal64 { raw: 12345, scale: -3 })))
+        .unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -290,8 +333,10 @@ fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error
 fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
@@ -299,9 +344,11 @@ fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape(
 
     reset_row_predicate_observation();
     let filtered = df
+        .on(Exec::RETAINED)
         .filter_expr(
-            col("shipdate").ge(lit_timestamp_raw(18_263, TimestampResolution::Days))
-                & col("shipdate").lt(lit_timestamp_raw(18_264, TimestampResolution::Days)),
+            col("shipdate").ge(lit(ScalarValue::Timestamp { raw: 18_263, resolution: TimestampResolution::Days }))
+                & col("shipdate")
+                    .lt(lit(ScalarValue::Timestamp { raw: 18_264, resolution: TimestampResolution::Days })),
         )
         .unwrap();
 
@@ -314,8 +361,10 @@ fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape(
 fn test_filter_any_keeps_rows_matching_any_predicate() {
     let df = edge_df();
 
-    let filtered =
-        df.filter_any([col("sourceId").eq("alice"), col("weight").ge(5i32), col("targetId").eq("grace")]).unwrap();
+    let filtered = df
+        .on(Exec::RETAINED)
+        .filter_any([col("sourceId").eq("alice"), col("weight").ge(5i32), col("targetId").eq("grace")])
+        .unwrap();
 
     assert_eq!(filtered.num_rows(), 3);
     assert_eq!(
@@ -330,7 +379,7 @@ fn test_filter_expr_drops_null_predicate_rows() {
     let value = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = dataframe_from_columns(vec!["name".into(), "value".into()], vec![name, value]).unwrap();
 
-    let filtered = df.filter_expr(col("name").ne("")).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("name").ne("")).unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("name").unwrap().to_strings_strict().unwrap(), vec!["alpha".to_string()]);
@@ -340,20 +389,24 @@ fn test_filter_expr_drops_null_predicate_rows() {
 fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let cutoff = series("cutoff", &[18_263i32, 18_263, 18_263])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("shipdate", shipdate), ("cutoff", cutoff)]).unwrap();
 
-    let filtered = df.filter_expr(col("shipdate").lt(col("cutoff"))).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("shipdate").lt(col("cutoff"))).unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
@@ -363,7 +416,10 @@ fn test_filter_expr_string_like_uses_boolean_mask_fallback() {
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("sourceId").str().like("a%") | col("sourceId").str().like("f%")).unwrap();
+    let filtered = df
+        .on(Exec::RETAINED)
+        .filter_expr(col("sourceId").str().like("a%") | col("sourceId").str().like("f%"))
+        .unwrap();
 
     assert_eq!(filtered.num_rows(), 2);
     assert_eq!(
@@ -380,7 +436,8 @@ fn test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independe
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("weight").abs().gt(0i32) & col("sourceId").str().like("a%")).unwrap();
+    let filtered =
+        df.on(Exec::RETAINED).filter_expr(col("weight").abs().gt(0i32) & col("sourceId").str().like("a%")).unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
@@ -390,7 +447,8 @@ fn test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independe
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
 
     reset_row_predicate_observation();
-    let filtered = df.filter_expr(col("sourceId").str().like("a%") & col("weight").abs().gt(0i32)).unwrap();
+    let filtered =
+        df.on(Exec::RETAINED).filter_expr(col("sourceId").str().like("a%") & col("weight").abs().gt(0i32)).unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
@@ -404,8 +462,10 @@ fn test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback() {
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let filtered =
-        df.filter_expr(col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a")).unwrap();
+    let filtered = df
+        .on(Exec::RETAINED)
+        .filter_expr(col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a"))
+        .unwrap();
 
     assert_eq!(filtered.num_rows(), 1);
     assert_eq!(filtered.series("sourceId").unwrap().to_strings_strict().unwrap(), vec!["alice".to_string()]);
@@ -419,6 +479,7 @@ fn test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independ
 
     reset_row_predicate_observation();
     let filtered = df
+        .on(Exec::RETAINED)
         .filter_expr(
             col("weight").abs().gt(0i32)
                 & col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a"),
@@ -434,6 +495,7 @@ fn test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independ
 
     reset_row_predicate_observation();
     let filtered = df
+        .on(Exec::RETAINED)
         .filter_expr(
             col("sourceId").str().slice(StringSliceOptions::new(Some(0), Some(1))).eq("a")
                 & col("weight").abs().gt(0i32),
@@ -452,7 +514,7 @@ fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs(
     let df = edge_df();
 
     reset_row_predicate_observation();
-    let err = df.filter_expr(col("sourceId").eq(5i32)).unwrap_err();
+    let err = df.on(Exec::RETAINED).filter_expr(col("sourceId").eq(5i32)).unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -468,7 +530,7 @@ fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs(
 fn test_filter_expr_rejects_non_boolean_predicate_output() {
     let df = edge_df();
 
-    let err = df.filter_expr(col("weight")).unwrap_err();
+    let err = df.on(Exec::RETAINED).filter_expr(col("weight")).unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -479,7 +541,7 @@ fn test_filter_expr_rejects_non_boolean_predicate_output() {
 fn test_filter_expr_rejects_logical_not_on_non_boolean_operand() {
     let df = edge_df();
 
-    let err = df.filter_expr(!col("weight")).unwrap_err();
+    let err = df.on(Exec::RETAINED).filter_expr(!col("weight")).unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -492,6 +554,7 @@ fn test_filter_expr_uses_fused_row_predicate_path_once() {
 
     reset_row_predicate_observation();
     let filtered = df
+        .on(Exec::RETAINED)
         .filter_expr(
             col("sourceId").ne("")
                 & col("targetId").ne("")

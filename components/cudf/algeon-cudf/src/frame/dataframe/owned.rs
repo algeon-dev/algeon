@@ -19,7 +19,7 @@ use crate::{
     hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
     internal::{reassemble::dataframe_from_table_and_names, resolve::validate_no_duplicate_names},
     ops::groupby,
-    runtime::{ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
+    runtime::{DeviceId, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
 };
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
@@ -41,15 +41,16 @@ use crate::{
 /// cell values to host memory.
 ///
 /// This keeps `Display` distinct from row-selection APIs such as
-/// [`head`](Self::head), [`tail`](Self::tail), and [`slice`](Self::slice).
+/// [`head`](crate::FrameOps::head), [`tail`](crate::FrameOps::tail), and [`slice`](crate::FrameOps::slice).
 /// Use those APIs to select row subsets, then inspect the resulting columns
 /// explicitly when you need host-visible values.
 ///
 /// # Interop
 ///
-/// Use a borrowed view for temporary device access, a prepared export when the
-/// consumer needs access or a copy, and an owned transfer when it takes over
-/// the device buffers.
+/// [`try_prepare_device_table_export`](Self::try_prepare_device_table_export)
+/// describes the device buffers to a consumer without copying them;
+/// [`try_prepare_host_table_export`](Self::try_prepare_host_table_export) and
+/// [`to_record_batch`](Self::to_record_batch) copy the rows to host memory.
 #[derive(Clone)]
 pub struct DataFrame {
     pub(super) columns: FastIndexMap<String, Arc<Column>>,
@@ -344,36 +345,6 @@ impl DataFrame {
         self.row_count
     }
 
-    /// Build an owned [`Table`] by deep-copying each column.
-    ///
-    /// This is useful when calling APIs that operate on `Table` directly.
-    ///
-    /// # Cost
-    ///
-    /// GPU-allocating: deep-copies every column to a new `Table`. Each column
-    /// gets its own fresh device allocation.
-    pub fn to_table_copy(&self) -> Result<Table> {
-        let mut cols: Vec<Column> = Vec::with_capacity(self.columns.len());
-        for (name, arc_col) in &self.columns {
-            let col = arc_col
-                .copy_into_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")
-                .map_err(|e| e.with_column(name.clone()))?;
-            cols.push(col);
-        }
-
-        let table = if cols.is_empty() {
-            Table::from_columns_in_domain_with_num_rows(
-                cols,
-                self.row_count,
-                Arc::clone(&self.domain),
-                "dataframe::to_table_copy",
-            )?
-        } else {
-            Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::to_table_copy"))?
-        };
-        Ok(table)
-    }
-
     /// Ensure this DataFrame is placed in the target runtime.
     ///
     /// Columns already in the target runtime's retained provenance are shared
@@ -387,12 +358,19 @@ impl DataFrame {
             .columns
             .values()
             .any(|column| !ExecutionDomain::same_provenance(column.execution_domain(), &output_domain));
-        let columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
-        let domain = resolve_frame_domain_from_authoritative_source(&columns, &output_domain, operation)?;
+        let output = self.in_domain(&output_domain, operation)?;
         #[cfg(any(test, feature = "test-hooks"))]
         if should_copy {
             testing_hooks::record_device_to_device_copy();
         }
+        Ok(output)
+    }
+
+    /// This frame with its columns in `output_domain`: columns already there
+    /// are shared, the others are device-copied.
+    pub(crate) fn in_domain(&self, output_domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        let columns = self.clone_or_copy_columns_into_domain(output_domain, operation)?;
+        let domain = resolve_frame_domain_from_authoritative_source(&columns, output_domain, operation)?;
         Ok(Self { columns, row_count: self.row_count, domain })
     }
 
@@ -472,6 +450,11 @@ impl DataFrame {
         self.domain.placement()
     }
 
+    /// The CUDA device this frame's columns live on.
+    pub fn device(&self) -> DeviceId {
+        self.domain.device_id()
+    }
+
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
@@ -535,9 +518,10 @@ impl DataFrame {
 
     /// Start a groupby operation.
     ///
-    /// Returns a [`GroupBy`](crate::GroupBy) on which you call [`.agg()`][groupby::GroupBy::agg]
-    /// with [`AggSpec`][groupby::AggSpec] items, or use shortcut methods like
-    /// `.sum()`, `.mean()`, `.count()`.
+    /// Returns a [`GroupBy`](crate::GroupBy); run it through
+    /// [`GroupBy::on`](groupby::GroupBy::on) and call
+    /// [`.agg()`][groupby::GroupByOps::agg] with [`AggSpec`][groupby::AggSpec]
+    /// items, or use shortcut methods like `.sum()`, `.mean()`, `.count()`.
     ///
     /// # Example
     ///
@@ -548,7 +532,7 @@ impl DataFrame {
     /// # let vals = rt.series(&[10i64, 20]).unwrap();
     /// # let df = DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
     /// let result =
-    ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
+    ///     df.groupby(&["key"]).on(rt.exec()).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     /// ```
     pub fn groupby<I, S>(&self, keys: I) -> groupby::GroupBy<'_>
     where

@@ -1,88 +1,35 @@
 //! Tests for binary operations (numeric and string).
 use cudf::{
-    DataType, TypeId,
+    DataFrame, DataType, Exec, TypeId,
     core::error::{FactKeyName, FactValue},
-    ops::binary::{self, BinaryOperator},
+    ops::{
+        binary::{self, BinaryOperator},
+        expr::{Expr, col},
+    },
     testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
-    scalar, string_scalar,
+    explicit_i32_series, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, nullable_series,
+    reset_exec_observation, reset_sync_observation, run_named_cases, series,
 };
 
-fn test_add_column_column() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
-
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32)).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<i32>().unwrap();
-    assert_eq!(values, vec![11, 22, 33]);
-}
-
-fn test_mul_column_scalar() {
-    let col = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let scalar = scalar(10i32).unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Mul, &DataType::new(TypeId::Int32)).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<i32>().unwrap();
-    assert_eq!(values, vec![20, 30, 40]);
-}
-
 fn test_div_scalar_column() {
-    let scalar = scalar(100.0f64).unwrap();
-    let col = column_from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
-    let cv = col.testing_view().unwrap();
+    let df = DataFrame::from_series([("v", series::<f64>("v", &[2.0, 4.0, 5.0]).unwrap())]).unwrap();
 
-    let result =
-        binary::binary_operation_sv(&scalar, &cv, BinaryOperator::Div, &DataType::new(TypeId::Float64)).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<f64>().unwrap();
-    assert_eq!(values, vec![50.0, 25.0, 20.0]);
-}
+    let result = (100.0f64 / col("v")).eval(&df).unwrap();
 
-fn test_comparison() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[2i32, 2, 1]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
-
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<bool>().unwrap();
-    assert_eq!(values, vec![true, false, false]);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![50.0, 25.0, 20.0]);
 }
 
 fn test_binary_operation_error_contains_operation_context() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20]).unwrap(); // mismatched length
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[10, 20]).unwrap(); // mismatched length
 
-    let err = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::Int32))
-        .expect_err("expected error");
+    let err = a.on(Exec::RETAINED).add(&b).expect_err("expected error");
 
-    assert_eq!(err.operation(), "binary::binary_operation_vv");
+    assert_eq!(err.operation(), "series::add");
     assert!(err.details().iter().any(|(k, _)| *k == "operator"));
-}
-
-fn test_logical_and() {
-    let a = column_from_slice(&[true, true, false, false]).unwrap();
-    let b = column_from_slice(&[true, false, true, false]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::LogicalAnd, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<bool>().unwrap();
-    assert_eq!(values, vec![true, false, false, false]);
 }
 
 fn test_null_logical_or_uses_sql_three_valued_logic() {
@@ -90,20 +37,19 @@ fn test_null_logical_or_uses_sql_three_valued_logic() {
     //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
     let lhs_values = [true, true, true, false, false, false, false, false, false];
     let lhs_validity = [true, true, true, true, true, true, false, false, false];
-    let a = column_from_slice_nullable(&lhs_values, &lhs_validity).unwrap();
+    let a = nullable_series("a", &lhs_values, &lhs_validity).unwrap();
     let rhs_values = [true, false, false, true, false, false, true, false, false];
     let rhs_validity = [true, true, false, true, true, false, true, true, false];
-    let b = column_from_slice_nullable(&rhs_values, &rhs_validity).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let b = nullable_series("b", &rhs_values, &rhs_validity).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let expr = Expr::BinaryOp { lhs: Box::new(col("a")), op: BinaryOperator::NullLogicalOr, rhs: Box::new(col("b")) };
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::NullLogicalOr, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = expr.eval(&df).unwrap();
+
     // true||* = true; false||true = true; false||false = false; false||null = null;
     // null||true = true; null||false = null; null||null = null.
     assert_eq!(
-        rv.to_optional_vec::<bool>().unwrap(),
+        result.to_optional_vec::<bool>().unwrap(),
         vec![Some(true), Some(true), Some(true), Some(true), Some(false), None, Some(true), None, None]
     );
 }
@@ -113,248 +59,114 @@ fn test_null_logical_and_uses_sql_three_valued_logic() {
     //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
     let lhs_values = [true, true, true, false, false, false, false, false, false];
     let lhs_validity = [true, true, true, true, true, true, false, false, false];
-    let a = column_from_slice_nullable(&lhs_values, &lhs_validity).unwrap();
+    let a = nullable_series("a", &lhs_values, &lhs_validity).unwrap();
     let rhs_values = [true, false, false, true, false, false, true, false, false];
     let rhs_validity = [true, true, false, true, true, false, true, true, false];
-    let b = column_from_slice_nullable(&rhs_values, &rhs_validity).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let b = nullable_series("b", &rhs_values, &rhs_validity).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+    let expr = Expr::BinaryOp { lhs: Box::new(col("a")), op: BinaryOperator::NullLogicalAnd, rhs: Box::new(col("b")) };
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::NullLogicalAnd, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = expr.eval(&df).unwrap();
+
     // false&&* = false; true&&true = true; true&&false = false; true&&null = null;
     // null&&true = null; null&&false = false; null&&null = null.
     assert_eq!(
-        rv.to_optional_vec::<bool>().unwrap(),
+        result.to_optional_vec::<bool>().unwrap(),
         vec![Some(true), Some(false), None, Some(false), Some(false), Some(false), None, Some(false), None]
     );
 }
 
 fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
-    let lhs = explicit_i32_column(&[1, 2, 3], 900);
-    let rhs = explicit_i32_column(&[10, 20, 30], 901);
-    let expected_stream = lhs.testing_execution_domain_stream_value();
-    let expected_mr = lhs.testing_execution_domain_mr_value();
+    let lhs = explicit_i32_series("lhs", &[1, 2, 3], 900);
+    let rhs = explicit_i32_series("rhs", &[10, 20, 30], 901);
+    let expected_stream = lhs.as_column().testing_execution_domain_stream_value();
+    let expected_mr = lhs.as_column().testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = binary::binary_operation_vv(
-        &lhs.testing_view().unwrap(),
-        &rhs.testing_view().unwrap(),
-        BinaryOperator::Add,
-        &DataType::new(TypeId::Int32),
-    )
-    .unwrap();
+    let result = lhs.on(Exec::RETAINED).add(&rhs).unwrap();
 
-    assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
-    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.as_column().testing_execution_domain_id(), lhs.as_column().testing_execution_domain_id());
+    assert_eq!(result.as_column().testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
-    let lhs = explicit_i32_column(&[2, 3, 4], 902);
-    let rhs = scalar(10i32).unwrap().testing_rebind_execution_domain_explicit(903).unwrap();
-    let expected_stream = lhs.testing_execution_domain_stream_value();
-    let expected_mr = lhs.testing_execution_domain_mr_value();
+fn test_series_scalar_binary_operation_uses_series_provenance() {
+    let lhs = explicit_i32_series("lhs", &[2, 3, 4], 902);
+    let expected_stream = lhs.as_column().testing_execution_domain_stream_value();
+    let expected_mr = lhs.as_column().testing_execution_domain_mr_value();
 
     reset_exec_observation();
-    let result = binary::binary_operation_vs(
-        &lhs.testing_view().unwrap(),
-        &rhs,
-        BinaryOperator::Mul,
-        &DataType::new(TypeId::Int32),
-    )
-    .unwrap();
+    let result = lhs.on(Exec::RETAINED).mul_scalar(10i32).unwrap();
 
-    assert_eq!(result.testing_execution_domain_id(), lhs.testing_execution_domain_id());
-    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(result.as_column().testing_execution_domain_id(), lhs.as_column().testing_execution_domain_id());
+    assert_eq!(result.as_column().testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
-    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
-    assert_eq!(last_sync_stream_value(), expected_stream);
-}
-
-fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
-    let lhs = scalar(100i32).unwrap().testing_rebind_execution_domain_explicit(904).unwrap();
-    let rhs = explicit_i32_column(&[2, 4, 5], 905);
-    // After the L11 fix, binary_operation_sv uses the column's (rhs) domain
-    // as primary, consistent with binary_operation_vs.
-    let expected_stream = rhs.testing_execution_domain_stream_value();
-
-    reset_exec_observation();
-    let result = binary::binary_operation_sv(
-        &lhs,
-        &rhs.testing_view().unwrap(),
-        BinaryOperator::Div,
-        &DataType::new(TypeId::Int32),
-    )
-    .unwrap();
-
-    assert_eq!(result.testing_execution_domain_id(), rhs.testing_execution_domain_id());
-    assert_eq!(result.testing_execution_domain_mr_value(), last_exec_mr_value());
-    assert_eq!(last_exec_stream_value(), expected_stream);
-
-    reset_sync_observation();
-    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![50, 25, 20]);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
 // ---------------------------------------------------------------------------
-// String comparison: column vs column
+// String comparison: series vs series
 // ---------------------------------------------------------------------------
 
 fn test_string_equal_vv() {
-    let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
-    let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["foo", "bar", "baz"]).unwrap();
+    let b = series("b", &["foo", "bar", "qux"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
+    let result = a.on(Exec::RETAINED).eq(&b).unwrap();
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
 fn test_string_not_equal_vv() {
-    let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
-    let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["foo", "bar", "baz"]).unwrap();
+    let b = series("b", &["foo", "bar", "qux"]).unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
+    let result = a.on(Exec::RETAINED).ne(&b).unwrap();
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
 fn test_string_less_vv() {
-    let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["apple", "cherry", "banana"]).unwrap();
+    let b = series("b", &["banana", "banana", "banana"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = a.on(Exec::RETAINED).lt(&b).unwrap();
     // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
 fn test_string_greater_vv() {
-    let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["apple", "cherry", "banana"]).unwrap();
+    let b = series("b", &["banana", "banana", "banana"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = a.on(Exec::RETAINED).gt(&b).unwrap();
     // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 fn test_string_less_equal_vv() {
-    let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["apple", "banana", "cherry"]).unwrap();
+    let b = series("b", &["banana", "banana", "banana"]).unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = a.on(Exec::RETAINED).le(&b).unwrap();
     // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
 fn test_string_greater_equal_vv() {
-    let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["apple", "banana", "cherry"]).unwrap();
+    let b = series("b", &["banana", "banana", "banana"]).unwrap();
 
-    let result =
-        binary::binary_operation_vv(&av, &bv, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = a.on(Exec::RETAINED).ge(&b).unwrap();
     // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
-}
-
-// ---------------------------------------------------------------------------
-// String comparison: column vs scalar
-// ---------------------------------------------------------------------------
-
-fn test_string_equal_vs() {
-    let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = string_scalar("active").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
-
-fn test_string_not_equal_vs() {
-    let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = string_scalar("active").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::NotEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
-}
-
-fn test_string_less_vs() {
-    let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = string_scalar("banana").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Less, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_string_greater_vs() {
-    let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = string_scalar("banana").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Greater, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
-}
-
-fn test_string_less_equal_vs() {
-    let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = string_scalar("banana").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::LessEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
-}
-
-fn test_string_greater_equal_vs() {
-    let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = string_scalar("banana").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result =
-        binary::binary_operation_vs(&cv, &scalar, BinaryOperator::GreaterEqual, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,26 +174,20 @@ fn test_string_greater_equal_vs() {
 // ---------------------------------------------------------------------------
 
 fn test_string_equal_empty() {
-    let a = column_from_strs(&["", "hello", ""]).unwrap();
-    let b = column_from_strs(&["", "", "hello"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["", "hello", ""]).unwrap();
+    let b = series("b", &["", "", "hello"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
+    let result = a.on(Exec::RETAINED).eq(&b).unwrap();
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
 fn test_string_equal_case_sensitive() {
-    let a = column_from_strs(&["Foo", "BAR", "baz"]).unwrap();
-    let b = column_from_strs(&["foo", "bar", "baz"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["Foo", "BAR", "baz"]).unwrap();
+    let b = series("b", &["foo", "bar", "baz"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8)).unwrap();
-    let rv = result.testing_view().unwrap();
+    let result = a.on(Exec::RETAINED).eq(&b).unwrap();
     // Case-sensitive: "Foo" != "foo", "BAR" != "bar", "baz" == "baz"
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
 // ---------------------------------------------------------------------------
@@ -389,21 +195,10 @@ fn test_string_equal_case_sensitive() {
 // ---------------------------------------------------------------------------
 
 fn test_string_add_vv_error() {
-    let a = column_from_strs(&["foo", "bar"]).unwrap();
-    let b = column_from_strs(&["baz", "qux"]).unwrap();
-    let av = a.testing_view().unwrap();
-    let bv = b.testing_view().unwrap();
+    let a = series("a", &["foo", "bar"]).unwrap();
+    let b = series("b", &["baz", "qux"]).unwrap();
 
-    let result = binary::binary_operation_vv(&av, &bv, BinaryOperator::Add, &DataType::new(TypeId::String));
-    assert!(result.is_err());
-}
-
-fn test_string_sub_vs_error() {
-    let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = string_scalar("baz").unwrap();
-    let cv = col.testing_view().unwrap();
-
-    let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));
+    let result = a.on(Exec::RETAINED).add(&b);
     assert!(result.is_err());
 }
 
@@ -813,15 +608,11 @@ fn test_infer_mixed_string_numeric_comparison_rejected() {
 #[test]
 fn binary_tests_cases() {
     run_named_cases(&[
-        ("test_add_column_column", test_add_column_column),
-        ("test_mul_column_scalar", test_mul_column_scalar),
         ("test_div_scalar_column", test_div_scalar_column),
-        ("test_comparison", test_comparison),
         (
             "test_binary_operation_error_contains_operation_context",
             test_binary_operation_error_contains_operation_context,
         ),
-        ("test_logical_and", test_logical_and),
         ("test_null_logical_or_uses_sql_three_valued_logic", test_null_logical_or_uses_sql_three_valued_logic),
         ("test_null_logical_and_uses_sql_three_valued_logic", test_null_logical_and_uses_sql_three_valued_logic),
         (
@@ -829,12 +620,8 @@ fn binary_tests_cases() {
             test_mixed_domain_binary_operation_vv_uses_lhs_provenance,
         ),
         (
-            "test_mixed_domain_binary_operation_vs_uses_column_provenance",
-            test_mixed_domain_binary_operation_vs_uses_column_provenance,
-        ),
-        (
-            "test_mixed_domain_binary_operation_sv_uses_column_provenance",
-            test_mixed_domain_binary_operation_sv_uses_column_provenance,
+            "test_series_scalar_binary_operation_uses_series_provenance",
+            test_series_scalar_binary_operation_uses_series_provenance,
         ),
         ("test_string_equal_vv", test_string_equal_vv),
         ("test_string_not_equal_vv", test_string_not_equal_vv),
@@ -842,16 +629,9 @@ fn binary_tests_cases() {
         ("test_string_greater_vv", test_string_greater_vv),
         ("test_string_less_equal_vv", test_string_less_equal_vv),
         ("test_string_greater_equal_vv", test_string_greater_equal_vv),
-        ("test_string_equal_vs", test_string_equal_vs),
-        ("test_string_not_equal_vs", test_string_not_equal_vs),
-        ("test_string_less_vs", test_string_less_vs),
-        ("test_string_greater_vs", test_string_greater_vs),
-        ("test_string_less_equal_vs", test_string_less_equal_vs),
-        ("test_string_greater_equal_vs", test_string_greater_equal_vs),
         ("test_string_equal_empty", test_string_equal_empty),
         ("test_string_equal_case_sensitive", test_string_equal_case_sensitive),
         ("test_string_add_vv_error", test_string_add_vv_error),
-        ("test_string_sub_vs_error", test_string_sub_vs_error),
         ("test_is_comparison_true_for_comparison_ops", test_is_comparison_true_for_comparison_ops),
         ("test_is_comparison_false_for_arithmetic_ops", test_is_comparison_false_for_arithmetic_ops),
         ("test_infer_same_type_arithmetic", test_infer_same_type_arithmetic),

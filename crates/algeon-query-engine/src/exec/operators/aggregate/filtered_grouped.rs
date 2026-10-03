@@ -275,10 +275,10 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     let partial_rows = partial_state.num_rows() as u64;
     let final_aggregate = lower_final_aggregate_spec(spec)?;
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
     let mut output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         partial_state.into_frame(),
         &final_aggregate,
         token,
@@ -395,7 +395,7 @@ fn execute_segmented_filtered_grouped_partial_state(
         let chunk = if length == input_rows {
             frame.clone()
         } else {
-            frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
+            frame.on(token.exec()).slice(offset, length).map_err(|error| {
                 attach_budget_token_failure_facts(
                     cudf_query_error(
                         "query_engine.filtered_grouped_aggregate.slice",
@@ -488,7 +488,7 @@ fn execute_filtered_grouped_partial_segment(
         prepare_filtered_grouped_partial_segment(prepared_chunk, input_schema, indexed_exprs, token, metrics)?;
     let aggregate = indexed_partial_grouped_aggregate(spec, &prepared_indexed)?;
     let output = execute_groupby_aggregate_with_budget(
-        &token.execution_overrides(),
+        token.exec(),
         prepared,
         &aggregate,
         token,
@@ -516,7 +516,7 @@ fn merge_filtered_grouped_segment_frames(
     let key_names = grouped_key_output_names(spec)?;
     for frame in segment_frames {
         merged = merged
-            .with_execution(&token.execution_overrides())
+            .on(token.exec())
             .merge(
                 frame.frame(),
                 cudf::MergeOptions::new()
@@ -572,8 +572,8 @@ fn prepare_filtered_grouped_predicates_for_chunk(
         fields.push(Field::new(alias, ArrowDataType::Boolean, true));
     }
     if !predicate_expressions.is_empty() {
-        frame = frame
-            .with_columns_with_budget(predicate_expressions, token)
+        frame = token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(predicate_expressions))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.filtered_grouped_aggregate.filter_predicates",
@@ -630,8 +630,8 @@ fn prepare_filtered_grouped_partial_segment(
         ));
     }
     if !masked_expressions.is_empty() {
-        frame = frame
-            .with_columns_with_budget(masked_expressions, token)
+        frame = token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(masked_expressions))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.filtered_grouped_aggregate.filter_inputs",
@@ -705,7 +705,7 @@ fn concat_partial_state_frames(
     }
     let first = partial_frames.remove(0).into_frame();
     let rest = partial_frames.iter().map(GpuDataFrame::frame).collect::<Vec<_>>();
-    first.with_execution(&token.execution_overrides()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
+    first.on(token.exec()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
         attach_budget_token_failure_facts(
             cudf_query_error(
                 "query_engine.filtered_grouped_aggregate.concat_partial_state",

@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use cudf::{
     DataFrame, Runtime, Series, TypeId,
     core::{Column, Table},
-    ops::dictionary,
-    testing::{interop::column_export_with_lease_backend_for_test, prelude::*},
+    testing::{dictionary, interop::column_export_with_lease_backend_for_test, prelude::*},
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, InteropError, InteropErrorKind, PhysicalValidity, PreparedAccess,

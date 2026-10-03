@@ -1,5 +1,7 @@
 use std::{fs::File, path::Path, sync::Arc};
 
+use cudf::Exec;
+
 use super::*;
 
 #[test]
@@ -32,11 +34,13 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
         cudf::AggSpec::new("value", cudf::GroupByAgg::Count { include_nulls: false }).with_alias("count_value"),
     ];
 
-    let direct = frame.groupby(["key"]).options(groupby_options.clone()).agg(&aggregate_specs).unwrap();
+    let direct =
+        frame.groupby(["key"]).options(groupby_options.clone()).on(Exec::RETAINED).agg(&aggregate_specs).unwrap();
 
-    let codebook = frame.codebook("key").unwrap();
-    let encoded = frame.with_encoded_column("__encoded_key", "key", &codebook).unwrap();
-    let encoded_grouped = encoded.groupby(["__encoded_key"]).options(groupby_options).agg(&aggregate_specs).unwrap();
+    let codebook = frame.on(Exec::RETAINED).codebook("key").unwrap();
+    let encoded = frame.on(Exec::RETAINED).with_encoded_column("__encoded_key", "key", &codebook).unwrap();
+    let encoded_grouped =
+        encoded.groupby(["__encoded_key"]).options(groupby_options).on(Exec::RETAINED).agg(&aggregate_specs).unwrap();
     let encoded_grouped_batch = encoded_grouped.to_record_batch().unwrap();
     assert!(
         (0..encoded_grouped_batch.num_rows()).any(|row| encoded_grouped_batch.column(0).is_null(row)),
@@ -44,6 +48,7 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
     );
 
     let decoded = encoded_grouped
+        .on(Exec::RETAINED)
         .with_decoded_column("key", "__encoded_key", &codebook)
         .unwrap()
         .select(["key", "sum_value", "count_value"])

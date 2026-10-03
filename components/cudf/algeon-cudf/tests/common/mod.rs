@@ -3,7 +3,7 @@
 use std::{
     ffi::c_void,
     fs::File,
-    ptr,
+    ptr, slice,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -16,14 +16,15 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetRequest, ExecutionBudgetToken, QueryMemoryDomain,
-    QueryMemoryDomainOptions, Result as CudfResult, Runtime, Series, StreamReservationLease, TimestampResolution,
-    TypeId,
+    DataFrame, DataType, DeviceId, ErrorCode, Exec, ExecutionBudgetRequest, ExecutionBudgetToken, ParquetReadOptions,
+    ParquetSourceChunkReadOutput, QueryMemoryDomain, QueryMemoryDomainOptions, Result as CudfResult, Runtime,
+    ScalarValue, Series, SourceRead, StreamReservationLease, TypeId,
     core::{
         Column, CudfType, DeviceBuffer, Scalar,
         error::{FactKeyName, FactValue},
     },
     frame::HostColumnData,
+    io::source::{LocalParquetSource, SourceReadMode, plan_local_parquet_source_chunks},
     runtime::CudaStream,
     testing::{self, prelude::*},
 };
@@ -137,40 +138,8 @@ pub fn column_from_device_buffer_nullable(
     })
 }
 
-pub fn scalar<T: CudfType>(value: T) -> cudf::Result<Scalar> {
+pub fn scalar(value: impl Into<ScalarValue>) -> cudf::Result<Scalar> {
     with_test_runtime(|rt| rt.scalar(value))
-}
-
-pub fn string_scalar(value: &str) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.string_scalar(value))
-}
-
-pub fn null_scalar<T: CudfType>() -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.null_scalar::<T>())
-}
-
-pub fn null_string_scalar() -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.null_string_scalar())
-}
-
-pub fn decimal32_raw_scalar(raw: i32, scale: i32) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.decimal32_raw_scalar(raw, scale))
-}
-
-pub fn decimal64_raw_scalar(raw: i64, scale: i32) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.decimal64_raw_scalar(raw, scale))
-}
-
-pub fn decimal128_raw_scalar(raw: i128, scale: i32) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.decimal128_raw_scalar(raw, scale))
-}
-
-pub fn timestamp_raw_scalar(raw: i64, resolution: TimestampResolution) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.timestamp_raw_scalar(raw, resolution))
-}
-
-pub fn duration_raw_scalar(raw: i64, resolution: TimestampResolution) -> cudf::Result<Scalar> {
-    with_test_runtime(|rt| rt.duration_raw_scalar(raw, resolution))
 }
 
 pub fn series<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> cudf::Result<Series> {
@@ -619,5 +588,38 @@ pub fn nested_dataframe(runtime: &Runtime, columns: Vec<(&str, ArrayRef)>) -> Da
     let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), batch.schema(), None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
-    DataFrame::read_parquet(runtime, &path).unwrap()
+    DataFrame::read_parquet(ParquetReadOptions::builder().filepath(&path).with_runtime(runtime).build(), Exec::RETAINED)
+        .unwrap()
+}
+
+/// Read every planned chunk of `source` and concatenate the frames in plan
+/// order, the way a caller assembles a whole-source read from
+/// `DataFrame::read_parquet_source`.
+pub fn read_whole_parquet_source(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    mode: SourceReadMode,
+) -> CudfResult<DataFrame> {
+    let plan = plan_local_parquet_source_chunks(source, Default::default())?;
+    let mut frames = plan
+        .chunks()
+        .iter()
+        .map(|chunk| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(source, slice::from_ref(chunk), mode),
+                runtime,
+                Exec::RETAINED,
+            )
+            .map(ParquetSourceChunkReadOutput::into_frame)
+        })
+        .collect::<CudfResult<Vec<_>>>()?;
+    match frames.len() {
+        0 => DataFrame::read_parquet_source(SourceRead::new(source, &[], mode), runtime, Exec::RETAINED)
+            .map(ParquetSourceChunkReadOutput::into_frame),
+        1 => Ok(frames.remove(0)),
+        _ => {
+            let rest = frames[1..].iter().collect::<Vec<_>>();
+            frames[0].on(Exec::RETAINED).concat_many(&rest)
+        },
+    }
 }

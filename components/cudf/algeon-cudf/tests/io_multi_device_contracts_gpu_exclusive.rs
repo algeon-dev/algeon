@@ -5,7 +5,9 @@ use std::{
     thread,
 };
 
-use cudf::{DataFrame, DeviceId, DeviceMemoryManager, InstallSpec, Runtime, testing::prelude::*};
+use cudf::{
+    DataFrame, DeviceId, DeviceMemoryManager, Exec, InstallSpec, ParquetReadOptions, Runtime, testing::prelude::*,
+};
 use tempfile::TempDir;
 
 #[test]
@@ -40,7 +42,11 @@ fn concurrent_parquet_reads_across_devices_do_not_need_a_process_global_io_lock(
                 let runtime = Runtime::builder().with_device(*device).build().unwrap();
                 barrier.wait();
                 for _ in 0..3 {
-                    let frame = DataFrame::read_parquet(&runtime, path).unwrap();
+                    let frame = DataFrame::read_parquet(
+                        ParquetReadOptions::builder().filepath(path).with_runtime(&runtime).build(),
+                        Exec::RETAINED,
+                    )
+                    .unwrap();
                     assert_eq!(frame.testing_execution_domain_id(), runtime.testing_execution_domain_id());
                     assert_eq!(frame.num_rows(), expected.len());
                     let actual = frame.series("id").unwrap().to_vec_strict::<i32>().unwrap();

@@ -2,9 +2,9 @@ use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
     BoundedJoinSideFrame, BoundedPartitionRowPolicy, DataFrame, GpuDataFrame, JoinNode, JoinSide, JoinStrategy,
     KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinSide, QueryError, QueryErrorCode, ResidentFrameStreamPayload,
-    ResidentGpuFrame, Result, compiled_join_input_columns, cudf_query_error, execution_overrides,
-    hash_partition_join_side, join_keys_for_side, materialize_bounded_join_leaf_local_parquet_source_stream,
-    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    ResidentGpuFrame, Result, compiled_join_input_columns, cudf_query_error, hash_partition_join_side,
+    join_keys_for_side, materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
+    partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
     prepare_bounded_join_side_input_from_resident_frame, release_bounded_join_side_frame,
     stream_bounded_join_leaf_local_parquet_source,
 };
@@ -264,9 +264,9 @@ fn concatenate_join_build_input_frames(
     let mut inputs = frames.into_iter().map(|frame| frame.frame).collect::<Vec<_>>();
     let first = inputs.remove(0);
     let rest = inputs.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let output = first.on(overrides).concat_many(&rest).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.join.build_input_concat",
             "failed to concatenate bounded join build input chunks",
@@ -319,10 +319,10 @@ impl PartitionedJoinBuildAccumulator {
         input: BoundedJoinSideFrame,
     ) -> Result<()> {
         let partition_count = self.commitment.partition_count;
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         if self.empty_template.is_none() {
-            let template = input.frame.with_execution(&overrides).slice(0, 0).map_err(|error| {
+            let template = input.frame.on(overrides).slice(0, 0).map_err(|error| {
                 cudf_query_error(
                     "query_engine.bounded.join.build_partition_slice",
                     "failed to create an empty build partition template",
@@ -337,7 +337,7 @@ impl PartitionedJoinBuildAccumulator {
         let input_rows = input.rows;
         let input_bytes = input.bytes;
         let partitioned =
-            hash_partition_join_side(execution, self.side, input, &self.keys, partition_count, &overrides)?;
+            hash_partition_join_side(execution, self.side, input, &self.keys, partition_count, overrides)?;
         let PartitionedJoinSide::Contiguous { frame, offsets, .. } = partitioned else {
             unreachable!("hash partitioning a build chunk yields a contiguous partitioned frame")
         };
@@ -349,7 +349,7 @@ impl PartitionedJoinBuildAccumulator {
             if len == 0 {
                 continue;
             }
-            let slice = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
+            let slice = frame.on(overrides).slice(start, len).map_err(|error| {
                 cudf_query_error(
                     "query_engine.bounded.join.build_partition_slice",
                     "failed to copy a build chunk partition into its partition accumulator",
@@ -396,8 +396,8 @@ impl PartitionedJoinBuildAccumulator {
             .with_fact("build_side", side));
         };
         let partition_count = commitment.partition_count;
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         let mut partitions: Vec<DataFrame> = Vec::with_capacity(partition_count);
         let mut device_bytes = 0u64;
         for (partition, mut partition_slices) in slices.into_iter().enumerate() {
@@ -409,7 +409,7 @@ impl PartitionedJoinBuildAccumulator {
                     let first = partition_slices.remove(0);
                     let output = {
                         let rest = partition_slices.iter().collect::<Vec<_>>();
-                        first.with_execution(&overrides).concat_many(&rest)
+                        first.on(overrides).concat_many(&rest)
                     }
                     .map_err(|error| {
                         cudf_query_error(

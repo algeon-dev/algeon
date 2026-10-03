@@ -1,26 +1,11 @@
 use super::*;
 
 impl DataFrame {
-    /// Return exact device bytes that must be reserved before building a
-    /// reusable filtered-join artifact from this DataFrame's named key columns.
-    pub fn filtered_join_pre_build_reservation_size_bytes<I, S>(
-        &self,
-        build_on: I,
-        options: DataFrameFilteredJoinOptions,
-    ) -> Result<usize>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.filtered_join_pre_build_reservation_size_bytes_in_context(build_on, options, &ctx)
-    }
-
     pub(crate) fn filtered_join_pre_build_reservation_size_bytes_in_context<I, S>(
         &self,
         build_on: I,
         options: DataFrameFilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<usize>
     where
         I: IntoIterator<Item = S>,
@@ -41,25 +26,11 @@ impl DataFrame {
         )
     }
 
-    /// Build a reusable filtered-join artifact from this DataFrame's named key columns.
-    pub fn build_filtered_join<I, S>(
-        &self,
-        build_on: I,
-        options: DataFrameFilteredJoinOptions,
-    ) -> Result<DataFrameFilteredJoin>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.build_filtered_join_in_context(build_on, options, &ctx)
-    }
-
     pub(crate) fn build_filtered_join_in_context<I, S>(
         &self,
         build_on: I,
         options: DataFrameFilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameFilteredJoin>
     where
         I: IntoIterator<Item = S>,
@@ -72,24 +43,12 @@ impl DataFrame {
         let build_key_refs = build_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
         resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
         let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
-        let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
+        let build_key_table =
+            build_key_frame.on(Exec::RETAINED).to_table_copy().map_err(|error| error.reanchor(operation))?;
         let join = join::FilteredJoin::new_in(build_key_table, options.to_filtered_join_options(), ctx)
             .map_err(|error| error.reanchor(operation))?;
 
         Ok(DataFrameFilteredJoin { join, build: self.clone(), build_keys, options })
-    }
-    /// Filter existing two-sided join-index pairs with a predicate.
-    pub fn filter_join_indices(
-        &self,
-        right: &DataFrame,
-        left_indices: &DataFrameJoinIndices,
-        right_indices: &DataFrameJoinIndices,
-        predicate: &AstExpression,
-        options: DataFramePredicateJoinOptions,
-        join_type: join::JoinType,
-    ) -> Result<DataFrameJoinPairIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.filter_join_indices_in_context(right, left_indices, right_indices, predicate, options, join_type, &ctx)
     }
     pub(crate) fn filter_join_indices_in_context(
         &self,
@@ -99,9 +58,9 @@ impl DataFrame {
         predicate: &AstExpression,
         options: DataFramePredicateJoinOptions,
         join_type: join::JoinType,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameJoinPairIndices> {
-        let operation = "dataframe::with_execution::filter_join_indices";
+        let operation = "dataframe::filter_join_indices";
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         let left_indices = left_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
         let right_indices = right_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
@@ -120,104 +79,7 @@ impl DataFrame {
 
 impl DataFrameFilteredJoin {
     /// Probe this reusable build artifact with left semi semantics.
-    pub fn left_semi_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameJoinIndices>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_semi_probe_in(probe, probe_on, &ctx)
-    }
-
-    /// Probe this reusable build artifact with left anti semantics.
-    pub fn left_anti_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameJoinIndices>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_anti_probe_in(probe, probe_on, &ctx)
-    }
-
-    /// Begin a retained left semi probe without materializing its gather map.
-    pub fn begin_left_semi_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameFilteredJoinProbeState>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.begin_left_semi_probe_in(probe, probe_on, &ctx)
-    }
-
-    /// Begin a retained left anti probe without materializing its gather map.
-    pub fn begin_left_anti_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameFilteredJoinProbeState>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.begin_left_anti_probe_in(probe, probe_on, &ctx)
-    }
-
-    /// Return the exact output row count for a left semi probe.
-    pub fn left_semi_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_semi_probe_size_in(probe, probe_on, &ctx)
-    }
-
-    /// Return the exact output row count for a left anti probe.
-    pub fn left_anti_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<usize>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_anti_probe_size_in(probe, probe_on, &ctx)
-    }
-
-    /// Probe this reusable build artifact with left semi semantics using an
-    /// exact caller-supplied output row count.
-    pub fn left_semi_probe_with_output_size<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        output_size: usize,
-    ) -> Result<DataFrameJoinIndices>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_semi_probe_with_output_size_in(probe, probe_on, output_size, &ctx)
-    }
-
-    /// Probe this reusable build artifact with left anti semantics using an
-    /// exact caller-supplied output row count.
-    pub fn left_anti_probe_with_output_size<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        output_size: usize,
-    ) -> Result<DataFrameJoinIndices>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let ctx = ExecutionOverrides::new();
-        self.left_anti_probe_with_output_size_in(probe, probe_on, output_size, &ctx)
-    }
-
-    /// Probe this reusable build artifact with left semi semantics using a borrowed execution override.
-    pub fn left_semi_probe_in<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrameJoinIndices>
+    pub fn left_semi_probe<I, S>(&self, probe: &DataFrame, probe_on: I, ctx: Exec<'_>) -> Result<DataFrameJoinIndices>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -225,13 +87,8 @@ impl DataFrameFilteredJoin {
         self.probe_indices_with_context(probe, probe_on, true, None, ctx, "dataframe::filtered_join::left_semi_probe")
     }
 
-    /// Probe this reusable build artifact with left anti semantics using a borrowed execution override.
-    pub fn left_anti_probe_in<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrameJoinIndices>
+    /// Probe this reusable build artifact with left anti semantics.
+    pub fn left_anti_probe<I, S>(&self, probe: &DataFrame, probe_on: I, ctx: Exec<'_>) -> Result<DataFrameJoinIndices>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -239,12 +96,12 @@ impl DataFrameFilteredJoin {
         self.probe_indices_with_context(probe, probe_on, false, None, ctx, "dataframe::filtered_join::left_anti_probe")
     }
 
-    /// Begin a retained left semi probe using a borrowed execution override.
-    pub fn begin_left_semi_probe_in<I, S>(
+    /// Begin a retained left semi probe without materializing its gather map.
+    pub fn begin_left_semi_probe<I, S>(
         &self,
         probe: &DataFrame,
         probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameFilteredJoinProbeState>
     where
         I: IntoIterator<Item = S>,
@@ -259,12 +116,12 @@ impl DataFrameFilteredJoin {
         )
     }
 
-    /// Begin a retained left anti probe using a borrowed execution override.
-    pub fn begin_left_anti_probe_in<I, S>(
+    /// Begin a retained left anti probe without materializing its gather map.
+    pub fn begin_left_anti_probe<I, S>(
         &self,
         probe: &DataFrame,
         probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameFilteredJoinProbeState>
     where
         I: IntoIterator<Item = S>,
@@ -279,13 +136,8 @@ impl DataFrameFilteredJoin {
         )
     }
 
-    /// Return the exact output row count for a left semi probe using a borrowed execution override.
-    pub fn left_semi_probe_size_in<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<usize>
+    /// Return the exact output row count for a left semi probe.
+    pub fn left_semi_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I, ctx: Exec<'_>) -> Result<usize>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -293,13 +145,8 @@ impl DataFrameFilteredJoin {
         self.probe_size_with_context(probe, probe_on, true, ctx, "dataframe::filtered_join::left_semi_probe_size")
     }
 
-    /// Return the exact output row count for a left anti probe using a borrowed execution override.
-    pub fn left_anti_probe_size_in<I, S>(
-        &self,
-        probe: &DataFrame,
-        probe_on: I,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<usize>
+    /// Return the exact output row count for a left anti probe.
+    pub fn left_anti_probe_size<I, S>(&self, probe: &DataFrame, probe_on: I, ctx: Exec<'_>) -> Result<usize>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -307,14 +154,14 @@ impl DataFrameFilteredJoin {
         self.probe_size_with_context(probe, probe_on, false, ctx, "dataframe::filtered_join::left_anti_probe_size")
     }
 
-    /// Probe this reusable build artifact with left semi semantics using a
-    /// borrowed execution override and an exact caller-supplied output row count.
-    pub fn left_semi_probe_with_output_size_in<I, S>(
+    /// Probe this reusable build artifact with left semi semantics using an
+    /// exact caller-supplied output row count.
+    pub fn left_semi_probe_with_output_size<I, S>(
         &self,
         probe: &DataFrame,
         probe_on: I,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameJoinIndices>
     where
         I: IntoIterator<Item = S>,
@@ -330,14 +177,14 @@ impl DataFrameFilteredJoin {
         )
     }
 
-    /// Probe this reusable build artifact with left anti semantics using a
-    /// borrowed execution override and an exact caller-supplied output row count.
-    pub fn left_anti_probe_with_output_size_in<I, S>(
+    /// Probe this reusable build artifact with left anti semantics using an
+    /// exact caller-supplied output row count.
+    pub fn left_anti_probe_with_output_size<I, S>(
         &self,
         probe: &DataFrame,
         probe_on: I,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<DataFrameJoinIndices>
     where
         I: IntoIterator<Item = S>,
@@ -359,12 +206,14 @@ impl DataFrameFilteredJoin {
         probe: &DataFrame,
         indices: &DataFrameJoinIndices,
         columns: I,
+        exec: Exec<'_>,
     ) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         probe
+            .on(exec)
             .materialize_join_indices(indices, columns)
             .map_err(|error| error.reanchor("dataframe::filtered_join::materialize_probe"))
     }
@@ -375,7 +224,7 @@ impl DataFrameFilteredJoin {
         probe_on: I,
         semi_join: bool,
         output_size: Option<usize>,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<DataFrameJoinIndices>
     where
@@ -407,7 +256,7 @@ impl DataFrameFilteredJoin {
         probe: &DataFrame,
         probe_on: I,
         semi_join: bool,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<DataFrameFilteredJoinProbeState>
     where
@@ -428,7 +277,7 @@ impl DataFrameFilteredJoin {
         probe: &DataFrame,
         probe_on: I,
         semi_join: bool,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize>
     where

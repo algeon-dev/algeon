@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, ExecutionOverrides};
+use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, Exec};
 
 use super::cudf_query_error;
 use crate::{
@@ -83,7 +83,7 @@ pub(in crate::exec) fn materialize_join_output_projection(
     right: &DataFrame,
     left_indices: &DataFrameJoinIndices,
     right_indices: &DataFrameJoinIndices,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     projection: &[JoinOutputColumn],
     join_type: JoinType,
     preserved_side: JoinSide,
@@ -129,7 +129,7 @@ pub(in crate::exec) fn materialize_join_output_projection(
 pub(in crate::exec) fn materialize_left_only_join_output_projection(
     left: &DataFrame,
     indices: &DataFrameJoinIndices,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     projection: &[JoinOutputColumn],
     join_type: JoinType,
 ) -> Result<DataFrame> {
@@ -178,7 +178,7 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
 /// `matching_indices` are the left-semi indices returned by the filtered-join
 /// probe. They identify which *probe* rows have a match. The mark column is
 /// constructed by testing whether each probe row index appears in the matching
-/// set via `Series::isin` (hash-set membership, O(N + M)).
+/// set via `SeriesOps::isin` (hash-set membership, O(N + M)).
 pub(in crate::exec) fn materialize_mark_join_output_projection(
     context: &ExecutionContext,
     probe: &DataFrame,
@@ -221,7 +221,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
                 error,
             )
         })?;
-        probe_indices.isin(matching_indices.indices()).map_err(|error| {
+        probe_indices.on(Exec::RETAINED).isin(matching_indices.indices()).map_err(|error| {
             cudf_query_error(
                 "query_engine.join.mark_output",
                 "failed to compute mark column via isin membership test",
@@ -267,13 +267,13 @@ fn materialize_join_side_projection(
     indices: &DataFrameJoinIndices,
     columns: Vec<String>,
     side: JoinSide,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<Option<DataFrame>> {
     if columns.is_empty() {
         return Ok(None);
     }
 
-    frame.with_execution(overrides).materialize_join_indices(indices, columns).map(Some).map_err(|error| {
+    frame.on(overrides).materialize_join_indices(indices, columns).map(Some).map_err(|error| {
         cudf_query_error(
             "query_engine.join.output_projection",
             "failed to materialize native join output columns",

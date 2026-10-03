@@ -7,7 +7,7 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, testing::prelude::*};
+use cudf::{DataFrame, Exec, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, sample_runtime, series,
@@ -18,7 +18,7 @@ fn test_gather_sequential_indices() {
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let indices = series::<i32>("idx", &[0, 1, 2]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
@@ -31,7 +31,7 @@ fn test_gather_reversed() {
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let indices = series::<i32>("idx", &[2, 1, 0]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
@@ -44,7 +44,7 @@ fn test_gather_out_of_bounds_nullify() {
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let indices = series::<i32>("idx", &[0, 99, 2]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     let view = result.series("x").unwrap();
@@ -59,7 +59,7 @@ fn test_gather_duplicate_indices() {
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let indices = series::<i32>("idx", &[1, 1, 1]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
@@ -73,7 +73,7 @@ fn test_gather_preserves_schema() {
     let df = dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![c1, c2]).unwrap();
 
     let indices = series::<i32>("idx", &[2, 0]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.column_names(), &["id", "score"]);
     assert_eq!(result.num_rows(), 2);
@@ -87,7 +87,7 @@ fn test_gather_empty_indices() {
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let indices = series::<i32>("idx", &[]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.column_names(), &["x"]);
@@ -101,10 +101,10 @@ fn test_gather_empty_indices() {
     let source_type = nested.to_record_batch().unwrap().column(0).data_type().clone();
     let vector = nested.series("vector").unwrap();
     for empty in [
-        nested.gather(&indices).unwrap(),
-        nested.head(0).unwrap(),
-        DataFrame::from_series([("vector", vector.gather(&indices).unwrap())]).unwrap(),
-        DataFrame::from_series([("vector", vector.head(0).unwrap())]).unwrap(),
+        nested.on(Exec::RETAINED).gather(&indices).unwrap(),
+        nested.on(Exec::RETAINED).head(0).unwrap(),
+        DataFrame::from_series([("vector", vector.on(Exec::RETAINED).gather(&indices).unwrap())]).unwrap(),
+        DataFrame::from_series([("vector", vector.on(Exec::RETAINED).head(0).unwrap())]).unwrap(),
     ] {
         let exported = empty.to_record_batch().unwrap();
         assert_eq!(exported.num_rows(), 0);
@@ -121,7 +121,7 @@ fn test_gather_multi_type() {
             .unwrap();
 
     let indices = series::<i32>("idx", &[2, 0]).unwrap();
-    let result = df.gather(&indices).unwrap();
+    let result = df.on(Exec::RETAINED).gather(&indices).unwrap();
 
     assert_eq!(result.num_rows(), 2);
     // Gather produces nullable output; use to_optional_vec / to_optional_strings.

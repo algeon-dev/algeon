@@ -2,7 +2,7 @@
 
 use arrow::{array::Decimal128Array, datatypes::DataType as ArrowDataType};
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TypeId,
     frame::dataframe::InfoDetail,
     ops::{col, lit_null, when},
     testing::prelude::*,
@@ -17,6 +17,7 @@ use crate::common::{
 fn decimal128_scale_zero_frame() -> DataFrame {
     let amount = series::<i64>("amount", &[1, -2, 0])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal128, 0).unwrap())
         .unwrap();
     DataFrame::from_series([("amount", amount)]).unwrap()
@@ -120,7 +121,7 @@ fn test_fillna_with_scalar_fills_values() {
     let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
 
     let fill = scalar(99i32).unwrap();
-    let result = df.fillna_with_scalar("b", &fill).unwrap();
+    let result = df.on(Exec::RETAINED).fillna_with_scalar("b", &fill).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["a", "b"]);
@@ -138,7 +139,7 @@ fn test_fillna_with_scalar_nonexistent_column_returns_error() {
     let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
 
     let fill = scalar(0i32).unwrap();
-    let err = df.fillna_with_scalar("missing", &fill).expect_err("expected error");
+    let err = df.on(Exec::RETAINED).fillna_with_scalar("missing", &fill).expect_err("expected error");
     assert_missing_column_error(&err, "missing");
 }
 
@@ -151,7 +152,7 @@ fn test_fillna_with_scalar_preserves_other_columns() {
         .unwrap();
 
     let fill = scalar(99i32).unwrap();
-    let result = df.fillna_with_scalar("b", &fill).unwrap();
+    let result = df.on(Exec::RETAINED).fillna_with_scalar("b", &fill).unwrap();
 
     assert_eq!(result.column_names(), vec!["a", "b", "c"]);
 
@@ -170,7 +171,7 @@ fn test_cast_column_changes_type() {
     .unwrap();
 
     let target = DataType::new(TypeId::Float64);
-    let result = df.cast_column("b", target).unwrap();
+    let result = df.on(Exec::RETAINED).cast_column("b", target).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), vec!["a", "b"]);
@@ -190,7 +191,7 @@ fn test_cast_column_nonexistent_returns_error() {
     let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
 
     let target = DataType::new(TypeId::Float64);
-    let err = df.cast_column("missing", target).expect_err("expected error");
+    let err = df.on(Exec::RETAINED).cast_column("missing", target).expect_err("expected error");
     assert_missing_column_error(&err, "missing");
 }
 
@@ -206,7 +207,7 @@ fn test_cast_column_preserves_schema_order() {
     .unwrap();
 
     let target = DataType::new(TypeId::Int64);
-    let result = df.cast_column("y", target).unwrap();
+    let result = df.on(Exec::RETAINED).cast_column("y", target).unwrap();
 
     assert_eq!(result.column_names(), vec!["x", "y", "z"]);
 
@@ -249,7 +250,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
     .unwrap();
 
     let fill = scalar(99i32).unwrap();
-    let result = df.fillna_with_scalar("b", &fill).unwrap();
+    let result = df.on(Exec::RETAINED).fillna_with_scalar("b", &fill).unwrap();
 
     let names = result.series("name").unwrap().to_strings_strict().unwrap();
     assert_eq!(names, vec!["x", "y", "z"]);
@@ -265,7 +266,7 @@ fn test_cast_column_with_string_sibling_column() {
     )
     .unwrap();
 
-    let result = df.cast_column("qty", DataType::new(TypeId::Float64)).unwrap();
+    let result = df.on(Exec::RETAINED).cast_column("qty", DataType::new(TypeId::Float64)).unwrap();
 
     let names = result.series("name").unwrap().to_strings_strict().unwrap();
     assert_eq!(names, vec!["a", "b", "c"]);
@@ -315,7 +316,8 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = df.with_columns_with_budget([("sum", col("a") + col("b"))], &token).unwrap();
+    let outcome =
+        token.run("dataframe::with_columns", |exec| df.on(exec).with_columns([("sum", col("a") + col("b"))])).unwrap();
     let result = outcome.value();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
@@ -343,7 +345,8 @@ fn test_with_columns_with_budget_case_report_records_output() {
     });
     let expr = when(col("score").eq(col("fallback"))).then(col("score")).otherwise(lit_null(TypeId::Float64));
 
-    let outcome = df.with_columns_with_budget([("derived_score", expr)], &token).unwrap();
+    let outcome =
+        token.run("dataframe::with_columns", |exec| df.on(exec).with_columns([("derived_score", expr)])).unwrap();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(outcome.value());
 
@@ -366,7 +369,9 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = df.cast_column_with_budget("qty", DataType::new(TypeId::Float64), &token).unwrap();
+    let outcome = token
+        .run("dataframe::cast_column", |exec| df.on(exec).cast_column("qty", DataType::new(TypeId::Float64)))
+        .unwrap();
     let result = outcome.value();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
@@ -385,7 +390,8 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
 fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
     let df = decimal128_scale_zero_frame();
 
-    let result = df.cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap()).unwrap();
+    let result =
+        df.on(Exec::RETAINED).cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap()).unwrap();
 
     assert_amount_decimal128_scale_8(&result);
 }
@@ -399,8 +405,11 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome =
-        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap(), &token).unwrap();
+    let outcome = token
+        .run("dataframe::cast_column", |exec| {
+            df.on(exec).cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap())
+        })
+        .unwrap();
     let result = outcome.value();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
@@ -430,12 +439,12 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     });
 
     let err = expect_cudf_err(
-        df.with_columns_with_budget([("sum", col("a") + col("b"))], &token),
+        token.run("dataframe::with_columns", |exec| df.on(exec).with_columns([("sum", col("a") + col("b"))])),
         "one-byte budget should not cover with_columns allocations",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "dataframe::with_columns_with_budget");
+    assert_eq!(err.operation(), "dataframe::with_columns");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_with_columns");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
@@ -454,12 +463,12 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     });
 
     let err = expect_cudf_err(
-        df.cast_column_with_budget("qty", DataType::new(TypeId::Float64), &token),
+        token.run("dataframe::cast_column", |exec| df.on(exec).cast_column("qty", DataType::new(TypeId::Float64))),
         "one-byte budget should not cover cast-column allocations",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
+    assert_eq!(err.operation(), "dataframe::cast_column");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_cast");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
@@ -475,12 +484,14 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     });
 
     let err = expect_cudf_err(
-        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap(), &token),
+        token.run("dataframe::cast_column", |exec| {
+            df.on(exec).cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap())
+        }),
         "one-byte budget should not cover Decimal128 scale-to-scale cast allocations",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
+    assert_eq!(err.operation(), "dataframe::cast_column");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_cast_decimal_scale");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,

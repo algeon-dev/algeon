@@ -8,9 +8,9 @@ use super::{
     cast_count_output_columns_with_budget, concatenate_partitioned_final_merge_outputs, cudf_query_error,
     execute_aggregate_with_budget, execute_compiled_bounded_aggregate_from_empty_input,
     execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
-    execution_budget_token_for_boundary, execution_overrides, final_global_aggregate_spec,
-    final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
-    observe_device_memory_bytes, partition_final_merge_partial, partitioned_final_merge_partition_count,
+    execution_budget_token_for_boundary, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
+    finalize_avg_output_columns_with_budget, lower_final_aggregate_spec, observe_device_memory_bytes,
+    partition_final_merge_partial, partitioned_final_merge_partition_count,
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
     reduce_merge_fan_in, validate_aggregate_output_names,
 };
@@ -319,7 +319,7 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
         let first_frame = partials[0].frame.frame().clone();
         let other_frames = partials[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
         let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
+        first_frame.on(token.exec()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
                 cudf_query_error(
                     "query_engine.compiled_final_merge.partitioned_concat_partials",
@@ -370,7 +370,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     } else {
         let other_frames = partials.iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
         let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-        let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+        let concatenated = first_frame.on(token.exec()).concat_many(&other_frame_refs);
         match concatenated {
             Ok(frame) => frame,
             Err(error) => {
@@ -587,7 +587,7 @@ fn merge_compiled_final_aggregate_partials(
     let first_frame = partials[0].frame.frame().clone();
     let other_frames = partials[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+    let concatenated = first_frame.on(token.exec()).concat_many(&other_frame_refs);
     let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.aggregate.compiled_stream_concat_partials",
@@ -875,12 +875,12 @@ fn execute_final_aggregate_for_plan(
 
     let frame = input.into_frame();
     let input_rows = frame.num_rows() as u64;
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &aggregate,
         token,

@@ -31,7 +31,7 @@ use crate::{
 /// `DeviceMemoryResource` does not execute work by itself. Install it into
 /// [`crate::Runtime::builder`] when you want it to become a runtime's owned
 /// default allocator, or borrow it with
-/// [`crate::ExecutionOverrides::with_memory_resource`] when you want a
+/// [`crate::Exec::with_memory_resource`] when you want a
 /// same-device override for one supported operation.
 #[derive(Clone)]
 pub struct DeviceMemoryResource {
@@ -41,6 +41,9 @@ pub struct DeviceMemoryResource {
 pub(super) struct DeviceMemoryResourceHandle {
     pub(super) raw: Option<NonNull<cudf_sys::cudf_memory_resource_handle_state>>,
     pub(super) device: DeviceId,
+    /// The native resource pointer behind `raw`, read once at creation so
+    /// interop and diagnostics never enter the device to read it again.
+    pub(super) native_resource: usize,
     // Pool-backed resources release physical allocations during native
     // destruction. Keep every runtime stream that selected such a resource so
     // its outstanding work can retire before that release begins.
@@ -144,14 +147,10 @@ impl DeviceMemoryResource {
         retirement_streams: Option<Arc<RetirementStreams>>,
         failure_callbacks: Vec<Arc<FailureCallbackState>>,
     ) -> Result<Self> {
-        Ok(Self {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: Some(error::require_non_null(handle, constructor, "device memory resource")?),
-                device,
-                retirement_streams,
-                _failure_callbacks: failure_callbacks,
-            }),
-        })
+        let raw = error::require_non_null(handle, constructor, "device memory resource")?;
+        let handle =
+            DeviceMemoryResourceHandle::adopt(raw, device, retirement_streams, failure_callbacks, constructor)?;
+        Ok(Self { handle: Arc::new(handle) })
     }
 
     /// Create a CUDA (default) memory resource handle on the calling thread's
@@ -461,17 +460,13 @@ impl DeviceMemoryResource {
         self.handle.raw()
     }
 
-    pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut out = std::ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_memory_resource_raw(self.handle.raw(), &mut out) },
-            "memory::device_memory_resource::interop_raw_handle",
-        )?;
-        Ok(out)
+    /// The native resource pointer behind this handle.
+    pub(crate) fn interop_raw_handle(&self) -> *mut std::ffi::c_void {
+        self.handle.native_resource as *mut std::ffi::c_void
     }
+
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
-        self.interop_raw_handle().map(|raw| raw as usize).unwrap_or(0)
+        self.handle.native_resource
     }
 }
 
@@ -518,6 +513,32 @@ impl Drop for DeviceMemoryResourceHandle {
 }
 
 impl DeviceMemoryResourceHandle {
+    /// Own `raw` and record its native resource pointer. The pointer read is
+    /// a host-side field access, so it needs no device entry; on failure the
+    /// returned error drops the handle and destroys `raw`.
+    pub(super) fn adopt(
+        raw: NonNull<cudf_sys::cudf_memory_resource_handle_state>,
+        device: DeviceId,
+        retirement_streams: Option<Arc<RetirementStreams>>,
+        failure_callbacks: Vec<Arc<FailureCallbackState>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let mut handle = Self {
+            raw: Some(raw),
+            device,
+            native_resource: 0,
+            retirement_streams,
+            _failure_callbacks: failure_callbacks,
+        };
+        let mut native_resource = std::ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_resource_raw(handle.raw(), &mut native_resource) },
+            operation,
+        )?;
+        handle.native_resource = native_resource as usize;
+        Ok(handle)
+    }
+
     fn raw(&self) -> cudf_sys::cudf_memory_resource_handle {
         self.raw.expect("live memory resource retains its native handle").as_ptr()
     }

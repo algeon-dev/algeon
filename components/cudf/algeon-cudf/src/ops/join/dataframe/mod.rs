@@ -24,9 +24,7 @@ use crate::{
         build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
     },
     ops::{ast::AstExpression, join, replace},
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 const MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT: &str = "materialize_join_indices_reservation_size_bytes";

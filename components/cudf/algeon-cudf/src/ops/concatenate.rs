@@ -3,13 +3,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{Runtime, Series};
+//! use cudf::{Exec, Runtime, Series};
 //!
 //! let rt = Runtime::new().unwrap();
 //! let a = rt.series(&[1i32, 2]).unwrap();
 //! let b = rt.series(&[3i32, 4, 5]).unwrap();
 //!
-//! let combined = Series::concat(&[&a, &b]).unwrap();
+//! let combined = Series::concat(&[&a, &b], Exec::RETAINED).unwrap();
 //! assert_eq!(combined.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 //! ```
 
@@ -21,9 +21,7 @@ use crate::{
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         table::{Table, TableView},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 fn checked_len_to_i32(
@@ -135,32 +133,19 @@ fn compatible_column_execution(columns: &[&ColumnView<'_>]) -> Result<ResolvedEx
     let Some(first) = columns.first() else {
         return Err(concatenate_requires_input_error("concatenate::concatenate_columns", "column"));
     };
-    let ctx = ExecutionOverrides::new();
+    let ctx = Exec::RETAINED;
     ResolvedExecution::many(
         first.execution_domain(),
         columns[1..].iter().map(|column| column.execution_domain()),
-        &ctx,
+        ctx,
         "concatenate::concatenate_columns",
-    )
-}
-
-fn compatible_table_execution(tables: &[&TableView<'_>]) -> Result<ResolvedExecution> {
-    let Some(first) = tables.first() else {
-        return Err(concatenate_requires_input_error("concatenate::concatenate_tables", "table"));
-    };
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::many(
-        first.execution_domain(),
-        tables[1..].iter().map(|table| table.execution_domain()),
-        &ctx,
-        "concatenate::concatenate_tables",
     )
 }
 
 /// Concatenate multiple columns into a single column.
 ///
 /// All columns must have the same data type.
-pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
+pub(crate) fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
     let execution = compatible_column_execution(columns)?;
     concatenate_columns_with_exec(columns, execution.output_domain(), execution.exec_options())
 }
@@ -190,14 +175,6 @@ pub(crate) fn concatenate_columns_with_exec(
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Concatenate multiple tables into a single table.
-///
-/// All tables must have the same number of columns with matching types.
-pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
-    let execution = compatible_table_execution(tables)?;
-    concatenate_tables_with_exec(tables, execution.output_domain(), execution.exec_options())
 }
 
 pub(crate) fn concatenate_tables_with_exec(

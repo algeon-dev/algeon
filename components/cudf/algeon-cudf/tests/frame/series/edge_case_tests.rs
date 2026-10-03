@@ -8,7 +8,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, TypeId, frame::dataframe::DropNaOptions};
+use cudf::{DataType, Exec, TypeId, frame::dataframe::DropNaOptions};
 
 use crate::common::{nullable_series, run_named_cases, series};
 
@@ -19,26 +19,26 @@ use crate::common::{nullable_series, run_named_cases, series};
 fn test_add_empty_series() {
     let a = series::<i32>("a", &[]).unwrap();
     let b = series::<i32>("b", &[]).unwrap();
-    let result = a.add(&b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
     assert!(result.is_empty());
 }
 
 fn test_eq_empty_series() {
     let a = series::<i32>("a", &[]).unwrap();
     let b = series::<i32>("b", &[]).unwrap();
-    let result = a.eq(&b).unwrap();
+    let result = a.on(Exec::RETAINED).eq(&b).unwrap();
     assert!(result.is_empty());
 }
 
 fn test_add_scalar_empty_series() {
     let a = series::<i32>("a", &[]).unwrap();
-    let result = a.add_scalar(5i32).unwrap();
+    let result = a.on(Exec::RETAINED).add_scalar(5i32).unwrap();
     assert!(result.is_empty());
 }
 
 fn test_neg_empty_series() {
     let a = series::<i32>("a", &[]).unwrap();
-    let result = (-&a).unwrap();
+    let result = a.on(Exec::RETAINED).neg().unwrap();
     assert!(result.is_empty());
 }
 
@@ -48,20 +48,20 @@ fn test_neg_empty_series() {
 
 fn test_min_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
-    let result = s.min().unwrap();
+    let result = s.on(Exec::RETAINED).min().unwrap();
     // min of empty = null scalar (no elements to pick)
     assert!(!result.is_valid().unwrap());
 }
 
 fn test_max_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
-    let result = s.max().unwrap();
+    let result = s.on(Exec::RETAINED).max().unwrap();
     assert!(!result.is_valid().unwrap());
 }
 
 fn test_mean_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
-    let result = s.mean().unwrap();
+    let result = s.on(Exec::RETAINED).mean().unwrap();
     // mean of empty = null (no elements to average)
     assert!(!result.is_valid().unwrap());
 }
@@ -73,25 +73,25 @@ fn test_mean_empty_series() {
 fn test_sort_single_element() {
     use cudf::SortOptions;
     let s = series::<i32>("x", &[42]).unwrap();
-    let result = s.sort_values(SortOptions::default()).unwrap();
+    let result = s.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
 fn test_unique_single_element() {
     let s = series::<i32>("x", &[42]).unwrap();
-    let result = s.unique().unwrap();
+    let result = s.on(Exec::RETAINED).unique().unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
 fn test_nunique_single_element() {
     let s = series::<i32>("x", &[42]).unwrap();
-    assert_eq!(s.nunique().unwrap(), 1);
+    assert_eq!(s.on(Exec::RETAINED).nunique().unwrap(), 1);
 }
 
 fn test_factorize_single_element() {
     let s = series::<i32>("x", &[42]).unwrap();
-    let factorized = s.factorize().unwrap();
+    let factorized = s.on(Exec::RETAINED).factorize().unwrap();
     assert_eq!(factorized.row_codes().len(), 1);
     assert_eq!(factorized.codebook().len(), 1);
 }
@@ -103,7 +103,7 @@ fn test_factorize_single_element() {
 fn test_astype_bool_to_int() {
     // true -> 1, false -> 0
     let s = series::<bool>("flags", &[true, false, true]).unwrap();
-    let result = s.astype(TypeId::Int32).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
     let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![1, 0, 1]);
 }
@@ -111,21 +111,21 @@ fn test_astype_bool_to_int() {
 fn test_astype_int_to_bool() {
     // nonzero -> true, zero -> false
     let s = series::<i32>("x", &[0, 1, 42, -1]).unwrap();
-    let result = s.astype(TypeId::Bool8).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Bool8).unwrap();
     let vals = result.to_vec_strict::<bool>().unwrap();
     assert_eq!(vals, vec![false, true, true, true]);
 }
 
 fn test_astype_i32_to_i64_widening() {
     let s = series::<i32>("x", &[i32::MAX, i32::MIN, 0]).unwrap();
-    let result = s.astype(TypeId::Int64).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![i32::MAX as i64, i32::MIN as i64, 0]);
 }
 
 fn test_astype_f64_to_i32_truncates() {
     let s = series::<f64>("x", &[1.9, -2.7, 0.1]).unwrap();
-    let result = s.astype(TypeId::Int32).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
     let vals = result.to_vec_strict::<i32>().unwrap();
     // GPU truncation: 1.9 -> 1, -2.7 -> -2, 0.1 -> 0
     assert_eq!(vals, vec![1, -2, 0]);
@@ -133,34 +133,34 @@ fn test_astype_f64_to_i32_truncates() {
 
 fn test_astype_preserves_nulls() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
-    let result = s.astype(TypeId::Float64).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
     let vals = result.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
 fn test_astype_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
-    let result = s.astype(TypeId::Float64).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
     assert!(result.is_empty());
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
 
 fn test_astype_same_type_noop() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let result = s.astype(TypeId::Int32).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 fn test_astype_unsigned_to_signed() {
     let s = series::<u32>("x", &[0, 100, 255]).unwrap();
-    let result = s.astype(TypeId::Int32).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
     let vals = result.to_vec_strict::<i32>().unwrap();
     assert_eq!(vals, vec![0, 100, 255]);
 }
 
 fn test_astype_i8_to_i64() {
     let s = series::<i8>("x", &[i8::MAX, i8::MIN, 0]).unwrap();
-    let result = s.astype(TypeId::Int64).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     let vals = result.to_vec_strict::<i64>().unwrap();
     assert_eq!(vals, vec![i8::MAX as i64, i8::MIN as i64, 0]);
 }
@@ -172,7 +172,7 @@ fn test_astype_i8_to_i64() {
 fn test_unique_with_nulls() {
     // [1, null, 2, null, 1] -> unique should keep {1, 2, null}
     let s = nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
-    let result = s.unique().unwrap();
+    let result = s.on(Exec::RETAINED).unique().unwrap();
     // Should have 3 unique values: 1, 2, and null
     // Order is unspecified, but count should be 3
     assert_eq!(result.len(), 3);
@@ -182,14 +182,14 @@ fn test_unique_with_nulls() {
 fn test_nunique_with_nulls() {
     // [1, null, 2, null, 1] -> nunique excludes nulls -> 2 (just 1 and 2)
     let s = nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
-    assert_eq!(s.nunique().unwrap(), 2);
+    assert_eq!(s.on(Exec::RETAINED).nunique().unwrap(), 2);
 }
 
 fn test_isin_with_null_in_source() {
     // source: [10, null, 30], values: [10, 30]
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let vals = series::<i32>("vals", &[10, 30]).unwrap();
-    let result = s.isin(&vals).unwrap();
+    let result = s.on(Exec::RETAINED).isin(&vals).unwrap();
     let rv = result.to_optional_vec::<bool>().unwrap();
     // 10 is in vals -> true, null isin anything -> null, 30 is in vals -> true
     assert_eq!(rv[0], Some(true));
@@ -202,21 +202,21 @@ fn test_fillna_with_series_both_have_nulls() {
     // Expected: [10, 20, null]  (null in fill at position 2 means it stays null)
     let s = nullable_series::<i32>("x", &[10, 0, 0], &[true, false, false]).unwrap();
     let fill = nullable_series::<i32>("f", &[0, 20, 0], &[true, true, false]).unwrap();
-    let result = s.fillna_with_series(&fill).unwrap();
+    let result = s.on(Exec::RETAINED).fillna_with_series(&fill).unwrap();
     let vals = result.to_optional_vec::<i32>().unwrap();
     assert_eq!(vals, vec![Some(10), Some(20), None]);
 }
 
 fn test_fillna_empty_series() {
     let s = series::<i32>("x", &[]).unwrap();
-    let result = s.fillna(0i32).unwrap();
+    let result = s.on(Exec::RETAINED).fillna(0i32).unwrap();
     assert!(result.is_empty());
 }
 
 fn test_factorize_with_nulls() {
     // [1, null, 2, null, 1] -> codes should map nulls consistently
     let s = nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
-    let factorized = s.factorize().unwrap();
+    let factorized = s.on(Exec::RETAINED).factorize().unwrap();
     let codes = factorized.row_codes();
     let keys = factorized.codebook().keys();
     assert_eq!(codes.len(), 5);
@@ -239,7 +239,7 @@ fn test_factorize_with_nulls() {
 fn test_sort_all_null() {
     use cudf::SortOptions;
     let s = nullable_series::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
-    let result = s.sort_values(SortOptions::default()).unwrap();
+    let result = s.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
     assert_eq!(result.len(), 3);
     assert_eq!(result.null_count(), 3);
 }
@@ -254,7 +254,7 @@ fn test_dataframe_filter_empty_result() {
     let df = DataFrame::from_series([("a", a)]).unwrap();
     // Filter with all-false mask
     let mask = series::<bool>("mask", &[false, false, false]).unwrap();
-    let result = df.filter(&mask).unwrap();
+    let result = df.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.num_columns(), 1);
 }
@@ -263,7 +263,7 @@ fn test_dataframe_head_zero() {
     use cudf::DataFrame;
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("a", a)]).unwrap();
-    let result = df.head(0).unwrap();
+    let result = df.on(Exec::RETAINED).head(0).unwrap();
     assert_eq!(result.num_rows(), 0);
 }
 
@@ -271,7 +271,7 @@ fn test_dataframe_slice_empty() {
     use cudf::DataFrame;
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("a", a)]).unwrap();
-    let result = df.slice(1, 0).unwrap();
+    let result = df.on(Exec::RETAINED).slice(1, 0).unwrap();
     assert_eq!(result.num_rows(), 0);
 }
 
@@ -285,7 +285,7 @@ fn test_dataframe_dropna_with_mixed_nulls() {
     let a = nullable_series::<i32>("a", &[1, 0, 3], &[true, false, true]).unwrap();
     let b = nullable_series::<i32>("b", &[0, 5, 6], &[false, true, true]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
-    let result = df.dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
+    let result = df.on(Exec::RETAINED).dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
     // Only row 2 (index 2) has no nulls in either column
     assert_eq!(result.num_rows(), 1);
     let col_a = result.series("a").unwrap();
@@ -296,7 +296,7 @@ fn test_dataframe_cast_column_preserves_nulls() {
     use cudf::DataFrame;
     let a = nullable_series::<i32>("a", &[10, 0, 30], &[true, false, true]).unwrap();
     let df = DataFrame::from_series([("a", a)]).unwrap();
-    let result = df.cast_column("a", DataType::new(TypeId::Float64)).unwrap();
+    let result = df.on(Exec::RETAINED).cast_column("a", DataType::new(TypeId::Float64)).unwrap();
     let col = result.series("a").unwrap();
     let vals = col.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);

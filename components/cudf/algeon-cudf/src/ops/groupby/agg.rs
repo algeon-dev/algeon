@@ -19,9 +19,7 @@ use crate::{
         },
         reduction::{ScanAgg, checked_ddof_to_i32, ddof_range_error},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 // GroupBy callers usually touch a handful of value columns and aggregations per
@@ -54,7 +52,7 @@ pub enum GroupByAgg {
 }
 
 /// A single aggregation request: which column to aggregate and how.
-pub struct AggregationRequest<'a> {
+pub(crate) struct AggregationRequest<'a> {
     /// The values column to aggregate.
     pub values: &'a ColumnView<'a>,
     /// One or more aggregations to apply to this column.
@@ -62,7 +60,7 @@ pub struct AggregationRequest<'a> {
 }
 
 /// A single grouped scan request: which column to scan and how.
-pub struct GroupByScanRequest<'a> {
+pub(crate) struct GroupByScanRequest<'a> {
     /// The values column to scan.
     pub values: &'a ColumnView<'a>,
     /// One or more cumulative aggregations to apply to this column.
@@ -70,7 +68,7 @@ pub struct GroupByScanRequest<'a> {
 }
 
 /// Output payload of a low-level groupby aggregation.
-pub struct GroupByAggregationOutput {
+pub(crate) struct GroupByAggregationOutput {
     /// The unique key groups.
     pub keys: Table,
     /// Aggregation results, one `Vec<Column>` per request. Each inner vec
@@ -79,9 +77,7 @@ pub struct GroupByAggregationOutput {
 }
 
 /// Output payload of a low-level grouped scan.
-pub struct GroupByScanOutput {
-    /// Group labels for each output row.
-    pub keys: Table,
+pub(crate) struct GroupByScanOutput {
     /// Scan results, one `Vec<Column>` per request. Each inner vec has one
     /// column per scan aggregation in the corresponding request.
     pub results: Vec<Vec<Column>>,
@@ -112,45 +108,24 @@ pub struct PreparedGroupByFacts {
 /// prepared handle. Each aggregate call may use different value columns and
 /// aggregation requests, but they must be compatible with the original key row
 /// count.
-pub struct PreparedGroupBy<'keys> {
+pub(crate) struct PreparedGroupBy<'keys> {
     handle: NonNull<cudf_sys::cudf_prepared_groupby_handle_state>,
     keys_domain: Arc<ExecutionDomain>,
-    keys_are_sorted: bool,
-    null_policy: NullPolicy,
     _keys: PhantomData<&'keys TableView<'keys>>,
 }
 
 impl<'keys> PreparedGroupBy<'keys> {
-    /// Create reusable groupby state for `keys`.
-    pub fn new(keys: &TableView<'keys>, null_policy: NullPolicy) -> Result<Self> {
-        let ctx = ExecutionOverrides::new();
-        Self::new_impl(keys, null_policy, false, &ctx, "groupby::PreparedGroupBy::new")
-    }
-
     /// Create reusable groupby state for `keys` using a borrowed execution
     /// override.
-    pub fn new_in(keys: &TableView<'keys>, null_policy: NullPolicy, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub fn new_in(keys: &TableView<'keys>, null_policy: NullPolicy, ctx: Exec<'_>) -> Result<Self> {
         Self::new_impl(keys, null_policy, false, ctx, "groupby::PreparedGroupBy::new_in")
-    }
-
-    /// Create reusable groupby state for keys already sorted ascending with
-    /// nulls after.
-    ///
-    /// Passing unsorted keys violates cuDF's sorted-key groupby contract.
-    pub fn new_sorted(keys: &TableView<'keys>, null_policy: NullPolicy) -> Result<Self> {
-        let ctx = ExecutionOverrides::new();
-        Self::new_impl(keys, null_policy, true, &ctx, "groupby::PreparedGroupBy::new_sorted")
     }
 
     /// Create reusable groupby state for sorted keys using a borrowed
     /// execution override.
     ///
     /// Passing unsorted keys violates cuDF's sorted-key groupby contract.
-    pub fn new_sorted_in(
-        keys: &TableView<'keys>,
-        null_policy: NullPolicy,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<Self> {
+    pub fn new_sorted_in(keys: &TableView<'keys>, null_policy: NullPolicy, ctx: Exec<'_>) -> Result<Self> {
         Self::new_impl(keys, null_policy, true, ctx, "groupby::PreparedGroupBy::new_sorted_in")
     }
 
@@ -167,7 +142,7 @@ impl<'keys> PreparedGroupBy<'keys> {
         keys: &TableView<'keys>,
         null_policy: NullPolicy,
         keys_are_sorted: bool,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let execution = ResolvedExecution::unary(keys.execution_domain(), ctx, operation)?;
@@ -188,25 +163,8 @@ impl<'keys> PreparedGroupBy<'keys> {
         Ok(Self {
             handle: error::require_non_null(handle, operation, "prepared groupby")?,
             keys_domain: Arc::clone(execution.output_domain()),
-            keys_are_sorted,
-            null_policy,
             _keys: PhantomData,
         })
-    }
-
-    /// Execute aggregation requests using the retained groupby state.
-    pub fn aggregate(&self, requests: &[AggregationRequest<'_>]) -> Result<GroupByAggregationOutput> {
-        let operation = "groupby::PreparedGroupBy::aggregate";
-        let execution = compatible_prepared_groupby_domain(&self.keys_domain, requests, operation)?;
-        groupby_aggregate_impl_with_prepared(
-            self.handle.as_ptr(),
-            requests,
-            self.null_policy,
-            self.keys_are_sorted,
-            execution.output_domain(),
-            execution.exec_options(),
-            operation,
-        )
     }
 }
 
@@ -596,7 +554,9 @@ pub(crate) fn groupby_scan_impl(
         ],
     )?;
 
-    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, Arc::clone(output_domain)) }?;
+    // Scan callers need only the row-aligned results; adopting the key table
+    // releases it when this function returns.
+    let _keys_table = unsafe { Table::from_raw_with_domain(out_keys, Arc::clone(output_domain)) }?;
     let total = usize::try_from(out_total_columns).map_err(|_| {
         foreign_groupby_contract_error(
             operation,
@@ -623,31 +583,7 @@ pub(crate) fn groupby_scan_impl(
 
     unsafe { cudf_sys::cudf_free_column_array(out_values) };
 
-    Ok(GroupByScanOutput { keys: keys_table, results })
-}
-
-fn compatible_groupby_domain(keys: &TableView<'_>, requests: &[AggregationRequest<'_>]) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::many(
-        keys.execution_domain(),
-        requests.iter().map(|request| request.values.execution_domain()),
-        &ctx,
-        "groupby::groupby_aggregate",
-    )
-}
-
-fn compatible_prepared_groupby_domain(
-    keys_domain: &Arc<ExecutionDomain>,
-    requests: &[AggregationRequest<'_>],
-    operation: &'static str,
-) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::many(
-        keys_domain,
-        requests.iter().map(|request| request.values.execution_domain()),
-        &ctx,
-        operation,
-    )
+    Ok(GroupByScanOutput { results })
 }
 
 /// Create a C-side aggregation handle from an [`GroupByAgg`] enum.
@@ -762,61 +698,19 @@ unsafe fn create_groupby_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_
     Ok(handle)
 }
 
-/// Perform a groupby aggregation.
-///
-/// Groups rows by the `keys` table, then applies aggregations from each
-/// request to the corresponding values column.
-pub fn groupby_aggregate(
-    keys: &TableView<'_>,
-    requests: &[AggregationRequest<'_>],
-    null_policy: NullPolicy,
-) -> Result<GroupByAggregationOutput> {
-    let execution = compatible_groupby_domain(keys, requests)?;
-    groupby_aggregate_impl(
-        keys,
-        requests,
-        null_policy,
-        false,
-        execution.output_domain(),
-        execution.exec_options(),
-        "groupby::groupby_aggregate",
-    )
-}
-
-/// Perform a groupby aggregation over keys already sorted in ascending order
-/// with nulls after.
-///
-/// This exposes cuDF's pre-sorted key contract. Callers must only use it when
-/// every key column is sorted ascending with nulls ordered after non-null
-/// values; otherwise results are undefined by the lower-level groupby contract.
-pub fn groupby_aggregate_sorted(
-    keys: &TableView<'_>,
-    requests: &[AggregationRequest<'_>],
-    null_policy: NullPolicy,
-) -> Result<GroupByAggregationOutput> {
-    let execution = compatible_groupby_domain(keys, requests)?;
-    groupby_aggregate_impl(
-        keys,
-        requests,
-        null_policy,
-        true,
-        execution.output_domain(),
-        execution.exec_options(),
-        "groupby::groupby_aggregate_sorted",
-    )
-}
-
-/// Perform a grouped prefix scan over rows already sorted by group keys.
+/// Perform a grouped prefix scan over rows already sorted by group keys,
+/// running where `exec` selects.
 ///
 /// The output rows are aligned to the sorted input rows. Callers that need a
 /// different final order should add their own row-position column before
 /// sorting and restore that order after consuming the scan output.
-pub fn groupby_scan_sorted(
+pub(crate) fn groupby_scan_sorted(
     keys: &TableView<'_>,
     requests: &[GroupByScanRequest<'_>],
     null_policy: NullPolicy,
+    exec: Exec<'_>,
 ) -> Result<GroupByScanOutput> {
-    let execution = compatible_groupby_scan_domain(keys, requests)?;
+    let execution = compatible_groupby_scan_domain(keys, requests, exec)?;
     groupby_scan_impl(
         keys,
         requests,
@@ -831,12 +725,12 @@ pub fn groupby_scan_sorted(
 fn compatible_groupby_scan_domain(
     keys: &TableView<'_>,
     requests: &[GroupByScanRequest<'_>],
+    exec: Exec<'_>,
 ) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
     ResolvedExecution::many(
         keys.execution_domain(),
         requests.iter().map(|request| request.values.execution_domain()),
-        &ctx,
+        exec,
         "groupby::groupby_scan_sorted",
     )
 }

@@ -264,7 +264,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
     let total_timer = Instant::now();
     let mut encode_elapsed = Duration::ZERO;
     let mut decode_elapsed = Duration::ZERO;
@@ -295,7 +295,8 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
                     error,
                 )
             })?
-            .codebook_in(&overrides)
+            .on(overrides)
+            .codebook()
             .map_err(|error| {
                 attach_budget_token_failure_facts(
                     cudf_query_error(
@@ -307,7 +308,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
                 )
             })?;
         frame = frame
-            .with_execution(&overrides)
+            .on(overrides)
             .with_encoded_column(encoded_key_column.as_str(), key_column.as_str(), &codebook)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
@@ -328,7 +329,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     let groupby_timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &aggregate,
         token,
@@ -344,7 +345,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
         };
         let decode_timer = Instant::now();
         output = output
-            .with_execution(&overrides)
+            .on(overrides)
             .with_decoded_column(output_key_name.as_str(), output_key_name.as_str(), codebook)
             .map_err(|error| {
                 attach_budget_token_failure_facts(

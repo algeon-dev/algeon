@@ -4,7 +4,7 @@ use super::{
     PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY, PartitionedJoinDriverPlan, PartitionedJoinInputStats,
     PartitionedJoinOutputSummary, PartitionedJoinPartitionOutput, PartitionedJoinSide, PartitionedJoinSides,
     ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, VecDeque,
-    concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, execution_overrides, join_index_error,
+    concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, join_index_error,
     join_side_output_upper_bound_bytes, lower_join_residual_predicate,
     materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partition_join_sides,
     partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
@@ -136,8 +136,8 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let residual_columns = residual_input_columns(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
     let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
     let timer = Instant::now();
@@ -146,27 +146,27 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let size_data = match node.spec.join_type {
         JoinType::Inner => left
             .frame
-            .with_execution(&overrides)
+            .on(overrides)
             .mixed_inner_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::Pair),
         JoinType::Left => left
             .frame
-            .with_execution(&overrides)
+            .on(overrides)
             .mixed_left_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::Pair),
         JoinType::Full => left
             .frame
-            .with_execution(&overrides)
+            .on(overrides)
             .mixed_full_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::Pair),
         JoinType::LeftSemi => left
             .frame
-            .with_execution(&overrides)
+            .on(overrides)
             .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
         JoinType::LeftAnti { .. } => left
             .frame
-            .with_execution(&overrides)
+            .on(overrides)
             .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
         JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated above"),
@@ -188,7 +188,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
         },
     };
     execution.metrics().record_mixed_join_size_data_bytes(mixed_size_data_bytes);
-    let indices = match size_data.materialize_indices_in(&overrides, node) {
+    let indices = match size_data.materialize_indices_in(overrides, node) {
         Ok(indices) => indices,
         Err(error) => {
             txn.rollback();
@@ -217,7 +217,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let output = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,

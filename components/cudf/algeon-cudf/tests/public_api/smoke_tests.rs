@@ -53,189 +53,49 @@ fn query_memory_manager_surface_is_publicly_importable() {
 #[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::{
-        DataFrame, DataFrameProjectedCrossJoinPlan,
-        ops::join::{
-            FilteredJoinAllocationPreflight, FilteredJoinProbeAllocationPreflight, HashJoin, HashJoinKeyMetadata,
-            HashJoinOptions, HashJoinPreprocessingMode, HashJoinStringOffsetWidth, JoinIndices, NullEquality,
-            filtered_join_allocation_preflight_for_metadata, filtered_join_probe_allocation_preflight,
-            full_join_indices, full_join_indices_in, inner_join_indices, inner_join_indices_in, left_join_indices,
-            left_join_indices_in,
-        },
+        DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameProjectedCrossJoinPlan,
+        ops::join::NullEquality,
     };
 
-    let _options = HashJoinOptions::new().null_equality(NullEquality::Equal);
-    let _: Option<HashJoin> = None;
-    let _: Option<JoinIndices> = None;
-    let _: Option<FilteredJoinAllocationPreflight> = None;
-    let _: Option<FilteredJoinProbeAllocationPreflight> = None;
+    let _options = DataFrameHashJoinOptions::new().null_equality(NullEquality::Equal);
+    let _: Option<DataFrameHashJoin> = None;
     let _: Option<DataFrameProjectedCrossJoinPlan> = None;
-    let _ = (
-        HashJoin::new,
-        HashJoin::new_in,
-        HashJoin::pre_build_reservation_size_bytes,
-        HashJoin::pre_build_reservation_size_bytes_in,
-        HashJoin::inner_join_indices,
-        HashJoin::inner_join_indices_in,
-        HashJoin::inner_join_indices_with_output_size,
-        HashJoin::inner_join_indices_with_output_size_in,
-        HashJoin::left_join_indices,
-        HashJoin::left_join_indices_in,
-        HashJoin::left_join_indices_with_output_size,
-        HashJoin::left_join_indices_with_output_size_in,
-        HashJoin::full_join_indices,
-        HashJoin::full_join_indices_in,
-        HashJoin::full_join_indices_with_output_size,
-        HashJoin::full_join_indices_with_output_size_in,
-        HashJoin::inner_join_size,
-        HashJoin::inner_join_size_in,
-        HashJoin::left_join_size,
-        HashJoin::left_join_size_in,
-        HashJoin::full_join_size,
-        HashJoin::full_join_size_in,
-        HashJoin::device_allocated_size_bytes,
-    );
-    let _ = DataFrame::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
-    let _ = (
-        HashJoinKeyMetadata::fixed_width,
-        HashJoinKeyMetadata::string,
-        HashJoinStringOffsetWidth::I32,
-        HashJoinPreprocessingMode::for_keys,
-        filtered_join_allocation_preflight_for_metadata,
-        filtered_join_probe_allocation_preflight,
-    );
-    let _ = DataFrame::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;
+    let _ = cudf::FrameOps::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
+    let _ = cudf::FrameOps::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;
     let _ = DataFrame::projected_cross_join_plan;
     let _ = (
         DataFrameProjectedCrossJoinPlan::output_rows,
         DataFrameProjectedCrossJoinPlan::output_column_names,
         DataFrameProjectedCrossJoinPlan::reservation_size_bytes,
-        DataFrameProjectedCrossJoinPlan::reservation_size_bytes_in,
         DataFrameProjectedCrossJoinPlan::materialize,
-        DataFrameProjectedCrossJoinPlan::materialize_in,
-    );
-    let _ = (
-        inner_join_indices,
-        inner_join_indices_in,
-        left_join_indices,
-        left_join_indices_in,
-        full_join_indices,
-        full_join_indices_in,
-    );
-}
-
-#[test]
-fn slice7_join_and_copying_surface_is_publicly_importable() {
-    use cudf::ops::{
-        copying::{scatter, scatter_in, scatter_unchecked, scatter_unchecked_in},
-        join::{
-            SingleSideJoinIndices, cross_join, cross_join_in, left_anti_join_indices, left_anti_join_indices_in,
-            left_semi_join_indices, left_semi_join_indices_in,
-        },
-    };
-
-    let _: Option<SingleSideJoinIndices> = None;
-    let _ = (
-        left_semi_join_indices,
-        left_semi_join_indices_in,
-        left_anti_join_indices,
-        left_anti_join_indices_in,
-        cross_join,
-        cross_join_in,
-        scatter,
-        scatter_in,
-        scatter_unchecked,
-        scatter_unchecked_in,
     );
 }
 
 #[test]
 fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
     use cudf::{
-        DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameMixedJoinSizeData,
-        DataFrameMixedSingleSideJoinSizeData,
-        ops::{
-            ast::{AstExpression, AstOperator},
-            join::{
-                conditional_full_join_indices, conditional_full_join_indices_in, conditional_inner_join_indices,
-                conditional_inner_join_indices_in, conditional_inner_join_indices_with_output_size,
-                conditional_inner_join_indices_with_output_size_in, conditional_inner_join_size,
-                conditional_inner_join_size_in, conditional_left_anti_join_indices,
-                conditional_left_anti_join_indices_in, conditional_left_anti_join_indices_with_output_size,
-                conditional_left_anti_join_indices_with_output_size_in, conditional_left_anti_join_size,
-                conditional_left_anti_join_size_in, conditional_left_join_indices, conditional_left_join_indices_in,
-                conditional_left_join_indices_with_output_size, conditional_left_join_indices_with_output_size_in,
-                conditional_left_join_size, conditional_left_join_size_in, conditional_left_semi_join_indices,
-                conditional_left_semi_join_indices_in, conditional_left_semi_join_indices_with_output_size,
-                conditional_left_semi_join_indices_with_output_size_in, conditional_left_semi_join_size,
-                conditional_left_semi_join_size_in, filter_join_indices, filter_join_indices_in,
-                mixed_full_join_indices, mixed_full_join_indices_in, mixed_inner_join_indices,
-                mixed_inner_join_indices_in, mixed_left_anti_join_indices, mixed_left_anti_join_indices_in,
-                mixed_left_join_indices, mixed_left_join_indices_in, mixed_left_semi_join_indices,
-                mixed_left_semi_join_indices_in,
-            },
-        },
+        DataFrameConditionalFullJoinSizeData, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
+        ops::ast::{AstExpression, AstOperator},
     };
 
     let _: Option<AstExpression> = None;
     let _operator = AstOperator::Less;
+    let _ = (AstExpression::cast_to_float64, AstExpression::cast_to_int64, AstExpression::cast_to_uint64);
     let _ = (
-        AstExpression::cast_to_float64,
-        AstExpression::cast_to_int64,
-        AstExpression::cast_to_uint64,
-        conditional_inner_join_indices,
-        conditional_inner_join_indices_in,
-        conditional_inner_join_size,
-        conditional_inner_join_size_in,
-        conditional_inner_join_indices_with_output_size,
-        conditional_inner_join_indices_with_output_size_in,
-        conditional_left_join_indices,
-        conditional_left_join_indices_in,
-        conditional_left_join_size,
-        conditional_left_join_size_in,
-        conditional_left_join_indices_with_output_size,
-        conditional_left_join_indices_with_output_size_in,
-        conditional_full_join_indices,
-        conditional_full_join_indices_in,
-        conditional_left_semi_join_indices,
-        conditional_left_semi_join_indices_in,
-        conditional_left_semi_join_size,
-        conditional_left_semi_join_size_in,
-        conditional_left_semi_join_indices_with_output_size,
-        conditional_left_semi_join_indices_with_output_size_in,
-        conditional_left_anti_join_indices,
-        conditional_left_anti_join_indices_in,
-        conditional_left_anti_join_size,
-        conditional_left_anti_join_size_in,
-        conditional_left_anti_join_indices_with_output_size,
-        conditional_left_anti_join_indices_with_output_size_in,
-        filter_join_indices,
-        filter_join_indices_in,
-        mixed_inner_join_indices,
-        mixed_inner_join_indices_in,
-        mixed_left_join_indices,
-        mixed_left_join_indices_in,
-        mixed_full_join_indices,
-        mixed_full_join_indices_in,
-        mixed_left_semi_join_indices,
-        mixed_left_semi_join_indices_in,
-        mixed_left_anti_join_indices,
-        mixed_left_anti_join_indices_in,
-    );
-    let _ = (
-        DataFrame::conditional_inner_join_size,
-        DataFrame::conditional_inner_join_indices_with_output_size,
-        DataFrame::conditional_left_join_size,
-        DataFrame::conditional_left_join_indices_with_output_size,
-        DataFrame::conditional_left_semi_join_size,
-        DataFrame::conditional_left_semi_join_indices_with_output_size,
-        DataFrame::conditional_left_anti_join_size,
-        DataFrame::conditional_left_anti_join_indices_with_output_size,
-        DataFrame::conditional_full_join_size_data,
-        DataFrame::mixed_inner_join_size_data,
-        DataFrame::mixed_left_join_size_data,
-        DataFrame::mixed_full_join_size_data,
-        DataFrame::mixed_left_semi_join_size_data,
-        DataFrame::mixed_left_anti_join_size_data,
+        cudf::FrameOps::conditional_inner_join_size,
+        cudf::FrameOps::conditional_inner_join_indices_with_output_size,
+        cudf::FrameOps::conditional_left_join_size,
+        cudf::FrameOps::conditional_left_join_indices_with_output_size,
+        cudf::FrameOps::conditional_left_semi_join_size,
+        cudf::FrameOps::conditional_left_semi_join_indices_with_output_size,
+        cudf::FrameOps::conditional_left_anti_join_size,
+        cudf::FrameOps::conditional_left_anti_join_indices_with_output_size,
+        cudf::FrameOps::conditional_full_join_size_data,
+        cudf::FrameOps::mixed_inner_join_size_data,
+        cudf::FrameOps::mixed_left_join_size_data,
+        cudf::FrameOps::mixed_full_join_size_data,
+        cudf::FrameOps::mixed_left_semi_join_size_data,
+        cudf::FrameOps::mixed_left_anti_join_size_data,
     );
     let _: Option<DataFrameConditionalFullJoinSizeData<'_>> = None;
     let _ = (
@@ -243,7 +103,6 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         DataFrameConditionalFullJoinSizeData::device_allocated_size_bytes,
         DataFrameConditionalFullJoinSizeData::gather_map_reservation_size_bytes,
         DataFrameConditionalFullJoinSizeData::materialize_indices,
-        DataFrameConditionalFullJoinSizeData::materialize_indices_in,
     );
     let _: Option<DataFrameMixedJoinSizeData<'_>> = None;
     let _: Option<DataFrameMixedSingleSideJoinSizeData<'_>> = None;
@@ -252,14 +111,12 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
         DataFrameMixedJoinSizeData::device_allocated_size_bytes,
         DataFrameMixedJoinSizeData::gather_map_reservation_size_bytes,
         DataFrameMixedJoinSizeData::materialize_indices,
-        DataFrameMixedJoinSizeData::materialize_indices_in,
     );
     let _ = (
         DataFrameMixedSingleSideJoinSizeData::output_size,
         DataFrameMixedSingleSideJoinSizeData::device_allocated_size_bytes,
         DataFrameMixedSingleSideJoinSizeData::gather_map_reservation_size_bytes,
         DataFrameMixedSingleSideJoinSizeData::materialize_indices,
-        DataFrameMixedSingleSideJoinSizeData::materialize_indices_in,
     );
 }
 
@@ -269,21 +126,22 @@ fn slice9_multi_file_parquet_surface_is_publicly_importable() {
 
     use cudf::{DataFrame, Runtime, frame::dataframe::MultiParquetReadOptions};
 
-    fn assert_reader(_: fn(MultiParquetReadOptions) -> cudf::Result<DataFrame>) {}
+    fn assert_reader(_: fn(MultiParquetReadOptions, cudf::Exec<'_>) -> cudf::Result<DataFrame>) {}
 
     let rt = Runtime::builder().build().unwrap();
     let paths = [PathBuf::from("part-0.parquet"), PathBuf::from("part-1.parquet")];
     let _options = MultiParquetReadOptions::builder().filepaths(&paths).columns(&["id"]).with_runtime(&rt).build();
-    assert!(DataFrame::read_parquet_many(&rt, Vec::<PathBuf>::new()).is_err());
+    let no_files: [PathBuf; 0] = [];
+    let empty = MultiParquetReadOptions::builder().filepaths(&no_files).with_runtime(&rt).build();
+    assert!(DataFrame::read_parquet_many(empty, cudf::Exec::RETAINED).is_err());
 
-    assert_reader(DataFrame::read_parquet_many_with_options);
+    assert_reader(DataFrame::read_parquet_many);
 }
 
 #[test]
 fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     use cudf::{
-        DataType, TypeId,
-        frame::dataframe::ParquetSourceChunkReadOutput,
+        DataType, ParquetSourceChunkReadOutput, SourceRead, TypeId,
         io::source::{
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetSourceLocation,
             PartitionColumn, PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
@@ -298,22 +156,8 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     fn assert_location(_: &ParquetSourceLocation) {}
     fn assert_plan(_: &SourceChunkPlan) {}
     fn assert_chunk(_: &SourceChunk) {}
-    fn assert_source_reader(_: fn(&cudf::Runtime, &LocalParquetSource) -> cudf::Result<cudf::DataFrame>) {}
-    fn assert_source_mode_reader(
-        _: fn(&cudf::Runtime, &LocalParquetSource, SourceReadMode) -> cudf::Result<cudf::DataFrame>,
-    ) {
-    }
-    fn assert_source_chunk_reader(
-        _: fn(&cudf::Runtime, &LocalParquetSource, &SourceChunk, SourceReadMode) -> cudf::Result<cudf::DataFrame>,
-    ) {
-    }
-    fn assert_source_chunk_reader_with_evidence(
-        _: fn(
-            &cudf::Runtime,
-            &LocalParquetSource,
-            &SourceChunk,
-            SourceReadMode,
-        ) -> cudf::Result<ParquetSourceChunkReadOutput>,
+    fn assert_source_reader(
+        _: fn(SourceRead<'_>, &cudf::Runtime, cudf::Exec<'_>) -> cudf::Result<ParquetSourceChunkReadOutput>,
     ) {
     }
 
@@ -366,9 +210,6 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     assert_eq!(source_row_group_index_to_i32(0).unwrap(), 0);
     assert_eq!(source_row_count_to_i64(0).unwrap(), 0);
     assert_source_reader(cudf::DataFrame::read_parquet_source);
-    assert_source_mode_reader(cudf::DataFrame::read_parquet_source_with_mode);
-    assert_source_chunk_reader(cudf::DataFrame::read_parquet_source_chunk);
-    assert_source_chunk_reader_with_evidence(cudf::DataFrame::read_parquet_source_chunk_with_evidence);
     assert_eq!(SourceReadMode::FinalOutput, SourceReadMode::FinalOutput);
 }
 

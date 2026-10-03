@@ -174,13 +174,14 @@ impl QueryMemoryDomain {
         // still released on every error path.
         let reservation =
             NonNull::new(raw_reservation).map(|raw| ReservationHandle { raw: Some(raw), device: self.device() });
-        let resource = NonNull::new(raw_resource).map(|raw| DeviceMemoryResource {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: Some(raw),
-                device: self.device(),
-                retirement_streams: None,
-                _failure_callbacks: Vec::new(),
-            }),
+        let resource = NonNull::new(raw_resource).map(|raw| {
+            DeviceMemoryResourceHandle::adopt(
+                raw,
+                self.device(),
+                None,
+                Vec::new(),
+                "memory::query_memory_domain::reserve_stream",
+            )
         });
         error::check_status_in_with_details(
             status,
@@ -206,7 +207,8 @@ impl QueryMemoryDomain {
                 "device memory resource",
             )
             .unwrap_err()
-        })?;
+        })??;
+        let resource = DeviceMemoryResource { handle: Arc::new(resource) };
         Ok(StreamReservationLease {
             manager: self.manager.clone(),
             stream: stream.clone(),
@@ -396,13 +398,14 @@ impl StreamReservationLease {
         };
         let reservation = NonNull::new(raw_reservation)
             .map(|raw| ReservationHandle { raw: Some(raw), device: self.manager.device() });
-        let resource = NonNull::new(raw_resource).map(|raw| DeviceMemoryResource {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: Some(raw),
-                device: self.manager.device(),
-                retirement_streams: None,
-                _failure_callbacks: Vec::new(),
-            }),
+        let resource = NonNull::new(raw_resource).map(|raw| {
+            DeviceMemoryResourceHandle::adopt(
+                raw,
+                self.manager.device(),
+                None,
+                Vec::new(),
+                "memory::stream_reservation_lease::attach_sibling_raw_stream",
+            )
         });
         error::check_status_in_with_details(
             status,
@@ -428,7 +431,8 @@ impl StreamReservationLease {
                 "device memory resource",
             )
             .unwrap_err()
-        })?;
+        })??;
+        let resource = DeviceMemoryResource { handle: Arc::new(resource) };
         Ok(RawStreamReservationLease {
             manager: self.manager.clone(),
             raw_stream,
@@ -439,8 +443,8 @@ impl StreamReservationLease {
     }
 
     /// Borrow this lease as per-operation execution overrides.
-    pub fn execution_overrides(&self) -> crate::ExecutionOverrides<'_> {
-        crate::ExecutionOverrides::new().with_stream(&self.stream).with_memory_resource(self.memory_resource())
+    pub fn exec(&self) -> crate::Exec<'_> {
+        crate::Exec::RETAINED.with_stream(&self.stream).with_memory_resource(self.memory_resource())
     }
 }
 

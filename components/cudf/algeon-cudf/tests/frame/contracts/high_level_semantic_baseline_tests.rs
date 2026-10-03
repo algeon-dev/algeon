@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use cudf::{DataFrame, ErrorCode, TypeId, core::Column};
+use cudf::{DataFrame, ErrorCode, Exec, TypeId, core::Column};
 
 use crate::common::{
     column_from_slice, dataframe_device_ptr, dataframe_from_columns, error_context_value,
@@ -168,7 +168,7 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
 /// `to_table()` produces a new table with independent GPU memory.
 fn df_to_table_deep_copies() {
     let df = sample_df();
-    let table = df.to_table_copy().unwrap();
+    let table = df.on(Exec::RETAINED).to_table_copy().unwrap();
 
     assert_eq!(table.num_columns().unwrap(), 2);
     assert_eq!(table.num_rows().unwrap(), 3);
@@ -187,7 +187,7 @@ fn df_to_table_deep_copies() {
 /// `to_table()` does not consume the DataFrame; source remains usable.
 fn df_to_table_source_still_usable() {
     let df = sample_df();
-    let _table = df.to_table_copy().unwrap();
+    let _table = df.on(Exec::RETAINED).to_table_copy().unwrap();
 
     // DataFrame is still fully readable
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -258,7 +258,7 @@ fn filter_allocates_new_gpu_data() {
     let original_ptr = dataframe_device_ptr(&df, "id");
 
     let mask = series::<bool>("mask", &[true, false, true]).unwrap();
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter(&mask).unwrap();
 
     let filtered_ptr = dataframe_device_ptr(&filtered, "id");
     assert_ne!(original_ptr, filtered_ptr);
@@ -269,8 +269,10 @@ fn sort_values_consistent_results() {
     let df1 = sample_df();
     let df2 = sample_df();
 
-    let result1 = df1.sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
-    let result2 = df2.sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
+    let result1 =
+        df1.on(Exec::RETAINED).sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
+    let result2 =
+        df2.on(Exec::RETAINED).sort_values(["id"], cudf::SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(
         result1.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
@@ -372,7 +374,7 @@ fn df_filter_gpu_allocates() {
     let df = sample_df();
     let mask = series::<bool>("mask", &[true, false, true]).unwrap();
 
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 
@@ -385,13 +387,13 @@ fn df_slicing_ops_gpu_allocate() {
     let df = sample_df();
     let original_ptr = dataframe_device_ptr(&df, "id");
 
-    let h = df.head(2).unwrap();
+    let h = df.on(Exec::RETAINED).head(2).unwrap();
     assert_ne!(original_ptr, dataframe_device_ptr(&h, "id"));
 
-    let t = df.tail(2).unwrap();
+    let t = df.on(Exec::RETAINED).tail(2).unwrap();
     assert_ne!(original_ptr, dataframe_device_ptr(&t, "id"));
 
-    let s = df.slice(1, 1).unwrap();
+    let s = df.on(Exec::RETAINED).slice(1, 1).unwrap();
     assert_ne!(original_ptr, dataframe_device_ptr(&s, "id"));
 }
 
@@ -400,11 +402,11 @@ fn series_ops_gpu_allocate() {
     let s = series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column().device_data_ptr().unwrap();
 
-    let mask = s.gt_scalar(1i32).unwrap();
+    let mask = s.on(Exec::RETAINED).gt_scalar(1i32).unwrap();
     let mask_ptr = mask.as_column().device_data_ptr().unwrap();
     assert_ne!(original_ptr, mask_ptr, "gt_scalar must allocate new column");
 
-    let added = s.add_scalar(10i32).unwrap();
+    let added = s.on(Exec::RETAINED).add_scalar(10i32).unwrap();
     let add_ptr = added.as_column().device_data_ptr().unwrap();
     assert_ne!(original_ptr, add_ptr, "add_scalar must allocate new column");
 }

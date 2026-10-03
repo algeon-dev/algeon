@@ -7,27 +7,17 @@ use crate::{
         error::{self, Error, ErrorCode, Result},
         table::{Table, TableView},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Result of a hash partition operation.
 #[derive(Debug)]
-pub struct HashPartitionedTable {
+pub(crate) struct HashPartitionedTable {
     table: Table,
     offsets: Vec<usize>,
 }
 
 impl HashPartitionedTable {
-    pub fn table(&self) -> &Table {
-        &self.table
-    }
-
-    pub fn offsets(&self) -> &[usize] {
-        &self.offsets
-    }
-
     pub fn into_parts(self) -> (Table, Vec<usize>) {
         (self.table, self.offsets)
     }
@@ -103,22 +93,4 @@ pub(crate) fn hash_partition_impl(
         .collect::<Result<Vec<_>>>()?;
     let table = unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }?;
     Ok(HashPartitionedTable { table, offsets })
-}
-
-/// Hash-partition rows by selected key column indices.
-pub fn hash_partition(
-    input: &TableView<'_>,
-    column_indices: &[usize],
-    num_partitions: usize,
-) -> Result<HashPartitionedTable> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "partitioning::hash_partition")?;
-    hash_partition_impl(
-        input,
-        column_indices,
-        num_partitions,
-        execution.output_domain(),
-        execution.exec_options(),
-        "partitioning::hash_partition",
-    )
 }

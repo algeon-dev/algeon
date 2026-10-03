@@ -1,4 +1,4 @@
-use cudf::{DataType, Series, TypeId, runtime::ExecutionBindingId};
+use cudf::{DataType, Exec, Series, TypeId, runtime::ExecutionBindingId};
 
 use crate::{
     DeviceBuffer, DeviceMatrix, Error, ErrorCode, FailurePhase, MatrixLayout, Result,
@@ -166,7 +166,8 @@ impl LogisticRegressionModel {
             .ok_or_else(|| size_error(OP, "coefficient extent overflow"))?;
         resources.validate_exact_binding(OP)?;
         let mut coefficients = DeviceBuffer::new(resources, coefficients_len)?;
-        let labels_f32 = labels.astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
+        let labels_f32 =
+            labels.on(Exec::RETAINED).astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
         let labels_ptr = labels_f32.as_column().device_data_ptr().map_err(|e| from_cudf(OP, e))?.cast();
         let mut objective = 0.0_f64;
         let mut iterations = 0_i32;
@@ -273,9 +274,10 @@ impl LogisticRegressionModel {
         })?;
         predictions.validate_finite(OP)?;
         let predicted = Series::from_column(predictions.into_column()?).map_err(|e| from_cudf(OP, e))?;
-        let min = predicted.min_value::<f32>().map_err(|e| from_cudf(OP, e))?;
-        let indices = predicted.astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))?;
-        let max_index = indices.max_value::<i32>().map_err(|e| from_cudf(OP, e))?;
+        let min = predicted.on(Exec::RETAINED).min_value::<f32>().map_err(|e| from_cudf(OP, e))?;
+        let indices =
+            predicted.on(Exec::RETAINED).astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))?;
+        let max_index = indices.on(Exec::RETAINED).max_value::<i32>().map_err(|e| from_cudf(OP, e))?;
         if min.is_none_or(|value| value < 0.0) || max_index.is_none_or(|value| value >= self.n_classes as i32) {
             return Err(error(
                 ErrorCode::OutputOutOfRange,
@@ -284,9 +286,17 @@ impl LogisticRegressionModel {
                 "QN predictions must be integral class indices in 0..n_classes",
             ));
         }
-        let roundtrip = indices.astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
+        let roundtrip =
+            indices.on(Exec::RETAINED).astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
         // Equality reduces the device comparison mask to one host boolean.
-        if !predicted.eq(&roundtrip).map_err(|e| from_cudf(OP, e))?.all_value().map_err(|e| from_cudf(OP, e))? {
+        if !predicted
+            .on(Exec::RETAINED)
+            .eq(&roundtrip)
+            .map_err(|e| from_cudf(OP, e))?
+            .on(Exec::RETAINED)
+            .all_value()
+            .map_err(|e| from_cudf(OP, e))?
+        {
             return Err(error(
                 ErrorCode::OutputOutOfRange,
                 FailurePhase::OutputValidation,

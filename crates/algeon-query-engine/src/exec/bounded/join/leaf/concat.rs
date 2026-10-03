@@ -1,6 +1,6 @@
 use super::{
     BoundedExecutionAttempt, GpuDataFrame, Instant, NodeId, ResidentGpuFrame, Result, cudf_query_error,
-    execution_overrides, observe_device_memory_bytes,
+    observe_device_memory_bytes,
 };
 
 pub(super) fn concatenate_join_source_chunks(
@@ -19,10 +19,10 @@ pub(super) fn concatenate_join_source_chunks(
     let chunk_count = frames.len();
     let first_frame = frames.remove(0);
     let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
+    let output = match first_frame.on(overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
             return Err(cudf_query_error(

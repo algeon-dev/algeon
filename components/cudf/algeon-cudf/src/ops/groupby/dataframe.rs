@@ -17,15 +17,15 @@ use super::{
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result, invariant_violation},
+        error::{self, Error, Result, invariant_violation},
         native_teardown::drop_device_owned_handle,
         scalar::Scalar,
     },
     frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
     internal::resolve::missing_column_error,
     runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
-        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::Exec, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
     },
 };
 
@@ -156,20 +156,21 @@ impl GroupByOptions {
 /// A pending groupby operation on a [`DataFrame`][crate::DataFrame].
 ///
 /// Created via [`DataFrame::groupby`][crate::DataFrame::groupby].
-/// Call [`.agg()`][GroupBy::agg] with [`AggSpec`] items, or use the shortcut
-/// methods [`.sum()`][GroupBy::sum], [`.mean()`][GroupBy::mean],
-/// [`.count()`][GroupBy::count] to execute.
+/// Run it through [`GroupBy::on`]: call [`.agg()`][GroupByOps::agg] with
+/// [`AggSpec`] items, or use the shortcut methods [`.sum()`][GroupByOps::sum],
+/// [`.mean()`][GroupByOps::mean], [`.count()`][GroupByOps::count].
+#[derive(Clone)]
 pub struct GroupBy<'a> {
     df: &'a DataFrame,
     keys: Vec<String>,
     options: GroupByOptions,
 }
 
-/// Scoped borrowed execution override for one groupby operation chain.
+/// The GPU operations of one groupby, run where an [`Exec`] selects.
 #[must_use]
-pub struct GroupByExecutionScope<'a, 'ctx, 'handles> {
+pub struct GroupByOps<'a> {
     groupby: GroupBy<'a>,
-    ctx: &'ctx ExecutionOverrides<'handles>,
+    ctx: Exec<'a>,
 }
 
 /// Owned high-level prepared groupby state for a DataFrame.
@@ -202,10 +203,10 @@ impl PreparedDataFrameGroupBy {
         )
     }
 
-    /// Execute aggregation requests through this prepared groupby handle.
-    pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
-        let ctx = ExecutionOverrides::new();
-        self.agg_impl_with_groupby_error_mapper(specs, &ctx, "groupby::PreparedDataFrameGroupBy::agg", |error| error)
+    /// Execute aggregation requests through this prepared groupby handle,
+    /// running where `exec` selects.
+    pub fn agg(&self, specs: &[AggSpec], exec: Exec<'_>) -> Result<DataFrame> {
+        self.agg_impl_with_groupby_error_mapper(specs, exec, "groupby::PreparedDataFrameGroupBy::agg", |error| error)
     }
 
     /// Execute aggregation requests through this prepared groupby handle with a
@@ -216,10 +217,10 @@ impl PreparedDataFrameGroupBy {
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<DataFrame>> {
         let operation = "groupby::PreparedDataFrameGroupBy::agg_with_budget";
-        let ctx = token.execution_overrides();
+        let ctx = token.exec();
         let output = self
-            .agg_impl_with_groupby_error_mapper(specs, &ctx, operation, |error| {
-                annotate_groupby_budget_execution_error(error, token, operation)
+            .agg_impl_with_groupby_error_mapper(specs, ctx, operation, |error| {
+                token.annotate_execution_error(error, operation)
             })
             .map_err(|error| error.reanchor_if_needed(operation))?;
         let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
@@ -243,7 +244,7 @@ impl PreparedDataFrameGroupBy {
     fn agg_impl_with_groupby_error_mapper<F>(
         &self,
         specs: &[AggSpec],
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
         map_groupby_error: F,
     ) -> Result<DataFrame>
@@ -386,34 +387,10 @@ impl<'a> GroupBy<'a> {
         self
     }
 
-    /// Borrow a per-operation execution override for subsequent groupby calls.
-    pub fn with_execution<'ctx, 'handles>(
-        self,
-        ctx: &'ctx ExecutionOverrides<'handles>,
-    ) -> GroupByExecutionScope<'a, 'ctx, 'handles> {
-        GroupByExecutionScope { groupby: self, ctx }
-    }
-
-    /// Execute the groupby with the given aggregation specifications.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - `specs` is empty
-    /// - Any key or value column name is not in the DataFrame's schema
-    pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
-        let output_domain = Arc::clone(self.df.execution_domain());
-        self.agg_impl(specs, output_domain, "groupby::GroupBy::agg")
-    }
-
-    /// Prepare reusable grouping state and return cuDF-reported cardinality.
-    ///
-    /// This runs cuDF's grouping preparation for this DataFrame's key columns
-    /// and returns only direct facts from that operation. It does not estimate
-    /// temporary workspace or retained groupby-state memory.
-    pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
-        let ctx = ExecutionOverrides::new();
-        self.prepare_groups_impl(&ctx, "groupby::GroupBy::prepare_groups")
+    /// The operations of this groupby, run where `exec` selects.
+    pub fn on<'s>(&self, exec: Exec<'s>) -> GroupByOps<'s>
+    where 'a: 's {
+        GroupByOps { groupby: self.clone(), ctx: exec }
     }
 
     /// Build explicit prepared sort-groupby state under a hard execution
@@ -428,10 +405,10 @@ impl<'a> GroupBy<'a> {
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<PreparedDataFrameGroupBy>> {
         let operation = "groupby::GroupBy::prepare_sort_groupby_with_budget";
-        let ctx = token.execution_overrides();
+        let ctx = token.exec();
         let prepared = self
-            .prepare_sort_groupby_impl(&ctx, operation)
-            .map_err(|error| annotate_groupby_budget_execution_error(error, token, operation))?;
+            .prepare_sort_groupby_impl(ctx, operation)
+            .map_err(|error| token.annotate_execution_error(error, operation))?;
         let facts = prepared.prepared_facts();
         let report = token.reservation_enforced_report().with_output_rows(facts.num_groups).with_context_facts([
             ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
@@ -444,57 +421,21 @@ impl<'a> GroupBy<'a> {
         Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
 
-    /// Execute the groupby with a hard execution-budget token.
-    ///
-    /// This has the same aggregation semantics and validation as
-    /// [`agg`](Self::agg), but routes execution allocations through the
-    /// token's execution overrides. The returned report records the observed
-    /// output DataFrame device footprint after execution.
-    pub fn agg_with_budget(
-        &self,
-        specs: &[AggSpec],
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<DataFrame>> {
-        let operation = "groupby::GroupBy::agg_with_budget";
-        let ctx = token.execution_overrides();
-        let output_domain = ctx
-            .resolve_output_domain(self.df.execution_domain())
-            .map_err(|error| error.reanchor_if_needed(operation))?;
-        let output = self
-            .agg_impl_with_groupby_error_mapper(specs, output_domain, operation, |error| {
-                annotate_groupby_budget_execution_error(error, token, operation)
-            })
-            .map_err(|error| error.reanchor_if_needed(operation))?;
-        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
-        let output_rows = output.num_rows();
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(output_rows);
-
-        Ok(BudgetedExecutionOutcome::new(output, report))
-    }
-
     /// Execute the groupby with a borrowed per-operation execution override.
-    pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
-        self.agg_impl(specs, output_domain, "groupby::GroupBy::with_execution::agg")
+        self.agg_impl(specs, output_domain, "groupby::GroupBy::agg")
     }
     /// Prepare reusable grouping state using a borrowed per-operation
     /// execution override.
-    pub(crate) fn prepare_groups_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<PreparedGroupByFacts> {
-        self.prepare_groups_impl(ctx, "groupby::GroupBy::with_execution::prepare_groups")
+    pub(crate) fn prepare_groups_in_context(&self, ctx: Exec<'_>) -> Result<PreparedGroupByFacts> {
+        self.prepare_groups_impl(ctx, "groupby::GroupBy::prepare_groups")
     }
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }
-    fn prepare_groups_impl(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<PreparedGroupByFacts> {
+    fn prepare_groups_impl(&self, ctx: Exec<'_>, operation: &'static str) -> Result<PreparedGroupByFacts> {
         use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
@@ -513,11 +454,7 @@ impl<'a> GroupBy<'a> {
         prepared.prepare_groups()
     }
 
-    fn prepare_sort_groupby_impl(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<PreparedDataFrameGroupBy> {
+    fn prepare_sort_groupby_impl(&self, ctx: Exec<'_>, operation: &'static str) -> Result<PreparedDataFrameGroupBy> {
         use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
@@ -708,65 +645,15 @@ impl<'a> GroupBy<'a> {
         DataFrame::new(schema_names, final_cols)
     }
 
-    groupby_shortcuts!(
-        /// Shortcut: compute the sum of each named column per group.
-        fn sum(columns) => GroupByAgg::Sum;
-
-        /// Shortcut: compute the mean of each named column per group.
-        fn mean(columns) => GroupByAgg::Mean;
-
-        /// Shortcut: count non-null values of each named column per group.
-        fn count(columns) => GroupByAgg::Count { include_nulls: false };
-
-        /// Shortcut: compute the median of each named column per group.
-        fn median(columns) => GroupByAgg::Median;
-
-        /// Shortcut: count unique non-null values of each named column per group.
-        fn nunique(columns) => GroupByAgg::NUnique;
-
-        /// Shortcut: compute the sample standard deviation (ddof=1) of each named column per group.
-        fn std(columns) => GroupByAgg::Std { ddof: 1 };
-
-        /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
-        fn var(columns) => GroupByAgg::Variance { ddof: 1 };
-    );
-
-    /// Apply a per-group row shift to each column named by `specs`.
-    ///
-    /// This is the building block for SQL `LAG(value, offset, default)` and
-    /// `LEAD(value, offset, default)` window functions. Within each group
-    /// libcudf shifts the column by the requested offset and fills
-    /// indeterminate output rows with `fill_value`. The returned
-    /// [`DataFrame`] contains the key columns followed by one shifted column
-    /// per spec, in spec order. Row order within each group matches the input
-    /// row order, but the inter-group order is libcudf-defined and may differ
-    /// across calls.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `specs` is empty, a referenced column does not
-    /// exist, or a `ShiftSpec`'s `fill_value` does not have the same data
-    /// type as the corresponding column.
-    pub fn shift(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
-        let output_domain = Arc::clone(self.df.execution_domain());
+    /// Apply a per-group row shift with a borrowed per-operation execution
+    /// override.
+    pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: Exec<'_>) -> Result<DataFrame> {
+        let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.shift_impl(specs, output_domain, false, "groupby::GroupBy::shift")
     }
 
-    /// Apply a per-group row shift with a borrowed per-operation execution
-    /// override.
-    pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    pub(crate) fn shift_sorted_in_context(&self, specs: &[ShiftSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
-        self.shift_impl(specs, output_domain, false, "groupby::GroupBy::with_execution::shift")
-    }
-
-    /// Apply a per-group row shift, asserting that key columns are already
-    /// ascending with nulls after.
-    ///
-    /// Use this overload when keys come from a prior sort step so libcudf can
-    /// skip its internal key sort. Passing keys that are not actually sorted
-    /// produces undefined output ordering within groups.
-    pub fn shift_sorted(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
-        let output_domain = Arc::clone(self.df.execution_domain());
         self.shift_impl(specs, output_domain, true, "groupby::GroupBy::shift_sorted")
     }
 
@@ -853,7 +740,7 @@ impl<'a> GroupBy<'a> {
     }
 }
 
-/// Specification for one column in [`GroupBy::shift`].
+/// Specification for one column in [`GroupByOps::shift`](GroupByOps::shift).
 ///
 /// `offset` matches libcudf's `cudf::size_type` convention: positive offsets
 /// move each row toward larger indices within its group (SQL `LAG`), and
@@ -910,17 +797,6 @@ impl ShiftSpec {
     }
 }
 
-fn annotate_groupby_budget_execution_error(
-    error: Error,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-) -> Error {
-    match error.kind() {
-        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
-        _ => error.reanchor_if_needed(operation),
-    }
-}
-
 fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
     let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor_if_needed(operation))?;
     let Some(memory) = info.memory_accounting else {
@@ -934,21 +810,55 @@ fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static 
     })
 }
 
-impl GroupByExecutionScope<'_, '_, '_> {
+impl GroupByOps<'_> {
     /// Execute the groupby with the given aggregation specifications.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `specs` is empty
+    /// - Any key or value column name is not in the DataFrame's schema
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         self.groupby.agg_in_context(specs, self.ctx)
     }
 
-    /// Prepare reusable grouping state and return cuDF-reported cardinality
-    /// using this scope's execution override.
+    /// Prepare reusable grouping state and return cuDF-reported cardinality.
+    ///
+    /// This runs cuDF's grouping preparation for this DataFrame's key columns
+    /// and returns only direct facts from that operation. It does not estimate
+    /// temporary workspace or retained groupby-state memory.
     pub fn prepare_groups(&self) -> Result<PreparedGroupByFacts> {
         self.groupby.prepare_groups_in_context(self.ctx)
     }
 
-    /// Apply a per-group row shift using this scope's execution override.
+    /// Apply a per-group row shift to each column named by `specs`.
+    ///
+    /// This is the building block for SQL `LAG(value, offset, default)` and
+    /// `LEAD(value, offset, default)` window functions. Within each group
+    /// libcudf shifts the column by the requested offset and fills
+    /// indeterminate output rows with `fill_value`. The returned
+    /// [`DataFrame`] contains the key columns followed by one shifted column
+    /// per spec, in spec order. Row order within each group matches the input
+    /// row order, but the inter-group order is libcudf-defined and may differ
+    /// across calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `specs` is empty, a referenced column does not
+    /// exist, or a `ShiftSpec`'s `fill_value` does not have the same data
+    /// type as the corresponding column.
     pub fn shift(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
         self.groupby.shift_in_context(specs, self.ctx)
+    }
+
+    /// Apply a per-group row shift, asserting that key columns are already
+    /// ascending with nulls after.
+    ///
+    /// Use this when keys come from a prior sort step so libcudf can skip its
+    /// internal key sort. Passing keys that are not actually sorted produces
+    /// undefined output ordering within groups.
+    pub fn shift_sorted(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
+        self.groupby.shift_sorted_in_context(specs, self.ctx)
     }
 
     groupby_shortcuts!(

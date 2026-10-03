@@ -1,135 +1,22 @@
 //! Tests for reduction and scan operations.
 
-use cudf::{
-    DataType, ErrorCode, ErrorKind, TypeId,
-    ops::reduction::{self, NullPolicy, ReduceAgg, ScanAgg, ScanType},
-    testing::prelude::*,
-};
+use cudf::{DataType, Exec, TypeId};
 
-use crate::common::{column_from_slice, error_context_value, run_named_cases, series};
-
-fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, expected_ddof: u32) {
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason").as_deref(), Some("ddof_exceeds_i32_range"));
-    assert_eq!(error_context_value(err, "remedy").as_deref(), Some("use a ddof value within libcudf's i32 range"));
-    assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
-}
-
-fn test_reduce_sum() {
-    let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::reduce(&view, &ReduceAgg::Sum, &DataType::new(TypeId::Int64)).unwrap();
-    assert!(result.is_valid().unwrap());
-    assert_eq!(result.value::<i64>().unwrap(), 10);
-}
-
-fn test_reduce_min() {
-    let col = column_from_slice(&[5i32, 1, 3]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::reduce(&view, &ReduceAgg::Min, &DataType::new(TypeId::Int32)).unwrap();
-    assert!(result.is_valid().unwrap());
-    assert_eq!(result.value::<i32>().unwrap(), 1);
-}
-
-fn test_reduce_max() {
-    let col = column_from_slice(&[5i32, 1, 3]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::reduce(&view, &ReduceAgg::Max, &DataType::new(TypeId::Int32)).unwrap();
-    assert!(result.is_valid().unwrap());
-    assert_eq!(result.value::<i32>().unwrap(), 5);
-}
-
-fn test_reduce_mean() {
-    let col = column_from_slice(&[2.0f64, 4.0, 6.0]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::reduce(&view, &ReduceAgg::Mean, &DataType::new(TypeId::Float64)).unwrap();
-    assert!(result.is_valid().unwrap());
-    assert!((result.value::<f64>().unwrap() - 4.0).abs() < 1e-10);
-}
-
-fn test_reduce_product() {
-    let col = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::reduce(&view, &ReduceAgg::Product, &DataType::new(TypeId::Int64)).unwrap();
-    assert!(result.is_valid().unwrap());
-    assert_eq!(result.value::<i64>().unwrap(), 24);
-}
-
-fn test_scan_inclusive_sum() {
-    let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::scan(&view, ScanAgg::Sum, ScanType::Inclusive, NullPolicy::Exclude).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<i32>().unwrap();
-    assert_eq!(values, vec![1, 3, 6, 10]);
-}
-
-fn test_scan_exclusive_sum() {
-    let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let result = reduction::scan(&view, ScanAgg::Sum, ScanType::Exclusive, NullPolicy::Exclude).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<i32>().unwrap();
-    assert_eq!(values, vec![0, 1, 3, 6]);
-}
-
-fn test_reduce_ddof_above_i32_max_contains_context() {
-    let col = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let err = reduction::reduce(&view, &ReduceAgg::Variance { ddof: u32::MAX }, &DataType::new(TypeId::Float64))
-        .expect_err("expected error");
-
-    assert_ddof_range_validation_error(&err, "reduction::reduce", u32::MAX);
-    assert!(
-        err.call_chain().contains(&"reduction::create_reduce_agg_handle(variance)"),
-        "call_chain did not contain reduction::create_reduce_agg_handle(variance): {:?}",
-        err.call_chain()
-    );
-}
-
-fn test_minmax() {
-    let col = column_from_slice(&[5i32, 1, 3, 7, 2]).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let (min_scalar, max_scalar) = reduction::minmax(&view).unwrap();
-    assert!(min_scalar.is_valid().unwrap());
-    assert!(max_scalar.is_valid().unwrap());
-    assert_eq!(min_scalar.value::<i32>().unwrap(), 1);
-    assert_eq!(max_scalar.value::<i32>().unwrap(), 7);
-}
+use crate::common::{run_named_cases, series};
 
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
-    let series = series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
-    let view = series.testing_view().unwrap();
+    let series = series::<i32>("x", &[100, 200, 300]).unwrap().on(Exec::RETAINED).astype(dt).unwrap();
 
-    let result = reduction::reduce(&view, &ReduceAgg::Min, &dt).unwrap();
+    let result = series.on(Exec::RETAINED).min().unwrap();
 
     assert_eq!(result.data_type().unwrap(), dt);
 }
 
 #[test]
 fn reduction_tests_cases() {
-    run_named_cases(&[
-        ("test_reduce_sum", test_reduce_sum),
-        ("test_reduce_min", test_reduce_min),
-        ("test_reduce_max", test_reduce_max),
-        ("test_reduce_mean", test_reduce_mean),
-        ("test_reduce_product", test_reduce_product),
-        ("test_scan_inclusive_sum", test_scan_inclusive_sum),
-        ("test_scan_exclusive_sum", test_scan_exclusive_sum),
-        ("test_reduce_ddof_above_i32_max_contains_context", test_reduce_ddof_above_i32_max_contains_context),
-        ("test_minmax", test_minmax),
-        ("test_reduce_decimal_scalar_dtype_preserves_scale", test_reduce_decimal_scalar_dtype_preserves_scale),
-    ]);
+    run_named_cases(&[(
+        "test_reduce_decimal_scalar_dtype_preserves_scale",
+        test_reduce_decimal_scalar_dtype_preserves_scale,
+    )]);
 }

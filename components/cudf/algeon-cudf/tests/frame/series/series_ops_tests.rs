@@ -1,13 +1,12 @@
-//! Integration tests for `Series` arithmetic operator overloads.
+//! Integration tests for `Series` arithmetic, negation, and logical-not.
 //!
-//! Validates the `Result<Series>`-returning operator contract for:
-//! - `Series op Series` (all value/ref combos for arithmetic operators)
-//! - `Series op scalar` (all arithmetic numeric `CudfType`s)
-//! - `scalar op Series` (all arithmetic numeric `CudfType`s)
+//! Covers `Series op Series` and `Series op scalar` through the named
+//! methods on `SeriesOps`, including dtype promotion, decimal scales,
+//! timestamp differences, and error reporting.
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, Series, TypeId};
+use cudf::{DataType, Exec, Series, TypeId};
 
 use crate::common::{
     column_from_slice, error_context_value, host_export_i32_values, host_export_i64_values, nullable_series,
@@ -18,72 +17,42 @@ use crate::common::{
 // Series op Series; Result<Series> contract
 // ===========================================================================
 
-fn test_series_add_operator_returns_result() {
+fn test_series_add_returns_result() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
     let b = series::<i32>("b", &[10, 20, 30]).unwrap();
 
-    let result: cudf::Result<Series> = &a + &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).add(&b).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-fn test_series_sub_operator_returns_result() {
+fn test_series_sub_returns_result() {
     let a = series::<i32>("a", &[10, 20, 30]).unwrap();
     let b = series::<i32>("b", &[1, 2, 3]).unwrap();
 
-    let result: cudf::Result<Series> = &a - &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).sub(&b).unwrap();
 
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![9, 18, 27]);
 }
 
-fn test_series_mul_operator_returns_result() {
+fn test_series_mul_returns_result() {
     let a = series::<i32>("a", &[2, 3, 4]).unwrap();
     let b = series::<i32>("b", &[10, 10, 10]).unwrap();
 
-    let result: cudf::Result<Series> = &a * &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).mul(&b).unwrap();
 
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
 }
 
-fn test_series_div_operator_returns_result_f64() {
+fn test_series_div_returns_result_f64() {
     let a = series::<f64>("a", &[10.0, 20.0, 30.0]).unwrap();
     let b = series::<f64>("b", &[2.0, 4.0, 5.0]).unwrap();
 
-    let result: cudf::Result<Series> = &a / &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).div(&b).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(s.to_vec_strict::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
-}
-
-// -- owned/ref combo variants --
-
-fn test_series_add_owned_owned() {
-    let a = series::<i32>("a", &[1, 2]).unwrap();
-    let b = series::<i32>("b", &[10, 20]).unwrap();
-
-    let result: cudf::Result<Series> = a + b;
-    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
-}
-
-fn test_series_add_owned_ref() {
-    let a = series::<i32>("a", &[1, 2]).unwrap();
-    let b = series::<i32>("b", &[10, 20]).unwrap();
-
-    let result: cudf::Result<Series> = a + &b;
-    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
-}
-
-fn test_series_add_ref_owned() {
-    let a = series::<i32>("a", &[1, 2]).unwrap();
-    let b = series::<i32>("b", &[10, 20]).unwrap();
-
-    let result: cudf::Result<Series> = &a + b;
-    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
 }
 
 // -- output contract: Series formatting never exposes schema names --
@@ -92,7 +61,7 @@ fn test_series_op_series_produces_unnamed_result() {
     let a = series::<i32>("named_a", &[1, 2, 3]).unwrap();
     let b = series::<i32>("named_b", &[10, 20, 30]).unwrap();
 
-    let result = (&a + &b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
     let output = format!("{}", result);
     assert!(
         !output.contains("named_a") && !output.contains("named_b"),
@@ -103,11 +72,11 @@ fn test_series_op_series_produces_unnamed_result() {
 
 // -- dtype promotion --
 
-fn test_series_add_operator_mixed_type_promotion() {
+fn test_series_add_mixed_type_promotion() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
     let b = series::<f64>("b", &[0.5, 0.5, 0.5]).unwrap();
 
-    let result = (&a + &b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
@@ -115,14 +84,16 @@ fn test_series_add_operator_mixed_type_promotion() {
 fn test_series_add_decimal64_same_scale_preserves_scale_and_raw_values() {
     let a = series("a", &[12_345i64, 20_000, 0])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let b = series("b", &[100i64, -500, 25])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
-    let result = (&a + &b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000, 2_500]);
@@ -131,22 +102,34 @@ fn test_series_add_decimal64_same_scale_preserves_scale_and_raw_values() {
 fn test_series_mul_decimal64_same_scale_sums_scales_and_raw_values() {
     let a = series("a", &[12_345i64, 20_000])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
-    let b =
-        series("b", &[100i64, -500]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
+    let b = series("b", &[100i64, -500])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
 
-    let result = (&a * &b).unwrap();
+    let result = a.on(Exec::RETAINED).mul(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![12_345_000_000, -100_000_000_000]);
 }
 
 fn test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values() {
-    let a = series("a", &[1i64, 2]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
-    let b = series("b", &[3i64, 4]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -4).unwrap()).unwrap();
+    let a = series("a", &[1i64, 2])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
+    let b = series("b", &[3i64, 4])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -4).unwrap())
+        .unwrap();
 
-    let result = (&a + &b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![40_000, 60_000]);
@@ -155,12 +138,16 @@ fn test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values() {
 fn test_series_add_nullable_decimal64_preserves_scale_and_nulls() {
     let a = nullable_series("a", &[1i64, 0, 3], &[true, false, true])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
-    let b =
-        series("b", &[10i64, 20, 30]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
+    let b = series("b", &[10i64, 20, 30])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
 
-    let result = (&a + &b).unwrap();
+    let result = a.on(Exec::RETAINED).add(&b).unwrap();
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(result.null_count(), 1);
@@ -169,18 +156,22 @@ fn test_series_add_nullable_decimal64_preserves_scale_and_nulls() {
 fn test_series_timestamp_days_filter_predicate_matches_tpch_date_shape() {
     let dates = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let cutoff = series("cutoff", &[18_263i32, 18_263, 18_263])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
 
-    let result = dates.lt(&cutoff).unwrap();
+    let result = dates.on(Exec::RETAINED).lt(&cutoff).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
@@ -189,18 +180,22 @@ fn test_series_timestamp_days_filter_predicate_matches_tpch_date_shape() {
 fn test_series_timestamp_minus_timestamp_returns_duration_days() {
     let lhs = series("lhs", &[18_265i32, 18_270])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let rhs = series("rhs", &[18_262i32, 18_263])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
 
-    let result = (&lhs - &rhs).unwrap();
+    let result = lhs.on(Exec::RETAINED).sub(&rhs).unwrap();
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::DurationDays);
     assert_eq!(host_export_i32_values(&result), vec![3, 7]);
@@ -210,51 +205,36 @@ fn test_series_timestamp_minus_timestamp_returns_duration_days() {
 // Series op scalar; Result<Series> contract
 // ===========================================================================
 
-fn test_series_mul_scalar_f64_operator() {
+fn test_series_mul_scalar_f64() {
     let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
 
-    let result: cudf::Result<Series> = &s * 2.0_f64;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).mul_scalar(2.0_f64).unwrap();
 
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
-fn test_series_add_scalar_i32_operator() {
+fn test_series_add_scalar_i32() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
 
-    let result: cudf::Result<Series> = &s + 10_i32;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).add_scalar(10_i32).unwrap();
 
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
 }
 
-fn test_series_sub_scalar_i64_operator() {
+fn test_series_sub_scalar_i64() {
     let s = series::<i64>("x", &[100, 200, 300]).unwrap();
 
-    let result: cudf::Result<Series> = &s - 50_i64;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).sub_scalar(50_i64).unwrap();
 
     assert_eq!(out.to_vec_strict::<i64>().unwrap(), vec![50, 150, 250]);
 }
 
-fn test_series_div_scalar_f32_operator() {
+fn test_series_div_scalar_f32() {
     let s = series::<f32>("x", &[10.0, 20.0, 30.0]).unwrap();
 
-    let result: cudf::Result<Series> = &s / 5.0_f32;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).div_scalar(5.0_f32).unwrap();
 
     assert_eq!(out.to_vec_strict::<f32>().unwrap(), vec![2.0, 4.0, 6.0]);
-}
-
-// -- owned Series op scalar --
-
-fn test_series_mul_scalar_owned_operator() {
-    let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-
-    let result: cudf::Result<Series> = s * 2.0_f64;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
 }
 
 // -- output contract: scalar ops also omit schema names in Series formatting --
@@ -262,7 +242,7 @@ fn test_series_mul_scalar_owned_operator() {
 fn test_series_op_scalar_display_omits_input_name() {
     let s = series::<f64>("my_col", &[1.0, 2.0, 3.0]).unwrap();
 
-    let result = (&s * 2.0_f64).unwrap();
+    let result = s.on(Exec::RETAINED).mul_scalar(2.0_f64).unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("my_col"), "series * scalar output should not expose schema names: {}", output);
 }
@@ -271,100 +251,9 @@ fn test_series_op_scalar_unnamed_stays_unnamed() {
     // from_column produces an unnamed Series.
     let unnamed = Series::from_column(column_from_slice(&[1i32, 2, 3]).unwrap()).unwrap();
 
-    let result = (&unnamed + 10_i32).unwrap();
+    let result = unnamed.on(Exec::RETAINED).add_scalar(10_i32).unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("name="), "unnamed series output should stay unnamed: {}", output);
-}
-
-// ===========================================================================
-// scalar op Series; Result<Series> contract
-// ===========================================================================
-
-fn test_scalar_mul_series_f64_operator() {
-    let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-
-    let result: cudf::Result<Series> = 2.0_f64 * &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
-}
-
-fn test_scalar_add_series_i32_operator() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-
-    let result: cudf::Result<Series> = 10_i32 + &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![11, 12, 13]);
-}
-
-// -- non-commutative: scalar - Series --
-
-fn test_scalar_sub_series_f64_operator() {
-    let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-
-    let result: cudf::Result<Series> = 10.0_f64 - &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![9.0, 8.0, 7.0]);
-}
-
-fn test_scalar_sub_series_i32_operator() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-
-    let result: cudf::Result<Series> = 100_i32 - &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![99, 98, 97]);
-}
-
-// -- non-commutative: scalar / Series --
-
-fn test_scalar_div_series_f64_operator() {
-    let s = series::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
-
-    let result: cudf::Result<Series> = 20.0_f64 / &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![10.0, 5.0, 4.0]);
-}
-
-fn test_scalar_div_series_i64_operator() {
-    let s = series::<i64>("x", &[2, 5, 10]).unwrap();
-
-    let result: cudf::Result<Series> = 100_i64 / &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<i64>().unwrap(), vec![50, 20, 10]);
-}
-
-// -- scalar op owned Series --
-
-fn test_scalar_mul_owned_series_operator() {
-    let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-
-    let result: cudf::Result<Series> = 2.0_f64 * s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
-}
-
-// -- output contract: scalar-on-series formatting omits schema names --
-
-fn test_scalar_op_series_display_omits_input_name() {
-    let s = series::<f64>("my_col", &[1.0, 2.0]).unwrap();
-
-    let result = (2.0_f64 * &s).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("my_col"), "scalar * series output should not expose schema names: {}", output);
-}
-
-fn test_scalar_sub_series_display_omits_input_name() {
-    let s = series::<f64>("revenue", &[100.0, 200.0]).unwrap();
-
-    let result = (1000.0_f64 - &s).unwrap();
-    let output = format!("{}", result);
-    assert!(!output.contains("revenue"), "scalar - series output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -375,103 +264,54 @@ fn test_series_op_series_type_mismatch_returns_err() {
     let nums = series::<i32>("nums", &[1, 2, 3]).unwrap();
     let strs = series("strs", &["a", "b", "c"]).unwrap();
 
-    let result: cudf::Result<Series> = &nums + &strs;
+    let result: cudf::Result<Series> = nums.on(Exec::RETAINED).add(&strs);
     let err = result.expect_err("Expected Err for type mismatch");
     assert_eq!(err.operation(), "series::add");
     assert_eq!(error_context_value(&err, "operator").as_deref(), Some("add"));
 }
 
 // ===========================================================================
-// All four scalar types work for each direction
+// Remaining integer scalar types
 // ===========================================================================
 
-fn test_series_add_all_scalar_types() {
-    let i32s = series::<i32>("x", &[1, 2]).unwrap();
-    let i64s = series::<i64>("x", &[1, 2]).unwrap();
-    let f32s = series::<f32>("x", &[1.0, 2.0]).unwrap();
-    let f64s = series::<f64>("x", &[1.0, 2.0]).unwrap();
-
-    // Series + scalar
-    assert!((&i32s + 1_i32).is_ok());
-    assert!((&i64s + 1_i64).is_ok());
-    assert!((&f32s + 1.0_f32).is_ok());
-    assert!((&f64s + 1.0_f64).is_ok());
-
-    // scalar + Series
-    assert!((1_i32 + &i32s).is_ok());
-    assert!((1_i64 + &i64s).is_ok());
-    assert!((1.0_f32 + &f32s).is_ok());
-    assert!((1.0_f64 + &f64s).is_ok());
-}
-
-fn test_series_sub_all_scalar_types() {
-    let i32s = series::<i32>("x", &[10, 20]).unwrap();
-    let f64s = series::<f64>("x", &[10.0, 20.0]).unwrap();
-
-    assert!((&i32s - 1_i32).is_ok());
-    assert!((&f64s - 1.0_f64).is_ok());
-    assert!((100_i32 - &i32s).is_ok());
-    assert!((100.0_f64 - &f64s).is_ok());
-}
-
-fn test_series_div_all_scalar_types() {
-    let i32s = series::<i32>("x", &[10, 20]).unwrap();
-    let f64s = series::<f64>("x", &[10.0, 20.0]).unwrap();
-
-    assert!((&i32s / 2_i32).is_ok());
-    assert!((&f64s / 2.0_f64).is_ok());
-    assert!((100_i32 / &i32s).is_ok());
-    assert!((100.0_f64 / &f64s).is_ok());
-}
-
-fn test_series_scalar_operators_support_remaining_integer_types() {
+fn test_series_scalar_ops_support_remaining_integer_types() {
     let u8s = series::<u8>("u8s", &[1, 2, 3]).unwrap();
     let u16s = series::<u16>("u16s", &[10, 20, 30]).unwrap();
     let u32s = series::<u32>("u32s", &[2, 3, 4]).unwrap();
     let u64s = series::<u64>("u64s", &[20, 40, 60]).unwrap();
-    let i8s = series::<i8>("i8s", &[10, 20, 30]).unwrap();
-    let i16s = series::<i16>("i16s", &[2, 4, 6]).unwrap();
 
-    let series_add = (&u8s + 1u8).unwrap();
+    let series_add = u8s.on(Exec::RETAINED).add_scalar(1u8).unwrap();
     assert_eq!(series_add.to_vec_strict::<u8>().unwrap(), vec![2, 3, 4]);
 
-    let series_sub = (&u16s - 5u16).unwrap();
+    let series_sub = u16s.on(Exec::RETAINED).sub_scalar(5u16).unwrap();
     assert_eq!(series_sub.to_vec_strict::<u16>().unwrap(), vec![5, 15, 25]);
 
-    let series_mul = (&u32s * 10u32).unwrap();
+    let series_mul = u32s.on(Exec::RETAINED).mul_scalar(10u32).unwrap();
     assert_eq!(series_mul.to_vec_strict::<u32>().unwrap(), vec![20, 30, 40]);
 
-    let series_div = (&u64s / 10u64).unwrap();
+    let series_div = u64s.on(Exec::RETAINED).div_scalar(10u64).unwrap();
     assert_eq!(series_div.to_vec_strict::<u64>().unwrap(), vec![2, 4, 6]);
-
-    let scalar_sub = (100i8 - &i8s).unwrap();
-    assert_eq!(scalar_sub.to_vec_strict::<i8>().unwrap(), vec![90, 80, 70]);
-
-    let scalar_mul = (3i16 * &i16s).unwrap();
-    assert_eq!(scalar_mul.to_vec_strict::<i16>().unwrap(), vec![6, 12, 18]);
 }
 
 // ===========================================================================
-// Rem (modulo) operator; Series % Series and Series % scalar
+// Rem (modulo); Series % Series and Series % scalar
 // ===========================================================================
 
-fn test_series_rem_operator_i32() {
+fn test_series_rem_i32() {
     let a = series::<i32>("a", &[10, 23, 17]).unwrap();
     let b = series::<i32>("b", &[3, 5, 4]).unwrap();
 
-    let result: cudf::Result<Series> = &a % &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).rem(&b).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 3, 1]);
 }
 
-fn test_series_rem_operator_f64() {
+fn test_series_rem_f64() {
     let a = series::<f64>("a", &[10.5, 7.0]).unwrap();
     let b = series::<f64>("b", &[3.0, 2.5]).unwrap();
 
-    let result: cudf::Result<Series> = &a % &b;
-    let s = result.unwrap();
+    let s = a.on(Exec::RETAINED).rem(&b).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     let vals = s.to_vec_strict::<f64>().unwrap();
@@ -479,39 +319,29 @@ fn test_series_rem_operator_f64() {
     assert!((vals[1] - 2.0).abs() < 1e-10);
 }
 
-fn test_series_rem_scalar_i32_operator() {
+fn test_series_rem_scalar_i32() {
     let s = series::<i32>("x", &[10, 23, 17]).unwrap();
 
-    let result: cudf::Result<Series> = &s % 3_i32;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).rem_scalar(3_i32).unwrap();
 
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 2]);
 }
 
-fn test_series_rem_scalar_f64_operator() {
+fn test_series_rem_scalar_f64() {
     let s = series::<f64>("x", &[10.5, 7.0]).unwrap();
 
-    let result: cudf::Result<Series> = &s % 3.0_f64;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).rem_scalar(3.0_f64).unwrap();
 
     let vals = out.to_vec_strict::<f64>().unwrap();
     assert!((vals[0] - 1.5).abs() < 1e-10);
     assert!((vals[1] - 1.0).abs() < 1e-10);
 }
 
-fn test_series_rem_owned_owned() {
-    let a = series::<i32>("a", &[10, 7]).unwrap();
-    let b = series::<i32>("b", &[3, 4]).unwrap();
-
-    let result: cudf::Result<Series> = a % b;
-    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
-}
-
 fn test_series_rem_produces_unnamed_result() {
     let a = series::<i32>("named_a", &[10]).unwrap();
     let b = series::<i32>("named_b", &[3]).unwrap();
 
-    let result = (&a % &b).unwrap();
+    let result = a.on(Exec::RETAINED).rem(&b).unwrap();
     let output = format!("{}", result);
     assert!(
         !output.contains("named_a") && !output.contains("named_b"),
@@ -523,92 +353,56 @@ fn test_series_rem_produces_unnamed_result() {
 fn test_series_rem_scalar_display_omits_input_name() {
     let s = series::<i32>("my_col", &[10, 23]).unwrap();
 
-    let result = (&s % 3_i32).unwrap();
+    let result = s.on(Exec::RETAINED).rem_scalar(3_i32).unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("my_col"), "series % scalar output should not expose schema names: {}", output);
 }
 
-fn test_scalar_rem_series_i32() {
-    let s = series::<i32>("x", &[3, 4]).unwrap();
-
-    let result: cudf::Result<Series> = 10_i32 % &s;
-    let out = result.unwrap();
-
-    assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
-}
-
-fn test_scalar_rem_series_f64() {
-    let s = series::<f64>("x", &[3.0]).unwrap();
-
-    let result: cudf::Result<Series> = 10.0_f64 % &s;
-    let out = result.unwrap();
-
-    let vals = out.to_vec_strict::<f64>().unwrap();
-    assert!((vals[0] - 1.0).abs() < 1e-10);
-}
-
 // ===========================================================================
-// Neg operator; -Series
+// Negation
 // ===========================================================================
 
-fn test_series_neg_operator_i32() {
+fn test_series_neg_i32() {
     let s = series::<i32>("x", &[1, -2, 3]).unwrap();
 
-    let result: cudf::Result<Series> = -&s;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).neg().unwrap();
 
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
-fn test_series_neg_operator_f64() {
+fn test_series_neg_f64() {
     let s = series::<f64>("x", &[1.5, -2.5]).unwrap();
 
-    let result: cudf::Result<Series> = -&s;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).neg().unwrap();
 
     assert_eq!(out.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
-}
-
-fn test_series_neg_owned() {
-    let s = series::<i32>("x", &[1, -2]).unwrap();
-
-    let result: cudf::Result<Series> = -s;
-    assert_eq!(result.unwrap().to_vec_strict::<i32>().unwrap(), vec![-1, 2]);
 }
 
 fn test_series_neg_display_omits_input_name() {
     let s = series::<i32>("my_col", &[1, 2]).unwrap();
 
-    let result = (-&s).unwrap();
+    let result = s.on(Exec::RETAINED).neg().unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("my_col"), "negated series output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
-// Not operator; !Series (logical not for Bool8)
+// Logical not and boolean mask composition (Bool8)
 // ===========================================================================
 
-fn test_series_not_operator_bool() {
+fn test_series_not_bool() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();
 
-    let result: cudf::Result<Series> = !&s;
-    let out = result.unwrap();
+    let out = s.on(Exec::RETAINED).logical_not().unwrap();
 
     assert_eq!(out.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(out.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-fn test_series_not_owned() {
-    let s = series::<bool>("x", &[true, false]).unwrap();
-
-    let result: cudf::Result<Series> = !s;
-    assert_eq!(result.unwrap().to_vec_strict::<bool>().unwrap(), vec![false, true]);
-}
-
 fn test_series_not_display_omits_input_name() {
     let s = series::<bool>("flags", &[true, false]).unwrap();
 
-    let result = (!&s).unwrap();
+    let result = s.on(Exec::RETAINED).logical_not().unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("flags"), "logical-not series output should not expose schema names: {}", output);
 }
@@ -617,7 +411,7 @@ fn test_series_logical_and_method_bool() {
     let a = series::<bool>("lhs", &[true, false, true]).unwrap();
     let b = series::<bool>("rhs", &[true, true, false]).unwrap();
 
-    let result = a.logical_and(&b).unwrap();
+    let result = a.on(Exec::RETAINED).logical_and(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
@@ -626,72 +420,20 @@ fn test_series_logical_or_method_bool() {
     let a = series::<bool>("lhs", &[true, false, true]).unwrap();
     let b = series::<bool>("rhs", &[false, true, false]).unwrap();
 
-    let result = a.logical_or(&b).unwrap();
+    let result = a.on(Exec::RETAINED).logical_or(&b).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
-}
-
-// ===========================================================================
-// Named rem / rem_scalar methods
-// ===========================================================================
-
-fn test_series_rem_method() {
-    let a = series::<i32>("a", &[10, 23]).unwrap();
-    let b = series::<i32>("b", &[3, 5]).unwrap();
-
-    let result = a.rem(&b).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 3]);
-}
-
-fn test_series_rem_scalar_method() {
-    let s = series::<i32>("x", &[10, 23]).unwrap();
-
-    let result = s.rem_scalar(3i32).unwrap();
-    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
-}
-
-// ===========================================================================
-// Non-commutative scalar ops produce correct directional results
-// ===========================================================================
-
-fn test_scalar_sub_is_not_commutative() {
-    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-
-    let forward = (&s - 10_i32).unwrap();
-    let reverse = (10_i32 - &s).unwrap();
-
-    let fwd_vals = forward.to_vec_strict::<i32>().unwrap();
-    let rev_vals = reverse.to_vec_strict::<i32>().unwrap();
-
-    assert_eq!(fwd_vals, vec![-9, -8, -7]);
-    assert_eq!(rev_vals, vec![9, 8, 7]);
-}
-
-fn test_scalar_div_is_not_commutative() {
-    let s = series::<f64>("x", &[2.0, 4.0, 5.0]).unwrap();
-
-    let forward = (&s / 20.0_f64).unwrap();
-    let reverse = (20.0_f64 / &s).unwrap();
-
-    let fwd_vals = forward.to_vec_strict::<f64>().unwrap();
-    let rev_vals = reverse.to_vec_strict::<f64>().unwrap();
-
-    assert_eq!(fwd_vals, vec![0.1, 0.2, 0.25]);
-    assert_eq!(rev_vals, vec![10.0, 5.0, 4.0]);
 }
 
 #[test]
 fn series_ops_tests_cases() {
     run_named_cases(&[
-        ("test_series_add_operator_returns_result", test_series_add_operator_returns_result),
-        ("test_series_sub_operator_returns_result", test_series_sub_operator_returns_result),
-        ("test_series_mul_operator_returns_result", test_series_mul_operator_returns_result),
-        ("test_series_div_operator_returns_result_f64", test_series_div_operator_returns_result_f64),
-        ("test_series_add_owned_owned", test_series_add_owned_owned),
-        ("test_series_add_owned_ref", test_series_add_owned_ref),
-        ("test_series_add_ref_owned", test_series_add_ref_owned),
+        ("test_series_add_returns_result", test_series_add_returns_result),
+        ("test_series_sub_returns_result", test_series_sub_returns_result),
+        ("test_series_mul_returns_result", test_series_mul_returns_result),
+        ("test_series_div_returns_result_f64", test_series_div_returns_result_f64),
         ("test_series_op_series_produces_unnamed_result", test_series_op_series_produces_unnamed_result),
-        ("test_series_add_operator_mixed_type_promotion", test_series_add_operator_mixed_type_promotion),
+        ("test_series_add_mixed_type_promotion", test_series_add_mixed_type_promotion),
         (
             "test_series_add_decimal64_same_scale_preserves_scale_and_raw_values",
             test_series_add_decimal64_same_scale_preserves_scale_and_raw_values,
@@ -716,51 +458,29 @@ fn series_ops_tests_cases() {
             "test_series_timestamp_minus_timestamp_returns_duration_days",
             test_series_timestamp_minus_timestamp_returns_duration_days,
         ),
-        ("test_series_mul_scalar_f64_operator", test_series_mul_scalar_f64_operator),
-        ("test_series_add_scalar_i32_operator", test_series_add_scalar_i32_operator),
-        ("test_series_sub_scalar_i64_operator", test_series_sub_scalar_i64_operator),
-        ("test_series_div_scalar_f32_operator", test_series_div_scalar_f32_operator),
-        ("test_series_mul_scalar_owned_operator", test_series_mul_scalar_owned_operator),
+        ("test_series_mul_scalar_f64", test_series_mul_scalar_f64),
+        ("test_series_add_scalar_i32", test_series_add_scalar_i32),
+        ("test_series_sub_scalar_i64", test_series_sub_scalar_i64),
+        ("test_series_div_scalar_f32", test_series_div_scalar_f32),
         ("test_series_op_scalar_display_omits_input_name", test_series_op_scalar_display_omits_input_name),
         ("test_series_op_scalar_unnamed_stays_unnamed", test_series_op_scalar_unnamed_stays_unnamed),
-        ("test_scalar_mul_series_f64_operator", test_scalar_mul_series_f64_operator),
-        ("test_scalar_add_series_i32_operator", test_scalar_add_series_i32_operator),
-        ("test_scalar_sub_series_f64_operator", test_scalar_sub_series_f64_operator),
-        ("test_scalar_sub_series_i32_operator", test_scalar_sub_series_i32_operator),
-        ("test_scalar_div_series_f64_operator", test_scalar_div_series_f64_operator),
-        ("test_scalar_div_series_i64_operator", test_scalar_div_series_i64_operator),
-        ("test_scalar_mul_owned_series_operator", test_scalar_mul_owned_series_operator),
-        ("test_scalar_op_series_display_omits_input_name", test_scalar_op_series_display_omits_input_name),
-        ("test_scalar_sub_series_display_omits_input_name", test_scalar_sub_series_display_omits_input_name),
         ("test_series_op_series_type_mismatch_returns_err", test_series_op_series_type_mismatch_returns_err),
-        ("test_series_add_all_scalar_types", test_series_add_all_scalar_types),
-        ("test_series_sub_all_scalar_types", test_series_sub_all_scalar_types),
-        ("test_series_div_all_scalar_types", test_series_div_all_scalar_types),
         (
-            "test_series_scalar_operators_support_remaining_integer_types",
-            test_series_scalar_operators_support_remaining_integer_types,
+            "test_series_scalar_ops_support_remaining_integer_types",
+            test_series_scalar_ops_support_remaining_integer_types,
         ),
-        ("test_series_rem_operator_i32", test_series_rem_operator_i32),
-        ("test_series_rem_operator_f64", test_series_rem_operator_f64),
-        ("test_series_rem_scalar_i32_operator", test_series_rem_scalar_i32_operator),
-        ("test_series_rem_scalar_f64_operator", test_series_rem_scalar_f64_operator),
-        ("test_series_rem_owned_owned", test_series_rem_owned_owned),
+        ("test_series_rem_i32", test_series_rem_i32),
+        ("test_series_rem_f64", test_series_rem_f64),
+        ("test_series_rem_scalar_i32", test_series_rem_scalar_i32),
+        ("test_series_rem_scalar_f64", test_series_rem_scalar_f64),
         ("test_series_rem_produces_unnamed_result", test_series_rem_produces_unnamed_result),
         ("test_series_rem_scalar_display_omits_input_name", test_series_rem_scalar_display_omits_input_name),
-        ("test_scalar_rem_series_i32", test_scalar_rem_series_i32),
-        ("test_scalar_rem_series_f64", test_scalar_rem_series_f64),
-        ("test_series_neg_operator_i32", test_series_neg_operator_i32),
-        ("test_series_neg_operator_f64", test_series_neg_operator_f64),
-        ("test_series_neg_owned", test_series_neg_owned),
+        ("test_series_neg_i32", test_series_neg_i32),
+        ("test_series_neg_f64", test_series_neg_f64),
         ("test_series_neg_display_omits_input_name", test_series_neg_display_omits_input_name),
-        ("test_series_not_operator_bool", test_series_not_operator_bool),
-        ("test_series_not_owned", test_series_not_owned),
+        ("test_series_not_bool", test_series_not_bool),
         ("test_series_not_display_omits_input_name", test_series_not_display_omits_input_name),
         ("test_series_logical_and_method_bool", test_series_logical_and_method_bool),
         ("test_series_logical_or_method_bool", test_series_logical_or_method_bool),
-        ("test_series_rem_method", test_series_rem_method),
-        ("test_series_rem_scalar_method", test_series_rem_scalar_method),
-        ("test_scalar_sub_is_not_commutative", test_scalar_sub_is_not_commutative),
-        ("test_scalar_div_is_not_commutative", test_scalar_div_is_not_commutative),
     ]);
 }

@@ -3,11 +3,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, ErrorCode, ErrorKind, Series, TypeId};
+use cudf::{DataType, ErrorCode, ErrorKind, ScalarValue, Series, TypeId};
 
-use crate::common::{
-    empty_series, error_context_value, null_scalar, null_series, run_named_cases, scalar, series_opt, string_scalar,
-};
+use crate::common::{empty_series, error_context_value, null_series, run_named_cases, scalar, series_opt};
 
 // ===========================================================================
 // Runtime unnamed-default constructor split
@@ -191,7 +189,7 @@ fn test_from_scalar_f64() {
 }
 
 fn test_from_scalar_string() {
-    let scalar = string_scalar("hello").unwrap();
+    let scalar = scalar("hello").unwrap();
     let s = Series::from_scalar(&scalar, 2).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
@@ -200,7 +198,7 @@ fn test_from_scalar_string() {
 }
 
 fn test_from_scalar_null_produces_all_nulls() {
-    let scalar = null_scalar::<i32>().unwrap();
+    let scalar = scalar(ScalarValue::Null(TypeId::Int32.into())).unwrap();
     let s = Series::from_scalar(&scalar, 3).unwrap();
 
     assert_eq!(s.len(), 3);

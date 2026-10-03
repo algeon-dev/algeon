@@ -1,7 +1,7 @@
 //! Tests for the DataFrame wrapper.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind,
+    DataFrame, ErrorCode, ErrorKind, Exec,
     core::Table,
     testing::{dataframe::reassemble_dataframe_from_table_and_names_for_test, prelude::*},
 };
@@ -177,7 +177,7 @@ fn test_zero_column_dataframe_table_round_trip_preserves_row_count() {
         .select(std::iter::empty::<&str>())
         .unwrap();
 
-    let copied = source.to_table_copy().unwrap();
+    let copied = source.on(Exec::RETAINED).to_table_copy().unwrap();
     {
         let copied_view = copied.testing_view().unwrap();
         assert_eq!(copied_view.num_columns().unwrap(), 0);

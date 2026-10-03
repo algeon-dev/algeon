@@ -6,8 +6,6 @@ mod cast_spec_tests;
 mod concatenate_tests;
 #[path = "../ops/join/conditional_join_tests.rs"]
 mod conditional_join_tests;
-#[path = "../ops/copying/copying_tests.rs"]
-mod copying_tests;
 #[path = "../ops/filter/dataframe_filter_expr_tests.rs"]
 mod dataframe_filter_expr_tests;
 #[path = "../ops/filter/dataframe_filter_sort_tests.rs"]
@@ -28,8 +26,6 @@ mod dataframe_merge_tests;
 mod dataframe_sort_values_tests;
 #[path = "../ops/datetime/datetime_tests.rs"]
 mod datetime_tests;
-#[path = "../ops/misc/dictionary_tests.rs"]
-mod dictionary_tests;
 #[path = "../ops/misc/expr_doc_surface_tests.rs"]
 mod expr_doc_surface_tests;
 #[path = "../ops/misc/expr_tests.rs"]
@@ -38,16 +34,12 @@ mod expr_tests;
 mod factorize_tests;
 #[path = "../ops/misc/ffi_enum_contract_tests.rs"]
 mod ffi_enum_contract_tests;
-#[path = "../ops/filter/filter_tests.rs"]
-mod filter_tests;
 #[path = "../ops/groupby/groupby_null_tests.rs"]
 mod groupby_null_tests;
 #[path = "../ops/groupby/shift_tests.rs"]
 mod groupby_shift_tests;
 #[path = "../ops/groupby/groupby_tests.rs"]
 mod groupby_tests;
-#[path = "../ops/misc/hashing_tests.rs"]
-mod hashing_tests;
 #[path = "../ops/groupby/high_level_groupby_tests.rs"]
 mod high_level_groupby_tests;
 #[path = "../ops/join/join_tests.rs"]
@@ -64,12 +56,8 @@ mod replace_tests;
 mod search_tests;
 #[path = "../ops/groupby/shared_group_key_validation_tests.rs"]
 mod shared_group_key_validation_tests;
-#[path = "../ops/copying/shift_tests.rs"]
-mod shift_tests;
 #[path = "../ops/sorting/sorting_tests.rs"]
 mod sorting_tests;
-#[path = "../ops/misc/stream_compaction_tests.rs"]
-mod stream_compaction_tests;
 #[path = "../ops/strings/strings_tests.rs"]
 mod strings_tests;
 #[path = "../ops/unary/unary_tests.rs"]

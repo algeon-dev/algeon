@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::*;
-use crate::core::Scalar;
+use crate::core::{Scalar, scalar::ScalarValue};
 
 /// A source-schema column referenced by a local Parquet reader predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,18 +351,18 @@ fn source_reader_literal_scalar(
             _ => source_reader_literal_type_mismatch(literal, target_type),
         },
         TypeId::String => match literal {
-            SourceReaderPredicateLiteral::String(value) => runtime.string_scalar(value),
+            SourceReaderPredicateLiteral::String(value) => runtime.scalar(value),
             _ => source_reader_literal_type_mismatch(literal, target_type),
         },
         TypeId::TimestampDays => match literal {
             SourceReaderPredicateLiteral::Date32(value) => {
-                runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days)
+                runtime.scalar(ScalarValue::Timestamp { raw: i64::from(*value), resolution: TimestampResolution::Days })
             },
             _ => source_reader_literal_type_mismatch(literal, target_type),
         },
         TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
             let raw = source_reader_decimal_literal_raw(literal, target_type.scale())?;
-            runtime.decimal_raw_scalar(raw, target_type)
+            runtime.scalar(ScalarValue::decimal(raw, target_type)?)
         },
         other => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,

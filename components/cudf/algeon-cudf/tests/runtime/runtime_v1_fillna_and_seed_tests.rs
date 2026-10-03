@@ -4,12 +4,12 @@
 //! - `DataFrame::copy_into_runtime` + `fillna_with_series`: explicit placement
 //! - `Series::copy_into_runtime` + `fillna_with_series`: explicit placement
 //! - `DataFrame::fillna_with_series`: v2: mixed-domain default path succeeds
-//! - `Series::fillna_with_series`: v2: mixed-domain default path succeeds
+//! - `SeriesOps::fillna_with_series`: v2: mixed-domain default path succeeds
 //! - `Runtime::empty_column`: retains explicit domain
 //! - `Runtime::column_from_device_ptr`: uses `_ex` FFI, retains explicit domain
 use std::{ffi::c_void, ptr};
 
-use cudf::{DataFrame, Series, TypeId, testing::prelude::*};
+use cudf::{DataFrame, Exec, Series, TypeId, testing::prelude::*};
 use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
@@ -68,7 +68,7 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let fill = fill.copy_into_runtime(&target_rt).unwrap();
 
     obs_reset();
-    let result = df.fillna_with_series("val", &fill).unwrap();
+    let result = df.on(Exec::RETAINED).fillna_with_series("val", &fill).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().testing_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().testing_raw_handle_value());
@@ -95,7 +95,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 
     // Without runtime, mixed domains now succeed under v2.
     obs_reset();
-    let result = df.fillna_with_series("val", &fill).unwrap();
+    let result = df.on(Exec::RETAINED).fillna_with_series("val", &fill).unwrap();
 
     // Output provenance inherits from the input DataFrame.
     assert_eq!(result.testing_execution_domain_id(), rt_a.testing_execution_domain_id());
@@ -116,8 +116,12 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let fill = rt.series(&[99i32, 99, 99]).unwrap();
 
     obs_reset();
-    let result =
-        df.copy_into_runtime(&rt).unwrap().fillna_with_series("val", &fill.copy_into_runtime(&rt).unwrap()).unwrap();
+    let result = df
+        .copy_into_runtime(&rt)
+        .unwrap()
+        .on(Exec::RETAINED)
+        .fillna_with_series("val", &fill.copy_into_runtime(&rt).unwrap())
+        .unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
@@ -141,7 +145,7 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let fill = fill.copy_into_runtime(&target_rt).unwrap();
 
     obs_reset();
-    let result = series.fillna_with_series(&fill).unwrap();
+    let result = series.on(Exec::RETAINED).fillna_with_series(&fill).unwrap();
 
     assert_eq!(obs_last_stream(), target_rt.stream().testing_raw_handle_value());
     assert_eq!(obs_last_mr() as usize, target_rt.memory_resource().testing_raw_handle_value());
@@ -153,7 +157,7 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-/// v2 semantics: mixed-domain Series::fillna_with_series succeeds via the
+/// v2 semantics: mixed-domain SeriesOps::fillna_with_series succeeds via the
 /// default path (without `_with_runtime`). Output provenance follows the
 /// input series (primary input for replace-nulls).
 fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
@@ -166,7 +170,7 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 
     // Without runtime, mixed domains now succeed under v2.
     obs_reset();
-    let result = series.fillna_with_series(&fill).unwrap();
+    let result = series.on(Exec::RETAINED).fillna_with_series(&fill).unwrap();
 
     // Output provenance inherits from the input series.
     assert_eq!(result.as_column().testing_execution_domain_id(), rt_a.testing_execution_domain_id());

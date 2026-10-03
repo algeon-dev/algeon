@@ -2,7 +2,7 @@
 use std::fs;
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind,
+    DataFrame, ErrorCode, ErrorKind, Exec,
     core::{
         Table,
         error::{FactKeyName, FactValue},
@@ -46,7 +46,11 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     write_parquet(&table, &write_opts).unwrap();
 
     // Read back via DataFrame.
-    let df = DataFrame::read_parquet(&rt, &path).unwrap();
+    let df = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -75,7 +79,7 @@ fn test_read_parquet_with_options() {
 
     // Read with column selection and row limit.
     let opts = ParquetReadOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).with_runtime(&rt).build();
-    let df = DataFrame::read_parquet_with_options(opts).unwrap();
+    let df = DataFrame::read_parquet(opts, Exec::RETAINED).unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows(), 3);
@@ -98,8 +102,9 @@ fn test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them
     write_parquet(&table, &write_opts).unwrap();
 
     let mut filebytes = fs::read(&path).unwrap();
-    let opts = ParquetReadOptions::builder().columns(&["b"]).num_rows(3).with_runtime(&rt).build();
-    let df = DataFrame::read_parquet_from_host_buffer(&filebytes, opts).unwrap();
+    let opts =
+        ParquetReadOptions::builder().filebytes(&filebytes).columns(&["b"]).num_rows(3).with_runtime(&rt).build();
+    let df = DataFrame::read_parquet(opts, Exec::RETAINED).unwrap();
 
     filebytes.fill(0);
     drop(filebytes);
@@ -120,7 +125,7 @@ fn test_read_parquet_with_options_accepts_filebytes_source() {
 
     let filebytes = fs::read(&path).unwrap();
     let opts = ParquetReadOptions::builder().filebytes(&filebytes).with_runtime(&rt).build();
-    let df = DataFrame::read_parquet_with_options(opts).unwrap();
+    let df = DataFrame::read_parquet(opts, Exec::RETAINED).unwrap();
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
@@ -145,11 +150,11 @@ fn test_read_parquet_with_options_rejects_empty_projection_as_invalid_input() {
     write_parquet(&table, &write_opts).unwrap();
 
     let opts = ParquetReadOptions::builder().filepath(&path).columns(&[]).with_runtime(&rt).build();
-    let err = DataFrame::read_parquet_with_options(opts).expect_err("empty projection should fail clearly");
+    let err = DataFrame::read_parquet(opts, Exec::RETAINED).expect_err("empty projection should fail clearly");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::EmptyInput);
-    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet");
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("columns"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_projection"));
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
@@ -172,7 +177,11 @@ fn test_write_parquet_preserves_schema() {
     df.write_parquet(&path).unwrap();
 
     // Read back and verify schema preserved.
-    let df2 = DataFrame::read_parquet(&rt, &path).unwrap();
+    let df2 = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
     assert_eq!(df2.column_names(), vec!["x", "y"]);
     assert_eq!(df2.num_rows(), 2);
 
@@ -199,7 +208,11 @@ fn test_roundtrip_create_write_read() {
 
     df.write_parquet(&path).unwrap();
 
-    let df2 = DataFrame::read_parquet(&rt, &path).unwrap();
+    let df2 = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
     assert_eq!(df2.column_names(), vec!["alpha", "beta", "gamma"]);
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.num_rows(), 3);
@@ -212,8 +225,14 @@ fn test_roundtrip_create_write_read() {
 #[test]
 fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
     let rt = sample_runtime();
-    let err = DataFrame::read_parquet(&rt, "/tmp/nonexistent_cudf_test_file_12345.parquet")
-        .expect_err("missing Parquet file should fail");
+    let err = DataFrame::read_parquet(
+        ParquetReadOptions::builder()
+            .filepath("/tmp/nonexistent_cudf_test_file_12345.parquet")
+            .with_runtime(&rt)
+            .build(),
+        Exec::RETAINED,
+    )
+    .expect_err("missing Parquet file should fail");
 
     assert_eq!(err.code(), ErrorCode::IoFailure);
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
@@ -231,11 +250,15 @@ fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_tabl
     write_parquet(&table, &write_opts).unwrap();
 
     arm_next_io_metadata_fault(CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
-    let err = DataFrame::read_parquet(&rt, &path).expect_err("missing schema metadata should fail");
+    let err = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
-    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet");
     assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(0)));
     assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
@@ -260,11 +283,15 @@ fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_c
     write_parquet(&table, &write_opts).unwrap();
 
     arm_next_io_metadata_fault(CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
-    let err = DataFrame::read_parquet(&rt, &path).expect_err("invalid UTF-8 metadata should fail");
+    let err = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("invalid UTF-8 metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
-    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet");
     assert!(
         err.call_chain().contains(&"io::parquet::read_parquet_table"),
         "expected reanchor trail to include io::parquet::read_parquet_table, got {:?}",

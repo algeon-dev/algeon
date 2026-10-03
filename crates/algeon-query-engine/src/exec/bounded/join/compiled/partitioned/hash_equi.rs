@@ -7,13 +7,13 @@ use super::{
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
     PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource,
     ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, bounded_invariant_violation,
-    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side,
-    join_keys_for_side, materialize_compiled_keyed_equality_join_indices_with_preflight,
-    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partitioned_join_partition_count,
-    partitioned_join_target_bytes_for_context, partitioned_streaming_probe_supported,
-    prepare_bounded_join_side_input_from_resident_frame, probe_side, record_partitioned_join_operator_metrics,
-    record_streamed_partitioned_hash_join_metrics, release_partitioned_join_side, run_partitioned_join_driver,
-    stream_bounded_join_leaf_local_parquet_source_serial, validate_partitioned_hash_equi_join,
+    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, hash_partition_join_side, join_keys_for_side,
+    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
+    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
+    record_partitioned_join_operator_metrics, record_streamed_partitioned_hash_join_metrics,
+    release_partitioned_join_side, run_partitioned_join_driver, stream_bounded_join_leaf_local_parquet_source_serial,
+    validate_partitioned_hash_equi_join,
 };
 use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
 
@@ -109,8 +109,8 @@ fn materialize_partitioned_hash_equi_join_partition(
 ) -> Result<PartitionedJoinPartitionOutput> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     let (left, right) = txn.sides();
@@ -122,7 +122,7 @@ fn materialize_partitioned_hash_equi_join_partition(
         node.spec.build_side,
         &left_keys,
         &right_keys,
-        &overrides,
+        overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
@@ -151,7 +151,7 @@ fn materialize_partitioned_hash_equi_join_partition(
     let output = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
@@ -207,10 +207,10 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let partition_target_bytes = partitioned_join_target_bytes_for_context(execution.context());
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let build_partitioned =
-        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, &overrides)?;
+        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, overrides)?;
     let build_partitioned_bytes = build_partitioned.device_bytes();
     let mut outputs = Vec::new();
     let mut summary =
@@ -240,7 +240,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         let probe_rows = probe.rows;
         let probe_bytes = probe.bytes;
         let probe_partitioned =
-            hash_partition_join_side(execution, probe_side, probe, &probe_keys, partition_count, &overrides)?;
+            hash_partition_join_side(execution, probe_side, probe, &probe_keys, partition_count, overrides)?;
         let probe_partitioned_bytes = probe_partitioned.device_bytes();
         // A chunk that fails here is re-read in smaller pieces by the leaf
         // stream, so its outputs and summary are kept only after every
@@ -330,10 +330,10 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let partition_target_bytes = partitioned_join_target_bytes_for_context(execution.context());
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let build_partitioned =
-        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, &overrides)?;
+        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, overrides)?;
     let build_partitioned_bytes = build_partitioned.device_bytes();
     execution.metrics().record_join_strategy_decision(
         node_id,

@@ -1,7 +1,7 @@
 //! Tests for DataFrame groupby aggregation.
 
 use cudf::{
-    AggSpec, DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, GroupByAgg,
+    AggSpec, DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, GroupByAgg,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     testing::{
@@ -73,7 +73,7 @@ fn test_groupby_single_key_sum() {
 
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // Should have 2 columns: "key" and "value_sum"
     assert_eq!(result.num_columns(), 2);
@@ -99,14 +99,14 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
-    let expected = df.groupby(["key"]).agg(&specs).unwrap();
+    let expected = df.groupby(["key"]).on(Exec::RETAINED).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
         execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
             .unwrap()
     });
 
     reset_exec_observation();
-    let outcome = df.groupby(["key"]).agg_with_budget(&specs, &token).unwrap();
+    let outcome = token.run("groupby::agg", |exec| df.groupby(["key"]).on(exec).agg(&specs)).unwrap();
     let budgeted_exec_mr = last_exec_mr_value();
     let result = outcome.value();
     let report = outcome.report();
@@ -137,7 +137,7 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
-    let expected = df.groupby(["key"]).agg(&specs).unwrap();
+    let expected = df.groupby(["key"]).on(Exec::RETAINED).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
         execution_budget_token(
             runtime,
@@ -219,7 +219,7 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
             .unwrap()
     });
 
-    let outcome = df.groupby(["l_partkey"]).agg_with_budget(&specs, &token).unwrap();
+    let outcome = token.run("groupby::agg", |exec| df.groupby(["l_partkey"]).on(exec).agg(&specs)).unwrap();
     let result = outcome.value();
     let report = outcome.report();
 
@@ -245,13 +245,12 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
         execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("grouped_sum")).unwrap()
     });
 
-    let err = df
-        .groupby(["key"])
-        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+    let err = token
+        .run("groupby::agg", |exec| df.groupby(["key"]).on(exec).agg(&[AggSpec::new("value", GroupByAgg::Sum)]))
         .expect_err("one-byte budget should not cover grouped aggregate allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_eq!(err.operation(), "groupby::agg");
     let budget = err.budget_exhaustion().expect("budgeted aggregate exposes its budget scope");
     assert_eq!(budget.boundary(), "grouped_sum");
     let usage = budget.usage().expect("the member was sampled");
@@ -271,11 +270,13 @@ fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_
             .unwrap()
     });
 
-    let err = df.groupby(["key"]).agg_with_budget(&[], &token).expect_err("expected error for empty aggregation");
+    let err = token
+        .run("groupby::agg", |exec| df.groupby(["key"]).on(exec).agg(&[]))
+        .expect_err("expected error for empty aggregation");
 
     assert_high_level_groupby_validation_error(
         &err,
-        "groupby::GroupBy::agg_with_budget",
+        "groupby::agg",
         "empty_agg_specs",
         "provide at least one AggSpec or use a shortcut like .sum([...])",
     );
@@ -291,13 +292,12 @@ fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budg
             .unwrap()
     });
 
-    let err = df
-        .groupby(["key"])
-        .agg_with_budget(&[AggSpec::new("missing_value", GroupByAgg::Sum)], &token)
+    let err = token
+        .run("groupby::agg", |exec| df.groupby(["key"]).on(exec).agg(&[AggSpec::new("missing_value", GroupByAgg::Sum)]))
         .expect_err("expected error for missing aggregation column");
 
     assert_missing_column_error(&err, "missing_value");
-    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_eq!(err.operation(), "groupby::agg");
     assert_no_budget_error_details(&err);
 }
 
@@ -310,14 +310,15 @@ fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_d
             .unwrap()
     });
 
-    let err = df
-        .groupby(Vec::<&str>::new())
-        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+    let err = token
+        .run("groupby::agg", |exec| {
+            df.groupby(Vec::<&str>::new()).on(exec).agg(&[AggSpec::new("value", GroupByAgg::Sum)])
+        })
         .expect_err("expected error for empty group keys");
 
     assert_high_level_groupby_validation_error(
         &err,
-        "groupby::GroupBy::agg_with_budget",
+        "groupby::agg",
         "empty_group_keys",
         "provide at least one group key column",
     );
@@ -335,14 +336,13 @@ fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budge
     });
 
     arm_next_groupby_negative_total_columns_fault();
-    let err = df
-        .groupby(["key"])
-        .agg_with_budget(&[AggSpec::new("value", GroupByAgg::Sum)], &token)
+    let err = token
+        .run("groupby::agg", |exec| df.groupby(["key"]).on(exec).agg(&[AggSpec::new("value", GroupByAgg::Sum)]))
         .expect_err("expected foreign invariant error");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
-    assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
+    assert_eq!(err.operation(), "groupby::agg");
     assert_no_budget_error_details(&err);
 }
 
@@ -351,7 +351,8 @@ fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(Vec::<&str>::new()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
+    let err =
+        df.groupby(Vec::<&str>::new()).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
 
     assert_high_level_groupby_validation_error(
         &err,
@@ -366,7 +367,7 @@ fn test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract() {
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(Vec::<&str>::new()).sum(["value"]).unwrap_err();
+    let err = df.groupby(Vec::<&str>::new()).on(Exec::RETAINED).sum(["value"]).unwrap_err();
 
     assert_high_level_groupby_validation_error(
         &err,
@@ -386,6 +387,7 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
 
     let result = df
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("score", GroupByAgg::Min), AggSpec::new("score", GroupByAgg::Max)])
         .unwrap();
 
@@ -418,7 +420,7 @@ fn test_groupby_multiple_keys() {
     let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "value".to_string()], vec![k0, k1, vals])
         .unwrap();
 
-    let result = df.groupby(["a", "b"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
+    let result = df.groupby(["a", "b"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
     // Should have 3 columns: "a", "b", "value_sum"
     assert_eq!(result.num_columns(), 3);
@@ -438,6 +440,7 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
 
     let err = df
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("nonexistent", GroupByAgg::Sum)])
         .expect_err("expected error for nonexistent column");
 
@@ -452,6 +455,7 @@ fn test_groupby_nonexistent_key_column_returns_error() {
 
     let err = df
         .groupby(["missing_key"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("value", GroupByAgg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
@@ -467,6 +471,7 @@ fn test_groupby_result_column_naming_convention() {
 
     let result = df
         .groupby(["id"])
+        .on(Exec::RETAINED)
         .agg(&[
             AggSpec::new("price", GroupByAgg::Sum),
             AggSpec::new("price", GroupByAgg::Mean),
@@ -498,6 +503,7 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
 
     let result = df
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .agg(&[
             AggSpec::new("a", GroupByAgg::Sum),
             AggSpec::new("b", GroupByAgg::Sum),
@@ -532,7 +538,7 @@ fn test_groupby_high_level_rejects_negative_foreign_result_column_count_with_sta
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     arm_next_groupby_negative_total_columns_fault();
-    let err = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
+    let err = df.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -553,7 +559,7 @@ fn test_groupby_no_aggregations_returns_error() {
 
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation");
+    let err = df.groupby(["key"]).on(Exec::RETAINED).agg(&[]).expect_err("expected error for empty aggregation");
 
     assert_high_level_groupby_validation_error(
         &err,

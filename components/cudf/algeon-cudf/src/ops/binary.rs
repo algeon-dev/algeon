@@ -18,12 +18,10 @@ use crate::{
     core::{
         column::{Column, ColumnView},
         error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
-        scalar::Scalar,
+        scalar::{Scalar, ScalarValue},
         types::{DataType, TypeId},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).
@@ -499,15 +497,15 @@ fn infer_primitive_binary_output(
 /// Works with both numeric and string columns. For strings, only comparison
 /// operators (`Equal`, `NotEqual`, `Less`, `Greater`, `LessEqual`,
 /// `GreaterEqual`) are supported; arithmetic operators return an error.
-pub fn binary_operation_vv(
+pub(crate) fn binary_operation_vv(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
+    let ctx = Exec::RETAINED;
     let execution =
-        ResolvedExecution::binary(lhs.execution_domain(), rhs.execution_domain(), &ctx, "binary::binary_operation_vv")?;
+        ResolvedExecution::binary(lhs.execution_domain(), rhs.execution_domain(), ctx, "binary::binary_operation_vv")?;
     binary_operation_vv_impl(
         lhs,
         rhs,
@@ -657,37 +655,6 @@ fn decimal_division_explicit_type_column_scalar_targets(
     )))
 }
 
-fn decimal_division_explicit_type_scalar_column_targets(
-    lhs: &Scalar,
-    rhs: &ColumnView<'_>,
-    op: BinaryOperator,
-    output_type: &DataType,
-    operation: &'static str,
-) -> Result<Option<(DataType, DataType)>> {
-    if op != BinaryOperator::Div || !output_type.id().is_decimal() {
-        return Ok(None);
-    }
-
-    let lhs_type = lhs.data_type()?;
-    let rhs_type = rhs.data_type()?;
-    if !(lhs_type.id().is_decimal() && rhs_type.id().is_decimal()) {
-        return Ok(None);
-    }
-
-    let lhs_scale = adjusted_decimal_division_lhs_scale(
-        rhs_type.scale(),
-        output_type,
-        lhs_type.id(),
-        rhs_type.id(),
-        op,
-        operation,
-    )?;
-    Ok(Some((
-        DataType::fixed_point(output_type.id(), lhs_scale)?,
-        DataType::fixed_point(output_type.id(), rhs_type.scale())?,
-    )))
-}
-
 fn adjusted_decimal_division_lhs_scale(
     rhs_scale: i32,
     output_type: &DataType,
@@ -759,13 +726,16 @@ fn rescale_decimal_division_scalar(
             .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
             .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
     })?;
-    Scalar::decimal_from_raw_in_domain(raw, target, output_domain).map(Some).map_err(|error| {
-        error
-            .with_detail_if_absent("operator", BinaryOperator::Div.name())
-            .with_detail_if_absent("decimal_division_scalar_target_type_id", target.id().to_string())
-            .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
-            .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
-    })
+    ScalarValue::decimal(raw, target)
+        .and_then(|value| Scalar::from_scalar_value_in_domain(&value, output_domain))
+        .map(Some)
+        .map_err(|error| {
+            error
+                .with_detail_if_absent("operator", BinaryOperator::Div.name())
+                .with_detail_if_absent("decimal_division_scalar_target_type_id", target.id().to_string())
+                .with_detail_if_absent("decimal_division_scalar_target_scale", target.scale().to_string())
+                .with_detail_if_absent("reason", "explicit_decimal_division_scalar_scale_adjustment")
+        })
 }
 
 fn decimal_scalar_raw_value(input: &Scalar, source: DataType, operation: &'static str) -> Result<i128> {
@@ -825,30 +795,6 @@ fn pow10_i128(exponent: u32, operation: &'static str) -> Result<i128> {
     Ok(value)
 }
 
-/// Binary operation: column op scalar.
-///
-/// Works with both numeric and string columns. For strings, only comparison
-/// operators are supported; arithmetic operators return an error.
-pub fn binary_operation_vs(
-    lhs: &ColumnView<'_>,
-    rhs: &Scalar,
-    op: BinaryOperator,
-    output_type: &DataType,
-) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(lhs.execution_domain(), rhs.execution_domain(), &ctx, "binary::binary_operation_vs")?;
-    binary_operation_vs_impl(
-        lhs,
-        rhs,
-        op,
-        output_type,
-        execution.output_domain(),
-        execution.exec_options(),
-        "binary::binary_operation_vs",
-    )
-}
-
 pub(crate) fn binary_operation_vs_impl(
     lhs: &ColumnView<'_>,
     rhs: &Scalar,
@@ -884,91 +830,6 @@ pub(crate) fn binary_operation_vs_impl(
     // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = unsafe {
         cudf_sys::cudf_binary_operation_vs_ex(
-            lhs.raw_handle(),
-            rhs.raw_handle(),
-            op_ffi,
-            dtype_handle,
-            &mut out,
-            exec_options,
-        )
-    };
-    // SAFETY: dtype_handle is a valid handle that must be destroyed.
-    unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [
-            ("operator", op.name().to_string()),
-            ("output_type_id", output_type.id().to_string()),
-            ("output_type_scale", output_type.scale().to_string()),
-            ("execution_authority", "retained_domain".to_string()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Binary operation: scalar op column.
-///
-/// Works with both numeric and string columns. For strings, only comparison
-/// operators are supported; arithmetic operators return an error.
-pub fn binary_operation_sv(
-    lhs: &Scalar,
-    rhs: &ColumnView<'_>,
-    op: BinaryOperator,
-    output_type: &DataType,
-) -> Result<Column> {
-    // Use the column's domain as primary (consistent with binary_operation_vs
-    // which also uses the column's domain).
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(rhs.execution_domain(), lhs.execution_domain(), &ctx, "binary::binary_operation_sv")?;
-    binary_operation_sv_impl(
-        lhs,
-        rhs,
-        op,
-        output_type,
-        execution.output_domain(),
-        execution.exec_options(),
-        "binary::binary_operation_sv",
-    )
-}
-
-fn binary_operation_sv_impl(
-    lhs: &Scalar,
-    rhs: &ColumnView<'_>,
-    op: BinaryOperator,
-    output_type: &DataType,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: &cudf_sys::cudf_exec_options_t,
-    operation: &'static str,
-) -> Result<Column> {
-    let lhs_decimal_division_scalar;
-    let rhs_decimal_division_cast;
-    let rhs_decimal_division_view;
-    let (lhs, rhs) = match decimal_division_explicit_type_scalar_column_targets(lhs, rhs, op, output_type, operation)? {
-        Some((lhs_target, rhs_target)) => {
-            lhs_decimal_division_scalar = rescale_decimal_division_scalar(lhs, lhs_target, output_domain, operation)?;
-            rhs_decimal_division_cast =
-                cast_decimal_division_operand(rhs, rhs_target, output_domain, exec_options, operation)?;
-            let lhs = if let Some(scalar) = lhs_decimal_division_scalar.as_ref() { scalar } else { lhs };
-            let rhs = if let Some(column) = rhs_decimal_division_cast.as_ref() {
-                rhs_decimal_division_view = column.view()?;
-                &rhs_decimal_division_view
-            } else {
-                rhs
-            };
-            (lhs, rhs)
-        },
-        None => (lhs, rhs),
-    };
-    let dtype_handle = output_type.to_raw_handle_for(operation)?;
-    let mut out = ptr::null_mut();
-    let op_ffi = op.to_raw();
-    // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
-    // dtype_handle was returned by a successful to_raw_handle_for call.
-    let status = unsafe {
-        cudf_sys::cudf_binary_operation_sv_ex(
             lhs.raw_handle(),
             rhs.raw_handle(),
             op_ffi,

@@ -1,7 +1,7 @@
 //! GPU-accelerated sorting operations.
 //!
 //! **Advanced/Core.** Most users should prefer
-//! [`DataFrame::sort_values`](crate::DataFrame::sort_values) with
+//! [`DataFrame::sort_values`](crate::FrameOps::sort_values) with
 //! [`SortOptions`].
 //!
 //! # Example
@@ -14,7 +14,8 @@
 //!     "value" => rt.series(&[30i32, 10, 20]).unwrap(),
 //! }
 //! .unwrap();
-//! let sorted = df.sort_values(["value"], SortOptions::new()).unwrap();
+//! let sorted =
+//!     df.on(rt.exec()).sort_values(["value"], SortOptions::new()).unwrap();
 //! assert_eq!(
 //!     sorted.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
 //!     vec![10, 20, 30]
@@ -34,9 +35,7 @@ use crate::{
         error::{self, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 const SORTED_ORDER_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
@@ -292,74 +291,20 @@ pub(crate) fn sorted_order_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
-/// Sort the rows of a table by all its columns.
-///
-/// If `column_order` or `null_precedence` are `None`, cuDF defaults are
-/// used (ascending, nulls after).
-pub fn sort(
-    input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sort")?;
-    sort_table_impl(
-        input,
-        SortKeyConfig::new(column_order, null_precedence),
-        false,
-        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sort"),
-    )
-}
-
-/// Stable sort (preserves relative order of equal elements).
-pub fn stable_sort(
-    input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::stable_sort")?;
-    sort_table_impl(
-        input,
-        SortKeyConfig::new(column_order, null_precedence),
-        true,
-        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::stable_sort"),
-    )
-}
-
-/// Sort the `values` table by a separate `keys` table.
-pub fn sort_by_key(
-    values: &TableView<'_>,
-    keys: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(values.execution_domain(), keys.execution_domain(), &ctx, "sorting::sort_by_key")?;
-    sort_by_key_impl(
-        values,
-        keys,
-        SortKeyConfig::new(column_order, null_precedence),
-        false,
-        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sort_by_key"),
-    )
-}
-
 /// Stable sort the `values` table by a separate `keys` table.
 ///
 /// Preserves the relative order of rows with equal keys.
-pub fn stable_sort_by_key(
+pub(crate) fn stable_sort_by_key(
     values: &TableView<'_>,
     keys: &TableView<'_>,
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let ctx = ExecutionOverrides::new();
+    let ctx = Exec::RETAINED;
     let execution = ResolvedExecution::binary(
         values.execution_domain(),
         keys.execution_domain(),
-        &ctx,
+        ctx,
         "sorting::stable_sort_by_key",
     )?;
     sort_by_key_impl(
@@ -368,23 +313,6 @@ pub fn stable_sort_by_key(
         SortKeyConfig::new(column_order, null_precedence),
         true,
         SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::stable_sort_by_key"),
-    )
-}
-
-/// Return the row indices that would sort the table.
-///
-/// The result is a single INT32 column.
-pub fn sorted_order(
-    input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sorted_order")?;
-    sorted_order_impl(
-        input,
-        SortKeyConfig::new(column_order, null_precedence),
-        SortExecution::new(execution.output_domain(), execution.exec_options(), "sorting::sorted_order"),
     )
 }
 
@@ -419,46 +347,7 @@ pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result
     })
 }
 
-/// Check whether the table is already sorted according to the given order.
-pub fn is_sorted(
-    input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> Result<bool> {
-    let operation = "sorting::is_sorted";
-    let num_keys = input.num_columns()?;
-    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
-    let num_keys_i32 = checked_num_keys(operation, num_keys)?;
-    let params = sort_params(column_order, null_precedence);
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, operation)?;
-    let mut out: i32 = 0;
-    error::check_status_in(
-        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe {
-            cudf_sys::cudf_is_sorted_ex(
-                input.raw_handle(),
-                params.column_order,
-                params.null_precedence,
-                num_keys_i32,
-                &mut out,
-                execution.exec_options(),
-            )
-        },
-        operation,
-    )
-    .map_err(|err| {
-        err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-            ("execution_authority", "retained_domain".to_string()),
-            ("host_boundary", "sortedness_boolean".to_string()),
-        ])
-    })?;
-    Ok(out != 0)
-}
-
-/// High-level sort configuration for [`DataFrame::sort_values`](crate::DataFrame::sort_values).
+/// High-level sort configuration for [`DataFrame::sort_values`](crate::FrameOps::sort_values).
 ///
 /// Provides a cuDF-Python-like interface over the low-level `Order`/`NullOrder`
 /// slices used by the core sorting functions.

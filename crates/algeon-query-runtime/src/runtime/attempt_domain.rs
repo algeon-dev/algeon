@@ -213,7 +213,7 @@ impl AttemptAllocationDomain {
         let mut fork_streams = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             fork_streams.push(
-                CudaStream::new().map_err(|error| {
+                CudaStream::new_on(parent.device()).map_err(|error| {
                     cudf_query_error(operation, "failed to create an attempt auxiliary stream", error)
                 })?,
             );

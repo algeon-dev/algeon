@@ -1,8 +1,8 @@
 //! GPU-accelerated groupby aggregation.
 //!
-//! Most users should use [`DataFrame::groupby`](crate::DataFrame::groupby)
-//! and the high-level [`GroupBy`] API. Low-level aggregation execution
-//! remains available through [`groupby_aggregate`].
+//! Run groupby work through [`DataFrame::groupby`](crate::DataFrame::groupby)
+//! and [`GroupBy::on`]; this module holds the aggregation and option types
+//! those calls take.
 
 mod agg;
 mod dataframe;
@@ -12,11 +12,9 @@ mod shift;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
-pub(crate) use agg::groupby_aggregate_impl;
-pub use agg::{
-    AggregationRequest, GroupByAgg, GroupByAggregationOutput, GroupByScanOutput, GroupByScanRequest, NullPolicy,
-    PreparedGroupBy, PreparedGroupByFacts, groupby_aggregate, groupby_aggregate_sorted, groupby_scan_sorted,
+pub(crate) use agg::{
+    AggregationRequest, GroupByAggregationOutput, GroupByScanRequest, groupby_aggregate_impl, groupby_scan_sorted,
 };
-pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions, PreparedDataFrameGroupBy, ShiftSpec};
+pub use agg::{GroupByAgg, NullPolicy, PreparedGroupByFacts};
+pub use dataframe::{AggSpec, GroupBy, GroupByOps, GroupByOptions, PreparedDataFrameGroupBy, ShiftSpec};
 pub(crate) use output::value_counts_result_columns;
-pub use shift::{GroupByShiftOutput, GroupByShiftRequest, groupby_shift};

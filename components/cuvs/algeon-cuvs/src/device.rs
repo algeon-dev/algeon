@@ -409,9 +409,9 @@ impl<T: DeviceElement> OwnedMatrix<T> {
                 .with_context("matrix_binding_id", validated.binding_id())
                 .with_context("resource_binding_id", resources.binding_id()));
             }
-            if validated.placement().device != resources.device() {
+            if validated.device() != resources.device() {
                 return Err(invalid_input(operation, "packed matrix and cuVS resources must use the same CUDA device")
-                    .with_context("matrix_device", validated.placement().device.ordinal())
+                    .with_context("matrix_device", validated.device().ordinal())
                     .with_context("resource_device", resources.device().ordinal()));
             }
             (validated.rows(), validated.columns(), validated.layout().into())
@@ -579,7 +579,7 @@ impl<T: DeviceElement> OwnedMatrix<T> {
     fn device_ordinal(&self) -> i32 {
         match &self.storage {
             MatrixStorage::Buffer(buffer) => buffer.inner().device().ordinal() as i32,
-            MatrixStorage::Packed(matrix) => matrix.placement().device.ordinal() as i32,
+            MatrixStorage::Packed(matrix) => matrix.device().ordinal() as i32,
         }
     }
 }
@@ -728,9 +728,9 @@ impl<'a, T: DeviceElement> ValidatedDeviceTensor<'a, T> {
             .with_context("tensor_binding_id", matrix.binding_id())
             .with_context("resource_binding_id", resources.binding_id()));
         }
-        if matrix.placement().device != resources.device() {
+        if matrix.device() != resources.device() {
             return Err(invalid_input(operation, "packed matrix and cuVS resources must use the same CUDA device")
-                .with_context("tensor_device", matrix.placement().device.ordinal())
+                .with_context("tensor_device", matrix.device().ordinal())
                 .with_context("resource_device", resources.device().ordinal()));
         }
         let data = matrix.as_ptr().map_err(|error| from_cudf(operation, error))? as *mut c_void;
