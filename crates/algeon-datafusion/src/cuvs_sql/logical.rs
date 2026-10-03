@@ -6,17 +6,19 @@ use datafusion::{
     logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
-    RelationIdType, VectorElementType, vector_kmeans_output_schema, vector_knn_output_schema,
-    vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
+    RelationIdType, VectorAlgorithmParams, VectorDistanceMetric, VectorElementType, VectorIvfFlatParams,
+    VectorIvfPqParams, vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+    vector_pca_output_schema, vector_top_k_output_schema,
 };
+use serde_json::Value;
 
 use super::{
-    CuvsOperation, CuvsOutputContract, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
+    CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
     error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
-    options::{options_from_named_values, validate_options},
+    options::{dense_relation_function, validate_options},
 };
 use crate::{
-    error::Result,
+    error::{Error, Result},
     gpu_functions::{
         dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions,
         input_orderings_with_expressions,
@@ -163,7 +165,7 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
             .into());
         };
         let options_json =
-            options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
+            dense_relation_function(self.operation).options_json(&inputs, self.options.value_options().clone())?;
         Self::try_new(self.operation, inputs, &options_json)?
             .with_input_orderings(input_orderings)
             .map_err(DataFusionError::from)
@@ -209,21 +211,20 @@ fn validate_input_schemas(
         ));
     }
     let element = elements[0];
-    let canonical: serde_json::Value = serde_json::from_str(options.canonical_json()).expect("canonical cuVS options");
-    if let Some(metric) = canonical.get("metric").and_then(serde_json::Value::as_str) {
-        let supported = operation.descriptor().element_support(element).expect("validated element");
-        if !supported.metrics.contains(&metric) {
-            return Err(invalid_call(
-                operation,
-                "unsupported_vector_element_metric",
-                format!(
-                    "{} {} does not support metric '{metric}'; valid metrics: {}",
-                    operation.descriptor().sql_function_name,
-                    element.as_str(),
-                    supported.metrics.join(", ")
-                ),
-            ));
-        }
+    if let Some(metric) = options.value_options().get("metric").and_then(Value::as_str)
+        && let Some(supported) = operation.descriptor().element_support(element)
+        && !supported.metrics.contains(&metric)
+    {
+        return Err(invalid_call(
+            operation,
+            "unsupported_vector_element_metric",
+            format!(
+                "{} {} does not support metric '{metric}'; valid metrics: {}",
+                operation.descriptor().sql_function_name,
+                element.as_str(),
+                supported.metrics.join(", ")
+            ),
+        ));
     }
     if matches!(
         operation,
@@ -245,23 +246,24 @@ fn validate_input_schemas(
             ),
         ));
     }
-    if matches!(operation, CuvsOperation::IvfFlat | CuvsOperation::IvfPq)
+    let ivf_metric = match options.params() {
+        VectorAlgorithmParams::IvfFlat(params) => Some(params.metric),
+        VectorAlgorithmParams::IvfPq(params) => Some(params.metric),
+        _ => None,
+    };
+    if ivf_metric == Some(VectorDistanceMetric::CosineExpanded)
         && let Some(Some(dimension)) = dimensions.first()
         && *dimension < 2
     {
-        let canonical: serde_json::Value =
-            serde_json::from_str(options.canonical_json()).expect("canonical cuVS options");
-        if canonical["metric"] == "cosine" {
-            return Err(invalid_call(
-                operation,
-                "insufficient_feature_dimension",
-                "cosine IVF search requires at least two dimensions",
-            ));
-        }
+        return Err(invalid_call(
+            operation,
+            "insufficient_feature_dimension",
+            "cosine IVF search requires at least two dimensions",
+        ));
     }
-    if operation == CuvsOperation::TopK
+    if let VectorAlgorithmParams::TopK(params) = options.params()
         && let Some(Some(dimension)) = dimensions.first()
-        && options.top_k_k().expect("validated Top-K options contain k") as usize > *dimension
+        && params.k > *dimension
     {
         return Err(invalid_call(operation, "k_exceeds_dimension", "Top-K k exceeds the vector dimension"));
     }
@@ -395,76 +397,55 @@ fn validate_known_cardinalities(
     inputs: &[LogicalPlan],
     options: &CuvsValidatedOptions,
 ) -> Result<()> {
-    match operation {
-        CuvsOperation::BruteForceKnn => {
-            if let Some(dataset_rows) = known_row_count(&inputs[0]) {
-                let k = options.knn_k().expect("validated kNN options contain k") as usize;
-                if dataset_rows == 0 {
-                    return Err(invalid_call(
-                        operation,
-                        "empty_dataset",
-                        "cuvs_brute_force_knn requires a non-empty dataset relation",
-                    ));
-                }
-                if k > dataset_rows {
-                    return Err(invalid_call(
-                        operation,
-                        "k_exceeds_dataset_rows",
-                        format!("k ({k}) exceeds the statically known dataset row count ({dataset_rows})"),
-                    ));
-                }
+    let Some(input_rows) = known_row_count(&inputs[0]) else {
+        return Ok(());
+    };
+    match options.params() {
+        VectorAlgorithmParams::BruteForceKnn(params) => {
+            if input_rows == 0 {
+                return Err(invalid_call(
+                    operation,
+                    "empty_dataset",
+                    "cuvs_brute_force_knn requires a non-empty dataset relation",
+                ));
+            }
+            if params.k > input_rows {
+                return Err(invalid_call(
+                    operation,
+                    "k_exceeds_dataset_rows",
+                    format!("k ({}) exceeds the statically known dataset row count ({input_rows})", params.k),
+                ));
             }
         },
-        CuvsOperation::IvfFlat | CuvsOperation::IvfPq | CuvsOperation::Cagra => {
-            if let Some(dataset_rows) = known_row_count(&inputs[0]) {
-                let k = options.knn_k().expect("validated IVF-Flat options contain k") as usize;
-                let canonical: serde_json::Value =
-                    serde_json::from_str(options.canonical_json()).expect("canonical cuVS options");
-                let degree = if operation == CuvsOperation::Cagra {
-                    canonical["intermediate_graph_degree"].as_u64().expect("validated graph degree") as usize
-                } else {
-                    canonical["n_lists"].as_u64().expect("validated IVF n_lists") as usize
-                };
-                if dataset_rows == 0
-                    || k > dataset_rows
-                    || degree >= dataset_rows && operation == CuvsOperation::Cagra
-                    || degree > dataset_rows
-                {
-                    return Err(invalid_call(
-                        operation,
-                        "invalid_dataset_cardinality",
-                        "ANN dataset must be non-empty; k must not exceed rows and graph degrees must be less than rows",
-                    ));
-                }
+        VectorAlgorithmParams::IvfFlat(VectorIvfFlatParams { k, n_lists, .. })
+        | VectorAlgorithmParams::IvfPq(VectorIvfPqParams { k, n_lists, .. }) => {
+            if input_rows == 0 || *k > input_rows || *n_lists as usize > input_rows {
+                return Err(invalid_ann_dataset_cardinality(operation));
             }
         },
-        CuvsOperation::PairwiseDistance | CuvsOperation::TopK => {},
-        CuvsOperation::KMeans => {
-            if let Some(input_rows) = known_row_count(&inputs[0]) {
-                let n_clusters =
-                    options.kmeans_clusters().expect("validated KMeans options contain n_clusters") as usize;
-                if input_rows == 0 {
-                    return Err(invalid_call(
-                        operation,
-                        "empty_input",
-                        "cuvs_kmeans requires a non-empty input relation",
-                    ));
-                }
-                if n_clusters > input_rows {
-                    return Err(invalid_call(
-                        operation,
-                        "cluster_count_exceeds_input_rows",
-                        format!(
-                            "n_clusters ({n_clusters}) exceeds the statically known input row count ({input_rows})"
-                        ),
-                    ));
-                }
+        VectorAlgorithmParams::Cagra(params) => {
+            if input_rows == 0 || params.k > input_rows || params.intermediate_graph_degree as usize >= input_rows {
+                return Err(invalid_ann_dataset_cardinality(operation));
             }
         },
-        CuvsOperation::Pca => {
-            if let Some(input_rows) = known_row_count(&inputs[0])
-                && input_rows < 2
-            {
+        VectorAlgorithmParams::PairwiseDistance(_) | VectorAlgorithmParams::TopK(_) => {},
+        VectorAlgorithmParams::KMeans(params) => {
+            if input_rows == 0 {
+                return Err(invalid_call(operation, "empty_input", "cuvs_kmeans requires a non-empty input relation"));
+            }
+            if params.n_clusters > input_rows {
+                return Err(invalid_call(
+                    operation,
+                    "cluster_count_exceeds_input_rows",
+                    format!(
+                        "n_clusters ({}) exceeds the statically known input row count ({input_rows})",
+                        params.n_clusters
+                    ),
+                ));
+            }
+        },
+        VectorAlgorithmParams::Pca(_) => {
+            if input_rows < 2 {
                 return Err(invalid_call(
                     operation,
                     "insufficient_input_rows",
@@ -476,6 +457,14 @@ fn validate_known_cardinalities(
     Ok(())
 }
 
+fn invalid_ann_dataset_cardinality(operation: CuvsOperation) -> Error {
+    invalid_call(
+        operation,
+        "invalid_dataset_cardinality",
+        "ANN dataset must be non-empty; k must not exceed rows and graph degrees must be less than rows",
+    )
+}
+
 fn derive_output_schema(
     operation: CuvsOperation,
     inputs: &[LogicalPlan],
@@ -483,44 +472,42 @@ fn derive_output_schema(
     dimensions: &[Option<usize>],
     element: VectorElementType,
 ) -> DataFusionResult<DFSchemaRef> {
-    let schema = match operation.descriptor().output_contract {
-        CuvsOutputContract::KnnNeighbors => {
-            let dataset_id = output_id_field(inputs[0].schema(), options.bindings()[0].id(), "neighbor_id")?;
-            let query_id = output_id_field(inputs[1].schema(), options.bindings()[1].id(), "query_id")?;
-            vector_knn_output_schema(query_id.data_type().clone(), dataset_id.data_type().clone())
+    let id_field = |ordinal: usize, output_name| {
+        output_id_field(inputs[ordinal].schema(), options.bindings()[ordinal].id(), output_name)
+            .map(|field| field.data_type().clone())
+    };
+    let schema = match options.params() {
+        VectorAlgorithmParams::BruteForceKnn(_)
+        | VectorAlgorithmParams::IvfFlat(_)
+        | VectorAlgorithmParams::IvfPq(_)
+        | VectorAlgorithmParams::Cagra(_) => {
+            vector_knn_output_schema(id_field(1, "query_id")?, id_field(0, "neighbor_id")?)
         },
-        CuvsOutputContract::PairwiseDistances => vector_pairwise_distance_output_schema(
-            output_id_field(inputs[0].schema(), options.bindings()[0].id(), "x_id")?.data_type().clone(),
-            output_id_field(inputs[1].schema(), options.bindings()[1].id(), "y_id")?.data_type().clone(),
+        VectorAlgorithmParams::PairwiseDistance(_) => vector_pairwise_distance_output_schema(
+            id_field(0, "x_id")?,
+            id_field(1, "y_id")?,
             match element {
                 VectorElementType::Float64 => DataType::Float64,
                 _ => DataType::Float32,
             },
         ),
-        CuvsOutputContract::TopKValues => vector_top_k_output_schema(
-            output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
-        ),
-        CuvsOutputContract::KMeansAssignments => vector_kmeans_output_schema(
-            output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
-        ),
-        CuvsOutputContract::PcaComponents => {
-            let n_components = options.pca_components().expect("validated PCA options contain n_components") as usize;
+        VectorAlgorithmParams::TopK(_) => vector_top_k_output_schema(id_field(0, "id")?),
+        VectorAlgorithmParams::KMeans(_) => vector_kmeans_output_schema(id_field(0, "id")?),
+        VectorAlgorithmParams::Pca(params) => {
             if let Some(dimension) = dimensions[0]
-                && n_components > dimension
+                && params.n_components > dimension
             {
                 return Err(invalid_call(
                     operation,
                     "component_count_exceeds_dimension",
                     format!(
-                        "n_components ({n_components}) exceeds the statically known feature dimension ({dimension})"
+                        "n_components ({}) exceeds the statically known feature dimension ({dimension})",
+                        params.n_components
                     ),
                 )
                 .into());
             }
-            vector_pca_output_schema(
-                output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
-                n_components,
-            )
+            vector_pca_output_schema(id_field(0, "id")?, params.n_components)
         },
     };
     Ok(Arc::new(DFSchema::try_from(schema.as_ref().clone())?))

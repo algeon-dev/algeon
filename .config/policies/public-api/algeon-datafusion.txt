@@ -85,7 +85,7 @@ pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait(&self, core:
 pub async fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait_async(&self, core::time::Duration) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
 pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_and_wait_until(&self, std::time::Instant) -> algeon_datafusion::error::Result<query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
 pub fn algeon_datafusion::backend::AlgeonGpuBackend::close_snapshot(&self) -> query_runtime::runtime::backend_close::GpuBackendCloseSnapshot
-pub fn algeon_datafusion::backend::AlgeonGpuBackend::cugraph_bfs_singleflight_snapshot(&self) -> algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot
+pub fn algeon_datafusion::backend::AlgeonGpuBackend::cugraph_bfs_singleflight_snapshot(&self) -> algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot
 pub fn algeon_datafusion::backend::AlgeonGpuBackend::device_admission_snapshots(&self) -> algeon_datafusion::error::Result<alloc::vec::Vec<query_runtime::runtime::query_service::service::api::QueryServiceDeviceAdmissionSnapshot>>
 pub fn algeon_datafusion::backend::AlgeonGpuBackend::device_cache_reports(&self) -> algeon_datafusion::error::Result<alloc::vec::Vec<query_runtime::runtime::cache::DeviceCacheReport>>
 pub fn algeon_datafusion::backend::AlgeonGpuBackend::device_cache_source_event_snapshots(&self) -> algeon_datafusion::error::Result<alloc::vec::Vec<query_runtime::runtime::cache::CacheSourceEventSnapshot>>
@@ -480,6 +480,23 @@ pub fn algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig::max_output_s
 pub fn algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig::try_new(usize, usize) -> datafusion_common::error::Result<Self>
 impl core::default::Default for algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig
 pub fn algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig::default() -> Self
+pub struct algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::action: &'static str
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::correlation_fingerprint: core::option::Option<alloc::string::String>
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::device_ordinal: usize
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::generation: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::sequence: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot::singleflight_key_fingerprint: alloc::string::String
+pub struct algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::cancelled_waiters: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::eligible_requests: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::events: alloc::vec::Vec<algeon_datafusion::cugraph_sql::GraphBfsSingleflightEventSnapshot>
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::follower_copies: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::groups_formed: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::leader_failures: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::overflow_groups: u64
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::peak_width: usize
+pub algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot::physical_traversals: u64
 pub const algeon_datafusion::cugraph_sql::CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION: &str
 pub const algeon_datafusion::cugraph_sql::CUGRAPH_BFS_FUNCTION: &str
 pub const algeon_datafusion::cugraph_sql::CUGRAPH_CORE_NUMBER_FUNCTION: &str
@@ -577,7 +594,15 @@ pub struct algeon_datafusion::cuml_sql::CumlValidatedOptions
 impl algeon_datafusion::cuml_sql::CumlValidatedOptions
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::bindings(&self) -> &[algeon_datafusion::cuml_sql::CumlRelationBinding]
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::canonical_json(&self) -> &str
-pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::n_components(&self) -> core::option::Option<usize>
+impl core::cmp::Eq for algeon_datafusion::cuml_sql::CumlValidatedOptions
+impl core::cmp::Ord for algeon_datafusion::cuml_sql::CumlValidatedOptions
+pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for algeon_datafusion::cuml_sql::CumlValidatedOptions
+pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for algeon_datafusion::cuml_sql::CumlValidatedOptions
+pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::hash::Hash for algeon_datafusion::cuml_sql::CumlValidatedOptions
+pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::hash<H: core::hash::Hasher>(&self, &mut H)
 pub fn algeon_datafusion::cuml_sql::cuml_options_json_schema(query_planning::plan::ml_algorithm::definition::CumlOperation) -> serde_json::value::Value
 pub fn algeon_datafusion::cuml_sql::cuml_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub type algeon_datafusion::cuml_sql::CumlAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuml_sql::exec::node::CumlRelationFunctionSpec>
@@ -634,10 +659,16 @@ pub struct algeon_datafusion::cuvs_sql::CuvsValidatedOptions
 impl algeon_datafusion::cuvs_sql::CuvsValidatedOptions
 pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::bindings(&self) -> &[algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding]
 pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::canonical_json(&self) -> &str
-pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::kmeans_clusters(&self) -> core::option::Option<u32>
-pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::knn_k(&self) -> core::option::Option<u32>
-pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::pca_components(&self) -> core::option::Option<u32>
-pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::top_k_k(&self) -> core::option::Option<u32>
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::params(&self) -> &query_planning::plan::vector_algorithm::VectorAlgorithmParams
+impl core::cmp::Eq for algeon_datafusion::cuvs_sql::CuvsValidatedOptions
+impl core::cmp::Ord for algeon_datafusion::cuvs_sql::CuvsValidatedOptions
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for algeon_datafusion::cuvs_sql::CuvsValidatedOptions
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for algeon_datafusion::cuvs_sql::CuvsValidatedOptions
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::hash::Hash for algeon_datafusion::cuvs_sql::CuvsValidatedOptions
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 impl algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::id(&self) -> &str
@@ -990,23 +1021,6 @@ impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::has_query_admission_authority(&self) -> bool
 impl core::default::Default for algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::default() -> Self
-pub struct algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::action: &'static str
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::correlation_fingerprint: core::option::Option<alloc::string::String>
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::device_ordinal: usize
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::generation: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::sequence: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::singleflight_key_fingerprint: alloc::string::String
-pub struct algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::cancelled_waiters: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::eligible_requests: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::events: alloc::vec::Vec<algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot>
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::follower_copies: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::groups_formed: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::leader_failures: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::overflow_groups: u64
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::peak_width: usize
-pub algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot::physical_traversals: u64
 pub struct algeon_datafusion::native_exec::LakehouseByteCache
 impl algeon_datafusion::native_exec::LakehouseByteCache
 pub fn algeon_datafusion::native_exec::LakehouseByteCache::ignoring_hits(self) -> Self

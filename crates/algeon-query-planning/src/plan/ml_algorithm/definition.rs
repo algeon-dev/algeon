@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::plan::{
     GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition, VectorElementType,
@@ -713,7 +713,10 @@ impl CumlOperationDescriptor {
     }
 }
 
-pub fn canonicalize_cuml_options(operation: CumlOperation, raw: &str) -> Result<Value, GpuOptionValidationError> {
+pub fn canonicalize_cuml_options(
+    operation: CumlOperation,
+    raw: &str,
+) -> Result<Map<String, Value>, GpuOptionValidationError> {
     let values = canonicalize_options(operation.descriptor().options, raw, "cuML", |option, value| {
         if matches!(
             operation,
@@ -744,7 +747,7 @@ pub fn canonicalize_cuml_options(operation: CumlOperation, raw: &str) -> Result<
         return Err(GpuOptionValidationError::new("missing_or_invalid_option", "cuML min_dist must not exceed spread")
             .for_argument("min_dist"));
     }
-    Ok(Value::Object(values))
+    Ok(values)
 }
 
 /// ML algorithm identity carried by the native IR.

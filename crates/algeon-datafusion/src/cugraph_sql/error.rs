@@ -1,6 +1,8 @@
 #[cfg(not(feature = "cugraph"))]
 use super::CugraphAlgorithm;
 use crate::error::{Error, ErrorCode};
+#[cfg(not(feature = "cugraph"))]
+use crate::gpu_functions::REQUIRED_FEATURE_DISABLED;
 
 /// Stable feature-off execution rejection for a cuGraph SQL operation.
 ///
@@ -15,7 +17,7 @@ pub(super) fn feature_disabled(algorithm: CugraphAlgorithm) -> Error {
         "cuGraph SQL execution requires the cugraph Cargo feature",
     )
     .with_log_safe_fact("cugraph_operation", algorithm.function_name())
-    .with_log_safe_fact("reason", "required_feature_disabled")
+    .with_log_safe_fact("reason", REQUIRED_FEATURE_DISABLED)
     .with_log_safe_fact("required_feature", "cugraph")
     .with_log_safe_fact("host_fallback", "disabled")
 }

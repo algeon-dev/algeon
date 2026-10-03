@@ -17,7 +17,7 @@ mod relation_planner;
 pub use config::{CumlModelStoreConfig, CumlSqlConfig};
 pub use exec::CumlAlgoExec;
 pub use extension_planner::CumlExtensionPlanner;
-pub(crate) use gpu_family::{CumlGpuFunctionFamily, cuml_gpu_function_availability};
+pub(crate) use gpu_family::CumlGpuFunctionFamily;
 pub use logical::CumlLogicalNode;
 #[cfg(feature = "server")]
 pub(crate) use logical::forest_model_digests;

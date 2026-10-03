@@ -66,6 +66,10 @@ use query_engine::{
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
+use self::singleflight::{
+    GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult, GraphBfsSingleflightJoin,
+    GraphBfsSingleflightKey,
+};
 use super::{
     CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
     CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN, CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN,
@@ -78,14 +82,9 @@ use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{
         AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeMetrics, GpuResidentProducer,
-        NativeExecutionMetricsCapture,
-        admission::task_context_with_query_admission_ticket,
+        NativeExecutionMetricsCapture, admission::task_context_with_query_admission_ticket,
         execute_gpu_resident_producer_with_context, gpu_resident_producer,
-        gpu_resident_producer_hard_output_row_upper_bound,
-        graph::{
-            GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult,
-            GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
-        },
+        gpu_resident_producer_hard_output_row_upper_bound, graph::GraphExecutionPlan,
         prepare_gpu_resident_producer_for_execution, run_gpu_execution_task,
     },
 };
@@ -120,6 +119,7 @@ mod logical_mapping;
 mod lowering;
 mod node;
 mod residency;
+pub(crate) mod singleflight;
 #[cfg(test)]
 pub(crate) mod tests;
 

@@ -18,7 +18,7 @@ mod table_functions;
 mod validation;
 
 pub(crate) use catalog::GpuFunctionCatalog;
-pub(crate) use descriptor::{GpuFunctionAvailability, GpuFunctionDescriptor};
+pub(crate) use descriptor::{GpuFunctionAvailability, GpuFunctionDescriptor, REQUIRED_FEATURE_DISABLED};
 pub(crate) use family::GpuFunctionFamily;
 pub(crate) use input_ordering::{
     fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions, resolve_input_ordering,

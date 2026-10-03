@@ -10,14 +10,14 @@ use datafusion::{
 #[cfg(feature = "server")]
 use query_engine::plan::MlForestModelDigest;
 use query_engine::plan::{
-    MlForestModelSnapshot, RelationIdType, ml_embedding_output_schema, ml_forest_output_schema,
+    MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, ml_embedding_output_schema, ml_forest_output_schema,
     ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
 };
 
 use super::{
     CumlOperation, CumlValidatedOptions, DenseVectorBinding,
     error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
-    options::{options_from_named_values, validate_options},
+    options::{CumlParams, dense_relation_function, validate_options},
 };
 use crate::{
     error::Result,
@@ -81,22 +81,12 @@ impl CumlLogicalNode {
             ));
         }
         let options = validate_options(operation, options_json)?;
-        match (operation, model) {
-            (CumlOperation::ForestPredict, None) => {
-                return Err(invalid_call(
-                    operation,
-                    "model_unbound",
-                    "cuml_forest_predict requires a model bound during planning",
-                ));
-            },
-            (CumlOperation::ForestPredict, Some(_)) | (_, None) => {},
-            (_, Some(_)) => {
-                return Err(invalid_call(
-                    operation,
-                    "unexpected_model_binding",
-                    format!("{} does not accept a bound model", operation.descriptor().sql_function_name),
-                ));
-            },
+        if model.is_some() && !matches!(options.params(), CumlParams::ForestPredict { .. }) {
+            return Err(invalid_call(
+                operation,
+                "unexpected_model_binding",
+                format!("{} does not accept a bound model", operation.descriptor().sql_function_name),
+            ));
         }
         let mut ids = Vec::new();
         let mut dimensions = Vec::new();
@@ -200,13 +190,15 @@ impl CumlLogicalNode {
                         "cuML dimensionality reduction requires at least two input feature columns",
                     ));
                 }
-                if options.n_components().is_some_and(|count| count > dimension) && operation == CumlOperation::Tsvd {
+                if let CumlParams::Algorithm(MlAlgorithmParams::Tsvd(params)) = options.params()
+                    && params.n_components > dimension
+                {
                     return Err(invalid_call(
                         operation,
                         "component_count_exceeds_dimension",
                         format!(
                             "n_components ({}) exceeds the statically known feature dimension ({dimension})",
-                            options.n_components().expect("decomposition components")
+                            params.n_components
                         ),
                     ));
                 }
@@ -223,19 +215,18 @@ impl CumlLogicalNode {
                 ));
             }
             if let Some(rows) = known_row_count(input) {
-                let rows = rows as u64;
-                let canonical: serde_json::Value =
-                    serde_json::from_str(options.canonical_json()).expect("validated options");
-                let violated = match operation {
-                    CumlOperation::Hdbscan => [
-                        ("min_samples_exceeds_input_rows", canonical["min_samples"].as_u64().unwrap() >= rows),
-                        ("min_cluster_size_exceeds_input_rows", canonical["min_cluster_size"].as_u64().unwrap() > rows),
-                        ("max_cluster_size_exceeds_input_rows", canonical["max_cluster_size"].as_u64().unwrap() > rows),
+                let violated = match options.params() {
+                    CumlParams::Algorithm(MlAlgorithmParams::Hdbscan(params)) => [
+                        ("min_samples_exceeds_input_rows", params.min_samples >= rows),
+                        ("min_cluster_size_exceeds_input_rows", params.min_cluster_size > rows),
+                        ("max_cluster_size_exceeds_input_rows", params.max_cluster_size > rows),
                     ]
                     .into_iter()
                     .find(|(_, violated)| *violated && rows > 0)
                     .map(|(reason, _)| reason),
-                    CumlOperation::Umap if rows > 0 && canonical["n_neighbors"].as_u64().unwrap() >= rows => {
+                    CumlParams::Algorithm(MlAlgorithmParams::Umap(params))
+                        if rows > 0 && params.n_neighbors >= rows =>
+                    {
                         Some("n_neighbors_exceeds_input_rows")
                     },
                     _ => None,
@@ -269,20 +260,33 @@ impl CumlLogicalNode {
             .with_log_safe_fact("actual", dimension));
         }
         let id_type = ids.last().expect("cuML requires a relation").clone();
-        let output = match operation {
-            CumlOperation::Tsvd => {
-                vector_pca_output_schema(id_type, options.n_components().expect("decomposition components"))
+        let output = match (options.params(), model) {
+            (CumlParams::Algorithm(MlAlgorithmParams::Tsvd(params)), _) => {
+                vector_pca_output_schema(id_type, params.n_components)
             },
-            CumlOperation::Hdbscan => ml_hdbscan_output_schema(id_type),
-            CumlOperation::Umap => {
-                ml_embedding_output_schema(id_type, options.n_components().expect("UMAP components"))
+            (CumlParams::Algorithm(MlAlgorithmParams::Hdbscan(_)), _) => ml_hdbscan_output_schema(id_type),
+            (CumlParams::Algorithm(MlAlgorithmParams::Umap(params)), _) => {
+                ml_embedding_output_schema(id_type, params.n_components)
             },
-            CumlOperation::LogisticRegression | CumlOperation::RandomForestClassifier => {
-                ml_predictions_output_schema(id_type, DataType::Int32)
+            (
+                CumlParams::Algorithm(
+                    MlAlgorithmParams::LogisticRegression(_) | MlAlgorithmParams::RandomForestClassifier(_),
+                ),
+                _,
+            ) => ml_predictions_output_schema(id_type, DataType::Int32),
+            (CumlParams::Algorithm(MlAlgorithmParams::RandomForestRegressor(_)), _) => {
+                ml_predictions_output_schema(id_type, DataType::Float32)
             },
-            CumlOperation::RandomForestRegressor => ml_predictions_output_schema(id_type, DataType::Float32),
-            CumlOperation::ForestPredict => {
-                ml_forest_output_schema(id_type, model.expect("forest model checked above").output())
+            (CumlParams::Algorithm(MlAlgorithmParams::ForestPredict(params)), _) => {
+                ml_forest_output_schema(id_type, params.model.output())
+            },
+            (CumlParams::ForestPredict { .. }, Some(model)) => ml_forest_output_schema(id_type, model.output()),
+            (CumlParams::ForestPredict { .. }, None) => {
+                return Err(invalid_call(
+                    operation,
+                    "model_unbound",
+                    "cuml_forest_predict requires a model bound during planning",
+                ));
             },
         };
         Ok((options, output))
@@ -431,7 +435,7 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
             .into());
         };
         let options_json =
-            options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
+            dense_relation_function(self.operation).options_json(&inputs, self.options.value_options().clone())?;
         Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())?
             .with_input_orderings(input_orderings)
             .map_err(DataFusionError::from)

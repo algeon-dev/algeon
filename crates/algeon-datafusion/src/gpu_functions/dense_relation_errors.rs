@@ -1,5 +1,6 @@
 //! Structured validation errors shared by dense-relation SQL families.
 
+use super::REQUIRED_FEATURE_DISABLED;
 use crate::error::{ClientDetail, Error, ErrorCode};
 
 pub(crate) struct DenseRelationErrorContext {
@@ -115,7 +116,7 @@ impl DenseRelationErrorContext {
     pub(crate) fn feature_disabled(&self, operation: &'static str) -> Error {
         Error::new(ErrorCode::UnsupportedOperator, self.execute_operation, self.feature_disabled_message)
             .with_log_safe_fact(self.operation_fact, operation)
-            .with_log_safe_fact("reason", "required_feature_disabled")
+            .with_log_safe_fact("reason", REQUIRED_FEATURE_DISABLED)
             .with_log_safe_fact("required_feature", self.required_feature)
             .with_log_safe_fact("host_fallback", "disabled")
     }

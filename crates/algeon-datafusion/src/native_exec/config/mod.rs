@@ -33,7 +33,7 @@ use super::{
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
 #[cfg(feature = "cugraph")]
-use crate::native_exec::graph::GraphExecutionServices;
+use crate::cugraph_sql::GraphBfsSingleflight;
 use crate::{
     error::{Error, Result},
     native::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint},
@@ -68,8 +68,9 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
     pub(super) metrics_capture: Option<NativeMetricsCapture>,
     pub(super) lakehouse_footer_pruning: bool,
+    /// Coalesces identical BFS requests across the queries of one backend.
     #[cfg(feature = "cugraph")]
-    pub(super) graph_execution_services: GraphExecutionServices,
+    pub(super) bfs_singleflight: GraphBfsSingleflight,
 }
 
 /// Native execution context plus any service leases that must outlive execution.
@@ -126,7 +127,7 @@ impl AlgeonNativeExecutionConfig {
             metrics_capture: Some(NativeMetricsCapture::standalone()),
             lakehouse_footer_pruning: false,
             #[cfg(feature = "cugraph")]
-            graph_execution_services: GraphExecutionServices::default(),
+            bfs_singleflight: GraphBfsSingleflight::default(),
         }
     }
 
@@ -307,13 +308,8 @@ impl AlgeonNativeExecutionConfig {
     }
 
     #[cfg(feature = "cugraph")]
-    pub(crate) fn graph_execution_services(&self) -> &GraphExecutionServices {
-        &self.graph_execution_services
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn graph_bfs_singleflight_snapshot(&self) -> super::graph::GraphBfsSingleflightSnapshot {
-        self.graph_execution_services.bfs_singleflight_snapshot()
+    pub(crate) fn bfs_singleflight(&self) -> &GraphBfsSingleflight {
+        &self.bfs_singleflight
     }
 
     /// Reads every `s3://` source through `profile`: native reads, cache

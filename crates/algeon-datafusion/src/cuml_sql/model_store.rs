@@ -29,7 +29,7 @@ pub(crate) enum ForestOutputRequest {
 }
 
 /// Validated `model`, `model_format`, and `output` options of one call.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "cuml"), expect(dead_code, reason = "only the cuml model loader reads the reference"))]
 pub(crate) struct ForestModelReference {
     pub(crate) path: String,
@@ -113,7 +113,7 @@ pub(super) fn bind_operation_model(
             "cuml_forest_predict requires a configured models root",
         ));
     };
-    load_snapshot(operation, store, &reference).map(|snapshot| Some(Arc::new(snapshot)))
+    load_snapshot(operation, store, reference).map(|snapshot| Some(Arc::new(snapshot)))
 }
 
 #[cfg(not(feature = "cuml"))]

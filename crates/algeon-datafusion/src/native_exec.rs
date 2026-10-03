@@ -79,7 +79,6 @@ pub(crate) use self::{
 pub use self::{
     config::{AlgeonNativeExecutionConfig, LakehouseByteCache, LakehouseByteCacheFill, SourceChunking},
     fragment::AlgeonNativeExec,
-    graph::{GraphBfsSingleflightEventSnapshot, GraphBfsSingleflightSnapshot},
     metrics::{
         GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES,
         SERVER_CAPTURE_LOSS_METRIC_NAME, SealedAttemptGraphClaimCalibrationSnapshot,
