@@ -47,8 +47,8 @@ pub(crate) mod child_inputs;
 mod common;
 mod composed;
 mod config;
+mod fragment;
 pub(crate) mod graph;
-mod host;
 pub(crate) mod lakehouse;
 mod metrics;
 mod native_node;
@@ -64,6 +64,7 @@ pub(crate) use self::composed::composed_admission_capability_evidence;
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped},
     composed::producer_bound_capability_evidence,
+    fragment::NativeOutput,
     metrics::{
         AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
     },
@@ -76,27 +77,28 @@ pub(crate) use self::{
     },
 };
 pub use self::{
-    composed::{AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec},
     config::{AlgeonNativeExecutionConfig, LakehouseByteCache, LakehouseByteCacheFill, SourceChunking},
+    fragment::AlgeonNativeExec,
     graph::{GraphBfsSingleflightEventSnapshot, GraphBfsSingleflightSnapshot},
-    host::AlgeonNativeExec,
     metrics::{
         GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES,
         SERVER_CAPTURE_LOSS_METRIC_NAME, SealedAttemptGraphClaimCalibrationSnapshot,
     },
-    producer::AlgeonNativeGpuProducerExec,
 };
 
 /// The plan below the admission node the native optimizer places at a
 /// query's root, or `plan` itself when it has none.
 pub fn below_native_admission(plan: &Arc<dyn ExecutionPlan>) -> &Arc<dyn ExecutionPlan> {
-    admission::query_admission_wrapped_input(plan.as_ref()).unwrap_or(plan)
+    match native_node::native_node(plan.as_ref()) {
+        Some(native_node::NativeNode::Admission(node)) => node.input(),
+        _ => plan,
+    }
 }
 
 /// Return the input of an adapter-owned root node (native admission or a GPU
 /// function host occurrence), which adds no rows or GPU work of its own.
 pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
-    admission::query_admission_wrapped_input(plan).or_else(|| occurrence::gpu_function_occurrence_wrapped_input(plan))
+    native_node::native_node(plan).and_then(|node| node.transparent_root_wrapper_input())
 }
 
 /// Validates every host-materializing GPU descendant against the outer
@@ -169,10 +171,9 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
 /// stable child order. The target is deliberately chosen before execution and
 /// receives only the already-sealed report.
 pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<SealedAttemptMetricsTarget> {
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>() {
-        return Some(exec.sealed_attempt_metrics_target());
-    }
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+    if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>()
+        && exec.materializes_host()
+    {
         return Some(exec.sealed_attempt_metrics_target());
     }
     if let Some(exec) = graph::graph_execution_plan(plan) {
@@ -227,9 +228,6 @@ pub(crate) fn contains_native_execution_wrapper(plan: &dyn ExecutionPlan) -> boo
 
 fn native_execution_wrapper_metrics(plan: &dyn ExecutionPlan) -> Option<&ExecutionPlanMetricsSet> {
     if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>() {
-        return Some(exec.execution_metrics());
-    }
-    if let Some(exec) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
         return Some(exec.execution_metrics());
     }
     gpu_resident_producer(plan).and_then(GpuResidentProducer::execution_metrics)

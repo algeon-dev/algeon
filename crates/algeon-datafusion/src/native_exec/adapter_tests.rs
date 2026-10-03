@@ -23,10 +23,7 @@ use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::ErrorCode,
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        SourceChunking,
-    },
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{
         AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
@@ -94,7 +91,7 @@ fn template_optimizer_config() -> AlgeonNativeOptimizerConfig {
 fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     let native_plan = host_sink_plan();
     let schema = Arc::clone(native_plan.output_schema());
-    let exec = AlgeonNativeExec::try_new(native_plan, template_execution_config()).unwrap();
+    let exec = AlgeonNativeExec::try_new_host_for_test(native_plan, template_execution_config()).unwrap();
 
     assert_eq!(exec.name(), "AlgeonNativeExec");
     assert!(exec.children().is_empty());
@@ -121,7 +118,7 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
 
 #[test]
 fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
-    let error = AlgeonNativeExec::try_new(gpu_resident_plan(), template_execution_config()).unwrap_err();
+    let error = AlgeonNativeExec::try_new_host_for_test(gpu_resident_plan(), template_execution_config()).unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(error.fact_value("result_sink"), Some("gpu_resident"));
@@ -195,9 +192,10 @@ async fn native_composed_exec_hands_gpu_result_between_fragments_without_host_ma
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let config = bound_execution_config(&fixture);
-    let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer = Arc::new(AlgeonNativeExec::try_new_producer_for_test("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let composed = Arc::new(AlgeonNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
+    let composed =
+        Arc::new(AlgeonNativeExec::try_new_composed_for_test(consumer_plan, vec![producer_child], config).unwrap());
 
     assert_eq!(composed.name(), "AlgeonNativeComposedExec");
     assert_eq!(composed.children().len(), 1);
@@ -257,7 +255,7 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
     };
     let fixture = backend_fixture();
     let normal_config = bound_execution_config(&fixture);
-    let normal = Arc::new(AlgeonNativeExec::try_new(normal_plan, normal_config).unwrap());
+    let normal = Arc::new(AlgeonNativeExec::try_new_host_for_test(normal_plan, normal_config).unwrap());
     let normal_admitted = admitted_plan(&fixture, Arc::clone(&normal) as Arc<dyn ExecutionPlan>);
     let normal_batches = collect(normal_admitted, Arc::new(TaskContext::default())).await.unwrap();
     drop(normal);
@@ -275,10 +273,14 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
         builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema)).unwrap()
     };
     let composed_config = bound_execution_config(&fixture);
-    let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer = Arc::new(AlgeonNativeExec::try_new_producer_for_test("fragment_input", producer_plan).unwrap());
     let composed = Arc::new(
-        AlgeonNativeComposedExec::try_new(consumer_plan, vec![producer as Arc<dyn ExecutionPlan>], composed_config)
-            .unwrap(),
+        AlgeonNativeExec::try_new_composed_for_test(
+            consumer_plan,
+            vec![producer as Arc<dyn ExecutionPlan>],
+            composed_config,
+        )
+        .unwrap(),
     );
     let composed_admitted = admitted_plan(&fixture, Arc::clone(&composed) as Arc<dyn ExecutionPlan>);
     let composed_batches = collect(composed_admitted, Arc::new(TaskContext::default())).await.unwrap();
@@ -306,9 +308,10 @@ async fn native_composed_host_output_memory_pool_accounting_fails_fast() {
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
     let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
-    let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer = Arc::new(AlgeonNativeExec::try_new_producer_for_test("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let composed = Arc::new(AlgeonNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
+    let composed =
+        Arc::new(AlgeonNativeExec::try_new_composed_for_test(consumer_plan, vec![producer_child], config).unwrap());
     // The four source columns contain only 72 logical cuDF payload bytes, but
     // their four Arrow destination buffers retain 4 * 64 = 256 bytes. A
     // 128-byte pool therefore proves admission uses the destination estimate:
@@ -350,7 +353,8 @@ async fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let fixture = backend_fixture();
     let config = bound_execution_config(&fixture).with_host_output_memory_pool_accounting(true);
-    let native_child = Arc::new(AlgeonNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_child =
+        Arc::new(AlgeonNativeExec::try_new_host_for_test(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
     let native_child = admitted_plan(&fixture, native_child);
     let native_schema = native_child.schema();
     let hybrid_plan = Arc::new(
@@ -395,7 +399,7 @@ async fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
     let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
     let fixture = backend_fixture();
     let config = bound_execution_config(&fixture).with_host_output_memory_pool_accounting(true);
-    let native_exec = AlgeonNativeExec::try_new(native_plan, config).unwrap();
+    let native_exec = AlgeonNativeExec::try_new_host_for_test(native_plan, config).unwrap();
     let admitted = admitted_plan(&fixture, Arc::new(native_exec));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -414,7 +418,8 @@ async fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
 
 #[test]
 fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
-    let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer =
+        Arc::new(AlgeonNativeExec::try_new_producer_for_test("fragment_input", gpu_resident_plan()).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
     let child_schema = producer_child.schema();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(
@@ -429,10 +434,10 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     let composed = optimized
-        .downcast_ref::<AlgeonNativeComposedExec>()
+        .downcast_ref::<AlgeonNativeExec>()
         .expect("GPU-resident producer children should lower through composed native execution");
     assert_eq!(composed.children().len(), 1);
-    assert!(composed.children()[0].downcast_ref::<AlgeonNativeGpuProducerExec>().is_some());
+    assert!(composed.children()[0].downcast_ref::<AlgeonNativeExec>().is_some());
     assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
     let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);
@@ -440,7 +445,8 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
 
 #[test]
 fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
-    let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer =
+        Arc::new(AlgeonNativeExec::try_new_producer_for_test("fragment_input", gpu_resident_plan()).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
     let child_schema = producer_child.schema();
     let ordering = LexOrdering::new([PhysicalSortExpr::new(
@@ -455,7 +461,7 @@ fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<AlgeonNativeComposedExec>().is_some());
+    assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);

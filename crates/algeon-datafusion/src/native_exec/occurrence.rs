@@ -75,10 +75,6 @@ pub(crate) fn gpu_function_occurrence_from_task_context(
     Ok(Some(active.occurrence_id.to_string()))
 }
 
-pub(crate) fn gpu_function_occurrence_wrapped_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
-    plan.downcast_ref::<GpuFunctionHostOccurrenceExec>().map(GpuFunctionHostOccurrenceExec::input)
-}
-
 fn task_context_with_gpu_function_occurrence(
     task_context: Arc<TaskContext>,
     occurrence_id: Arc<str>,

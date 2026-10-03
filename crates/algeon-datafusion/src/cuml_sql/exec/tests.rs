@@ -21,7 +21,7 @@ use super::CumlAlgoExec;
 use crate::{
     capability::CapabilityReason,
     cuml_sql::CumlOperation,
-    native_exec::{AlgeonNativeGpuProducerExec, gpu_resident_producer},
+    native_exec::{AlgeonNativeExec, gpu_resident_producer},
     planner::{AlgeonNativeOptimizerConfig, FinalPlanDisposition, classify_final_plan, plan_with_native_diagnostics},
     report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
@@ -81,7 +81,7 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
         panic!("a query plan's evidence has one execution scope")
     };
     let child_scope_fingerprint = child_scope.execution_scope_fingerprint();
-    let child = Arc::new(AlgeonNativeGpuProducerExec::try_new("native_input", child_plan).unwrap());
+    let child = Arc::new(AlgeonNativeExec::try_new_producer_for_test("native_input", child_plan).unwrap());
     let rebound = Arc::new(exec.clone())
         .replace_children(vec![child], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
         .unwrap();

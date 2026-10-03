@@ -33,10 +33,7 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        SERVER_CAPTURE_LOSS_METRIC_NAME,
-    },
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SERVER_CAPTURE_LOSS_METRIC_NAME},
     planner::{
         NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
         NativeCapabilityContractDiagnostics, NativePlanningDiagnostics,
@@ -1195,7 +1192,11 @@ fn native_exec_leaf_for_report() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     Arc::new(
-        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), native_execution_config()).unwrap(),
+        AlgeonNativeExec::try_new_host_for_test(
+            builder.finish_with_host_sink(source).unwrap(),
+            native_execution_config(),
+        )
+        .unwrap(),
     )
 }
 
@@ -1208,7 +1209,7 @@ fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     let producer = Arc::new(
-        AlgeonNativeGpuProducerExec::try_new(
+        AlgeonNativeExec::try_new_producer_for_test(
             "fragment_input",
             producer_builder.finish_gpu_resident(producer_source).unwrap(),
         )
@@ -1219,7 +1220,7 @@ fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
     let consumer_source = consumer_builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment_input", Arc::clone(&schema))));
     Arc::new(
-        AlgeonNativeComposedExec::try_new(
+        AlgeonNativeExec::try_new_composed_for_test(
             consumer_builder.finish_with_host_sink(consumer_source).unwrap(),
             vec![producer],
             native_execution_config(),

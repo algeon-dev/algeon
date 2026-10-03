@@ -4,9 +4,7 @@ use algeon_datafusion::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphGraphOptions, CugraphSqlConfig, stable_result_schema,
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec,
-    },
+    native_exec::AlgeonNativeExec,
     native_report::NativeDataFusionExecutionMetrics,
     planner::AlgeonNativeOptimizerConfig,
     session::AlgeonSessionStateBuilderExt,

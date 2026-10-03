@@ -31,7 +31,8 @@ use crate::{
     backend::InstalledTestGpuBackend,
     error::{Error, ErrorCode},
     native_exec::{
-        AlgeonNativeGpuProducerExec, QueryAdmissionSource, SourceChunking,
+        AlgeonNativeExec, GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget,
+        SourceChunking,
         admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
         graph::GraphExecutionPlan,
     },
@@ -296,8 +297,9 @@ fn composed_constructor_preserves_host_owned_graph_gpu_output_rejection() {
     let consumer_plan = consumer_plan(Arc::clone(&schema));
     let child = Arc::new(FakeHostOwnedGraphExec { inner: EmptyExec::new(schema) }) as Arc<dyn ExecutionPlan>;
 
-    let error = AlgeonNativeComposedExec::try_new(consumer_plan, vec![child], AlgeonNativeExecutionConfig::default())
-        .expect_err("host-owned graph results must not be accepted as GPU-resident producers");
+    let error =
+        AlgeonNativeExec::try_new_composed_for_test(consumer_plan, vec![child], AlgeonNativeExecutionConfig::default())
+            .expect_err("host-owned graph results must not be accepted as GPU-resident producers");
 
     assert_eq!(error.code(), ErrorCode::RequiredGpuOperationUnsupported);
     assert_eq!(error.fact_value("reason"), Some("logical_bfs_gpu_result_unsupported"));
@@ -679,7 +681,7 @@ fn complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ti
     let source = admission_source(&backend);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let producer_plan = typed_relational_producer_plan(Arc::clone(&schema));
-    let producer = AlgeonNativeGpuProducerExec::try_new("fake_input", producer_plan)
+    let producer = AlgeonNativeExec::try_new_producer_for_test("fake_input", producer_plan)
         .expect("ticketless relational producer should build");
     let consumer_plan = consumer_plan(Arc::clone(&schema));
     let (_active_ticket_attempt, active_ticket) = attempt_ticket_for_test(source.clone(), None);
@@ -703,7 +705,7 @@ fn complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ti
 fn complete_composed_admission_evidence_keeps_no_authority_unchanged() {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let producer =
-        AlgeonNativeGpuProducerExec::try_new("fake_input", typed_relational_producer_plan(Arc::clone(&schema)))
+        AlgeonNativeExec::try_new_producer_for_test("fake_input", typed_relational_producer_plan(Arc::clone(&schema)))
             .expect("ticketless relational producer should build");
     let consumer_plan = consumer_plan(schema);
     let config = AlgeonNativeExecutionConfig::default();
@@ -775,7 +777,7 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
     let config =
         AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
             .with_query_admission_source(source);
-    let composed = AlgeonNativeComposedExec::try_new(consumer_plan.clone(), producers, config)
+    let composed = AlgeonNativeExec::try_new_composed_for_test(consumer_plan.clone(), producers, config)
         .expect("the real composed constructor must retain both prepared producer occurrences");
 
     let task_context = invocation_task_context(&invocation_ticket);

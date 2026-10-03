@@ -6,8 +6,8 @@ use crate::{
     cuml_sql::CumlAlgoExec,
     cuvs_sql::CuvsAlgoExec,
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec,
-        gpu_resident_producer, transparent_root_wrapper_input,
+        AlgeonNativeExec, SealedAttemptMetricsTarget, gpu_resident_producer, native_execution_metrics,
+        sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     planner::FinalPlanDisposition,
 };
@@ -66,6 +66,35 @@ impl FinalPlanCoverage {
     }
 }
 
+/// What an attempt reads from one immutable final physical plan: its
+/// coverage, and the native root that receives the sealed attempt metrics
+/// with every native metric set below the plan. A rewritten plan is a new
+/// plan with its own index.
+pub(crate) struct NativePlanIndex {
+    coverage: FinalPlanCoverage,
+    sealed_metrics_target: Option<SealedAttemptMetricsTarget>,
+}
+
+impl NativePlanIndex {
+    pub(crate) fn build(plan: &dyn ExecutionPlan) -> Self {
+        Self {
+            coverage: observe_final_plan(plan),
+            sealed_metrics_target: sealed_attempt_metrics_target(plan)
+                .map(|target| target.with_execution_metrics(native_execution_metrics(plan))),
+        }
+    }
+
+    pub(crate) const fn disposition(&self) -> FinalPlanDisposition {
+        self.coverage.disposition
+    }
+
+    /// The elected metrics target with the coverage its projection reads, or
+    /// `None` when the plan runs no native root.
+    pub(crate) fn into_sealed_metrics_target(self) -> Option<(SealedAttemptMetricsTarget, FinalPlanCoverage)> {
+        self.sealed_metrics_target.map(|target| (target, self.coverage))
+    }
+}
+
 /// Observe the exact executable physical plan once.
 pub fn observe_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
     observe_with_output_boundary(plan, true)
@@ -80,33 +109,15 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         if let [child] = children.as_slice() {
             let wraps_gpu_producer = gpu_resident_producer(plan).is_some();
             let wraps_graph_native_input = !materializes_host
-                && (child.downcast_ref::<AlgeonNativeExec>().is_some()
-                    || child.downcast_ref::<AlgeonNativeComposedExec>().is_some());
+                && child.downcast_ref::<AlgeonNativeExec>().is_some_and(AlgeonNativeExec::materializes_host);
             if wraps_gpu_producer || wraps_graph_native_input {
                 return observe_with_output_boundary(child.as_ref(), false);
             }
         }
     }
-    if plan.downcast_ref::<AlgeonNativeExec>().is_some() {
-        return FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
-    }
-    if plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some() {
-        return FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, 0);
-    }
-    if plan.downcast_ref::<AlgeonNativeComposedExec>().is_some() {
-        let mut observation =
-            FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
-        for child in plan.children() {
-            let child = observe_as_gpu_producer(child.as_ref());
-            if child.disposition != FinalPlanDisposition::Native {
-                observation.disposition = FinalPlanDisposition::Mixed;
-            }
-            merge(&mut observation, child);
-        }
-        return observation;
-    }
-    if plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some() {
-        let mut observation = FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, 0);
+    if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
+        let host_materialization = usize::from(native.materializes_host() && materializes_host);
+        let mut observation = FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, host_materialization);
         for child in plan.children() {
             let child = observe_as_gpu_producer(child.as_ref());
             if child.disposition != FinalPlanDisposition::Native {

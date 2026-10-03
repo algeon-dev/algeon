@@ -24,8 +24,6 @@ use query_engine::{
 };
 
 use super::{physical::candidate_outcomes_from_report, *};
-#[cfg(feature = "cugraph")]
-use crate::native_exec::{AlgeonNativeComposedExec, AlgeonNativeGpuProducerExec};
 use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode},
@@ -94,7 +92,11 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     Arc::new(
-        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), test_execution_config()).unwrap(),
+        AlgeonNativeExec::try_new_host_for_test(
+            builder.finish_with_host_sink(source).unwrap(),
+            test_execution_config(),
+        )
+        .unwrap(),
     )
 }
 
@@ -113,7 +115,7 @@ fn native_edge_producer() -> Arc<dyn ExecutionPlan> {
         vec!["src".to_string(), "dst".to_string()],
     )));
     let plan = builder.finish_with_host_sink(source).unwrap().clone_with_gpu_resident_sink();
-    Arc::new(AlgeonNativeGpuProducerExec::try_new("query_gpu_coverage_edges", plan).unwrap())
+    Arc::new(AlgeonNativeExec::try_new_producer_for_test("query_gpu_coverage_edges", plan).unwrap())
 }
 
 #[cfg(feature = "cugraph")]
@@ -122,7 +124,7 @@ fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
     Arc::new(
-        AlgeonNativeComposedExec::try_new(
+        AlgeonNativeExec::try_new_composed_for_test(
             builder.finish_with_host_sink(source).unwrap(),
             vec![child],
             test_execution_config(),
@@ -609,7 +611,7 @@ mod cugraph {
             )
             .unwrap();
         Arc::new(
-            AlgeonNativeComposedExec::try_new(
+            AlgeonNativeExec::try_new_composed_for_test(
                 builder.finish_with_host_sink(projected).unwrap(),
                 vec![child],
                 test_execution_config(),

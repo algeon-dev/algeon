@@ -936,35 +936,15 @@ pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsS
 pub algeon_datafusion::native_exec::LakehouseByteCacheFill::Disabled
 pub algeon_datafusion::native_exec::LakehouseByteCacheFill::FillBeforeRead
 pub algeon_datafusion::native_exec::LakehouseByteCacheFill::ReadThrough
-pub struct algeon_datafusion::native_exec::AlgeonNativeComposedExec
-impl datafusion_physical_plan::display::DisplayAs for algeon_datafusion::native_exec::AlgeonNativeComposedExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_physical_plan::execution_plan::ExecutionPlan for algeon_datafusion::native_exec::AlgeonNativeComposedExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::name(&self) -> &str
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub struct algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec
-impl datafusion_physical_plan::display::DisplayAs for algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_physical_plan::execution_plan::ExecutionPlan for algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::name(&self) -> &str
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
-pub fn algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct algeon_datafusion::native_exec::AlgeonNativeExec
+impl algeon_datafusion::native_exec::AlgeonNativeExec
+pub fn algeon_datafusion::native_exec::AlgeonNativeExec::gpu_resident_input_name(&self) -> core::option::Option<&str>
+pub fn algeon_datafusion::native_exec::AlgeonNativeExec::materializes_host(&self) -> bool
 impl datafusion_physical_plan::display::DisplayAs for algeon_datafusion::native_exec::AlgeonNativeExec
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for algeon_datafusion::native_exec::AlgeonNativeExec
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
+pub fn algeon_datafusion::native_exec::AlgeonNativeExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
@@ -1008,19 +988,6 @@ impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::has_query_admission_authority(&self) -> bool
 impl core::default::Default for algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::default() -> Self
-pub struct algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
-impl algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::input_name(&self) -> &str
-impl datafusion_physical_plan::display::DisplayAs for algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_physical_plan::execution_plan::ExecutionPlan for algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::name(&self) -> &str
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
-pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot
 pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::action: &'static str
 pub algeon_datafusion::native_exec::GraphBfsSingleflightEventSnapshot::correlation_fingerprint: core::option::Option<alloc::string::String>

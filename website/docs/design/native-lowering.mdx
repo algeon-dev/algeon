@@ -31,7 +31,7 @@ DataFusion ExecutionPlan
   -> normalize and validate the completed physical shape
   -> lower one supported candidate to QueryPlan
   -> optimize IR, apply cost selection, and check execution capability
-  -> AlgeonNativeExec or AlgeonNativeComposedExec
+  -> AlgeonNativeExec
   -> capability evidence and, when needed, a QueryAdmissionTicket
 ~~~
 
@@ -61,8 +61,7 @@ Rules added to the session builder after `with_algeon_native` run after
 
 The entry points are `crates/algeon-datafusion/src/session.rs` for rule ordering and
 `AlgeonNativePhysicalOptimizerRule::optimize` in `crates/algeon-datafusion/src/planner/native.rs` for the
-rewrite. The rule is idempotent: an admission wrapper, `AlgeonNativeExec`,
-`AlgeonNativeComposedExec`, or a
+rewrite. The rule is idempotent: an admission wrapper, `AlgeonNativeExec`, or a
 [certified mixed plan](#selection-fallback-and-mixed-execution) is not lowered
 again.
 
@@ -107,13 +106,14 @@ native-capable plan declined by cost is distinct from an unsupported plan.
 
 ### 4. Choose the DataFusion wrapper
 
-The selected candidate is wrapped in one of two `ExecutionPlan` nodes:
-
-- `AlgeonNativeExec` for plans with ordinary sources.
-- `AlgeonNativeComposedExec` for plans that read named GPU-resident sources.
-  Its children are the explicit GPU producers, and the wrapper checks that the
-  required and provided input names match exactly. This is GPU-to-GPU
-  composition, not arbitrary relational fragment extraction.
+The selected candidate becomes one `AlgeonNativeExec` node. Its children are
+the explicit GPU producers of the named GPU-resident sources the plan reads,
+and the node checks that the required and provided input names match exactly;
+this is GPU-to-GPU composition, not arbitrary relational fragment extraction.
+The node's output either streams host Arrow or stays on the GPU for a consumer
+that binds it by input name. EXPLAIN names the four shapes
+`AlgeonNativeExec`, `AlgeonNativeComposedExec` (host output with producers),
+`AlgeonNativeGpuProducerExec`, and `AlgeonNativeComposedGpuProducerExec`.
 
 The planner also attaches admission evidence. Each selected fragment records
 the device capabilities and exact plan scope needed for execution. When the
@@ -156,12 +156,12 @@ complete property and ownership proof.
 
 ## Native execution boundary
 
-`AlgeonNativeExec` and `AlgeonNativeComposedExec` are ordinary DataFusion
-`ExecutionPlan`s with one bounded output partition. At execution they acquire
-the admitted native context, run the engine's observed execution entry point,
-and expose Arrow `RecordBatch`es to the caller. The composed form first turns
-its producer results into the `GpuResidentInputMap` consumed by the native
-plan, avoiding an intermediate host materialization.
+A host-output `AlgeonNativeExec` is an ordinary DataFusion `ExecutionPlan` with
+one bounded output partition. At execution it acquires the admitted native
+context, runs the engine's observed execution entry point, and exposes Arrow
+`RecordBatch`es to the caller. With producers, it first turns their results
+into the `GpuResidentInputMap` consumed by the native plan, avoiding an
+intermediate host materialization.
 
 The runtime observation snapshot is the source for engine `QueryMetrics`,
 DataFusion metrics, and native report projections. Once native execution has

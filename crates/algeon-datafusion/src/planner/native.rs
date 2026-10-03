@@ -24,8 +24,7 @@ use crate::{
     cugraph_sql::is_feature_disabled_execution_plan,
     error::{ClientDetail, Error, ErrorCode, Result},
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
-        AlgeonNativeGpuProducerExec, GpuFunctionHostOccurrenceExec,
+        AlgeonNativeExec, AlgeonNativeExecutionConfig, GpuFunctionHostOccurrenceExec,
         admission::{QueryAdmissionSource, wrap_plan_with_native_admission},
         gpu_resident_producer,
         graph::{GraphExecutionPlan, graph_execution_plan},
@@ -326,16 +325,12 @@ impl AlgeonNativePhysicalOptimizerRule {
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok((plan, None));
         }
-        let already_selected = if plan.downcast_ref::<AlgeonNativeExec>().is_some()
-            || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
-            || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-            || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
-            || is_certified_mixed_execution_plan(plan.as_ref())
-        {
-            Some(Arc::clone(&plan))
-        } else {
-            peel_cooperative_native_exec(&plan)
-        };
+        let already_selected =
+            if plan.downcast_ref::<AlgeonNativeExec>().is_some() || is_certified_mixed_execution_plan(plan.as_ref()) {
+                Some(Arc::clone(&plan))
+            } else {
+                peel_cooperative_native_exec(&plan)
+            };
         let retains_prior_selection_report = already_selected.is_some();
         // The DataFusion input as this rewrite saw it; native replacement can
         // remove the join nodes these diagnostics describe.
@@ -506,7 +501,7 @@ fn bind_gpu_function_host_occurrences(
     if plan.downcast_ref::<GpuFunctionHostOccurrenceExec>().is_some() {
         return Ok(plan);
     }
-    if plan.downcast_ref::<AlgeonNativeComposedExec>().is_some() {
+    if plan.downcast_ref::<AlgeonNativeExec>().is_some_and(AlgeonNativeExec::materializes_host) {
         let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
         let mut rewritten_children = Vec::with_capacity(children.len());
         let mut children_changed = false;
@@ -554,7 +549,7 @@ fn collect_gpu_function_occurrences(
     materializes_host_result: bool,
     occurrences: &mut Vec<AttemptExecutionOccurrence>,
 ) -> Result<Vec<String>> {
-    if plan.downcast_ref::<AlgeonNativeComposedExec>().is_some() {
+    if plan.downcast_ref::<AlgeonNativeExec>().is_some_and(AlgeonNativeExec::materializes_host) {
         let mut predecessors = Vec::new();
         for child in plan.children() {
             for occurrence in collect_gpu_function_occurrences(child.as_ref(), false, occurrences)? {
@@ -636,7 +631,10 @@ fn collect_native_fragment_capability_evidences(
     evidence_items: &mut Vec<AttemptCapabilityEvidence>,
 ) -> Result<()> {
     #[cfg(feature = "cugraph")]
-    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+    if let Some(composed) = plan
+        .downcast_ref::<AlgeonNativeExec>()
+        .filter(|native| native.materializes_host() && !native.gpu_inputs().is_empty())
+    {
         evidence_items.push(composed_admission_capability_evidence(composed.native_plan(), composed.gpu_inputs())?);
         for child in plan.children() {
             for descendant in child.children() {
@@ -671,16 +669,7 @@ fn collect_native_fragment_capability_evidences(
 }
 
 fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
-        return Some(native.native_plan());
-    }
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
-        return Some(native.native_plan());
-    }
-    if let Some(native) = plan.downcast_ref::<AlgeonNativeGpuProducerExec>() {
-        return Some(native.native_plan());
-    }
-    plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().map(AlgeonNativeComposedGpuProducerExec::native_plan)
+    plan.downcast_ref::<AlgeonNativeExec>().map(AlgeonNativeExec::native_plan)
 }
 
 #[cfg(test)]
@@ -728,7 +717,7 @@ mod tests {
 
     fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         Arc::new(
-            AlgeonNativeExec::try_new(
+            AlgeonNativeExec::try_new_host_for_test(
                 local_parquet_native_plan("/tmp/algeon-datafusion-final-plan-classifier-not-read.parquet"),
                 AlgeonNativeExecutionConfig::default(),
             )
@@ -850,13 +839,13 @@ mod tests {
     #[test]
     fn planner_admission_aggregates_scopes_from_composed_native_fragments() {
         let (_backend, config) = backend_admission_config();
-        let left = AlgeonNativeGpuProducerExec::try_new(
+        let left = AlgeonNativeExec::try_new_producer_for_test(
             "left",
             local_parquet_native_plan("/tmp/algeon-datafusion-planner-left-not-read.parquet")
                 .clone_with_gpu_resident_sink(),
         )
         .unwrap();
-        let right = AlgeonNativeGpuProducerExec::try_new(
+        let right = AlgeonNativeExec::try_new_producer_for_test(
             "right",
             local_parquet_native_plan("/tmp/algeon-datafusion-planner-right-not-read.parquet")
                 .clone_with_gpu_resident_sink(),
@@ -874,9 +863,12 @@ mod tests {
         let expected =
             composed_admission_capability_evidence(&consumer_plan, &[Arc::new(left.clone()), Arc::new(right.clone())])
                 .expect("composed evidence binds both producer occurrences");
-        let composed =
-            AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
-                .unwrap();
+        let composed = AlgeonNativeExec::try_new_composed_for_test(
+            consumer_plan,
+            vec![Arc::new(left), Arc::new(right)],
+            config.clone(),
+        )
+        .unwrap();
 
         let (_, evidence) = plan_native_admission(&composed, &config, None).unwrap().unwrap();
 

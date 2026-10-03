@@ -67,8 +67,8 @@ use crate::{
         graph_vertex_upper_bound_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
     },
     native_exec::{
-        AlgeonNativeComposedGpuProducerExec, GraphClaimCalibrationCapture, QueryAdmissionSource,
-        SealedAttemptMetricsTarget, SourceChunking,
+        AlgeonNativeExec, GraphClaimCalibrationCapture, NativeOutput, QueryAdmissionSource, SealedAttemptMetricsTarget,
+        SourceChunking,
         admission::{
             QueryAdmissionTicket, query_admission_ticket_from_task_context, task_context_with_query_admission_ticket,
         },
@@ -437,7 +437,16 @@ fn native_edge_source_with_root(
 /// GPU-resident producer holding its admitted artifact.
 fn native_edge_producer(plan: QueryPlan, config: &AlgeonNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     let admitted = admit_for_test(&plan.clone_with_gpu_resident_sink(), config).unwrap();
-    Arc::new(AlgeonNativeGpuProducerExec::try_new_for_shared_plan("edges", admitted, config, None).unwrap())
+    Arc::new(
+        AlgeonNativeExec::try_new(
+            admitted,
+            Vec::new(),
+            NativeOutput::GpuResident { input_name: "edges".to_string() },
+            config.clone(),
+            None,
+        )
+        .unwrap(),
+    )
 }
 
 fn native_graph_residency_edge_source_with_stable_id(
@@ -1591,12 +1600,12 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
             admit_query_plan(consumer_plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
                 .expect("composed edge-source fixture must be admissible");
         let producer = Arc::new(
-            AlgeonNativeComposedGpuProducerExec::try_new_with_equivalence_properties(
-                "composed_edge",
+            AlgeonNativeExec::try_new(
                 admitted,
                 children.clone(),
+                NativeOutput::GpuResident { input_name: "composed_edge".to_string() },
                 backend_execution_config(&backend),
-                EquivalenceProperties::new(Arc::clone(consumer_plan.output_schema())),
+                Some(EquivalenceProperties::new(Arc::clone(consumer_plan.output_schema()))),
             )
             .expect("composed edge-source fixture must build"),
         ) as Arc<dyn ExecutionPlan>;
@@ -2329,8 +2338,8 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
     let native_plan = builder.finish_with_host_sink(source).unwrap();
-    let native_exec =
-        Arc::new(AlgeonNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_exec = Arc::new(AlgeonNativeExec::try_new_host_for_test(native_plan, config.clone()).unwrap())
+        as Arc<dyn ExecutionPlan>;
 
     let error = validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
         .expect_err("standalone bounded cuGraph must not execute a native edge child without admission");
@@ -2359,8 +2368,8 @@ fn admission_backed_cugraph_allows_native_child_execution() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
     let native_plan = builder.finish_with_host_sink(source).unwrap();
-    let native_exec =
-        Arc::new(AlgeonNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_exec = Arc::new(AlgeonNativeExec::try_new_host_for_test(native_plan, config.clone()).unwrap())
+        as Arc<dyn ExecutionPlan>;
     let repartitioned =
         Arc::new(RepartitionExec::try_new(Arc::clone(&native_exec), Partitioning::UnknownPartitioning(1)).unwrap())
             as Arc<dyn ExecutionPlan>;
@@ -2381,9 +2390,10 @@ async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission()
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let host_native =
-        Arc::new(AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), config.clone()).unwrap())
-            as Arc<dyn ExecutionPlan>;
+    let host_native = Arc::new(
+        AlgeonNativeExec::try_new_host_for_test(builder.finish_with_host_sink(source).unwrap(), config.clone())
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
     let wrapped = Arc::new(
         RepartitionExec::try_new(host_native, Partitioning::UnknownPartitioning(1))
             .expect("test wrapper should accept the native child"),

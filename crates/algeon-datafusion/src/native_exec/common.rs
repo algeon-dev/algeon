@@ -1,10 +1,8 @@
-//! Shared helpers for the native execution wrappers.
+//! Shared helpers for native execution nodes.
 //!
-//! Each wrapper (`AlgeonNativeExec`, `AlgeonNativeComposedExec`,
-//! `AlgeonNativeComposedGpuProducerExec`,
-//! `AlgeonNativeGpuProducerExec`) advertises the same conservative
-//! `PlanProperties` and uses the same error tagging at the DataFusion runtime
-//! boundary, so those concerns live here rather than being duplicated.
+//! `AlgeonNativeExec` and the relation-function nodes advertise the same
+//! conservative `PlanProperties` and use the same error tagging at the
+//! DataFusion runtime boundary, so those concerns live here.
 
 use std::{
     collections::BTreeSet,

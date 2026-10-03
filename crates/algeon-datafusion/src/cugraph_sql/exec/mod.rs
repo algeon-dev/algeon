@@ -77,8 +77,8 @@ use super::{
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        AlgeonNativeMetrics, GpuResidentProducer, NativeExecutionMetricsCapture,
+        AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeMetrics, GpuResidentProducer,
+        NativeExecutionMetricsCapture,
         admission::task_context_with_query_admission_ticket,
         execute_gpu_resident_producer_with_context, gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound,
