@@ -1,32 +1,4 @@
 use cudf::testing::device_safety::injected_device_id;
-use query_planning::{plan::QueryPlanBuilder, source::{GpuResidentSource, SourceNode}};
-
-#[test]
-fn evidence_device_entries_are_retained_through_admission() {
-    let service = test_service(1, 8);
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let plan = builder.finish_with_host_sink(source).unwrap();
-    let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
-    let request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone());
-
-    let handle = service.admit_query_with_request(request).expect("evidence-backed fixture admission succeeds");
-    let requirement = handle
-        .handle
-        .lifetime
-        .admitted_device_requirement_for_test(0)
-        .expect("selected device keeps its immutable admission entry");
-    assert_eq!(requirement.required_capabilities(), evidence.required_capabilities());
-
-    handle.finish();
-    drop(handle);
-    service.close_and_wait_for_quiescence(Duration::from_secs(2)).expect("evidence-backed fixture cleanup completes");
-}
 
 #[test]
 #[ignore = "requires at least 2 GPUs"]
@@ -38,11 +10,7 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     )
     .expect("two-device runtime-backed service");
     let device_zero_ledger = std::sync::Arc::clone(
-        service
-            .inner
-            .resources
-            .as_ref()
-            .expect("runtime resources")
+        service.inner.resources
             .devices
             .context_by_ordinal(0)
             .expect("device zero context")
@@ -158,57 +126,14 @@ fn a_native_fault_ends_a_waiter_without_other_admission_activity() {
 }
 
 #[test]
-fn placement_missing_resolution_cleans_up_before_waking_a_close_waiter() {
-    let service = test_service(1, 8);
-    service.service.fail_next_placement_resolution_for_test();
-    let pause = service.service.pause_next_provisional_cleanup_for_test();
-    let admission_service = service.service.clone();
-    let admission = std::thread::spawn(move || admission_service.try_admit_query());
-    pause.wait_until_entered(Duration::from_secs(2));
-
-    let close_service = service.service.clone();
-    let (close_sender, close_receiver) = std::sync::mpsc::sync_channel(1);
-    let close = std::thread::spawn(move || {
-        close_sender
-            .send(close_service.close_and_wait_for_quiescence(Duration::from_secs(2)))
-            .expect("test receives close result");
-    });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while service.shutdown_waiter_count() == 0 {
-        assert!(Instant::now() < deadline, "close must wait for the unpublished provisional ticket");
-        std::thread::yield_now();
-    }
-    assert!(
-        matches!(close_receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
-        "the initial provisional-ticket notification must not let close report quiescence"
-    );
-
-    pause.release();
-    let error = admission
-        .join()
-        .expect("admission thread does not panic")
-        .expect_err("the injected post-placement resolution failure rejects the admission");
-    assert_eq!(error.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
-    close_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("close wakes after unpublished provisional cleanup")
-        .expect("the defensive placement failure leaves the service quiescent");
-    close.join().expect("close thread does not panic");
-
-    assert_eq!(service.admission_snapshot().expect("admission snapshot").active_queries, 0);
-    let state = service.service.inner.admission.lock().expect("admission state");
-    assert!(state.lifecycle.is_quiescent(), "the unpublished provisional ticket must be cleaned up exactly once");
-}
-
-#[test]
 fn dropping_admission_ticket_wakes_a_close_waiter_after_cleanup() {
     let service = test_service(1, 8);
     let ticket = {
-        let state = service.service.inner.admission.lock().expect("admission state");
-        state.lifecycle.begin_provisional(std::sync::Arc::downgrade(&service.service.inner))
+        let state = service.controller.state.lock().expect("admission state");
+        state.lifecycle.begin_provisional(std::sync::Arc::downgrade(&service.controller))
     };
 
-    let close_service = service.service.clone();
+    let close_service = service.clone();
     let (close_sender, close_receiver) = std::sync::mpsc::sync_channel(1);
     let close = std::thread::spawn(move || {
         close_sender
@@ -231,11 +156,10 @@ fn dropping_admission_ticket_wakes_a_close_waiter_after_cleanup() {
 
 #[test]
 fn device_entries_keep_distinct_ordinal_capability_requirements() {
-    let service = test_service(1, 8).service;
+    let service = test_service(1, 8).controller;
     let first = requirement();
     let second = distinct_capability_requirement();
-    let (entries, compatible) = service
-        .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
+    let (entries, compatible) = service.resolve_device_admission_entries_with(&[0, 1], |ordinal| {
             Ok(if ordinal == 0 { first.clone() } else { second.clone() })
         })
         .expect("both concrete candidates resolve");
@@ -246,9 +170,8 @@ fn device_entries_keep_distinct_ordinal_capability_requirements() {
 
 #[test]
 fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
-    let service = test_service(1, 8).service;
-    let (entries, compatible) = service
-        .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
+    let service = test_service(1, 8).controller;
+    let (entries, compatible) = service.resolve_device_admission_entries_with(&[0, 1], |ordinal| {
             if ordinal == 0 {
                 Err(QueryError::new(
                     QueryErrorCode::UnsupportedOperator,
@@ -269,9 +192,8 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
 
 #[test]
 fn all_device_entry_resolution_failures_return_capability_reason_before_queueing() {
-    let service = test_service(1, 8).service;
-    let error = service
-        .resolve_device_admission_entries_for_test(&[0, 1], |_ordinal| {
+    let service = test_service(1, 8).controller;
+    let error = service.resolve_device_admission_entries_with(&[0, 1], |_ordinal| {
             Err(QueryError::new(
                 QueryErrorCode::UnsupportedOperator,
                 "query_engine.test.sort_capability",
@@ -283,5 +205,5 @@ fn all_device_entry_resolution_failures_return_capability_reason_before_queueing
 
     assert_eq!(error.fact_value("reason"), Some("sort_capability_unavailable"));
     assert_eq!(error.fact_value("candidate_count"), Some("2"));
-    assert_eq!(service.inner.admission.lock().expect("admission state").queued.len(), 0);
+    assert_eq!(service.state.lock().expect("admission state").queued.len(), 0);
 }

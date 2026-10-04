@@ -6,21 +6,17 @@ use query_planning::{
 };
 
 use super::{
-    super::{
-        admission::{DeviceAdmissionEntries, PlacedQuery},
-        device_waiters::PendingDeviceSlotNotifications,
-        resources::QueryServiceResources,
-    },
-    QueryService,
+    super::admission::{DeviceAdmissionEntries, PlacedQuery},
+    AdmissionController,
 };
 use crate::{
     observability::{AdmissionRequestId, AttemptId},
     runtime::{
         context::AdmittedPlanIdentities,
         gpu::{
-            DeviceAdmissionHealth, PlacementRequest,
+            PlacementRequest,
             placement::{
-                PlacementCandidateSnapshot, compare_placement_candidates, ordered_placement_candidate_snapshots,
+                PlacementCandidateSnapshot, compare_placement_candidate_snapshots, placement_candidate_snapshot,
             },
         },
         query_service::admission::missing_device_admission_entry_error,
@@ -34,7 +30,7 @@ pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
     requirement.required_capabilities.clone()
 }
 
-impl QueryService {
+impl AdmissionController {
     /// Joins a fragment planned after an attempt's claim to the grant placed
     /// on `device_ordinal`. The claim's placement stands: the fragment joins
     /// only when that device provides every capability it requires, and
@@ -60,21 +56,10 @@ impl QueryService {
 
     /// Folds persistent native CUDA faults into their owning scheduler ledgers.
     ///
-    /// Callers own deferred shared-waiter notification: queue maintenance may
-    /// hold the admission mutex, while direct placement already owns a pending
-    /// notification set. Returning only ordinals whose ledgers transitioned
-    /// keeps notification outside those critical sections.
-    pub(in crate::runtime::query_service) fn reconcile_native_admission_health(&self) -> Result<Vec<usize>> {
-        let Some(resources) = &self.inner.resources else {
-            return Ok(Vec::new());
-        };
-        let mut transitioned_ordinals = Vec::new();
-        for context in resources.devices.contexts() {
-            if context.synchronize_native_admission_health()? {
-                transitioned_ordinals.push(context.device().ordinal());
-            }
-        }
-        Ok(transitioned_ordinals)
+    /// A ledger that closes notifies this service through its admission
+    /// observer, so queued requests recheck their device state.
+    pub(in crate::runtime::query_service) fn reconcile_native_admission_health(&self) -> Result<()> {
+        self.devices.reconcile_native_health()
     }
 
     /// Admits the selected waiter on the queue-selected device.
@@ -90,9 +75,8 @@ impl QueryService {
         attempt_id: AttemptId,
         requirement: &AttemptRequirement,
         requested_query_cap_bytes: Option<u64>,
-        slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
-        let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
+        let _fleet_admission = self.fleet_admission.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
                 "query_engine.query_service.placement",
@@ -104,39 +88,18 @@ impl QueryService {
         if !self.device_supports_capabilities(device_ordinal, &required_capabilities) {
             return Err(self.no_capable_device_error(&required_capabilities));
         }
-        let Some(resources) = &self.inner.resources else {
-            let Some(ledger) = &self.inner.fallback_device_ledger else {
-                return Err(QueryError::new(
-                    QueryErrorCode::Internal,
-                    "query_engine.query_service.placement",
-                    "admission-only service is missing its synthetic device ledger",
-                )
-                .with_fact("reason", "synthetic_ledger_missing"));
-            };
-            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, requested_query_cap_bytes).map(
-                |grant| grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant }),
-            );
-        };
-        let context = resources.devices.context_by_ordinal(device_ordinal)?;
-        if context.synchronize_native_admission_health()? {
-            slot_notifications.record_device_health_transition(device_ordinal);
+        if self.devices.synchronize_native_health(device_ordinal)? {
             return Ok(None);
         }
-        match context.try_admit_attempt(admission_request_id, attempt_id, requested_query_cap_bytes) {
-            Ok(Some(memory_grant)) => Ok(Some(PlacedQuery { device_ordinal, memory_grant })),
-            Ok(None) => {
-                if !matches!(context.ledger().health()?, DeviceAdmissionHealth::Open) {
-                    slot_notifications.record_device_health_transition(device_ordinal);
-                }
-                Ok(None)
-            },
-            Err(error) => Err(error),
-        }
+        Ok(self
+            .devices
+            .ledger(device_ordinal)?
+            .try_admit_for_attempt(admission_request_id, attempt_id, requested_query_cap_bytes)?
+            .map(|memory_grant| PlacedQuery { device_ordinal, memory_grant }))
     }
 
-    pub(in crate::runtime::query_service::service) fn placement_candidates_for_entries(
+    pub(in crate::runtime::query_service) fn placement_candidates_for_entries(
         &self,
-        resources: &QueryServiceResources,
         device_entries: &DeviceAdmissionEntries,
         ordinals: impl IntoIterator<Item = usize>,
         requested_query_cap_bytes: Option<u64>,
@@ -149,19 +112,10 @@ impl QueryService {
                 .with_requested_query_cap_bytes(requested_query_cap_bytes)
                 .with_attempt_requirement(requirement.clone())
                 .with_required_capabilities(required_capabilities_for_placement(requirement));
-            placements.extend(ordered_placement_candidate_snapshots(
-                &resources.devices,
-                &placement_request,
-                [ordinal],
-                None,
-            )?);
+            let ledger = self.ledger_for_ordinal(ordinal)?;
+            placements.extend(placement_candidate_snapshot(&ledger, &placement_request)?);
         }
-        placements.sort_by(|left, right| {
-            right
-                .can_admit_now
-                .cmp(&left.can_admit_now)
-                .then_with(|| compare_placement_candidates(&left.candidate, &right.candidate))
-        });
+        placements.sort_by(compare_placement_candidate_snapshots);
         Ok(placements)
     }
 }

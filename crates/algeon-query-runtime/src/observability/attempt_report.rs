@@ -617,8 +617,8 @@ impl CleanupFailureSummary {
 /// A report carries this only when its final sample completed successfully.
 /// `None` in [`QueryAttemptReport::final_domain_usage`] means that no
 /// trustworthy final sample is available; it never represents a synthetic
-/// all-zero domain. This includes ledger-only attempts, failed final samples,
-/// and unknown-isolation cleanup paths.
+/// all-zero domain. This includes releases without an allocation domain,
+/// failed final samples, and unknown-isolation cleanup paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptFinalDomainUsage {
     pub domain_id: u64,

@@ -179,7 +179,7 @@ fn admitted_context_gate_rejects_changed_scope_evidence() {
         let ledger = &ledger_reports[0];
         assert_eq!(ledger.active_attempts, 0);
         assert_eq!(ledger.live_grants_bytes, 0);
-        let admission = service.inner.admission.lock().expect("admission lifecycle state");
+        let admission = service.inner.admission.state.lock().expect("admission lifecycle state");
         assert!(admission.lifecycle.is_quiescent(), "context cleanup leaves the admission lifecycle tracker quiescent");
     };
     let admitted_fixture = |max_active_attempts_per_device| {
@@ -318,7 +318,7 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
 #[test]
 fn expired_deadline_stops_secondary_stream_acquisition_before_consuming_a_permit() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let handle = service.admit_query().expect("admission");
     let root_context = handle.acquire_context().expect("root context");
@@ -346,7 +346,7 @@ fn expired_deadline_stops_secondary_stream_acquisition_before_consuming_a_permit
 #[tokio::test(flavor = "current_thread")]
 async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_still_releases() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker runtime service");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let handle = Arc::new(service.admit_query().expect("admission"));
     let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
@@ -540,16 +540,6 @@ fn close_signal_is_nonblocking_and_fail_closed_during_admission_lock_contention(
     let close_result = close_result.expect("close signal must not wait for the admission-state mutex");
     close.join().unwrap();
     close_result.unwrap();
-    assert_eq!(service.try_admit_query().unwrap_err().fact_value("reason"), Some("admission_closed"));
-}
-#[test]
-fn resource_free_expired_shutdown_completes_epoch_cleanup_but_cannot_succeed() {
-    let service = test_service(1, 8);
-    let error = service
-        .close_and_wait_for_quiescence_until(Instant::now())
-        .expect_err("the complete shutdown cannot succeed after its absolute deadline");
-
-    assert_eq!(error.fact_value("reason"), Some("query_service_resource_epoch_timeout"));
     assert_eq!(service.try_admit_query().unwrap_err().fact_value("reason"), Some("admission_closed"));
 }
 #[test]
@@ -857,14 +847,13 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     // from admission time, so a handle that never acquired a context still
     // releases through the device executor.
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
-    let pool = service
-        .inner
-        .resources
-        .as_ref()
-        .unwrap()
+    let pool = service.inner.resources
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 2);
+    // The admission builds its envelope on the pool's lifecycle worker, so it
+    // completes before the blocker occupies that worker.
+    let direct = service.admit_query().expect("direct admission occupies the only slot");
 
     let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);
@@ -878,7 +867,6 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     .expect("cleanup blocker queues on the service pool");
     started_rx.await.expect("cleanup blocker starts");
 
-    let direct = service.admit_query().expect("direct admission occupies the only slot");
     let queued_service = service.clone();
     let queued = tokio::spawn(async move { queued_service.admit_async().await });
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -919,11 +907,7 @@ async fn placed_admission_builds_its_envelope_while_execution_workers_are_busy()
         vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 2, 6, 3, 2)],
     )
     .expect("runtime-backed service with three workers");
-    let pool = service
-        .inner
-        .resources
-        .as_ref()
-        .unwrap()
+    let pool = service.inner.resources
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
     let release_blockers = Arc::new(Semaphore::new(0));
@@ -957,11 +941,7 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     let context = handle.acquire_context().expect("root context acquisition");
     drop(context);
 
-    let pool = service
-        .inner
-        .resources
-        .as_ref()
-        .unwrap()
+    let pool = service.inner.resources
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 2);

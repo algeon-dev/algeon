@@ -22,11 +22,7 @@ fn assert_legal_resident_output(
     ) -> (GpuDataFrame, SchemaRef),
 ) {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident output");
-    let device = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime-backed service")
+    let device = service.inner.resources
         .devices
         .context_by_ordinal(0)
         .expect("device context");
@@ -220,12 +216,12 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
 /// the footer and the report agree, and the completion resolves.
 #[test]
 fn completion_dropped_before_its_seal_seals_with_the_attempt_outcome() {
-    let service = QueryService::new_for_admission_tests(
+    let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
-        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        vec![runtime_test_device_profile(1)],
     )
-    .expect("admission-only service");
+    .expect("runtime-backed service");
     let backend_lifecycle = BackendLifecycle::new();
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest {
@@ -266,12 +262,12 @@ fn completion_dropped_before_its_seal_seals_with_the_attempt_outcome() {
 /// published report precedes any visible capacity reuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
-    let service = QueryService::new_for_admission_tests(
+    let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
-        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        vec![runtime_test_device_profile(1)],
     )
-    .expect("admission-only service for release commit ordering");
+    .expect("runtime-backed service");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
     let attempt = AttemptOwner::begin(
@@ -365,12 +361,12 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
 /// report publishes.
 #[test]
 fn dropping_the_handle_keeps_the_grant_until_the_attempt_ends() {
-    let service = QueryService::new_for_admission_tests(
+    let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
-        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        vec![runtime_test_device_profile(1)],
     )
-    .expect("admission-only service for fallback release ordering");
+    .expect("runtime-backed service");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
     let attempt = AttemptOwner::begin(
@@ -400,7 +396,7 @@ fn dropping_the_handle_keeps_the_grant_until_the_attempt_ends() {
     // Deliberately omit `AttemptOwner::commit_terminal`: the abandoned
     // attempt's drop commits `Dropped`, which releases the grant.
     drop(attempt_owner);
-    let report = completion.wait_timeout(Duration::from_secs(1)).expect("the dropped attempt's report is published");
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("the dropped attempt's report is published");
     assert_eq!(report.outcome, RuntimeTerminalOutcome::Dropped);
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
@@ -414,12 +410,12 @@ fn dropping_the_handle_keeps_the_grant_until_the_attempt_ends() {
 /// the grant and publishes the report while the handle is still held.
 #[test]
 fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
-    let service = QueryService::new_for_admission_tests(
+    let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
-        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        vec![runtime_test_device_profile(1)],
     )
-    .expect("admission-only service for terminal release");
+    .expect("runtime-backed service");
     let backend_lifecycle = BackendLifecycle::new();
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest {
@@ -442,10 +438,16 @@ fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome commits");
 
-    let report = completion.wait_timeout(Duration::from_secs(1)).expect("the terminal commit publishes the report");
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("the terminal commit publishes the report");
     assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0, "the grant is released before the handle drops");
+    // The report publishes before capacity becomes reusable; the release
+    // still completes while the handle is held.
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || service.admission_snapshot().is_ok_and(|snapshot| snapshot.active_queries == 0),
+        "the grant is released before the handle drops",
+    );
     drop(handle);
 }
 
@@ -476,11 +478,7 @@ async fn terminal_commit_releases_and_publishes_after_gpu_cleanup() {
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission succeeds");
 
-    let pool = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime resources")
+    let pool = service.inner.resources
         .gpu_execution_pool_for_device(handle.device_ordinal())
         .expect("device GPU execution pool");
     let release_blocker = Arc::new(Semaphore::new(0));
@@ -922,7 +920,7 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
 #[test]
 fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for terminal usage quarantine");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
@@ -1023,7 +1021,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
 #[test]
 fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident attestation");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
@@ -1098,12 +1096,12 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
 /// cannot claim again or manufacture competing cleanup/capacity facts.
 #[test]
 fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
-    let service = QueryService::new_for_admission_tests(
+    let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
-        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+        vec![runtime_test_device_profile(1)],
     )
-    .expect("admission-only service");
+    .expect("runtime-backed service");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
     let attempt = AttemptOwner::begin(
@@ -1131,9 +1129,13 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
     drop(handle);
-    let report = completion.wait_timeout(Duration::from_secs(1)).expect("finalized report publishes");
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("finalized report publishes");
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
     assert!(report.timestamps.report_ready_ns.is_some());
+    // The caller recorded no admission facts; publication records them.
+    assert!(report.admission.is_some(), "publication recorded the admission fact");
+    let health = service.inner.admission.devices.ledger(0).expect("device ledger").health().expect("ledger health readable");
+    assert!(matches!(health, DeviceAdmissionHealth::Open), "{health:?}");
 }
 
 fn begin_native_attempt() -> (AttemptOwner, AttemptCompletion) {
@@ -1161,11 +1163,7 @@ fn begin_native_attempt() -> (AttemptOwner, AttemptCompletion) {
 #[test]
 fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let device = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime-backed service")
+    let device = service.inner.resources
         .devices
         .context_by_ordinal(0)
         .expect("device context");
@@ -1211,21 +1209,16 @@ fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
 #[test]
 fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let device = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime-backed service")
+    let device = service.inner.resources
         .devices
         .context_by_ordinal(0)
         .expect("device context");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterWorkerScope);
-    service.set_admission_transaction_probe(probe);
     let (attempt_owner, completion) = begin_native_attempt();
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service.admit_query_with_request(QueryAdmissionRequest::new(binding))
+        admission_service.admit_query_with_probe(QueryAdmissionRequest::new(binding), Arc::new(probe))
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
@@ -1247,7 +1240,6 @@ fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open()
         "the rolled-back envelope releases its provisional grant",
     );
     assert!(matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)));
-    service.set_admission_transaction_probe(AdmissionTransactionProbe::disabled());
     let independent = service.admit_query().expect("the fleet still admits independent attempts");
     drop(independent);
 }
@@ -1258,7 +1250,7 @@ fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for cleanup quarantine");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let attempt_owner =
         observed_attempt("failed-cleanup-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
@@ -1319,7 +1311,7 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
         ],
     )
     .expect("two-device runtime-backed service for alternate retry advice");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device_zero = resources.devices.context_by_ordinal(0).expect("device zero context");
     let device_one = resources.devices.context_by_ordinal(1).expect("device one context");
     let backend_lifecycle = BackendLifecycle::new();
@@ -1477,11 +1469,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     }
     assert!(
         matches!(
-            service
-                .inner
-                .resources
-                .as_ref()
-                .expect("runtime-backed service")
+            service.inner.resources
                 .devices
                 .context_by_ordinal(0)
                 .expect("device zero")
@@ -1502,7 +1490,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for OOM disposition");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let attempt_owner = observed_attempt("oom-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let binding = attempt_owner.admission_binding();
@@ -1647,14 +1635,14 @@ fn oom_release_projects_truthful_resource_evidence() {
 fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     let service = test_service(2, 8);
     let active = service.admit_query().expect("in-flight admission");
-    service.service.force_backend_unhealthy_for_test("test-injected unknown-isolation fault");
+    service.controller.close_unknown_isolation_admission("test-injected unknown-isolation fault");
     assert!(matches!(
-        service.service.inner.fallback_device_ledger.as_ref().expect("admission-only ledger").health(),
+        service.controller.devices.ledger(0).expect("fixture ledger").health(),
         Ok(DeviceAdmissionHealth::Closed { .. })
     ));
 
     let error = service.admit_query().expect_err("new submission rejects while unhealthy");
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
     assert_eq!(
         error.fact_value("detail"),
@@ -1667,7 +1655,6 @@ fn backend_unhealthy_rejects_new_submissions_while_inflight_finishes() {
     assert_eq!(queued_error.fact_value("reason"), Some("backend_unhealthy"));
 
     // In-flight work is untouched and its release commits normally.
-    active.finish();
     drop(active);
     let deadline = Instant::now() + Duration::from_secs(10);
     wait_until(

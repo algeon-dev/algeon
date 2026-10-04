@@ -11,13 +11,16 @@ use query_planning::{
     admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
 };
+use tokio::time;
 
-use super::{
-    PendingDeviceSlotNotifications, QueryActivityLease, QueryHandle, QueryService, QueryServiceInner,
-    admission_rejection, record_admission_lifecycle,
-};
+use super::{QueryActivityLease, admission_rejection, controller::AdmissionController, record_admission_lifecycle};
 #[cfg(any(test, feature = "test-hooks"))]
-use crate::{attempt::AttemptOwner, runtime::deadline::block_until};
+use super::{QueryHandle, QueryService};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::{
+    attempt::AttemptOwner,
+    runtime::{deadline::block_until, query_service::service::transaction::AdmissionTransactionProbe},
+};
 use crate::{
     attempt::{AdmittedGrantRelease, AttemptAdmission, AttemptHandle, AttemptLifecycleError, AttemptReportPublisher},
     observability::{
@@ -32,14 +35,13 @@ use crate::{
     },
 };
 
-/// Cancel-safe queued admission request.
+/// One request's membership in the admission queue.
 ///
-/// Dropping this value before admission removes the queued request from the
-/// service queue. Every admission entry drives one waiter: the async entry
-/// awaits its wakeups, and the test-hooks blocking entry parks on them.
+/// Placing the request ends only its own membership; dropping this value
+/// before placement removes the queued request. It owns no CUDA object.
 #[derive(Debug)]
-pub(crate) struct QueryAdmissionWaiter {
-    pub(super) service: QueryService,
+pub(crate) struct AdmissionWaiter {
+    pub(super) controller: Arc<AdmissionController>,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
@@ -47,9 +49,20 @@ pub(crate) struct QueryAdmissionWaiter {
     pub(super) execution_cancellation: ExecutionCancellation,
     pub(super) terminal: QueuedAdmissionTerminal,
     pub(super) queued: bool,
+}
+
+/// A queued admission on a query service: placement through the service's
+/// admission controller, then the envelope commit that publishes a handle.
+///
+/// Dropping this value before admission removes the queued request.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug)]
+pub(crate) struct QueryAdmissionWaiter {
+    pub(super) service: QueryService,
+    pub(super) waiter: AdmissionWaiter,
     /// The owner of a test attempt, handed to the handle this waiter admits.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(super) test_attempt: Option<AttemptOwner>,
+    pub(super) probe: Option<Arc<AdmissionTransactionProbe>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,14 +108,14 @@ pub(super) struct AdmissionLifecycleTracker {
 
 #[derive(Debug)]
 pub(super) struct PendingPreflightReservation {
-    service: Weak<QueryServiceInner>,
+    controller: Weak<AdmissionController>,
     submission_seq: u64,
     armed: bool,
 }
 
 impl PendingPreflightReservation {
-    pub(super) fn new(service: Weak<QueryServiceInner>, submission_seq: u64) -> Self {
-        Self { service, submission_seq, armed: true }
+    pub(super) fn new(controller: Weak<AdmissionController>, submission_seq: u64) -> Self {
+        Self { controller, submission_seq, armed: true }
     }
 
     pub(super) const fn submission_seq(&self) -> u64 {
@@ -123,17 +136,17 @@ impl PendingPreflightReservation {
         if !self.armed {
             return;
         }
-        let Some(service) = self.service.upgrade() else {
+        let Some(controller) = self.controller.upgrade() else {
             self.armed = false;
             return;
         };
-        let removed = match service.admission.lock() {
+        let removed = match controller.state.lock() {
             Ok(mut state) => state.pending_preflight.remove(&self.submission_seq),
             Err(error) => error.into_inner().pending_preflight.remove(&self.submission_seq),
         };
         self.armed = false;
         if removed {
-            service.notify_admission_available();
+            controller.notify_admission_available();
         }
     }
 }
@@ -145,13 +158,13 @@ impl Drop for PendingPreflightReservation {
 }
 
 impl AdmissionLifecycleTracker {
-    pub(super) fn begin_provisional(&self, service: Weak<QueryServiceInner>) -> AdmissionTicket {
+    pub(super) fn begin_provisional(&self, controller: Weak<AdmissionController>) -> AdmissionTicket {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state.next_ticket_id;
         state.next_ticket_id = state.next_ticket_id.checked_add(1).expect("admission lifecycle ticket id overflow");
         let previous = state.tickets.insert(id, AdmissionTicketPhase::Provisional);
         debug_assert!(previous.is_none(), "admission lifecycle ticket ids must be unique");
-        AdmissionTicket { tracker: self.clone(), service, id, phase: AdmissionTicketPhase::Provisional }
+        AdmissionTicket { tracker: self.clone(), controller, id, phase: AdmissionTicketPhase::Provisional }
     }
 
     fn transition(&self, id: u64, expected: AdmissionTicketPhase, next: AdmissionTicketPhase) -> Result<()> {
@@ -247,7 +260,7 @@ impl AdmissionLifecycleTracker {
 #[derive(Debug)]
 pub(super) struct AdmissionTicket {
     tracker: AdmissionLifecycleTracker,
-    service: Weak<QueryServiceInner>,
+    controller: Weak<AdmissionController>,
     id: u64,
     phase: AdmissionTicketPhase,
 }
@@ -285,14 +298,14 @@ impl Drop for AdmissionTicket {
     fn drop(&mut self) {
         match self.transition_to_cleanup().and_then(|()| self.tracker.finish_cleanup(self.id)) {
             Ok(()) => {
-                if let Some(service) = self.service.upgrade() {
+                if let Some(controller) = self.controller.upgrade() {
                     // The tracker has its own mutex, so removing the ticket does not touch the admission mutex.
                     // Locking it before the wakeup keeps the notify from landing between a waiter's quiescence
                     // check and its wait. No ticket drops on a thread holding this mutex: creators release it
                     // before moving the ticket on, and envelope teardown drops the grant, whose release observer
                     // also locks it, before the ticket.
-                    let _admission = service.admission.lock().unwrap_or_else(PoisonError::into_inner);
-                    service.notify_admission_available();
+                    let _admission = controller.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    controller.notify_admission_available();
                 }
             },
             Err(error) => {
@@ -808,55 +821,37 @@ impl Drop for QueryCompletion {
     }
 }
 
+/// A provisionally placed admission and every value its publication commits.
+///
+/// Holding a ledger grant and a provisional lifecycle ticket but no CUDA
+/// object, it is what placement hands from the controller to the service's
+/// envelope commit. Keeping these values together prevents the admission
+/// paths from publishing different request metadata.
+pub(in crate::runtime::query_service) struct PlacedAdmission {
+    pub(in crate::runtime::query_service) placed_query: PlacedQuery,
+    pub(in crate::runtime::query_service) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
+    pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
+    pub(in crate::runtime::query_service) attempt_id: AttemptId,
+    pub(in crate::runtime::query_service) completion: QueryCompletion,
+    pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
+    pub(in crate::runtime::query_service) admission_wait: Duration,
+    pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
+    pub(in crate::runtime::query_service) admission_wait_fact: Option<AttemptAdmissionWaitFact>,
+    pub(in crate::runtime::query_service) lifecycle_ticket: AdmissionTicket,
+}
+
 #[derive(Debug)]
 pub(super) struct PlacedQuery {
     pub(super) device_ordinal: usize,
     pub(super) memory_grant: MemoryGrant,
 }
 
-impl QueryAdmissionWaiter {
-    /// Attempts to complete this queued admission without blocking.
-    ///
-    /// Returns `Ok(None)` while the request is still queued behind active work
-    /// or a compatible device's current capacity/health constraint. Queue
-    /// timeout and service close remove the request and return a structured
-    /// error.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
-        match self.try_place()? {
-            Some(commit) => {
-                self.service.commit_placed_admission(commit).map(|handle| Some(self.own_test_attempt(handle)))
-            },
-            None => Ok(None),
-        }
-    }
-
-    /// Hands a test attempt's owner to the handle admitted for it.
-    #[cfg(any(test, feature = "test-hooks"))]
-    fn own_test_attempt(&mut self, handle: QueryHandle) -> QueryHandle {
-        *handle.test_attempt.lock().unwrap_or_else(PoisonError::into_inner) = self.test_attempt.take();
-        handle
-    }
-
-    /// [`Self::try_admit`] for an async caller: a placed admission builds its
-    /// envelope in a job on the device's GPU pool.
-    ///
-    /// A caller that stops waiting drops the placed commit: the unpublished
-    /// envelope and the ticket roll back on drop, and the completion recovers
-    /// the attempt's terminal outcome.
-    pub(crate) async fn try_admit_async(&mut self) -> Result<Option<QueryHandle>> {
-        let Some(commit) = self.try_place()? else {
-            return Ok(None);
-        };
-        let handle = self.service.commit_placed_admission_async(commit).await?;
-        #[cfg(any(test, feature = "test-hooks"))]
-        let handle = self.own_test_attempt(handle);
-        Ok(Some(handle))
-    }
-
+impl AdmissionWaiter {
     /// Places this queued admission if it is runnable, returning the commit
     /// that builds and publishes its envelope.
-    fn try_place(&mut self) -> Result<Option<super::service::PlacedAdmissionCommit>> {
+    pub(crate) fn try_place(&mut self) -> Result<Option<PlacedAdmission>> {
         if let Some(error) = self.terminal.take() {
             self.queued = false;
             return Err(error);
@@ -873,10 +868,10 @@ impl QueryAdmissionWaiter {
 
         if self.execution_cancellation.is_cancelled() {
             let error = admission_cancellation_or_deadline_error(&self.execution_cancellation);
-            let removed = match self.service.inner.admission.lock() {
+            let removed = match self.controller.state.lock() {
                 Ok(mut state) => {
                     let removed = self
-                        .service
+                        .controller
                         .remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
                     self.queued = false;
                     if removed.is_some() {
@@ -897,13 +892,13 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
-                    self.service.inner.notify_admission_available();
+                    self.controller.notify_admission_available();
                     removed
                 },
                 Err(error) => {
                     self.queued = false;
                     return Err(self
-                        .service
+                        .controller
                         .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
                 },
             };
@@ -911,13 +906,12 @@ impl QueryAdmissionWaiter {
             return Err(error);
         }
 
-        let mut slot_notifications = PendingDeviceSlotNotifications::default();
-        let mut state = match self.service.inner.admission.lock() {
+        let mut state = match self.controller.state.lock() {
             Ok(state) => state,
             Err(error) => {
                 self.queued = false;
                 return Err(self
-                    .service
+                    .controller
                     .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
             },
         };
@@ -930,23 +924,16 @@ impl QueryAdmissionWaiter {
             self.queued = false;
             return Err(error);
         }
-        match self.service.reconcile_native_admission_health() {
-            Ok(transitioned_device_ordinals) => {
-                for device_ordinal in transitioned_device_ordinals {
-                    slot_notifications.record_device_health_transition(device_ordinal);
-                }
-            },
-            Err(error) => {
-                eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
-            },
+        if let Err(error) = self.controller.reconcile_native_admission_health() {
+            eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
         }
         let device_state_rejection =
             match state.queued.iter_mut().find(|request| request.admission_request_id == self.admission_request_id) {
-                Some(request) => self.service.revalidate_queued_request_device_state(request),
+                Some(request) => self.controller.revalidate_queued_request_device_state(request),
                 None => None,
             };
         if let Some(error) = device_state_rejection {
-            let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+            let removed = self.controller.abandon_queued_request_locked(&mut state, self.admission_request_id);
             self.queued = false;
             if removed.is_some() {
                 record_admission_lifecycle(
@@ -962,11 +949,11 @@ impl QueryAdmissionWaiter {
             finish_removed_request_error(removed, &error);
             return Err(error);
         }
-        if let Some(error) = self.service.admission_terminal_rejection(&state) {
+        if let Some(error) = self.controller.admission_terminal_rejection(&state) {
             let removed =
-                self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
+                self.controller.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
             self.queued = false;
-            self.service.inner.notify_admission_available();
+            self.controller.notify_admission_available();
             if removed.is_some() {
                 record_admission_lifecycle(
                     &self.observation,
@@ -981,19 +968,19 @@ impl QueryAdmissionWaiter {
             finish_removed_request_error(removed, &error);
             return Err(error);
         }
-        let selected = match self.service.select_next_runnable_locked(&mut state) {
+        let selected = match self.controller.select_next_runnable_locked(&mut state) {
             Ok(selected) => match selected
                 .filter(|(position, _)| state.queued[*position].admission_request_id == self.admission_request_id)
             {
                 Some(selected) => Ok(Some(selected)),
-                None => self.service.fallback_driver_selection_locked(&state, self.admission_request_id),
+                None => self.controller.fallback_driver_selection_locked(&state, self.admission_request_id),
             },
             Err(error) => Err(error),
         };
         let selected = match selected {
             Ok(selected) => selected,
             Err(error) => {
-                let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+                let removed = self.controller.abandon_queued_request_locked(&mut state, self.admission_request_id);
                 self.queued = false;
                 if removed.is_some() {
                     record_admission_lifecycle(
@@ -1011,17 +998,16 @@ impl QueryAdmissionWaiter {
             },
         };
         if let Some((position, device_ordinal)) = selected {
-            let placed_query = match self.service.try_place_on_device(
+            let placed_query = match self.controller.try_place_on_device(
                 device_ordinal,
                 self.admission_request_id,
                 state.queued[position].attempt_id,
                 state.queued[position].requirement_for_device(device_ordinal)?,
                 state.queued[position].requested_query_cap_bytes,
-                &mut slot_notifications,
             ) {
                 Ok(placed_query) => placed_query,
                 Err(error) => {
-                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+                    let removed = self.controller.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
                     if removed.is_some() {
                         record_admission_lifecycle(
@@ -1044,7 +1030,7 @@ impl QueryAdmissionWaiter {
                     // removal shifts every later entry, so `position` no longer
                     // names this request afterwards.
                     let requested_query_cap_bytes = state.queued[position].requested_query_cap_bytes;
-                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+                    let removed = self.controller.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
                     if removed.is_some() {
                         record_admission_lifecycle(
@@ -1056,10 +1042,10 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
-                    let error = self.service.memory_grant_wait_timeout_error(
+                    let error = self.controller.memory_grant_wait_timeout_error(
                         device_ordinal,
                         requested_query_cap_bytes,
-                        self.service.queue_member_count_locked(&state),
+                        self.controller.queue_member_count_locked(&state),
                     );
                     drop(state);
                     finish_removed_request_error(removed, &error);
@@ -1069,7 +1055,7 @@ impl QueryAdmissionWaiter {
             };
             let admitted = state.remove_queued_at(position).expect("admissible request exists");
             let admission_wait_fact = admitted.admission_wait_fact();
-            if let Some(error) = self.service.admission_terminal_rejection(&state) {
+            if let Some(error) = self.controller.admission_terminal_rejection(&state) {
                 record_admission_lifecycle(
                     &admitted.observation,
                     self.admission_request_id,
@@ -1079,17 +1065,17 @@ impl QueryAdmissionWaiter {
                     None,
                 );
                 self.queued = false;
-                self.service.inner.notify_admission_available();
+                self.controller.notify_admission_available();
                 drop(state);
                 drop(placed_query);
                 finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
             }
-            let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.service.inner));
+            let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.controller));
             self.queued = false;
-            self.service.inner.notify_admission_available();
+            self.controller.notify_admission_available();
             drop(state);
-            return Ok(Some(super::service::PlacedAdmissionCommit {
+            return Ok(Some(PlacedAdmission {
                 placed_query,
                 admitted_device_requirements: admitted
                     .device_entries
@@ -1110,7 +1096,7 @@ impl QueryAdmissionWaiter {
         }
 
         if self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
+            let removed = self.controller.abandon_queued_request_locked(&mut state, self.admission_request_id);
             self.queued = false;
             if removed.is_some() {
                 record_admission_lifecycle(
@@ -1124,8 +1110,8 @@ impl QueryAdmissionWaiter {
             }
             let error = service_overloaded_error(
                 "queue_wait_elapsed",
-                self.service.queue_member_count_locked(&state),
-                self.service.inner.queue_bounds.max_waiters,
+                self.controller.queue_member_count_locked(&state),
+                self.controller.queue_bounds.max_waiters,
             );
             drop(state);
             finish_removed_request_error(removed, &error);
@@ -1141,21 +1127,48 @@ impl QueryAdmissionWaiter {
         self.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
-    /// Completes this queued admission on the calling thread.
+    /// Waits until this request is placed or rejected. A ledger transition,
+    /// cancellation, and the queue deadline each end one wait.
+    pub(crate) async fn place_async(&mut self) -> Result<PlacedAdmission> {
+        let controller = Arc::clone(&self.controller);
+        loop {
+            let notified = controller.admission_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(placed) = self.try_place()? {
+                return Ok(placed);
+            }
+            let wake = async {
+                tokio::select! {
+                    () = &mut notified => {},
+                    () = self.execution_cancellation.cancelled_or_expired() => {},
+                }
+            };
+            match self.remaining_wait() {
+                Some(remaining_wait) if remaining_wait.is_zero() => continue,
+                Some(remaining_wait) => {
+                    let _ = time::timeout(remaining_wait, wake).await;
+                },
+                None => wake.await,
+            }
+        }
+    }
+
+    /// Waits on the calling thread until this request is placed or rejected.
     ///
-    /// Each pass is one [`Self::try_admit`]; between passes the thread parks
+    /// Each pass is one [`Self::try_place`]; between passes the thread parks
     /// until an admission notification, cancellation, or the earlier of this
     /// request's and its cancellation's deadlines, the same events that end
     /// an async wait.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn admit_blocking(mut self) -> Result<QueryHandle> {
-        let service = self.service.clone();
+    pub(crate) fn place_blocking(&mut self) -> Result<PlacedAdmission> {
+        let controller = Arc::clone(&self.controller);
         loop {
-            let notified = service.inner.admission_notify.notified();
+            let notified = controller.admission_notify.notified();
             let mut notified = pin!(notified);
             notified.as_mut().enable();
-            if let Some(handle) = self.try_admit()? {
-                return Ok(handle);
+            if let Some(placed) = self.try_place()? {
+                return Ok(placed);
             }
             let wake_deadline = match (self.execution_cancellation.deadline(), self.deadline) {
                 (Some(attempt), Some(queue)) => Some(attempt.min(queue)),
@@ -1175,16 +1188,43 @@ impl QueryAdmissionWaiter {
     }
 }
 
-impl Drop for QueryAdmissionWaiter {
+#[cfg(any(test, feature = "test-hooks"))]
+impl QueryAdmissionWaiter {
+    /// Attempts to complete this queued admission without blocking.
+    ///
+    /// Returns `Ok(None)` while the request is still queued behind active work
+    /// or a compatible device's current capacity/health constraint. Queue
+    /// timeout and service close remove the request and return a structured
+    /// error.
+    pub(crate) fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
+        let Some(placed) = self.waiter.try_place()? else {
+            return Ok(None);
+        };
+        let handle = self.service.commit_placed_admission(placed, self.probe.clone())?;
+        handle.own_test_attempt(self.test_attempt.take());
+        Ok(Some(handle))
+    }
+
+    /// Completes this queued admission on the calling thread.
+    pub(crate) fn admit_blocking(mut self) -> Result<QueryHandle> {
+        let placed = self.waiter.place_blocking()?;
+        let handle = self.service.commit_placed_admission(placed, self.probe.take())?;
+        handle.own_test_attempt(self.test_attempt.take());
+        Ok(handle)
+    }
+}
+
+impl Drop for AdmissionWaiter {
     fn drop(&mut self) {
         if !self.queued {
             return;
         }
-        let removed = match self.service.inner.admission.lock() {
+        let removed = match self.controller.state.lock() {
             Ok(mut state) => {
-                let removed =
-                    self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
-                self.service.inner.notify_admission_available();
+                let removed = self
+                    .controller
+                    .remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
+                self.controller.notify_admission_available();
                 if removed.is_some() {
                     record_admission_lifecycle(
                         &self.observation,
@@ -1208,7 +1248,7 @@ impl Drop for QueryAdmissionWaiter {
             Err(error) => {
                 self.queued = false;
                 let error = self
-                    .service
+                    .controller
                     .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id);
                 eprintln!("[query-engine] warning: recovered queued query service admission request after {error}");
                 return;

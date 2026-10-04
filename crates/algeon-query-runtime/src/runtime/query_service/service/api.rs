@@ -390,13 +390,13 @@ pub struct QueryAdmissionRequest {
     pub(in crate::runtime::query_service) test_attempt: Option<AttemptOwner>,
 }
 
-pub(in crate::runtime::query_service::service) struct AdmissionObservation {
-    pub(in crate::runtime::query_service::service) handle: RuntimeObservationHandle,
-    pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
-    pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
+pub(in crate::runtime::query_service) struct AdmissionObservation {
+    pub(in crate::runtime::query_service) handle: RuntimeObservationHandle,
+    pub(in crate::runtime::query_service) activity: Option<QueryActivityLease>,
+    pub(in crate::runtime::query_service) activity_error: Option<QueryError>,
     /// The engine-minted attempt identity, which may receive a post-callback
     /// allocator correlation after a physical domain has been admitted.
-    pub(in crate::runtime::query_service::service) attempt_id: AttemptId,
+    pub(in crate::runtime::query_service) attempt_id: AttemptId,
 }
 
 /// Opaque RAII token retained until query-service cleanup is complete.
@@ -454,6 +454,14 @@ impl QueryAdmissionRequest {
         let mut request = Self::new(owner.admission_binding());
         request.test_attempt = Some(owner);
         request
+    }
+
+    /// Separates a test request's attempt owner, which the admitted handle
+    /// receives, from the request that enters admission.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::runtime::query_service) fn split_test_attempt(mut self) -> (Self, Option<AttemptOwner>) {
+        let owner = self.test_attempt.take();
+        (self, owner)
     }
 
     /// Requests an exact immutable query cap. Admission never clamps it.
@@ -527,7 +535,7 @@ impl QueryAdmissionRequest {
         self
     }
 
-    pub(in crate::runtime::query_service::service) fn into_admission_observation(self) -> AdmissionObservation {
+    pub(in crate::runtime::query_service) fn into_admission_observation(self) -> AdmissionObservation {
         let (activity, activity_error) = match self.runtime_observation_activity {
             Some(Ok(activity)) => (Some(activity), None),
             Some(Err(error)) => (None, Some(error)),
@@ -542,7 +550,7 @@ impl QueryAdmissionRequest {
     }
 
     /// Claims the bound attempt's only admission right.
-    pub(in crate::runtime::query_service::service) fn claim_attempt_admission(
+    pub(in crate::runtime::query_service) fn claim_attempt_admission(
         &self,
     ) -> std::result::Result<AttemptAdmission, AttemptLifecycleError> {
         self.attempt.claim()

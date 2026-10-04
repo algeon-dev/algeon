@@ -99,10 +99,9 @@ pub(crate) fn decide_capacity_commit(
     cleanup_evidence: CleanupEvidence,
     terminal_usage: Option<QueryMemoryDomainUsage>,
 ) -> CapacityCommitDecision {
-    // A ledger-only admission owns no device state: there is nothing to
-    // sample, quarantine, or mark unhealthy, and the commit must stay free
-    // of CUDA FFI so ledger-only release latency does not depend on driver
-    // contention.
+    // A release without an allocation domain owns no device state: there is
+    // nothing to sample, quarantine, or mark unhealthy, and the commit stays
+    // free of CUDA FFI so its latency does not depend on driver contention.
     if domain.is_none() {
         return CapacityCommitDecision {
             disposition: CapacityCommitDisposition::HealthyReuse,

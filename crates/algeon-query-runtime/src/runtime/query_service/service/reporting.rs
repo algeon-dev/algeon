@@ -11,23 +11,13 @@ use query_planning::error::Result;
 #[cfg(test)]
 use query_planning::error::{QueryError, QueryErrorCode};
 
-#[cfg(test)]
-use super::super::config::QueueBounds;
 use super::{super::config::QueryExecutionConfig, QueryService};
-#[cfg(test)]
-use crate::runtime::deadline::DeadlineMutexLockError;
-#[cfg(test)]
-use crate::runtime::deadline::deadline_remaining;
-#[cfg(test)]
-use crate::runtime::deadline::mutex_lock_until;
-#[cfg(test)]
-use crate::runtime::query_service::admission::AdmissionState;
 use crate::runtime::{
     DeviceFacts, DeviceResourceProfile,
     cache::{CacheSourceEventSnapshot, DeviceCacheReport},
     gpu::{
         self, AlgeonNvmlTelemetry, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceTelemetrySnapshot,
-        GpuTelemetry, LedgerSnapshot, registry::EngineDeviceHealthIdentity,
+        GpuTelemetry, registry::EngineDeviceHealthIdentity,
     },
     gpu_execution_pool::{GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
     query_service::{QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot},
@@ -43,94 +33,45 @@ impl QueryService {
         EngineDeviceHealthIdentity,
         DeviceResourceProfile,
     )> {
-        self.inner
-            .resources
-            .as_ref()
-            .map(|resources| {
-                resources
-                    .devices
-                    .contexts()
-                    .map(|device| {
-                        (
-                            device.facts().clone(),
-                            device.capacity_bytes(),
-                            device.memory_manager_installation(),
-                            device.engine_health_identity(),
-                            resources
-                                .devices
-                                .resource_profile(device.device().ordinal())
-                                .cloned()
-                                .expect("installed device has its immutable resource profile"),
-                        )
-                    })
-                    .collect()
+        let devices = &self.inner.resources.devices;
+        devices
+            .contexts()
+            .map(|device| {
+                (
+                    device.facts().clone(),
+                    device.capacity_bytes(),
+                    device.memory_manager_installation(),
+                    device.engine_health_identity(),
+                    devices
+                        .resource_profile(device.device().ordinal())
+                        .cloned()
+                        .expect("installed device has its immutable resource profile"),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
-        let Some(resources) = &self.inner.resources else {
-            return self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .map(|ledger| ledger.report())
-                .transpose()
-                .map(|report| report.into_iter().collect());
-        };
-        resources.devices.contexts().map(|context| context.ledger().report()).collect()
+        self.inner.admission.device_ledger_reports()
     }
 
     /// Returns physical allocation-domain usage and cache activity for every
     /// cache-enabled device.  It is diagnostic-only and never participates in
     /// admission; `device_ledger_reports` remains the ownership authority.
     pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
-        let Some(resources) = &self.inner.resources else {
-            return Ok(Vec::new());
-        };
-        resources.resident_caches.reports()
+        self.inner.resources.resident_caches.reports()
     }
 
     /// Returns bounded source-cache state-machine observations across enabled
     /// device domains. They are correlation diagnostics, never admission or
     /// residency accounting inputs.
     pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
-        let Some(resources) = &self.inner.resources else {
-            return Ok(Vec::new());
-        };
-        resources.resident_caches.source_event_snapshots()
+        self.inner.resources.resident_caches.source_event_snapshots()
     }
 
     /// Returns process-wide active-query slot counts for each service device.
     pub fn device_admission_snapshots(&self) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
-        let Some(resources) = &self.inner.resources else {
-            return self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .map(|ledger| {
-                    let snapshot = ledger.snapshot().ok();
-                    vec![QueryServiceDeviceAdmissionSnapshot {
-                        device_ordinal: ledger.device_ordinal(),
-                        process_active_query_slots: snapshot.as_ref().map_or(0, |snapshot| snapshot.active_attempts),
-                        has_protection: snapshot.as_ref().is_some_and(|snapshot| snapshot.protected_slot),
-                    }]
-                })
-                .unwrap_or_default();
-        };
-        resources
-            .devices
-            .contexts()
-            .map(|context| {
-                let device_ordinal = context.device().ordinal();
-                let snapshot = context.ledger().snapshot();
-                QueryServiceDeviceAdmissionSnapshot {
-                    device_ordinal,
-                    process_active_query_slots: snapshot.as_ref().map_or(0, |snapshot| snapshot.active_attempts),
-                    has_protection: snapshot.as_ref().is_ok_and(|snapshot| snapshot.protected_slot),
-                }
-            })
-            .collect()
+        self.inner.admission.device_admission_snapshots()
     }
 
     /// Samples current CUDA and optional NVML telemetry for each service
@@ -147,25 +88,17 @@ impl QueryService {
         &self,
         telemetry: &dyn GpuTelemetry,
     ) -> Vec<DeviceTelemetrySnapshot> {
-        let Some(resources) = &self.inner.resources else {
-            return Vec::new();
-        };
-        device_telemetry_snapshots_for_ordinals(telemetry, resources.devices.telemetry_device_ordinals())
+        device_telemetry_snapshots_for_ordinals(telemetry, self.inner.resources.devices.telemetry_device_ordinals())
     }
 
     /// Returns one device memory allocation-failure report for each installed service device.
     pub fn device_memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
-        let Some(resources) = &self.inner.resources else {
-            return Vec::new();
-        };
-        resources.devices.memory_failure_reports()
+        self.inner.resources.devices.memory_failure_reports()
     }
 
     /// Returns one dedicated GPU execution-pool report per service device.
     pub fn gpu_execution_pool_reports(&self) -> Vec<GpuExecutionPoolSnapshot> {
-        let Some(resources) = &self.inner.resources else {
-            return Vec::new();
-        };
+        let resources = &self.inner.resources;
         resources
             .devices
             .device_ordinals()
@@ -176,11 +109,7 @@ impl QueryService {
 
     /// Returns the exact current and peak query concurrency across all service GPU pools.
     pub fn gpu_execution_query_report(&self) -> GpuExecutionQuerySnapshot {
-        self.inner
-            .resources
-            .as_ref()
-            .map(|resources| resources.gpu_execution_query_tracker.snapshot())
-            .unwrap_or(GpuExecutionQuerySnapshot { active_query_jobs: 0, peak_active_query_jobs: 0 })
+        self.inner.resources.gpu_execution_query_tracker.snapshot()
     }
 
     /// Blocks until every created service runtime has completed background
@@ -193,61 +122,13 @@ impl QueryService {
     /// until `timeout` expires.
     #[cfg(test)]
     pub(crate) fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
-        let Some(resources) = &self.inner.resources else {
-            return Ok(());
-        };
         let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
-        for context in resources.devices.contexts() {
+        for context in self.inner.resources.devices.contexts() {
             context.stream_pool().wait_until_idle(deadline, "query_engine.query_service.wait_for_stream_pools_idle")?;
         }
-        self.wait_for_release_commits_until(deadline)
-    }
-
-    /// Waits for the release or provisional-rollback callback that follows
-    /// stream-pool cleanup.
-    ///
-    /// A returned root stream can make a pool look idle before its cleanup
-    /// completion commits the report and drops the immutable grant. The same
-    /// ordering applies when an unpublished envelope rolls back. Capacity
-    /// remains unavailable until that callback clears the admission counters,
-    /// so the public idle fence must include both phases.
-    #[cfg(test)]
-    fn wait_for_release_commits_until(&self, deadline: Instant) -> Result<()> {
-        let operation = "query_engine.query_service.wait_for_stream_pools_idle";
-        let mut state = match mutex_lock_until(&self.inner.admission, deadline) {
-            Ok(state) => state,
-            Err(DeadlineMutexLockError::Poisoned) => {
-                return Err(QueryError::new(
-                    QueryErrorCode::Internal,
-                    operation,
-                    "query service admission mutex was poisoned while waiting for stream cleanup",
-                )
-                .with_fact("reason", "admission_mutex_poisoned"));
-            },
-            Err(DeadlineMutexLockError::TimedOut) => {
-                return Err(stream_pool_release_commit_timeout(operation, None));
-            },
-        };
-        loop {
-            if state.lifecycle.is_quiescent() {
-                return Ok(());
-            }
-            let Some(remaining) = deadline_remaining(deadline) else {
-                return Err(stream_pool_release_commit_timeout(operation, Some(&state)));
-            };
-            let (next, timeout) = self.inner.admission_available.wait_timeout(state, remaining).map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    operation,
-                    "query service admission condition variable was poisoned while waiting for stream cleanup",
-                )
-                .with_fact("reason", "admission_condition_poisoned")
-            })?;
-            state = next;
-            if timeout.timed_out() && !state.lifecycle.is_quiescent() {
-                return Err(stream_pool_release_commit_timeout(operation, Some(&state)));
-            }
-        }
+        self.inner
+            .admission
+            .wait_for_lifecycle_quiescence_until(deadline, "query_engine.query_service.wait_for_stream_pools_idle")
     }
 
     /// Blocks until each pool has only its declared long-lived runtime leases
@@ -263,17 +144,7 @@ impl QueryService {
         timeout: Duration,
     ) -> Result<()> {
         let operation = "query_engine.query_service.wait_for_stream_pools_quiescent";
-        let Some(resources) = &self.inner.resources else {
-            if expected_leased_runtimes.iter().all(|(_device_ordinal, expected)| *expected == 0) {
-                return Ok(());
-            }
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "expected stream-pool leases require query service runtime resources",
-            )
-            .with_fact("reason", "runtime_resources_unavailable"));
-        };
+        let resources = &self.inner.resources;
         let mut expected_by_device = BTreeMap::new();
         for &(device_ordinal, expected) in expected_leased_runtimes {
             if expected_by_device.insert(device_ordinal, expected).is_some() {
@@ -300,131 +171,21 @@ impl QueryService {
         &self.inner.config
     }
 
-    /// Returns the controller-owned bounded admission queue policy.
-    #[cfg(test)]
-    pub(crate) fn queue_bounds(&self) -> &QueueBounds {
-        &self.inner.queue_bounds
-    }
-
     /// Returns a point-in-time admission snapshot for service reports.
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        let mut state = self.lock_admission()?;
-        let expired = self.sweep_expired_queued_requests_locked(&mut state);
-        // A ledger grant becomes provisional before the complete physical
-        // envelope can publish, so provisional transactions stay hidden.
-        // A published handle in terminal cleanup still owns its immutable
-        // grant, however; include it until the report commit and mechanical
-        // capacity release complete.
-        let lifecycle = state.lifecycle.snapshot();
-        let active_queries = lifecycle.active.saturating_add(lifecycle.published_cleanup);
-        let snapshot = QueryServiceAdmissionSnapshot {
-            active_queries,
-            queued_queries: state.queued.len(),
-            queue_high_watermark: state.queue_high_watermark(),
-            protected_devices: self
-                .device_ledger_snapshots()
-                .map(|snapshots| {
-                    snapshots
-                        .iter()
-                        .filter(|snapshot| snapshot.protected_slot)
-                        .map(|snapshot| snapshot.device_ordinal)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-        // Queue-sweep completion may reenter service callers, so release the admission lock first.
-        drop(state);
-        expired.finish();
-        Ok(snapshot)
-    }
-}
-
-#[cfg(test)]
-fn stream_pool_release_commit_timeout(operation: &'static str, state: Option<&AdmissionState>) -> QueryError {
-    let mut error = QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        operation,
-        "timed out waiting for query-service stream cleanup to commit capacity release",
-    )
-    .with_fact("reason", "stream_pool_idle_timeout")
-    .with_fact("cleanup_stage", "release_commit");
-    if let Some(state) = state {
-        let lifecycle = state.lifecycle.snapshot();
-        error = error
-            .with_fact("active_queries", lifecycle.active)
-            .with_fact("admitting_queries", lifecycle.provisional)
-            .with_fact("cleanup_in_progress", lifecycle.cleanup);
-    }
-    error
-}
-
-impl QueryService {
-    /// Test hook: closes new admission on one device ledger, driving the
-    /// queue's protection retarget path without a real device fault.
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn close_device_admission_for_test(
-        &self,
-        device_ordinal: usize,
-        reason: &str,
-    ) -> Result<()> {
-        self.ledger_for_ordinal(device_ordinal)?.close_admission(reason)?;
-        self.inner.notify_admission_available();
-        Ok(())
+        self.inner.admission.admission_snapshot()
     }
 }
 
 impl QueryService {
-    /// Largest device managed capacity represented by this query service.
-    pub(crate) fn max_device_capacity_bytes(&self) -> u64 {
-        self.inner.resources.as_ref().map_or_else(
-            || {
-                self.inner
-                    .fallback_device_ledger
-                    .as_ref()
-                    .expect("admission-only service has a fallback device ledger")
-                    .managed_capacity_bytes()
-            },
-            |resources| {
-                resources
-                    .devices
-                    .contexts()
-                    .map(|context| context.capacity_bytes())
-                    .max()
-                    .expect("runtime service has an installed device")
-            },
-        )
-    }
-
     /// Largest physical device-total byte count represented by this query service.
-    ///
-    /// Admission-only services have no CUDA inventory, so they fall back to the
-    /// configured synthetic-ledger capacity used by deterministic CPU-only tests.
     pub fn max_device_total_memory_bytes(&self) -> u64 {
-        self.inner.resources.as_ref().map_or_else(
-            || self.max_device_capacity_bytes(),
-            |resources| {
-                resources
-                    .devices
-                    .contexts()
-                    .map(|context| context.facts().total_bytes)
-                    .max()
-                    .expect("runtime service has an installed device")
-            },
-        )
-    }
-
-    /// One atomic snapshot per device ledger, for placement, reports, and
-    /// metrics. Admission-only services expose their synthetic ledger.
-    pub(in crate::runtime::query_service) fn device_ledger_snapshots(&self) -> Result<Vec<LedgerSnapshot>> {
-        let Some(resources) = &self.inner.resources else {
-            return self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .map(|ledger| ledger.snapshot())
-                .transpose()
-                .map(|snapshot| snapshot.into_iter().collect());
-        };
-        resources.devices.contexts().map(|context| context.ledger().snapshot()).collect()
+        self.inner
+            .resources
+            .devices
+            .contexts()
+            .map(|context| context.facts().total_bytes)
+            .max()
+            .expect("runtime service has an installed device")
     }
 }

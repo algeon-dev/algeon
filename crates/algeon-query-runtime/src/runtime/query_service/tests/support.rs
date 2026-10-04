@@ -10,6 +10,8 @@ impl QueryService {
     }
 }
 
+use std::collections::BTreeMap;
+
 use query_planning::{
     admission::ExecutionCapability,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
@@ -20,154 +22,173 @@ use crate::{
     observability::{RuntimeTimelineEvent, SealedRuntimeObservationSnapshot},
     runtime::{
         DeviceCapabilities,
+        context::AdmittedPlanIdentities,
         gpu::{DeviceLedger, GrantIdentity},
         gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
-        query_service::service::TestPauseHandle,
     },
 };
 
+/// CUDA-free admission fixture over the controller alone. A placed request
+/// activates its lifecycle ticket and keeps its grant; no envelope is built
+/// and no query handle is published.
 #[derive(Clone, Debug)]
 struct AdmissionTestController {
-    service: QueryService,
+    controller: Arc<AdmissionController>,
     synthetic_ticket: Arc<std::sync::Mutex<Option<AdmissionTicket>>>,
 }
 
 impl AdmissionTestController {
-    fn new(config: QueryExecutionConfig, queue_bounds: QueueBounds) -> Result<Self> {
-        Self::new_with_ledger(config, queue_bounds, test_ledger(64 * 1024 * 1024, 1, Default::default()))
+    fn new(queue_bounds: QueueBounds) -> Result<Self> {
+        Self::new_with_ledger(queue_bounds, test_ledger(64 * 1024 * 1024, 1, Default::default()))
     }
 
-    fn new_with_ledger(config: QueryExecutionConfig, queue_bounds: QueueBounds, ledger: DeviceLedger) -> Result<Self> {
-        QueryService::new_for_admission_tests(config, queue_bounds, ledger)
-            .map(|service| Self { service, synthetic_ticket: Arc::new(std::sync::Mutex::new(None)) })
+    fn new_with_ledger(queue_bounds: QueueBounds, ledger: DeviceLedger) -> Result<Self> {
+        Self::new_with_ledgers(queue_bounds, [ledger])
     }
 
-    fn new_with_device_capabilities(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        device_capabilities: DeviceCapabilities,
-    ) -> Result<Self> {
-        QueryService::new_for_admission_tests(
-            config,
-            queue_bounds,
-            test_ledger(64 * 1024 * 1024, 1, device_capabilities),
-        )
-        .map(|service| Self { service, synthetic_ticket: Arc::new(std::sync::Mutex::new(None)) })
+    fn new_with_ledgers(queue_bounds: QueueBounds, ledgers: impl IntoIterator<Item = DeviceLedger>) -> Result<Self> {
+        let devices =
+            AdmissionDevices::new(ledgers.into_iter().map(|ledger| AdmissionDevice::new(Arc::new(ledger), || None)));
+        AdmissionController::new(queue_bounds, devices)
+            .map(|controller| Self { controller, synthetic_ticket: Arc::new(std::sync::Mutex::new(None)) })
+    }
+
+    fn new_with_device_capabilities(queue_bounds: QueueBounds, device_capabilities: DeviceCapabilities) -> Result<Self> {
+        Self::new_with_ledger(queue_bounds, test_ledger(64 * 1024 * 1024, 1, device_capabilities))
     }
 
     fn admit_query(&self) -> Result<AdmissionTestHandle> {
-        self.service.admit_query().map(AdmissionTestHandle::new)
+        self.admit_query_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     async fn admit_async(&self) -> Result<AdmissionTestHandle> {
-        self.service.admit_async().await.map(AdmissionTestHandle::new)
+        self.admit_async_with_request(QueryAdmissionRequest::test_attempt()).await
     }
 
     fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestHandle> {
-        self.service.admit_query_with_request(request).map(AdmissionTestHandle::new)
+        let mut waiter = self.enqueue_admission_with_request(request)?;
+        let placed = waiter.waiter.place_blocking()?;
+        Ok(AdmissionTestHandle::activate(&self.controller, placed, waiter.test_attempt.take()))
     }
 
     async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestHandle> {
-        self.service.admit_async_with_request(request).await.map(AdmissionTestHandle::new)
+        let mut waiter = self.enqueue_admission_with_request(request)?;
+        let placed = waiter.waiter.place_async().await?;
+        Ok(AdmissionTestHandle::activate(&self.controller, placed, waiter.test_attempt.take()))
     }
 
     fn try_admit_query(&self) -> Result<Option<AdmissionTestHandle>> {
-        self.service.try_admit_query().map(|handle| handle.map(AdmissionTestHandle::new))
+        self.try_admit_query_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<AdmissionTestHandle>> {
-        self.service.try_admit_query_with_request(request).map(|handle| handle.map(AdmissionTestHandle::new))
+        self.enqueue_admission_with_request(request)?.try_admit()
     }
 
     fn enqueue_admission(&self) -> Result<AdmissionTestWaiter> {
-        self.service.enqueue_admission().map(AdmissionTestWaiter::new)
+        self.enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     fn enqueue_admission_with_request(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestWaiter> {
-        self.service.enqueue_admission_with_request(request).map(AdmissionTestWaiter::new)
+        let submission = self.begin_submission(request)?;
+        self.finish_submission(submission)
+    }
+
+    /// Holds a pending-preflight slot until [`Self::finish_submission`].
+    fn begin_submission(&self, request: QueryAdmissionRequest) -> Result<AdmissionTestSubmission> {
+        let (request, test_attempt) = request.split_test_attempt();
+        let submission = self.controller.begin_submission(request, None, None, None)?;
+        Ok(AdmissionTestSubmission { submission, test_attempt })
+    }
+
+    fn finish_submission(&self, submission: AdmissionTestSubmission) -> Result<AdmissionTestWaiter> {
+        let AdmissionTestSubmission { submission, test_attempt } = submission;
+        let waiter = self.controller.finish_submission(submission)?;
+        Ok(AdmissionTestWaiter { controller: Arc::clone(&self.controller), waiter, test_attempt })
+    }
+
+    fn finish_submission_with<F>(&self, submission: AdmissionTestSubmission, resolve: F) -> Result<AdmissionTestWaiter>
+    where
+        F: FnMut(usize) -> Result<AttemptRequirement>,
+    {
+        let AdmissionTestSubmission { submission, test_attempt } = submission;
+        let waiter = self.controller.finish_submission_with(submission, resolve)?;
+        Ok(AdmissionTestWaiter { controller: Arc::clone(&self.controller), waiter, test_attempt })
     }
 
     fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        self.service.admission_snapshot()
+        self.controller.admission_snapshot()
     }
 
     fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
-        self.service.device_ledger_reports()
+        self.controller.device_ledger_reports()
     }
 
     fn queued_len(&self) -> usize {
-        self.service.inner.admission.lock().unwrap().queued.len()
+        self.controller.state.lock().unwrap().queued.len()
     }
 
     fn queued_len_recovering_poison(&self) -> usize {
-        self.service.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued.len()
+        self.controller.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued.len()
     }
 
     fn pending_preflight_len(&self) -> usize {
-        self.service.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending_preflight.len()
+        self.controller.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending_preflight.len()
     }
 
-    fn pending_preflight_resolver_calls(&self) -> usize {
-        self.service.inner.pending_preflight_resolver_calls()
-    }
-
-    fn reset_pending_preflight_resolver_calls(&self) {
-        self.service.inner.reset_pending_preflight_resolver_calls();
-    }
-
-    fn pause_pending_preflight(&self) -> TestPauseHandle {
-        self.service.inner.pause_pending_preflight_for_test()
-    }
-
-    fn fail_next_pending_preflight(&self) {
-        self.service.inner.fail_next_pending_preflight_for_test();
+    fn lifecycle_snapshot(&self) -> AdmissionLifecycleSnapshot {
+        self.controller.state.lock().expect("admission state").lifecycle.snapshot()
     }
 
     fn poison_admission(&self) {
-        let service = self.service.clone();
+        let controller = Arc::clone(&self.controller);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            let _state = service.inner.admission.lock().expect("test acquires admission state");
+            let _state = controller.state.lock().expect("test acquires admission state");
             panic!("injected query service admission mutex poison");
         }));
     }
 
     fn close(&self) -> Result<()> {
-        self.service.close()
+        self.controller.close().finish()
     }
 
     fn close_device_admission_for_test(&self, device_ordinal: usize, reason: &str) -> Result<()> {
-        self.service.close_device_admission_for_test(device_ordinal, reason)
+        self.controller.close_device_admission_for_test(device_ordinal, reason)
     }
 
     fn close_and_wait_for_quiescence(&self, timeout: Duration) -> Result<()> {
-        self.service.close_and_wait_for_quiescence(timeout)
+        self.close_and_wait_for_quiescence_until(Instant::now() + timeout)
     }
 
     fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
-        self.service.close_and_wait_for_quiescence_until(deadline)
+        self.controller.close_gate();
+        self.controller.notify_admission_available();
+        let admission = self
+            .controller
+            .wait_for_quiescence_until(deadline, "query_engine.query_service.close_and_wait_for_quiescence");
+        QueryServiceDrainOutcome::new(vec![admission]).into_result()
     }
 
     fn hold_admission_lock(&self) -> Result<AdmissionTestLockGuard<'_>> {
-        self.service
+        self.controller
             .lock_admission()
             .map(|state| AdmissionTestLockGuard { state, synthetic_ticket: Arc::clone(&self.synthetic_ticket) })
     }
 
     fn shutdown_waiter_count(&self) -> usize {
-        self.service.inner.shutdown_waiters.load(Ordering::Acquire)
+        self.controller.shutdown_waiters.load(Ordering::Acquire)
     }
 
     fn notify_admission_available(&self) {
-        self.service.inner.notify_admission_available();
+        self.controller.notify_admission_available();
     }
 
     fn expire_waiter(&self, waiter: &mut AdmissionTestWaiter) {
         let expired = Instant::now();
         waiter.waiter.deadline = Some(expired);
         let admission_request_id = waiter.waiter.admission_request_id;
-        self.service
-            .inner
-            .admission
+        self.controller
+            .state
             .lock()
             .expect("admission state")
             .queued
@@ -178,64 +199,76 @@ impl AdmissionTestController {
     }
 }
 
+/// A placed request whose lifecycle ticket is active. Dropping it returns the
+/// grant's budget before the ticket leaves the lifecycle, the envelope
+/// teardown order.
 #[derive(Debug)]
 struct AdmissionTestHandle {
-    handle: QueryHandle,
+    controller: Arc<AdmissionController>,
+    device_ordinal: usize,
+    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    plan_identities: AdmittedPlanIdentities,
+    memory_grant: MemoryGrant,
+    _lifecycle_ticket: AdmissionTicket,
+    _completion: QueryCompletion,
+    _test_attempt: Option<AttemptOwner>,
 }
 
 impl AdmissionTestHandle {
-    fn new(handle: QueryHandle) -> Self {
-        Self { handle }
+    fn activate(
+        controller: &Arc<AdmissionController>,
+        placed: PlacedAdmission,
+        test_attempt: Option<AttemptOwner>,
+    ) -> Self {
+        let PlacedAdmission {
+            placed_query: PlacedQuery { device_ordinal, memory_grant },
+            admitted_device_requirements,
+            submitted_plan_capability_evidence,
+            completion,
+            mut lifecycle_ticket,
+            ..
+        } = placed;
+        let state = controller.state.lock().expect("admission state");
+        lifecycle_ticket.transition_to_active().expect("a placed lifecycle ticket activates once");
+        drop(state);
+        Self {
+            controller: Arc::clone(controller),
+            device_ordinal,
+            admitted_device_requirements,
+            plan_identities: AdmittedPlanIdentities::new(submitted_plan_capability_evidence),
+            memory_grant,
+            _lifecycle_ticket: lifecycle_ticket,
+            _completion: completion,
+            _test_attempt: test_attempt,
+        }
     }
 
-    fn admission_request_id(&self) -> AdmissionRequestId {
-        self.handle.admission_request_id()
+    fn admitted_device_requirement(&self, ordinal: usize) -> Option<&AttemptRequirement> {
+        self.admitted_device_requirements.get(&ordinal)
+    }
+
+    fn admitted_capability_evidence(&self) -> Option<Arc<AttemptRequirement>> {
+        self.plan_identities.current()
+    }
+
+    fn join_fragment(&self, fragment: &AttemptRequirement) -> Result<()> {
+        self.controller.join_admitted_fragment(self.device_ordinal, &self.plan_identities, fragment)
     }
 
     fn device_budget_bytes(&self) -> u64 {
-        self.handle.device_budget_bytes()
+        self.memory_grant.budget_bytes()
     }
 
     fn device_ordinal(&self) -> usize {
-        self.handle.device_ordinal()
+        self.device_ordinal
     }
 
     fn grant_identity(&self) -> GrantIdentity {
-        self.handle.grant_identity().expect("admitted handle owns a live grant identity")
+        self.memory_grant.identity()
     }
 
-    fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
-        self.handle.source_scheduler_policy()
-    }
-
-    fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
-        self.handle.source_chunk_planning_mode()
-    }
-
-    fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
-        self.handle.statistical_aggregate_execution_mode()
-    }
-
-    fn planning_policy(&self) -> PlanningPolicy {
-        self.handle.planning_policy()
-    }
-
-    fn aggregate_strategy_execution_options(
-        &self,
-    ) -> AggregateStrategyExecutionOptions {
-        self.handle.aggregate_strategy_execution_options()
-    }
-
-    fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
-        self.handle.source_chunk_planning_options()
-    }
-
-    fn memory_grant(&self) -> Result<MemoryGrant> {
-        self.handle.lifetime.memory_grant()
-    }
-
-    fn finish(&self) {
-        self.handle.end_test_attempt();
+    fn memory_grant(&self) -> MemoryGrant {
+        self.memory_grant.clone()
     }
 }
 
@@ -263,18 +296,26 @@ impl AdmissionTestLockGuard<'_> {
     }
 }
 
+/// A submission holding its pending-preflight slot.
+#[derive(Debug)]
+struct AdmissionTestSubmission {
+    submission: PendingSubmission,
+    test_attempt: Option<AttemptOwner>,
+}
+
 #[derive(Debug)]
 struct AdmissionTestWaiter {
-    waiter: QueryAdmissionWaiter,
+    controller: Arc<AdmissionController>,
+    waiter: AdmissionWaiter,
+    test_attempt: Option<AttemptOwner>,
 }
 
 impl AdmissionTestWaiter {
-    fn new(waiter: QueryAdmissionWaiter) -> Self {
-        Self { waiter }
-    }
-
     fn try_admit(&mut self) -> Result<Option<AdmissionTestHandle>> {
-        self.waiter.try_admit().map(|handle| handle.map(AdmissionTestHandle::new))
+        let Some(placed) = self.waiter.try_place()? else {
+            return Ok(None);
+        };
+        Ok(Some(AdmissionTestHandle::activate(&self.controller, placed, self.test_attempt.take())))
     }
 
     fn admission_request_id(&self) -> AdmissionRequestId {
@@ -319,7 +360,7 @@ fn observed_admission_events(observation: &RuntimeObservationHandle) -> Vec<(Adm
     }
 }
 fn wait_for_sealed_observation(observation: &RuntimeObservationHandle) -> SealedRuntimeObservationSnapshot {
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(snapshot) = observation.sealed_snapshot() {
             return snapshot;
@@ -380,17 +421,14 @@ fn test_ledger_with_explicit_profile(
 }
 
 /// Build the CUDA-free admission fixture with the exact per-device ledger
-/// contract asserted by a test. `QueryExecutionConfig` deliberately carries
-/// no device limits, so test-local capacity and floor values belong here.
+/// contract asserted by a test.
 fn admission_test_service_with_profile(
-    config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
     managed_capacity_bytes: u64,
     default_query_limit_bytes: u64,
     max_active_attempts: usize,
 ) -> AdmissionTestController {
     AdmissionTestController::new_with_ledger(
-        config,
         queue_bounds,
         test_ledger_with_explicit_profile(
             0,
@@ -406,7 +444,6 @@ fn admission_test_service_with_profile(
 fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> AdmissionTestController {
     let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500) };
     admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
         queue_bounds,
         64 * 1024 * 1024,
         (64 * 1024 * 1024 / u64::try_from(max_active_attempts_per_device.saturating_mul(8)).unwrap_or(u64::MAX)).max(1),

@@ -35,20 +35,17 @@ use crate::observability::{
 
 mod admission;
 mod config;
-mod device_waiters;
+mod controller;
 mod handle;
 mod resources;
 mod service;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use admission::QueryAdmissionWaiter;
 use admission::QueryCompletion;
 #[cfg(test)]
 use admission::{AdmissionState, DeviceAdmissionEntries};
 pub use config::{QueryExecutionConfig, QueueBounds};
-use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admission_available};
 pub use handle::{AdmittedQueryContext, QueryHandle};
 #[cfg(feature = "qualification")]
 pub use service::DeviceQuarantineInjection;

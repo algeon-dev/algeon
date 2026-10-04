@@ -39,7 +39,7 @@ fn opaque_activity_token_lives_until_query_service_release_finishes() {
         }
     }
 
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let drops = Arc::new(AtomicUsize::new(0));
     let attempt = AttemptOwner::native_for_test();
     let handle = service
@@ -54,6 +54,14 @@ fn opaque_activity_token_lives_until_query_service_release_finishes() {
     assert_eq!(drops.load(Ordering::SeqCst), 0, "dropping the handle releases nothing");
     drop(attempt);
 
+    // The envelope release, which drops the activity, runs on the device
+    // executor after the attempt ends.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while drops.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "query-service cleanup releases the activity");
+        std::thread::yield_now();
+    }
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
     assert_eq!(drops.load(Ordering::SeqCst), 1, "final query-service cleanup releases the activity exactly once");
 }
 
@@ -122,7 +130,7 @@ async fn fallible_activity_acquisition_rejects_without_entering_admission() {
 }
 #[test]
 fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let attempt = observed_attempt("external-query", Some("external-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let mut waiter = service
@@ -134,6 +142,7 @@ fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
     // The attempt's end, not the handle's drop, releases the admission.
     drop(handle);
     drop(attempt);
+    wait_for_sealed_observation(&observation);
 
     assert_eq!(observation.query_id().map(|query_id| query_id.as_str()), Some("external-query"));
     assert_eq!(observation.trace_id().map(|trace_id| trace_id.as_str()), Some("external-trace"));
@@ -148,7 +157,7 @@ fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn async_capacity_contention_uses_one_id_without_false_rejection() {
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let active = service.admit_query().expect("capacity barrier admits first query");
     let attempt = observed_attempt("async-contended-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
@@ -158,10 +167,7 @@ async fn async_capacity_contention_uses_one_id_without_false_rejection() {
         queued_service.admit_async_with_request(QueryAdmissionRequest::new(queued_binding)).await
     });
 
-    loop {
-        if service.queued_len() == 1 {
-            break;
-        }
+    while service.admission_snapshot().unwrap().queued_queries != 1 {
         yield_now().await;
     }
     let enqueued = observed_admission_events(&observation);
@@ -209,7 +215,7 @@ async fn async_permanent_rejection_remains_terminal_rejected() {
 }
 #[test]
 fn shared_owner_seals_only_after_admission_release_and_query_cleanup() {
-    let service = test_service(1, 8);
+    let service = runtime_test_service(1, 8);
     let attempt = observed_attempt("shared-owner-query", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let observation = attempt.observation_for_test();
     let handle = service
@@ -223,7 +229,7 @@ fn shared_owner_seals_only_after_admission_release_and_query_cleanup() {
 
     attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(handle);
-    let snapshot = observation.sealed_snapshot().expect("the attempt's release and cleanup seal the shared owner");
+    let snapshot = wait_for_sealed_observation(&observation);
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     let released = snapshot
         .events()
@@ -413,21 +419,20 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
     let admission_request_id = waiter.admission_request_id();
     service.expire_waiter(&mut waiter);
 
-    let pause = service.service.pause_next_queue_sweep_finish_for_test();
-    let reporting_service = service.service.clone();
-    let snapshot = std::thread::spawn(move || reporting_service.admission_snapshot());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let mut state = service.controller.lock_admission().expect("admission state");
+    let sweep = service.controller.sweep_expired_queued_requests_locked(&mut state);
+    drop(state);
 
-    assert_eq!(service.queued_len(), 0, "snapshot sweep removes the expired waiter before it finishes completion");
-    assert!(observation.sealed_snapshot().is_none(), "the paused sweep still owns terminal completion");
+    assert_eq!(service.queued_len(), 0, "the sweep removes the expired waiter before it finishes completion");
+    assert!(observation.sealed_snapshot().is_none(), "the unfinished sweep still owns terminal completion");
 
     let error = waiter.try_admit().expect_err("waiter consumes its recorded timeout before sweep finish");
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
     assert!(observation.sealed_snapshot().is_none(), "waiter error handoff does not complete or drop the observation");
 
-    pause.release();
-    let snapshot = snapshot.join().expect("snapshot reporter does not panic").expect("snapshot succeeds");
+    sweep.finish();
+    let snapshot = service.admission_snapshot().expect("snapshot succeeds");
     assert_eq!(snapshot.queued_queries, 0);
 
     let sealed = observation.sealed_snapshot().expect("sweep finalizes the queued completion");
@@ -470,18 +475,17 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
         .expect("attempt-bound second query queues");
     service.expire_waiter(&mut waiter);
 
-    let pause = service.service.pause_next_queue_sweep_finish_for_test();
-    let reporting_service = service.service.clone();
-    let snapshot = std::thread::spawn(move || reporting_service.admission_snapshot());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let mut state = service.controller.lock_admission().expect("admission state");
+    let sweep = service.controller.sweep_expired_queued_requests_locked(&mut state);
+    drop(state);
 
     let error = waiter.try_admit().expect_err("waiter consumes its terminal timeout before sweep completion");
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-    assert!(attempt.completion.try_report().is_none(), "the paused sweep still owns attempt completion");
+    assert!(attempt.completion.try_report().is_none(), "the unfinished sweep still owns attempt completion");
 
-    pause.release();
-    let admission = snapshot.join().expect("snapshot reporter does not panic").expect("snapshot succeeds");
+    sweep.finish();
+    let admission = service.admission_snapshot().expect("snapshot succeeds");
     assert_eq!(admission.queued_queries, 0);
 
     let report = attempt.completion.completion().wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
@@ -522,25 +526,24 @@ fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error
         .close_device_admission_for_test(0, "snapshot-sweep-health-rejection")
         .expect("close the waiter's only compatible device");
 
-    let pause = service.service.pause_next_queue_sweep_finish_for_test();
-    let reporting_service = service.service.clone();
-    let snapshot = std::thread::spawn(move || reporting_service.admission_snapshot());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let mut state = service.controller.lock_admission().expect("admission state");
+    let sweep = service.controller.sweep_expired_queued_requests_locked(&mut state);
+    drop(state);
 
-    assert_eq!(service.queued_len(), 0, "snapshot sweep removes the health-rejected waiter");
+    assert_eq!(service.queued_len(), 0, "the sweep removes the health-rejected waiter");
     let error = waiter.try_admit().expect_err("waiter consumes its recorded health rejection before sweep finish");
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
     assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
     assert!(observation.sealed_snapshot().is_none(), "waiter error handoff does not drop the observation");
 
-    pause.release();
-    let snapshot = snapshot.join().expect("snapshot reporter does not panic").expect("snapshot succeeds");
+    sweep.finish();
+    let snapshot = service.admission_snapshot().expect("snapshot succeeds");
     assert_eq!(snapshot.queued_queries, 0);
 
     let sealed = observation.sealed_snapshot().expect("sweep finalizes the health-rejected completion");
     assert!(matches!(
         &sealed.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if *error_code == AttemptFailureCode::Query(QueryErrorCode::CudfPersistentFailure)
     ));
     assert_eq!(
         observed_admission_events(&observation),
@@ -643,7 +646,7 @@ fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
     let admitted_context = handle.acquire_context().expect("context acquisition succeeds");
     drop(admitted_context);
 
-    let stream_pool = service.inner.resources.as_ref().unwrap().devices.context_by_ordinal(0).unwrap().stream_pool();
+    let stream_pool = service.inner.resources.devices.context_by_ordinal(0).unwrap().stream_pool();
     let cleanup_blocker = block_stream_cleanup_thread_for_test(stream_pool);
     attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(handle);

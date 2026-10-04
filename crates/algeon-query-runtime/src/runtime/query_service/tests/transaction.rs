@@ -21,17 +21,19 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
     for step in AdmissionStep::ALL {
         let service =
             try_guaranteed_runtime_test_service().expect("runtime-backed service for transaction rollback coverage");
-        let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+        let resources = &service.inner.resources;
         let device = resources.devices.context_by_ordinal(0).expect("device context");
         let ledger_before = device.ledger().snapshot().expect("ledger snapshot");
         assert_eq!(ledger_before.active_attempts, 0);
         assert_eq!(ledger_before.live_grants_bytes, 0);
         let (_, root_capacity, _, aux_capacity) = device.stream_pool().class_counters();
 
-        service.set_admission_transaction_probe(
-            AdmissionTransactionProbe::failing_at(step),
-        );
-        let error = service.admit_query().expect_err("injected fault rejects the admission");
+        let error = service
+            .admit_query_with_probe(
+                QueryAdmissionRequest::test_attempt(),
+                Arc::new(AdmissionTransactionProbe::failing_at(step)),
+            )
+            .expect_err("injected fault rejects the admission");
         assert_eq!(error.fact_value("reason"), Some("injected_admission_step_fault"), "step {step:?}");
         assert_eq!(error.fact_value("admission_step"), Some(step.as_str()), "step {step:?}");
 
@@ -54,9 +56,6 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
 
         // The service stays healthy: a later admission publishes a complete
         // matching envelope.
-        service.set_admission_transaction_probe(
-            AdmissionTransactionProbe::disabled(),
-        );
         let handle = service.admit_query().expect("admission succeeds after rollback");
         let (domain_id, grant_id, worker_scope) =
             handle.lifetime.envelope_evidence().expect("admitted handle carries its envelope");
@@ -83,14 +82,15 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
 fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for rollback cleanup-fence coverage");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let cleanup_blocker = block_stream_cleanup_thread_for_test(device.stream_pool());
-    service.set_admission_transaction_probe(
-        AdmissionTransactionProbe::failing_at(AdmissionStep::AfterRootMember),
-    );
-
-    let error = service.admit_query().expect_err("injected post-stream fault rejects admission");
+    let error = service
+        .admit_query_with_probe(
+            QueryAdmissionRequest::test_attempt(),
+            Arc::new(AdmissionTransactionProbe::failing_at(AdmissionStep::AfterRootMember)),
+        )
+        .expect_err("injected post-stream fault rejects admission");
     assert_eq!(error.fact_value("reason"), Some("injected_admission_step_fault"));
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
     assert_eq!(device.ledger().snapshot().unwrap().active_attempts, 1, "grant remains fenced by cleanup");
@@ -98,9 +98,6 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
     let (root_out, _, _, _) = device.stream_pool().class_counters();
     assert_eq!(root_out, 1, "root stream remains outstanding while cleanup is blocked");
 
-    service.set_admission_transaction_probe(
-        AdmissionTransactionProbe::disabled(),
-    );
     assert!(
         service.try_admit_query().expect("replacement admission attempt").is_none(),
         "replacement cannot reuse provisional capacity before cleanup quiesces"
@@ -120,31 +117,29 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
 }
 
 /// A complete but unpublished envelope transfers its private admission count
-/// to rollback cleanup before the admission mutex is released.  Otherwise an
-/// admission-only close could observe every counter as zero in the narrow
-/// interval before `AdmissionEnvelope::drop` installs deferred cleanup.
+/// to rollback cleanup before the admission mutex is released.  Otherwise the
+/// admission-quiescence phase of close could observe every counter as zero in
+/// the narrow interval before `AdmissionEnvelope::drop` installs deferred
+/// cleanup.
 #[test]
 fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for provisional rollback quiescence");
-    let device = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime resources")
+    let device = service.inner.resources
         .devices
         .context_by_ordinal(0)
         .expect("device context");
     let cleanup_blocker = block_stream_cleanup_thread_for_test(device.stream_pool());
     let (probe, rollback_pause) =
         AdmissionTransactionProbe::pausing_after_rollback_accounting();
-    service.set_admission_transaction_probe(probe);
     let admission_service = service.clone();
-    let admission = std::thread::spawn(move || admission_service.admit_query());
+    let admission = std::thread::spawn(move || {
+        admission_service.admit_query_with_probe(QueryAdmissionRequest::test_attempt(), Arc::new(probe))
+    });
 
     rollback_pause.wait_until_entered(Duration::from_secs(10));
     {
-        let state = service.inner.admission.lock().expect("admission state after rollback ownership transfer");
+        let state = service.inner.admission.state.lock().expect("admission state after rollback ownership transfer");
         let lifecycle = state.lifecycle.snapshot();
         assert_eq!(lifecycle.provisional, 0, "publication rejection released the provisional admission ticket");
         assert_eq!(lifecycle.cleanup, 1, "rollback cleanup owns the provisional envelope before mutex unlock");
@@ -158,7 +153,7 @@ fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
             .expect("test receives close result");
     });
     let deadline = Instant::now() + Duration::from_secs(10);
-    while service.inner.shutdown_waiters.load(std::sync::atomic::Ordering::Acquire) == 0 {
+    while service.inner.admission.shutdown_waiters.load(std::sync::atomic::Ordering::Acquire) == 0 {
         assert!(Instant::now() < deadline, "close must wait for pre-accounted provisional cleanup");
         std::thread::yield_now();
     }
@@ -189,10 +184,9 @@ fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
 fn attempt_deadline_expiry_after_acquisition_rolls_back_complete_envelope() {
     let service = try_guaranteed_runtime_test_service()
         .expect("runtime-backed service for post-acquisition deadline rollback coverage");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
-    service.set_admission_transaction_probe(probe);
     let attempt_deadline = Instant::now() + Duration::from_millis(200);
     let attempt_owner =
         observed_attempt("post-acquisition-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
@@ -200,9 +194,10 @@ fn attempt_deadline_expiry_after_acquisition_rolls_back_complete_envelope() {
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service.admit_query_with_request(
+        admission_service.admit_query_with_probe(
             QueryAdmissionRequest::new(binding)
                 .with_execution_cancellation(ExecutionCancellation::with_deadline(Some(attempt_deadline))),
+            Arc::new(probe),
         )
     });
 
@@ -233,12 +228,13 @@ fn queue_deadline_ends_at_placement() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for post-placement queue deadline");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
-    service.set_admission_transaction_probe(probe);
     let queue_deadline = Instant::now() + Duration::from_millis(200);
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service
-            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_queue_deadline(queue_deadline))
+        admission_service.admit_query_with_probe(
+            QueryAdmissionRequest::test_attempt().with_queue_deadline(queue_deadline),
+            Arc::new(probe),
+        )
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
@@ -261,9 +257,10 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for provisional admission visibility");
     let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
-    service.set_admission_transaction_probe(probe);
     let admission_service = service.clone();
-    let admission = std::thread::spawn(move || admission_service.admit_query());
+    let admission = std::thread::spawn(move || {
+        admission_service.admit_query_with_probe(QueryAdmissionRequest::test_attempt(), Arc::new(probe))
+    });
 
     // The first rendezvous means the provisional grant, lane, stream, domain,
     // and root member have been acquired, but the envelope has not published.
@@ -272,16 +269,11 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
     assert_eq!(snapshot.active_queries, 0, "only complete handles are public admissions");
     assert_eq!(snapshot.queued_queries, 0);
     assert_eq!(
-        service.inner.admission.lock().expect("admission state").lifecycle.snapshot().provisional,
+        service.inner.admission.state.lock().expect("admission state").lifecycle.snapshot().provisional,
         1,
         "the private transaction count still fences shutdown while the envelope is provisional"
     );
 
-    // Future admissions must not inherit the pause, while the in-flight probe
-    // remains held until the second rendezvous releases it.
-    service.set_admission_transaction_probe(
-        AdmissionTransactionProbe::disabled(),
-    );
     pause.release();
     let handle = admission
         .join()
@@ -302,7 +294,7 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
 fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for complete admission envelope coverage");
-    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let resources = &service.inner.resources;
     let device = resources.devices.context_by_ordinal(0).expect("device context");
 
     let handle = service.admit_query().expect("admission");
@@ -339,21 +331,36 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
-    service.set_admission_transaction_probe(AdmissionTransactionProbe::disabled());
+    let probe = Arc::new(AdmissionTransactionProbe::disabled());
 
-    let handle = service.admit_async().await.expect("async admission succeeds");
+    let handle = service
+        .admit_async_with_probe(QueryAdmissionRequest::test_attempt(), Arc::clone(&probe))
+        .await
+        .expect("async admission succeeds");
 
-    let probe = service
-        .inner
-        .admission_transaction_probe
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("installed transaction probe");
     let thread = probe.transaction_thread();
     assert!(
         thread.as_deref().is_some_and(|name| name.starts_with("algeon-gpu-")),
         "the envelope transaction ran on {thread:?}"
     );
     drop(handle);
+}
+
+/// A blocking admission builds its envelope on the placed device's GPU pool,
+/// as an async admission does, not on the calling thread.
+#[test]
+fn blocking_admission_builds_its_envelope_on_the_device_gpu_pool() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
+    let probe = Arc::new(AdmissionTransactionProbe::disabled());
+
+    let handle = service
+        .admit_query_with_probe(QueryAdmissionRequest::test_attempt(), Arc::clone(&probe))
+        .expect("blocking admission succeeds");
+
+    let thread = probe.transaction_thread();
+    assert!(
+        thread.as_deref().is_some_and(|name| name.starts_with("algeon-gpu-")),
+        "the envelope transaction ran on {thread:?}"
+    );
+    handle.end_test_attempt();
 }

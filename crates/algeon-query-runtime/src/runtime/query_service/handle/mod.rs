@@ -92,6 +92,12 @@ impl QueryHandle {
         self.device_ordinal
     }
 
+    /// Hands a test attempt's owner to this newly admitted handle.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::runtime::query_service) fn own_test_attempt(&self, owner: Option<AttemptOwner>) {
+        *self.test_attempt.lock().unwrap_or_else(PoisonError::into_inner) = owner;
+    }
+
     /// Ends this handle's test attempt as `Dropped` while the handle stays
     /// alive; the attempt's terminal commit then releases the grant.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -121,7 +127,11 @@ impl QueryHandle {
     /// returns a typed error.
     pub fn join_fragment(&self, fragment: &AttemptRequirement) -> Result<()> {
         let service = QueryService { inner: self.lifetime.service()? };
-        service.join_admitted_fragment(self.device_ordinal, &self.lifetime.admitted_plan_identities, fragment)
+        service.inner.admission.join_admitted_fragment(
+            self.device_ordinal,
+            &self.lifetime.admitted_plan_identities,
+            fragment,
+        )
     }
 
     /// Immutable attempt and ledger generation committed for this admission.
@@ -175,13 +185,7 @@ impl QueryHandle {
     ) -> Result<StreamSlot> {
         let operation = "query_engine.query_service.context.stream_acquire";
         let service = self.lifetime.service()?;
-        let Some(resources) = &service.resources else {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "query service was constructed without runtime resources",
-            ));
-        };
+        let resources = &service.resources;
         let pool = resources.devices.context_by_ordinal(self.device_ordinal)?.stream_pool().clone();
         pool.reserve_async(
             cancellation,
@@ -282,13 +286,7 @@ impl QueryHandle {
         let operation = "query_engine.query_service.gpu_execution_pool";
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let service = self.lifetime.service()?;
-        let Some(resources) = &service.resources else {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "query service was constructed without runtime resources",
-            ));
-        };
+        let resources = &service.resources;
         let pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
         let resource_epoch =
             QueryServiceResourceEpoch::acquire(&service.service_epoch, Some(&query_anchor), operation)?;
@@ -330,13 +328,7 @@ impl QueryHandle {
         cancellation.check(operation)?;
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let service = self.lifetime.service()?;
-        let Some(resources) = &service.resources else {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.query_service.context",
-                "query service was constructed without runtime resources",
-            ));
-        };
+        let resources = &service.resources;
         let device = resources.devices.context_by_ordinal(self.device_ordinal)?;
         let template = self.lifetime.with_resources(|lifetime| Ok(lifetime.root_context.clone()))?;
         if let Some(template) = template {

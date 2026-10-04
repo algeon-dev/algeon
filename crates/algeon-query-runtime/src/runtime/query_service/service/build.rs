@@ -1,23 +1,16 @@
 //! QueryService constructors and config preflight validation.
 
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 use std::{
     collections::HashMap,
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::sync::Notify;
 
 use super::{
     super::{
-        admission::AdmissionState,
         config::{QueryExecutionConfig, QueueBounds},
-        device_waiters::{notify_shared_device_admission_available, register_shared_device_admission_waiters},
+        controller::{AdmissionController, AdmissionDevice, AdmissionDevices},
         resources::QueryServiceResources,
     },
     QueryService, QueryServiceInner,
@@ -27,7 +20,7 @@ use crate::runtime::backend_core::GpuBackendDeviceProfile;
 #[cfg(test)]
 use crate::runtime::gpu::GpuInventory;
 use crate::runtime::{
-    AlgeonGpuInventory, CacheFillByteBudget, DeviceLedger, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    AlgeonGpuInventory, CacheFillByteBudget, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     allocator_correlation::AllocatorEventCorrelationIndex,
     backend_core::{
         ConstructionResourceJournal, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
@@ -37,7 +30,7 @@ use crate::runtime::{
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{DeviceRuntime, QueryServiceEpoch},
     gpu::{
-        DeviceOwnerToken, LedgerTransitionKind, normalize_device_ordinals,
+        DeviceOwnerToken, normalize_device_ordinals,
         registry::{
             DeviceRegistry, DeviceRegistryCapacityPolicy, DeviceRegistryConfig, DeviceRegistryInstallProfile,
             DeviceRegistryMemoryPartition, ResolvedDeviceInstallPlans,
@@ -135,7 +128,7 @@ impl QueryService {
             construction_journal,
             backend_metrics,
         )?;
-        Self::build(config, queue_bounds, Some(resources))
+        Self::build(config, queue_bounds, resources)
     }
 
     fn install_runtime_resources(
@@ -242,46 +235,21 @@ impl QueryService {
         })
     }
 
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn new_for_admission_tests(
+    fn build(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        ledger: DeviceLedger,
-    ) -> Result<Self> {
-        Self::build_with_fallback_device_ledger(config, queue_bounds, None, Some(ledger))
-    }
-
-    pub(in crate::runtime::query_service::service) fn build(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        resources: Option<QueryServiceResources>,
-    ) -> Result<Self> {
-        Self::build_with_fallback_device_ledger(config, queue_bounds, resources, None)
-    }
-
-    fn build_with_fallback_device_ledger(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        resources: Option<QueryServiceResources>,
-        fallback_device_ledger: Option<DeviceLedger>,
+        resources: QueryServiceResources,
     ) -> Result<Self> {
         config.validate()?;
         queue_bounds.validate()?;
         SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
 
-        let fallback_device_ledger = if resources.is_none() {
-            Some(fallback_device_ledger.ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.query_service.config.validate",
-                    "admission-only query service requires an explicit device ledger fixture",
-                )
-                .with_fact("field", "device_ledger")
-                .with_fact("reason", "required_for_admission_only_service")
-            })?)
-        } else {
-            None
-        };
+        let devices = AdmissionDevices::new(
+            resources
+                .devices
+                .contexts()
+                .map(|context| AdmissionDevice::new(Arc::clone(context.ledger()), context.native_fault_probe())),
+        );
 
         // Epoch idleness is only one owned drain phase. It cannot release the
         // process-wide backend lease while queues, caches, worker pools, or
@@ -290,78 +258,12 @@ impl QueryService {
         let service_epoch = QueryServiceEpoch::new(None);
         let inner = Arc::new(QueryServiceInner {
             config,
-            queue_bounds,
-            fallback_device_ledger,
+            admission: AdmissionController::new(queue_bounds, devices)?,
             resources,
             service_epoch,
-            admission_open: AtomicBool::new(true),
-            fleet_admission: Mutex::new(()),
-            admission: Mutex::new(AdmissionState::default()),
-            admission_available: Condvar::new(),
-            admission_notify: Notify::new(),
-            queue_revalidation_generation: AtomicU64::new(0),
             allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
-            #[cfg(test)]
-            shutdown_waiters: AtomicUsize::new(0),
-            #[cfg(test)]
-            admission_transaction_probe: Mutex::new(None),
-            #[cfg(test)]
-            direct_placement_resolution_failure: AtomicBool::new(false),
-            #[cfg(test)]
-            direct_provisional_cleanup_pause: Mutex::new(None),
-            #[cfg(test)]
-            pending_preflight_resolver_calls: AtomicUsize::new(0),
-            #[cfg(test)]
-            pending_preflight_pause: Mutex::new(None),
-            #[cfg(test)]
-            pending_preflight_failure: AtomicBool::new(false),
-            next_admission_request_id: AtomicU64::new(1),
-            next_submission_seq: AtomicU64::new(1),
-            next_admission_sequence: AtomicU64::new(1),
         });
-        register_shared_device_admission_waiters(&inner)?;
         let service = Self { inner };
-        // Grant releases wake this service's queue and any sibling services
-        // sharing the device; the admission invariant forbids grant drops
-        // while the admission mutex is held. An admission close or a
-        // frozen-resident publish can happen under this service's admission
-        // mutex (placement and the submission sweep fold native faults while
-        // holding it), so the observer only advances the queue's revalidation
-        // generation and wakes it; each queued request rechecks its device
-        // state on its next step. Each sibling service registers its own
-        // observer on a shared ledger.
-        let ledgers = service
-            .inner
-            .resources
-            .as_ref()
-            .map(|resources| {
-                resources.devices.contexts().map(|context| Arc::clone(context.ledger())).collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                vec![Arc::new(
-                    service
-                        .inner
-                        .fallback_device_ledger
-                        .as_ref()
-                        .expect("admission-only service has a fallback device ledger")
-                        .clone(),
-                )]
-            });
-        for ledger in ledgers {
-            let weak = Arc::downgrade(&service.inner);
-            ledger.register_admission_observer(Arc::new(move |transition| {
-                let released = transition.kind == LedgerTransitionKind::GrantReleased;
-                if released {
-                    notify_shared_device_admission_available(transition.snapshot.device_ordinal);
-                }
-                if let Some(inner) = weak.upgrade() {
-                    if !released {
-                        inner.queue_revalidation_generation.fetch_add(1, Ordering::AcqRel);
-                    }
-                    inner.notify_admission_available();
-                }
-            }))?;
-        }
         Ok(service)
     }
 }
