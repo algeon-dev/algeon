@@ -32,9 +32,10 @@ use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::TpcdsQuery;
 
 use super::{
-    TPCDS_QUERIES, TPCDS_TABLES, WorkloadResult, build_tpcds_gpu_backend, close_tpcds_gpu_backend,
-    discover_tpcds_table_layout, native_tpcds_session_config, register_tpcds_tables_with_native_metadata,
+    TPCDS_QUERIES, TPCDS_TABLES, WorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
+    register_tpcds_tables_with_native_metadata,
 };
+use crate::gpu_backend::{build_report_gpu_backend, close_report_gpu_backend};
 
 /// External oracle configuration for TPC-DS parity runs.
 #[derive(Debug, Clone)]
@@ -286,7 +287,7 @@ impl TpcdsParityRunner {
         register_tpcds_tables_with_native_metadata(&cpu_ctx, root).await?;
         let cpu_contexts = (cpu_ctx, cpu_stats_fallback_ctx);
 
-        let backend = build_tpcds_gpu_backend(optimizer_config, device_memory_limit)?;
+        let backend = build_report_gpu_backend(optimizer_config, device_memory_limit)?;
         let native = async {
             let builder = SessionStateBuilder::new_with_default_features()
                 .with_config(native_tpcds_session_config(native_session_config));
@@ -302,7 +303,7 @@ impl TpcdsParityRunner {
             Err(error) => {
                 // Release setup contexts before closing their backend owner.
                 drop(cpu_contexts);
-                let _ = close_tpcds_gpu_backend(backend);
+                let _ = close_report_gpu_backend(backend);
                 return Err(error);
             },
         };
@@ -340,7 +341,7 @@ impl TpcdsParityRunner {
             let _contexts = (cpu_ctx, cpu_stats_fallback_ctx, native_ctx);
             backend
         };
-        close_tpcds_gpu_backend(backend)
+        close_report_gpu_backend(backend)
     }
 }
 

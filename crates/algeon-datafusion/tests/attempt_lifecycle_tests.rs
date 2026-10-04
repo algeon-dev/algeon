@@ -10,7 +10,9 @@ use algeon_datafusion::{
     },
     error::DataFusionErrorExt,
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
-    native_report::NativeDataFusionExecutionMetrics,
+    native_report::{
+        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+    },
     planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, plan_with_native_diagnostics},
 };
 use datafusion::{
@@ -813,6 +815,26 @@ async fn plain_collect_runs_as_one_internal_attempt() {
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert_eq!(report.disposition, AttemptDisposition::Native);
     assert!(report.admission.is_some(), "the internal attempt admits the native plan once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn planning_report_names_the_native_root_below_the_admission_boundary() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let (state, logical) = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await.unwrap();
+    assert_eq!(plan.name(), "NativeAdmissionExec");
+
+    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "native_aggregate",
+        plan,
+        diagnostics,
+    )]);
+
+    assert!(!report.rows.is_empty());
+    for row in &report.rows {
+        assert_eq!(row.post_native_plan_root, "AlgeonNativeExec");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

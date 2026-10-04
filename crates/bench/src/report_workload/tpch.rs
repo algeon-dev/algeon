@@ -29,7 +29,10 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
+use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpch::{TPCH_QUERIES, WorkloadResult, register_tpch_tables};
+
+use crate::gpu_backend::{build_report_gpu_backend, close_report_gpu_backend};
 
 mod analytical_olap;
 
@@ -267,45 +270,57 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(session_config)
-        .with_algeon_native(optimizer_config)
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    register_tpch_tables(&ctx, root).await?;
+    let backend = build_report_gpu_backend(optimizer_config, GpuDeviceMemoryLimit::default())?;
+    let items: WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> = async {
+        let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
+        let builder = backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error)))?;
+        let ctx = SessionContext::new_with_state(builder.build());
+        register_tpch_tables(&ctx, root).await?;
 
-    let mut items = Vec::with_capacity(TPCH_QUERIES.len());
-    for query in TPCH_QUERIES {
-        let item = match ctx.sql(query.sql).await {
-            Ok(df) => {
-                let (state, logical) = df.into_parts();
-                match plan_with_native_diagnostics(&state, &logical).await {
-                    Ok((plan, diagnostics)) => {
-                        let runtime = if diagnostics.report.selected_count() > 0 {
-                            execute_tpch_native_plan(Arc::clone(&plan)).await
-                        } else {
-                            NativeDataFusionRuntime::NotStarted
-                        };
-                        NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
-                    },
-                    Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
-                        query.id,
-                        "physical_planning",
-                        "physical_planning_failed",
-                        error.to_string(),
-                    ),
-                }
-            },
-            Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
-                query.id,
-                "sql_to_logical_plan",
-                "sql_planning_failed",
-                error.to_string(),
-            ),
-        };
-        items.push(item);
+        let mut items = Vec::with_capacity(TPCH_QUERIES.len());
+        for query in TPCH_QUERIES {
+            let item = match ctx.sql(query.sql).await {
+                Ok(df) => {
+                    let (state, logical) = df.into_parts();
+                    match plan_with_native_diagnostics(&state, &logical).await {
+                        Ok((plan, diagnostics)) => {
+                            let runtime = if diagnostics.report.selected_count() > 0 {
+                                execute_tpch_native_plan(Arc::clone(&plan)).await
+                            } else {
+                                NativeDataFusionRuntime::NotStarted
+                            };
+                            NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
+                        },
+                        Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                            query.id,
+                            "physical_planning",
+                            "physical_planning_failed",
+                            error.to_string(),
+                        ),
+                    }
+                },
+                Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                    query.id,
+                    "sql_to_logical_plan",
+                    "sql_planning_failed",
+                    error.to_string(),
+                ),
+            };
+            items.push(item);
+        }
+        Ok(items)
     }
-    Ok(items)
+    .await;
+    match items {
+        Ok(items) => {
+            close_report_gpu_backend(backend)?;
+            Ok(items)
+        },
+        Err(error) => {
+            let _ = close_report_gpu_backend(backend);
+            Err(error)
+        },
+    }
 }
 
 async fn execute_tpch_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFusionRuntime {
