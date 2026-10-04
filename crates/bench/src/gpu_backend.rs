@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use algeon_datafusion::{
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
@@ -6,6 +8,8 @@ use algeon_datafusion::{
     error::Result,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
+use datafusion::error::DataFusionError;
+use workloads::WorkloadResult;
 
 /// Device budget, in bytes, that benchmark profiles carry when no budget
 /// override is configured. It equals the fallback capacity of
@@ -31,4 +35,29 @@ pub(crate) fn build_installed_gpu_backend(
         .devices([device_config])
         .queue_policy(AlgeonGpuQueuePolicy::default())
         .build()
+}
+
+/// The backend a workload report executes on: one attempt at a time, with the
+/// optimizer's source-read concurrency per attempt.
+pub(crate) fn build_report_gpu_backend(
+    optimizer_config: AlgeonNativeOptimizerConfig,
+    device_memory_limit: GpuDeviceMemoryLimit,
+) -> WorkloadResult<AlgeonGpuBackend> {
+    let source_work_per_attempt =
+        optimizer_config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight();
+    build_installed_gpu_backend(
+        optimizer_config,
+        device_memory_limit,
+        source_work_per_attempt,
+        1,
+        AlgeonGpuExecutionMode::NativePreferred,
+    )
+    .map_err(|error| DataFusionError::External(Box::new(error)).into())
+}
+
+pub(crate) fn close_report_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadResult<()> {
+    backend
+        .close_and_wait(Duration::from_secs(30))
+        .map(|_| ())
+        .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }

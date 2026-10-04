@@ -1,7 +1,7 @@
 use std::{error::Error, path::Path};
 
 use super::*;
-use crate::report_workload::tpcds::{build_tpcds_gpu_backend, close_tpcds_gpu_backend};
+use crate::gpu_backend::{build_report_gpu_backend, close_report_gpu_backend};
 
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
@@ -96,7 +96,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
                     &cfg.native_profile,
                 ))
                 .expect("native GPU benchmark installs the native rule");
-            let backend = build_tpcds_gpu_backend(optimizer_config, cfg.native_device_memory_limit)?;
+            let backend = build_report_gpu_backend(optimizer_config, cfg.native_device_memory_limit)?;
             let native = async {
                 let builder =
                     SessionStateBuilder::new_with_default_features().with_config(tpcds_native_report_session_config());
@@ -109,7 +109,7 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             let ctx = match native {
                 Ok(native) => native,
                 Err(error) => {
-                    let _ = close_tpcds_gpu_backend(backend);
+                    let _ = close_report_gpu_backend(backend);
                     return Err(error);
                 },
             };

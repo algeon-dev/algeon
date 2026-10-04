@@ -46,7 +46,7 @@ use crate::{
     capability::CapabilityReason,
     error::Result,
     native::lower_physical_plan_to_native,
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
     planner::{NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics},
     report::{CandidateOutcome, CandidateShape, GpuCandidate},
 };
@@ -299,7 +299,9 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
             return vec![datafusion_planning_row_for_planning_failure(item.query_id, failure)];
         },
     };
-    let post_native_plan_root = planned_plan.name().to_string();
+    // The attempt admission boundary wraps executable plans and is not part of
+    // the native plan the row describes.
+    let post_native_plan_root = below_native_admission(&planned_plan).name().to_string();
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let edge_normalize_inserted = post_native_plan_edge_normalize_inserted(planned_plan.as_ref());
     let post_native_join_diagnostics = physical_join_diagnostics(planned_plan.as_ref());
@@ -417,7 +419,9 @@ fn datafusion_execution_rows_for_item(
             return vec![datafusion_execution_row_for_planning_failure(item.query_id, failure)];
         },
     };
-    let post_native_plan_root = planned_plan.name().to_string();
+    // The attempt admission boundary wraps executable plans and is not part of
+    // the native plan the row describes.
+    let post_native_plan_root = below_native_admission(&planned_plan).name().to_string();
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();

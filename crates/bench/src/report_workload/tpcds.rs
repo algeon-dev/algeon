@@ -1,13 +1,12 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use algeon_datafusion::{
-    backend::AlgeonGpuBackend,
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,
 };
@@ -28,7 +27,7 @@ use workloads::tpcds::{
     registration::tpcds_table_schema,
 };
 
-use crate::gpu_backend::{DEFAULT_NATIVE_DEVICE_BUDGET_BYTES, build_installed_gpu_backend};
+use crate::gpu_backend::{DEFAULT_NATIVE_DEVICE_BUDGET_BYTES, build_report_gpu_backend, close_report_gpu_backend};
 
 mod parity;
 pub use parity::{
@@ -188,29 +187,6 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
     config.options_mut().execution.collect_statistics = false;
     config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config
-}
-
-pub(crate) fn build_tpcds_gpu_backend(
-    optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: GpuDeviceMemoryLimit,
-) -> WorkloadResult<AlgeonGpuBackend> {
-    let source_work_per_attempt =
-        optimizer_config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight();
-    build_installed_gpu_backend(
-        optimizer_config,
-        device_memory_limit,
-        source_work_per_attempt,
-        1,
-        AlgeonGpuExecutionMode::NativePreferred,
-    )
-    .map_err(|error| DataFusionError::External(Box::new(error)).into())
-}
-
-pub(crate) fn close_tpcds_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadResult<()> {
-    backend
-        .close_and_wait(Duration::from_secs(30))
-        .map(|_| ())
-        .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }
 
 /// Native optimizer config used by TPC-DS report surfaces.
@@ -732,7 +708,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered_with_device_memo
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let backend = build_tpcds_gpu_backend(optimizer_config, device_memory_limit)?;
+    let backend = build_report_gpu_backend(optimizer_config, device_memory_limit)?;
     let items = async {
         let builder =
             SessionStateBuilder::new_with_default_features().with_config(native_tpcds_session_config(session_config));
@@ -805,11 +781,11 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered_with_device_memo
     .await;
     match items {
         Ok(items) => {
-            close_tpcds_gpu_backend(backend)?;
+            close_report_gpu_backend(backend)?;
             Ok(items)
         },
         Err(error) => {
-            let _ = close_tpcds_gpu_backend(backend);
+            let _ = close_report_gpu_backend(backend);
             Err(error)
         },
     }
