@@ -5,7 +5,7 @@
 //! default TSV category, the data-layout property, and the Flight log class.
 //! A changed value changes every report that carries it, in place.
 
-pub use query_engine::triage::TriageCode;
+pub use query_planning::triage::TriageCode;
 
 use crate::gpu_coverage::{QueryGpuCandidateReasonKind, QueryGpuRemedy, QueryGpuRemedyKind};
 

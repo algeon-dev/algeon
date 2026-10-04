@@ -17,6 +17,7 @@ pub mod cache;
 mod cache_fill;
 mod context;
 mod deadline;
+mod execution_policy;
 pub(crate) mod gpu;
 mod gpu_execution_pool;
 mod io_lifecycle;
@@ -65,6 +66,7 @@ pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
 pub use context::{ExecutionCancellation, ExecutionContext};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use context::{RuntimeObservationBuildError, RuntimeObservedExecutionContext, StandaloneConfig};
+pub use execution_policy::{MemoryResourcePolicy, SourceSchedulerPolicy};
 pub(crate) use gpu::{AlgeonGpuInventory, DeviceContext, DeviceLedger, DeviceRegistry, MemoryGrant};
 pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedgerGrantRow, DeviceLedgerReport,
@@ -82,9 +84,6 @@ pub use io_lifecycle::IoLifecycle;
 #[doc(hidden)]
 pub use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
-pub use query_planning::execution_contracts::{
-    MemoryControlPolicy, MemoryResourcePolicy, ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy,
-};
 #[cfg(feature = "qualification")]
 pub use query_service::DeviceQuarantineInjection;
 #[doc(hidden)]

@@ -1,9 +1,7 @@
-use query_engine::{
-    error::Result,
-    runtime::{
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendSession,
-        QueryExecutionConfig, QueueBounds,
-    },
+use query_planning::error::Result;
+use query_runtime::runtime::{
+    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendSession,
+    QueryExecutionConfig, QueueBounds,
 };
 
 #[derive(Debug)]

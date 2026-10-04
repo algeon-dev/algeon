@@ -5,10 +5,10 @@ use datafusion::{
     datasource::physical_plan::{FileSource, ParquetSource},
     physical_plan::filter::FilterExec,
 };
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr},
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::LocalParquetSource as NativeLocalParquetSource,
 };
 

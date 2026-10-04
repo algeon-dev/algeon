@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
-use query_engine::runtime::SourceChunkPlanningMode;
+use query_planning::execution_contracts::SourceChunkPlanningMode;
 use workloads::tpch::TpchTableMetadata;
 
 use super::*;

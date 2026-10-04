@@ -6,9 +6,11 @@ import sys
 from pathlib import Path
 
 
-HEADER = ["public_symbol", "engine_type", "consumer", "decision", "facade_path", "reason", "phase"]
+HEADER = ["public_symbol", "owner_type", "consumer", "decision", "facade_path", "reason", "phase"]
 DECISIONS = {"RE-EXPORT", "ADAPT", "HIDE", "INTERNAL CONSUMER"}
-ENGINE_TYPE = re.compile(r"query_engine(?:::[A-Za-z_][A-Za-z0-9_]*)+")
+# Types owned by the planning, runtime, and engine crates, as cargo public-api
+# prints them: by defining path, never through a re-exporting crate.
+OWNER_TYPE = re.compile(r"query_(?:engine|planning|runtime)(?:::[A-Za-z_][A-Za-z0-9_]*)+")
 
 
 def fail(message: str) -> None:
@@ -40,7 +42,7 @@ def main() -> int:
     status = 0
     by_type: dict[str, dict[str, str]] = {}
     for line_number, row in enumerate(rows, 2):
-        engine_type = row["engine_type"]
+        owner_type = row["owner_type"]
         decision = row["decision"]
         if not all(row[column] for column in HEADER):
             fail(f"{ledger_path}:{line_number} has an empty field")
@@ -48,43 +50,43 @@ def main() -> int:
         if decision not in DECISIONS:
             fail(f"{ledger_path}:{line_number} has unknown decision {decision!r}")
             status = 1
-        if engine_type in by_type:
-            fail(f"{ledger_path}:{line_number} duplicates disposition for {engine_type}")
+        if owner_type in by_type:
+            fail(f"{ledger_path}:{line_number} duplicates disposition for {owner_type}")
             status = 1
-        by_type[engine_type] = row
+        by_type[owner_type] = row
 
-    live_types = set(ENGINE_TYPE.findall(snapshot))
+    live_types = set(OWNER_TYPE.findall(snapshot))
 
     def row_is_live(row: dict[str, str]) -> bool:
-        return row["engine_type"] in live_types or f"pub use {row['public_symbol']}" in snapshot
+        return row["owner_type"] in live_types or f"pub use {row['public_symbol']}" in snapshot
 
-    for engine_type in sorted(live_types):
-        row = by_type.get(engine_type)
+    for owner_type in sorted(live_types):
+        row = by_type.get(owner_type)
         if row is None:
-            fail(f"live engine type has no disposition: {engine_type}")
+            fail(f"live owner type has no disposition: {owner_type}")
             status = 1
             continue
         if row["decision"] != "RE-EXPORT":
-            fail(f"{engine_type} is live but disposition is {row['decision']}")
+            fail(f"{owner_type} is live but disposition is {row['decision']}")
             status = 1
             continue
         facade_path = row["facade_path"]
         if f"pub use {facade_path}" not in snapshot:
-            fail(f"approved facade path is not reachable: {facade_path} for {engine_type}")
+            fail(f"approved facade path is not reachable: {facade_path} for {owner_type}")
             status = 1
 
-    for engine_type, row in sorted(by_type.items()):
+    for owner_type, row in sorted(by_type.items()):
         live = row_is_live(row)
         if row["decision"] == "RE-EXPORT" and not live:
-            fail(f"stale RE-EXPORT disposition is not used by the live surface: {engine_type}")
+            fail(f"stale RE-EXPORT disposition is not used by the live surface: {owner_type}")
             status = 1
         if row["decision"] in {"ADAPT", "HIDE", "INTERNAL CONSUMER"} and live:
-            fail(f"forbidden {row['decision']} type reappeared in the live surface: {engine_type}")
+            fail(f"forbidden {row['decision']} type reappeared in the live surface: {owner_type}")
             status = 1
 
     if status == 0:
-        live_ledger_identities = {engine_type for engine_type, row in by_type.items() if row_is_live(row)}
-        print(f"PASS: {len(live_ledger_identities)} live engine types have unique approved facade reachability")
+        live_ledger_identities = {owner_type for owner_type, row in by_type.items() if row_is_live(row)}
+        print(f"PASS: {len(live_ledger_identities)} live owner types have unique approved facade reachability")
     return status
 
 

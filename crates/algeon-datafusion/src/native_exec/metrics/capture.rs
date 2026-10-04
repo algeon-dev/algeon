@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use query_engine::observability::{RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationLimits};
+use query_runtime::observability::{RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationLimits};
 
 /// Cloneable config-time observation wiring.
 #[derive(Clone)]

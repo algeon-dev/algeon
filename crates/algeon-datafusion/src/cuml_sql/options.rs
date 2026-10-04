@@ -3,7 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use query_engine::plan::{
+use query_planning::plan::{
     MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver, MlForestModelFormat, MlHdbscanParams,
     MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion, MlTsvdParams, MlUmapInit,
     MlUmapParams, VectorRowIdBinding,

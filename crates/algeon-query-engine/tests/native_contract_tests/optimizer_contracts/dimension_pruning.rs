@@ -2,9 +2,9 @@ use arrow::array::Array;
 use arrow::array::Int64Array;
 use arrow::array::StringArray;
 use arrow::array::StringViewArray;
-use query_engine::optimizer::DimensionKeyFilter;
-use query_engine::optimizer::KeyRange;
-use query_engine::optimizer::dimension_key_filter_from_batch;
+use query_planning::optimizer::DimensionKeyFilter;
+use query_planning::optimizer::KeyRange;
+use query_planning::optimizer::dimension_key_filter_from_batch;
 
 #[test]
 fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_groups() {

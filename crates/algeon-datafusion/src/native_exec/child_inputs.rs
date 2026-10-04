@@ -20,8 +20,8 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use futures::{StreamExt, TryStreamExt, stream::iter};
-use query_engine::{
-    error::QueryError,
+use query_planning::error::QueryError;
+use query_runtime::{
     native_error::cudf_query_error,
     runtime::{
         ExecutionCancellation, ExecutionContext,

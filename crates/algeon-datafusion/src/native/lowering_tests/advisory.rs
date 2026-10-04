@@ -1,13 +1,14 @@
 use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context,
+    shadow::estimate_compiled_pipeline,
+};
+use query_planning::{
     admission::admit,
-    dimension_pruning::local_dimension_pruning_resolver,
     mode::StatisticalAggregateExecutionMode,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::ShadowBytes,
     plan::AdvisoryStatistic,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
-    shadow::estimate_compiled_pipeline,
 };
 
 use super::*;

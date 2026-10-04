@@ -8,15 +8,16 @@ use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
+    correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     mode::StatisticalAggregateExecutionMode,
     plan::PlanFingerprint,
     policy::PlanningPolicy,
 };
 
 use super::{
-    GpuExecutionPool, GpuExecutorLease, MemoryControlPolicy, MemoryGrant, ServiceStreamPool, SourceChunkPlanningMode,
-    SourceSchedulerPolicy,
+    GpuExecutionPool, GpuExecutorLease, MemoryGrant, ServiceStreamPool, SourceSchedulerPolicy,
     attempt_domain::AttemptStreamProviderRoute,
     cache::local_parquet::GpuLocalParquetSourceCache,
     gpu::{GrantIdentity, ledger::ResidentOwnerLease},
@@ -26,13 +27,10 @@ use super::{
 };
 #[cfg(feature = "cugraph")]
 use super::{allocator_correlation::CacheScopeCorrelationGuard, cache::resident_graph::GpuResidentGraphCache};
-use crate::{
-    metrics::{QueryId, TraceId},
-    observability::{
-        AttemptId, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
-        RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTerminalOutcome,
-        RuntimeTraceId, SealedRuntimeObservationSnapshot,
-    },
+use crate::observability::{
+    AttemptId, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
+    RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTerminalOutcome,
+    SealedRuntimeObservationSnapshot,
 };
 
 mod admitted;
@@ -692,7 +690,7 @@ fn validate_runtime_observation_trace_id(observation: &RuntimeObservationHandle,
     if !observation.is_enabled() {
         return Ok(());
     }
-    let observation_trace_id = observation.trace_id().map(RuntimeTraceId::as_str);
+    let observation_trace_id = observation.trace_id().map(TraceId::as_str);
     if observation_trace_id == Some(trace_id.as_str()) {
         return Ok(());
     }

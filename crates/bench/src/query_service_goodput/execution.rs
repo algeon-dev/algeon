@@ -22,7 +22,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::StreamExt as _;
-use query_engine::harness::StableFnv1a64;
+use query_planning::util::StableFnv1a64;
 use tokio::time::timeout;
 
 use super::{config::GoodputConfig, workload::WorkloadItem};

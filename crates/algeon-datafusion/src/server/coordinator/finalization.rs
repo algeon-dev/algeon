@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use query_engine::{
+use query_runtime::{
     attempt::AttemptCancellation,
     observability::{
         QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,

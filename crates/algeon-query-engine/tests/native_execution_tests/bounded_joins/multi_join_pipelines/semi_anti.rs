@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     admission::{admit, bounded_join_unsupported_shape_facts},
     expr::ColumnRef,
-    rapids_backend::rapids_analysis_context,
-    runtime::ExecutionCancellation,
 };
+use query_runtime::runtime::ExecutionCancellation;
 
 use super::*;
 

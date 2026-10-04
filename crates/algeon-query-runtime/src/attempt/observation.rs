@@ -7,12 +7,14 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use query_planning::correlation::{QueryId, TraceId};
+
 #[cfg(test)]
 use crate::observability::RuntimeObservationDeliveryGate;
 use crate::observability::{
     AttemptReportSealProvider, QueryBoundaryKind, QueryCleanupSealDelivery, RuntimeObservationClock,
     RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeObservationSession,
-    RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
+    RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
 };
 
 /// An attempt's observation session.
@@ -30,8 +32,8 @@ pub(crate) struct AttemptObservation {
 
 impl AttemptObservation {
     pub(super) fn new(
-        query_id: RuntimeQueryId,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: QueryId,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> Self {

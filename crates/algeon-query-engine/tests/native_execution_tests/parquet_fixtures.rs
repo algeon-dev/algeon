@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, fs::File, path::Path, sync::Arc};
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use query_engine::{
+use query_planning::{
     parquet_stats::{ColumnByteKind, row_group_column_bytes},
     source::SourceColumnRef,
 };

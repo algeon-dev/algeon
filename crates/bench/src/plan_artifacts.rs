@@ -2,7 +2,7 @@ use std::{fmt::Write as _, sync::Arc};
 
 use algeon_datafusion::native_exec::AlgeonNativeExec;
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::admission::AdmittedPlan;
+use query_planning::admission::AdmittedPlan;
 
 /// Appends the compiled pipeline every native execution wrapper in a physical
 /// plan executes, as planning admitted it.

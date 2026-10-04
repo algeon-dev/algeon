@@ -1,5 +1,11 @@
 //! Bounded-pipeline execution boundary (the single capability-first path).
 
+use query_planning::{admission::AdmittedPlan, error::Result};
+use query_runtime::{
+    observability::RuntimeExecutionObservationScope,
+    runtime::{ExecutionContext, resident::GpuResidentInputMap},
+};
+
 use super::compiled::execute_compiled_pipeline;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
@@ -7,13 +13,7 @@ pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledTaskExecutor, LaneDispatchSupport, run_resident_lane_borrow,
 };
-use crate::{
-    admission::AdmittedPlan,
-    error::Result,
-    exec::{ExecutionMetrics, output::QueryOutput},
-    observability::RuntimeExecutionObservationScope,
-    runtime::{ExecutionContext, resident::GpuResidentInputMap},
-};
+use crate::exec::{ExecutionMetrics, output::QueryOutput};
 
 pub(in crate::exec) fn execute_bounded_pipeline(
     context: &ExecutionContext,

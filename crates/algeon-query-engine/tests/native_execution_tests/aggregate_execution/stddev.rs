@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_engine::{
+use query_planning::{
     expr::{CaseWhen, ColumnRef},
     mode::StatisticalAggregateExecutionMode,
 };

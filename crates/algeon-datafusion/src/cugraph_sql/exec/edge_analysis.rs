@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::physical_expr::PhysicalExpr;
-use query_engine::plan::edge_plan_has_simple_directed_edge_topology;
+use query_planning::plan::edge_plan_has_simple_directed_edge_topology;
 
 use super::{
     AggregateExec, AggregateMode, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,

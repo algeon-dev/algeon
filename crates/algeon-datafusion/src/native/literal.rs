@@ -5,7 +5,8 @@ use datafusion::{
     common::ScalarValue,
     physical_expr::{PhysicalExpr, expressions::Literal},
 };
-use query_engine::{datatypes::is_supported_arrow_type, expr::LiteralValue as NativeLiteralValue};
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::expr::LiteralValue as NativeLiteralValue;
 
 use crate::capability::CapabilityReason;
 

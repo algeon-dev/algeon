@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::runtime::ExecutionCancellation;
+use query_runtime::runtime::ExecutionCancellation;
 
 use super::*;
 

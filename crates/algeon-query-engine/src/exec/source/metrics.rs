@@ -1,5 +1,6 @@
+use query_runtime::observability::{RuntimeExecutionObservationScope, SourceReadFact};
+
 use super::{ExecutionMetrics, LocalParquetSource, QueryError, SourceChunk, SourceChunkPlan, comma_separated_usize};
-use crate::observability::{RuntimeExecutionObservationScope, SourceReadFact};
 
 /// Records what a source's chunk plan already knows about its Parquet files.
 pub(in crate::exec) fn record_bounded_parquet_source_metrics(
@@ -80,15 +81,15 @@ mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
-        chunk::{SourceChunk, SourceChunkPlan},
-        observability::SourceReadTotals,
+    use query_planning::{
+        execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
-        runtime::SourceChunkPlanningMode,
         source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
+    use query_runtime::observability::SourceReadTotals;
+
+    use super::*;
+    use crate::chunk::{SourceChunk, SourceChunkPlan};
 
     /// Runs `record` against a freshly admitted plan execution and returns its
     /// exact source-read totals, mirroring the checkpoint every real caller

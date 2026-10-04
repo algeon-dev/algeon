@@ -1,5 +1,5 @@
 use algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot;
-use query_engine::{
+use query_runtime::{
     observability::{AttemptFailureSummary, CleanupFailureSummary},
     runtime::GpuBackendCloseSnapshot,
 };

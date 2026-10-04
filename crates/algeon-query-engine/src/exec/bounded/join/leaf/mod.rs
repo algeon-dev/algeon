@@ -1,6 +1,17 @@
 use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::{
+    dynamic_filter::{
+        DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
+        DynamicFilterRoute, DynamicFilterSet,
+        apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter,
+        dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
+    },
+    plan::AggregateNode,
+    source::{ParquetReadStrategy, SourceFooterFacts},
+};
+use query_runtime::metrics::DynamicFilterSourceSnapshot;
 
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, ExecutionMetrics, FilterNode, GpuDataFrame,
@@ -16,12 +27,6 @@ use crate::{
     chunk::{
         SourceMetadataCache, plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
     },
-    dynamic_filter::{
-        DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
-        DynamicFilterRoute, DynamicFilterSet,
-        apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter,
-        dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
-    },
     exec::{
         bounded::BoundedPlan,
         source::{
@@ -30,10 +35,7 @@ use crate::{
             read_local_parquet_source,
         },
     },
-    metrics::DynamicFilterSourceSnapshot,
-    plan::AggregateNode,
     rapids_backend::rapids_analysis_context,
-    source::{ParquetReadStrategy, SourceFooterFacts},
 };
 
 mod batching;

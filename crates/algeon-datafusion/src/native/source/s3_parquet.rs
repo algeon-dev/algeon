@@ -4,8 +4,8 @@ use std::{
 };
 
 use cudf::io::parquet::{RemoteParquetBackendBuildStatus, remote_parquet_backend_build_status};
-use query_engine::{
-    exec::sanitize_cache_component,
+use query_engine::exec::sanitize_cache_component;
+use query_planning::{
     source::{
         CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ResolvedParquetSource,
     },
@@ -339,7 +339,7 @@ fn location_fingerprint(location: &str) -> String {
 mod tests {
     use std::fs;
 
-    use query_engine::source::ResolvedParquetInput;
+    use query_planning::source::ResolvedParquetInput;
 
     use super::*;
 

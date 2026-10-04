@@ -1,11 +1,9 @@
 use arrow::datatypes::{DataType as ArrowDataType, Field, FieldRef, Fields, TimeUnit};
-use query_engine::{
-    error::QueryErrorCode,
-    materialization_sizing::{
-        JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
-        join_output_upper_bound_bytes,
-    },
+use query_engine::materialization_sizing::{
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
+    join_output_upper_bound_bytes,
 };
+use query_planning::error::QueryErrorCode;
 
 fn fixed_column(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {
     JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None, input_total_string_bytes: None }

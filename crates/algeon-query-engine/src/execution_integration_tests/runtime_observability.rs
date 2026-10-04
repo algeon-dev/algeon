@@ -9,21 +9,22 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use query_engine::{
+use query_engine::exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan};
+use query_planning::{
+    correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode},
-    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan},
-    metrics::{QueryId, TraceId},
+    plan::QueryPlanBuilder,
+    source::{LiteralBatchSource, SourceNode},
+};
+use query_runtime::{
     observability::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload,
-        RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimeQueryId, RuntimeTerminalOutcome,
-        RuntimeTraceId,
+        RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimeTerminalOutcome,
     },
-    plan::QueryPlanBuilder,
     runtime::{
         ExecutionCancellation, MemoryResourcePolicy, RuntimeObservationBuildError, RuntimeObservedExecutionContext,
         SourceSchedulerPolicy, StandaloneConfig,
     },
-    source::{LiteralBatchSource, SourceNode},
 };
 
 const LARGE_BYTE_LIMIT: u64 = 16 * 1024 * 1024;
@@ -97,7 +98,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
         },
         RuntimeObservationSession::new(
             "manifest-query",
-            Some(RuntimeTraceId::new("shared-trace")),
+            Some(TraceId::new("shared-trace")),
             RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
         ),
     )
@@ -107,7 +108,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     let snapshot =
         observation.seal(RuntimeTerminalOutcome::from_query_error(&error)).expect("mismatch returns seal authority");
     assert_eq!(snapshot.manifest().query_id.as_str(), "manifest-query");
-    assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("shared-trace"));
+    assert_eq!(snapshot.manifest().trace_id.as_ref().map(TraceId::as_str), Some("shared-trace"));
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::from_query_error(&error)));
 }
 
@@ -126,7 +127,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_trace_mismatch() {
         },
         RuntimeObservationSession::new(
             "shared-query",
-            Some(RuntimeTraceId::new("manifest-trace")),
+            Some(TraceId::new("manifest-trace")),
             RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
         ),
     )
@@ -136,7 +137,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_trace_mismatch() {
     let snapshot =
         observation.seal(RuntimeTerminalOutcome::from_query_error(&error)).expect("mismatch returns seal authority");
     assert_eq!(snapshot.manifest().query_id.as_str(), "shared-query");
-    assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("manifest-trace"));
+    assert_eq!(snapshot.manifest().trace_id.as_ref().map(TraceId::as_str), Some("manifest-trace"));
 }
 
 #[test]
@@ -170,7 +171,7 @@ fn recorded_session_with_handle(
 ) -> (RuntimeObservationSession, RuntimeObservationHandle) {
     let session = RuntimeObservationSession::new(
         query_id,
-        trace_id.map(RuntimeTraceId::new),
+        trace_id.map(TraceId::new),
         RuntimeObservationConfig::bounded(8, LARGE_BYTE_LIMIT),
     );
     session.record(query_started);
@@ -216,7 +217,7 @@ fn assert_erased_build_error_drop_seals_dropped(
 fn supplied_session_manifest_adopts_or_validates_context_identity() {
     let supplied = RuntimeObservationSession::new(
         "manifest-query",
-        Some(RuntimeTraceId::new("manifest-trace")),
+        Some(TraceId::new("manifest-trace")),
         RuntimeObservationConfig::bounded(8, LARGE_BYTE_LIMIT),
     );
     let observed = RuntimeObservedExecutionContext::standalone(StandaloneConfig::default(), supplied)
@@ -227,7 +228,7 @@ fn supplied_session_manifest_adopts_or_validates_context_identity() {
 
     let matching = RuntimeObservationSession::new(
         "matching-query",
-        Some(RuntimeTraceId::new("matching-trace")),
+        Some(TraceId::new("matching-trace")),
         RuntimeObservationConfig::bounded(8, LARGE_BYTE_LIMIT),
     );
     let matching = RuntimeObservedExecutionContext::standalone(
@@ -250,10 +251,7 @@ fn observed_context_adopts_canonical_manifest_identity() {
         RuntimeObservedExecutionContext::standalone(StandaloneConfig::default(), recorded_session(" \t", None))
             .expect("canonical manifest identity is adopted");
     assert_eq!(observed.context().query_id().map(QueryId::as_str), Some(QueryId::UNASSIGNED));
-    assert_eq!(
-        observed.context().runtime_observation().query_id().map(RuntimeQueryId::as_str),
-        Some(QueryId::UNASSIGNED)
-    );
+    assert_eq!(observed.context().runtime_observation().query_id().map(QueryId::as_str), Some(QueryId::UNASSIGNED));
 }
 
 #[test]
@@ -377,7 +375,7 @@ fn observed_context_identity_changes_require_manifest_equality() {
         },
         RuntimeObservationSession::new(
             "fixed-query",
-            Some(RuntimeTraceId::new("fixed-trace")),
+            Some(TraceId::new("fixed-trace")),
             RuntimeObservationConfig::bounded(8, LARGE_BYTE_LIMIT),
         ),
     )

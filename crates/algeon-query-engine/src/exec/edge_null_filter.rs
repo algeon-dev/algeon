@@ -1,7 +1,9 @@
 use std::time::Instant;
 
+use query_planning::plan::GraphEdgeColumnBindings;
+use query_runtime::metrics::OperatorMetrics;
+
 use super::{DataFrame, ExecutionContext, ExecutionMetrics, NodeId, Result, col, cudf_query_error};
-use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 
 /// Which optional edge columns may gate null-row dropping for an operation.
 ///

@@ -3,18 +3,18 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 };
 
-use super::state::{CompiledPipelineState, ReleasedCompiledResource};
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
-    observability::{
-        CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeEventContext,
-        RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeSpanId, RuntimeTaskLifecycle,
-        task_attempt_id,
-    },
     pipeline::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
     },
 };
+use query_runtime::observability::{
+    CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeEventContext,
+    RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeSpanId, RuntimeTaskLifecycle, task_attempt_id,
+};
+
+use super::state::{CompiledPipelineState, ReleasedCompiledResource};
 
 const OPERATION: &str = "query_engine.exec.bounded.compiled.scheduler";
 
@@ -680,18 +680,20 @@ fn invalid(message: &'static str) -> QueryError {
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use super::*;
-    use crate::{
-        observability::{
-            AttemptFailureCode, AttemptFailureOperation, AttemptFailureStatus, PlanExecutionId,
-            RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle,
-            RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, TaskLifecycleState,
-        },
+    use query_planning::{
+        error::AttemptFailureCode,
         pipeline::{
             PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, ResidentLifetime,
             ResidentResource, SinkBoundary, SinkBoundaryKind, SourceReadPlan, TaskPhysical,
         },
     };
+    use query_runtime::observability::{
+        AttemptFailureOperation, AttemptFailureStatus, PlanExecutionId, RuntimeObservationConfig,
+        RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle, RuntimeTerminalOutcome,
+        SealedRuntimeObservationSnapshot, TaskLifecycleState,
+    };
+
+    use super::*;
 
     struct LifecycleTestExecutor {
         terminal_task: PipelineTaskId,

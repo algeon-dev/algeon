@@ -6,21 +6,23 @@
 
 use std::sync::Arc;
 
-use query_planning::admission::pipeline_tasks_within_migrated_contract;
-
-use super::{executor::CompiledGpuTaskExecutor, scheduler::CompiledPipelineScheduler};
-use crate::{
+use query_planning::{
+    admission::pipeline_tasks_within_migrated_contract,
     error::Result,
-    exec::ExecutionMetrics,
-    observability::RuntimeExecutionObservationScope,
     pipeline::{CompiledPipeline, PipelineTaskKind, SinkBoundaryKind, SortStrategy},
     plan::QueryPlan,
     policy::PlanningPolicy,
+};
+use query_runtime::{
+    observability::RuntimeExecutionObservationScope,
     runtime::{
         AttemptStreamProviderRoute, AttemptWorkLease, ExecutionContext,
         resident::{GpuResidentInputMap, GpuResultHandle},
     },
 };
+
+use super::{executor::CompiledGpuTaskExecutor, scheduler::CompiledPipelineScheduler};
+use crate::exec::ExecutionMetrics;
 
 mod chunks;
 pub(in crate::exec::bounded) use chunks::AggregateLaneDispatch;

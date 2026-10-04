@@ -17,17 +17,14 @@ mod enabled {
         inspect_forest_model,
     };
     use query_engine::{
-        error::{QueryError, QueryErrorCode},
         exec::{
             QueryExecutionRequest, admit_query_plan, output::QueryOutput, set_forest_after_import_hook_for_tests,
             set_forest_batch_element_limit_for_tests,
         },
-        metrics::QueryMetrics,
         native_error::{cuml_query_error, query_error_code_for_cuml_error},
-        observability::{
-            LiveRuntimeObservationSnapshot, RuntimeObservationConfig, RuntimeObservationPayload,
-            RuntimeOperatorStageKind, RuntimeOperatorStageState,
-        },
+    };
+    use query_planning::{
+        error::{QueryError, QueryErrorCode},
         plan::{
             MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelFacts, MlForestModelFormat,
             MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams, MlHdbscanParams,
@@ -35,11 +32,18 @@ mod enabled {
             MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding, ml_embedding_output_schema,
             ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
         },
+        source::{GpuResidentSource, SourceNode},
+    };
+    use query_runtime::{
+        metrics::QueryMetrics,
+        observability::{
+            LiveRuntimeObservationSnapshot, RuntimeObservationConfig, RuntimeObservationPayload,
+            RuntimeOperatorStageKind, RuntimeOperatorStageState,
+        },
         runtime::{
             ExecutionContext,
             resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
         },
-        source::{GpuResidentSource, SourceNode},
     };
 
     use super::super::{
@@ -1208,9 +1212,9 @@ fn cuml_disabled_rejects_before_local_source_staging() {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-    use query_engine::{
+    use query_engine::exec::{QueryExecutionRequest, admit_query_plan};
+    use query_planning::{
         error::QueryErrorCode,
-        exec::{QueryExecutionRequest, admit_query_plan},
         plan::{
             MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlRelationBinding, MlTsvdParams, QueryPlanBuilder,
             VectorRowIdBinding, vector_pca_output_schema,

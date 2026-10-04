@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use query_engine::{
+use query_runtime::{
     attempt::AttemptCancellation,
     observability::{
         QueryAttemptReport, RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,

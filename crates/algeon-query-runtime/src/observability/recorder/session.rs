@@ -12,13 +12,13 @@ use std::{
 #[cfg(test)]
 use super::RuntimeObservationDeliveryGate;
 use super::{
-    CleanupFailureTally, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, RetainedTopologyRecord,
-    RuntimeEventContext, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationConfig,
-    RuntimeObservationDeliveryGuard, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationManifest,
-    RuntimeObservationOwner, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecordClass,
-    RuntimeObservationRecordDisposition, RuntimeObservationRecorderState, RuntimeObservationSnapshotData,
-    RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
-    SealedRuntimeObservationSnapshot, SourceLocationDigestKeyState,
+    CleanupFailureTally, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, QueryId,
+    RetainedTopologyRecord, RuntimeEventContext, RuntimeObservationClassLoss, RuntimeObservationClock,
+    RuntimeObservationConfig, RuntimeObservationDeliveryGuard, RuntimeObservationFooter, RuntimeObservationHandle,
+    RuntimeObservationManifest, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeObservationReasonLoss,
+    RuntimeObservationRecordClass, RuntimeObservationRecordDisposition, RuntimeObservationRecorderState,
+    RuntimeObservationSnapshotData, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord,
+    SealedRuntimeObservationSnapshot, SourceLocationDigestKeyState, TraceId,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use super::{SystemRuntimeObservationClock, TestSourceLocationDigestKeyProvider};
@@ -148,18 +148,14 @@ impl fmt::Debug for RuntimeObservationSessionInner {
 
 impl RuntimeObservationSession {
     /// Creates an owner and recording handle using a system monotonic clock.
-    pub fn new(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
-        config: RuntimeObservationConfig,
-    ) -> Self {
+    pub fn new(query_id: impl Into<QueryId>, trace_id: Option<TraceId>, config: RuntimeObservationConfig) -> Self {
         Self { handle: RuntimeObservationHandle::new(query_id, trace_id, config) }
     }
 
     /// Creates an owner and recording handle using an injected clock.
     pub fn with_clock(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         clock: Arc<dyn RuntimeObservationClock>,
     ) -> Self {
@@ -168,8 +164,8 @@ impl RuntimeObservationSession {
 
     #[cfg(test)]
     pub(crate) fn with_source_location_test_key(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
         key: [u8; blake3::KEY_LEN],
     ) -> Self {
@@ -187,8 +183,8 @@ impl RuntimeObservationSession {
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn with_unavailable_source_location_test_key(
-        query_id: impl Into<RuntimeQueryId>,
-        trace_id: Option<RuntimeTraceId>,
+        query_id: impl Into<QueryId>,
+        trace_id: Option<TraceId>,
         config: RuntimeObservationConfig,
     ) -> Self {
         Self {
@@ -218,12 +214,12 @@ impl RuntimeObservationSession {
     }
 
     /// Returns the immutable query identity when recording is enabled.
-    pub fn query_id(&self) -> Option<&RuntimeQueryId> {
+    pub fn query_id(&self) -> Option<&QueryId> {
         self.handle.query_id()
     }
 
     /// Returns the immutable optional parent trace identity.
-    pub fn trace_id(&self) -> Option<&RuntimeTraceId> {
+    pub fn trace_id(&self) -> Option<&TraceId> {
         self.handle.trace_id()
     }
 

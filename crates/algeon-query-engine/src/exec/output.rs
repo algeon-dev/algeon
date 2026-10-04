@@ -1,14 +1,17 @@
 //! Native execution output assembly.
 
 use arrow::record_batch::RecordBatch;
-
-use super::{next_plan_execution_id, plan_identity};
-use crate::{
+use query_planning::{
+    correlation::{QueryId, TraceId},
     error::QueryError,
-    metrics::{QueryId, QueryMetrics, TraceId},
+};
+use query_runtime::{
+    metrics::QueryMetrics,
     observability::{MetricsRecorder, SealedRuntimeObservationSnapshot},
     runtime::{ExecutionContext, resident::GpuResultHandle},
 };
+
+use super::{next_plan_execution_id, plan_identity};
 
 /// Output produced by native query execution.
 ///

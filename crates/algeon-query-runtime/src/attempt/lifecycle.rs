@@ -1,15 +1,18 @@
 //! Pure fixed execution-attempt lifecycle state.
 use std::{error::Error, fmt};
 
+#[cfg(test)]
+use query_planning::error::AttemptFailureCode;
+
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
     AttemptFailureOperation, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
     COMPOSED_SCHEDULE_PROJECTION_SCHEMA, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
-use crate::observability::{
-    AttemptCapacityDisposition, AttemptFailureCode, AttemptFailureStatus, AttemptFinalDomainUsage,
-    AttemptHealthTransition,
+use crate::{
+    observability::AttemptCapacityDisposition, observability::AttemptFailureStatus,
+    observability::AttemptFinalDomainUsage, observability::AttemptHealthTransition,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

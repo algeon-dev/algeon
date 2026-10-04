@@ -1,6 +1,6 @@
 //! Compile-time mapping from ordered metric descriptors to recording paths.
 
-use query_engine::metrics::QueryMetrics;
+use query_runtime::metrics::QueryMetrics;
 
 use super::{AlgeonNativeMetrics, add_optional_count, count};
 use crate::native_exec::{

@@ -32,13 +32,13 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
-pub use query_engine::{
-    contract_report::CapabilityDecisionRow,
-    metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit},
-    mode::StatisticalAggregateExecutionMode,
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::source::SourceDiagnostics as NativeSourceDiagnostics;
+pub use query_planning::{
+    contract_report::CapabilityDecisionRow, mode::StatisticalAggregateExecutionMode,
     optimizer::NativeOptimizerDiagnostics,
 };
-use query_engine::{datatypes::is_supported_arrow_type, source::SourceDiagnostics as NativeSourceDiagnostics};
+pub use query_runtime::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
 
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::CugraphAlgoExec;

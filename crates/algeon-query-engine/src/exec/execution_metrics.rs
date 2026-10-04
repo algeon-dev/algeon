@@ -4,17 +4,19 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-#[cfg(feature = "test-hooks")]
-use crate::{error::Result, observability::RuntimeExecutionObservationScope, runtime::ExecutionContext};
 #[cfg(any(test, feature = "test-hooks"))]
-use crate::{
-    exec::output::PlanMetrics,
-    metrics::{QueryId, QueryMetrics},
-};
-use crate::{
-    observability::{MetricsRecorder, PlanExecutionId, RuntimeObservationHandle},
-    plan::NodeId,
-};
+use query_planning::correlation::QueryId;
+#[cfg(feature = "test-hooks")]
+use query_planning::error::Result;
+use query_planning::plan::NodeId;
+#[cfg(any(test, feature = "test-hooks"))]
+use query_runtime::metrics::QueryMetrics;
+use query_runtime::observability::{MetricsRecorder, PlanExecutionId, RuntimeObservationHandle};
+#[cfg(feature = "test-hooks")]
+use query_runtime::{observability::RuntimeExecutionObservationScope, runtime::ExecutionContext};
+
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::exec::output::PlanMetrics;
 
 /// Where one plan execution reports metrics, plus the evidence the engine
 /// reuses across that execution's occurrences.

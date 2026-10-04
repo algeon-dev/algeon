@@ -1,4 +1,4 @@
-use query_engine::plan::GraphVertexIdTypeSupport;
+use query_planning::plan::GraphVertexIdTypeSupport;
 use serde_json::{Value, json};
 
 use crate::cugraph_sql::{CugraphAlgorithm, stable_result_schema};

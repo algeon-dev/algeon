@@ -1,9 +1,12 @@
 use query_planning::{
-    graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphMeasuredPeakRow},
+    correlation::QueryId,
     plan::{GraphAlgorithm, NodeId},
 };
 
-use super::{QueryId, QueryMetrics};
+use super::QueryMetrics;
+use crate::observability::graph_observation::{
+    GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphMeasuredPeakRow,
+};
 
 /// cuGraph algorithm runtime metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -133,10 +136,10 @@ impl QueryMetrics {
 
 #[cfg(test)]
 mod tests {
-    use query_planning::graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance};
+    use query_planning::correlation::QueryId;
 
     use super::*;
-    use crate::metrics::QueryId;
+    use crate::observability::graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance};
 
     #[test]
     fn graph_claim_measurement_correlates_by_typed_node_and_algorithm() {

@@ -1,14 +1,11 @@
 # query-engine
 
-`query-engine` is the native execution owner and public
-facade used by `algeon-datafusion`. Its package and Rust import identity remain
-the compatible entry point for callers that used the native engine before the
-planning/runtime split.
-
-The crate depends on `query-planning` and `query-runtime`, re-exports
-the established planning and runtime module paths, and composes one planning
-proof with one runtime grant for native execution. It does not define another
-proof, ledger, grant, observation store, or error taxonomy.
+`query-engine` is the native execution owner. It depends on
+`query-planning` and `query-runtime` and composes one planning proof with one
+runtime grant for native execution. It exports only its own modules: callers,
+including `algeon-datafusion`, import planning and runtime items from those
+crates. It does not define another proof, ledger, grant, observation store, or
+error taxonomy.
 
 DataFusion-specific recognition, lowering, and `ExecutionPlan` wrappers belong
 in the DataFusion adapter crate.
@@ -23,9 +20,8 @@ in the DataFusion adapter crate.
   and dtypes; the dtype conversion table itself belongs to `cudf`.
 - `parquet_metadata.rs`, `source_chunk/`, and `chunk/` own source preparation:
   footer fetch, parsing, sidecars, the footer metadata cache, and chunk plans.
-- `native_error.rs` is the native error facade: cuVS projection lives here, the
-  shared cuDF projection is re-exported from the runtime's native boundary.
-- `lib.rs` is the compatible facade over planning and runtime owners.
+- `native_error.rs` projects cuVS and cuML errors; the shared cuDF projection
+  belongs to the runtime's native boundary.
 - `execution_integration_tests/` covers planning/runtime/execution composition.
 
 See [`query-planning`](../query-planning/README.md) for IR,
@@ -50,5 +46,5 @@ cargo nt -E 'binary_id(query-engine::gpu_allocator_event_correlation_gpu_exclusi
 bash scripts/check_all.sh
 ```
 
-The contract tests pin facade compatibility, dependency direction, the single
-controller boundary, and bounded execution composition.
+The contract tests pin dependency direction, the single controller boundary,
+and bounded execution composition.

@@ -20,18 +20,17 @@
 
 use std::sync::Arc;
 
+use query_planning::error::QueryError;
+
 use super::{
     BoundedExecutionAttempt, CommittedPartial, ExecutionBudgetRequest, GpuDataFrame, LimitSpec, NodeId,
     ResidentGpuFrame, Result, SortNode, cudf_query_error, execute_limit_spec_with_token, final_sort_runtime_facts,
     observe_final_sort_output, sort_topk_candidate_with_budget,
 };
-use crate::{
-    error::QueryError,
-    exec::{
-        bounded::compiled::lanes::AggregateLaneDispatch,
-        operators::attach_budget_token_failure_facts,
-        retry::{ResourceFailureRecovery, resource_failure_recovery},
-    },
+use crate::exec::{
+    bounded::compiled::lanes::AggregateLaneDispatch,
+    operators::attach_budget_token_failure_facts,
+    retry::{ResourceFailureRecovery, resource_failure_recovery},
 };
 
 /// Owned sort identity shared by every lane candidate of one fan-out.

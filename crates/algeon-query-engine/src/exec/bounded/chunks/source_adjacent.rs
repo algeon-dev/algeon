@@ -1,5 +1,8 @@
 use std::time::Instant;
 
+use query_planning::util::sum_optional_u64;
+use query_runtime::observability::SourceReadFact;
+
 use super::{
     BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, ParquetReadStrategy,
@@ -12,9 +15,7 @@ use super::{
 };
 use crate::{
     exec::retry::{RetryLimits, backoff_before_retry},
-    observability::SourceReadFact,
     rapids_backend::rapids_analysis_context,
-    util::sum_optional_u64,
 };
 
 pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
@@ -520,13 +521,13 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
+    use query_planning::{
+        execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
-        runtime::SourceChunkPlanningMode,
         source::{CredentialMode, LocalParquetFile, ParquetSourceLocation, ResolvedParquetSource},
     };
+
+    use super::*;
 
     #[test]
     fn remote_direct_grouped_source_adjacent_batching_uses_grouped_aggregate_cap() {

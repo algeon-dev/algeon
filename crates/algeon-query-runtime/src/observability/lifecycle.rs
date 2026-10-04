@@ -352,13 +352,15 @@ pub fn task_attempt_id(task_id: impl Into<RuntimeTaskId>, attempt: u32) -> TaskA
 
 #[cfg(test)]
 mod tests {
+    use query_planning::correlation::QueryId;
+
     use super::*;
-    use crate::observability::{RuntimeObservationConfig, RuntimeQueryId};
+    use crate::observability::RuntimeObservationConfig;
 
     #[test]
     fn coordinator_handle_plan_lifecycle_records_without_sealing_query_root() {
         let owner = RuntimeObservationOwner::new(
-            RuntimeQueryId::new("coordinator-owned"),
+            QueryId::new("coordinator-owned"),
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         );

@@ -14,18 +14,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_planning::error::QueryError;
+#[cfg(test)]
+use query_planning::error::AttemptFailureCode;
+use query_planning::{
+    correlation::{QueryId, TraceId},
+    error::QueryError,
+};
 
 use super::{
     AttemptBackendCounters, AttemptCancellation, AttemptCompletionQueue, AttemptLifecycle, AttemptLifecycleError,
     observation::AttemptObservation,
-};
-#[cfg(test)]
-use crate::observability::{
-    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFailureCode, AttemptFailureFactKey, AttemptFailureFactValue,
-    AttemptFailureOrigin, AttemptFailureStatus, AttemptFaultIsolation, AttemptFinalDomainUsage,
-    AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind,
-    AttemptNativeStatus, AttemptTeardownHealth, QueryBoundaryKind,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -34,6 +32,15 @@ use crate::observability::{
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::runtime::BackendLifecycle;
+#[cfg(test)]
+use crate::{
+    observability::AttemptDeviceHealth, observability::AttemptDeviceHealthStatus, observability::AttemptFailureFactKey,
+    observability::AttemptFailureFactValue, observability::AttemptFailureOrigin, observability::AttemptFailureStatus,
+    observability::AttemptFaultIsolation, observability::AttemptFinalDomainUsage,
+    observability::AttemptHealthTransition, observability::AttemptNativeFault,
+    observability::AttemptNativeFaultEvidence, observability::AttemptNativeFaultKind,
+    observability::AttemptNativeStatus, observability::AttemptTeardownHealth, observability::QueryBoundaryKind,
+};
 use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
@@ -41,8 +48,8 @@ use crate::{
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptReportSealProvider, AttemptRetryAdvice,
         AttemptTerminalCommit, AttemptTraceContext, CleanupFailureTally, QUERY_ATTEMPT_REPORT_SCHEMA,
         QueryAttemptReport, QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig,
-        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
-        SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
+        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
 };
@@ -657,9 +664,9 @@ impl AttemptOwner {
         let observation_query_id = request
             .query_id
             .as_ref()
-            .map(|query_id| RuntimeQueryId::new(query_id.as_str()))
-            .unwrap_or_else(|| RuntimeQueryId::new(""));
-        let trace_id = request.trace_context.as_ref().map(|trace| RuntimeTraceId::new(trace.as_str()));
+            .map(|query_id| QueryId::new(query_id.as_str()))
+            .unwrap_or_else(|| QueryId::new(""));
+        let trace_id = request.trace_context.as_ref().map(|trace| TraceId::new(trace.as_str()));
         let core = Arc::new(AttemptCore {
             attempt_id: AttemptId::mint(),
             query_id: request.query_id,

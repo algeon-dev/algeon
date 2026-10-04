@@ -11,21 +11,22 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use query_planning::{
+    chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy},
+    error::QueryErrorCode,
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
+    expr::{BinaryOp, Expr, LiteralValue},
+    plan::NodeId,
+    source::{
+        CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, LocalParquetFile, LocalParquetSource,
+        ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
+    },
+};
 
 use super::{
     decimal::validate_supplied_reader_decimal_types_match_footer,
     metadata::{SourceMetadataCacheKey, local_parquet_footer_metadata_path, sidecar_content_identity},
     *,
-};
-use crate::{
-    error::QueryErrorCode,
-    expr::{BinaryOp, Expr, LiteralValue},
-    plan::NodeId,
-    runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
-    source::{
-        CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, LocalParquetFile, LocalParquetSource,
-        ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
-    },
 };
 
 fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {

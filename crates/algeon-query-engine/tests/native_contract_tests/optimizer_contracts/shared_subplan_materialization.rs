@@ -1,4 +1,4 @@
-use query_engine::optimizer::SharedSubplanMaterializationRejectedReason;
+use query_planning::optimizer::SharedSubplanMaterializationRejectedReason;
 
 #[test]
 fn native_optimizer_discovers_repeated_grouped_aggregate_materialization_family() {

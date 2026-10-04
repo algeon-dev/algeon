@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_engine::expr::ColumnRef;
+use query_planning::expr::ColumnRef;
 
 use super::*;
 

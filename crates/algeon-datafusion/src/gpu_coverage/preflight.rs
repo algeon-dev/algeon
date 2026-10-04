@@ -14,7 +14,7 @@ use datafusion::{
         sqlparser::{ast::Statement as SqlStatement, dialect::dialect_from_str},
     },
 };
-use query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};
+use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
 
 use super::{
     ALGEON_EXPLAIN_COVERAGE_FUNCTION, COVERAGE_VALIDATOR_RECURSION_REASON_CODE, GPU_COVERAGE_REJECTION_REASON_FACT,

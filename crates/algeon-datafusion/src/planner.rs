@@ -16,7 +16,7 @@
 //! [`crate::report::CandidateOutcome`].
 
 use datafusion::physical_plan::ExecutionPlan;
-pub use query_engine::{
+pub use query_planning::{
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::StatisticalAggregateExecutionMode,
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions},
@@ -113,7 +113,7 @@ pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
 /// accepted. Native execution uses a bounded planning template, query-engine
 /// optimizer options use their own defaults, and plan-cost selection is
 /// disabled unless a workload opts in. The native
-/// [`ExecutionContext`](query_engine::runtime::ExecutionContext) is
+/// [`ExecutionContext`](query_runtime::runtime::ExecutionContext) is
 /// acquired lazily from backend admission through [`AlgeonNativeExecutionConfig`].
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeOptimizerConfig {

@@ -1,23 +1,25 @@
 use arrow::datatypes::SchemaRef;
-use query_engine::{
+use query_planning::{
     admission::{AdmissionDecision, admit},
     backend::AnalysisContext,
     capability::AggregateStrategyExecutionOptions,
     error::Result,
     expr::Expr,
-    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
     optimizer::NativeOptimizerOptions,
     pipeline::PipelineTaskKind,
     plan::QueryPlan,
     policy::PlanningPolicy,
+    source::{LocalParquetSource, validate_local_parquet_source},
+    triage::TriageSummary,
+};
+use query_runtime::{
+    metrics::QueryMetrics,
     runtime::{
         ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
         GpuBackendDeviceProfile, GpuMemoryOwnership, QueryExecutionConfig, QueueBounds,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
-    source::{LocalParquetSource, validate_local_parquet_source},
-    triage::TriageSummary,
 };
 
 #[test]

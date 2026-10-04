@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use query_engine::{
+use query_planning::{
     capability::CapabilityDecision,
     error::QueryErrorCode,
     expr::{BinaryOp, Expr, LiteralValue},

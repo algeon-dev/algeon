@@ -3,9 +3,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use query_planning::util::StableFnv1a64;
 use serde::{Deserialize, Serialize, de};
-
-use crate::util::StableFnv1a64;
 
 pub const COMPOSED_SCHEDULE_PROJECTION_SCHEMA: &str = "query_engine.composed_schedule_projection";
 

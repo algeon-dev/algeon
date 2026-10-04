@@ -25,10 +25,8 @@ use datafusion::{
 };
 #[cfg(feature = "server")]
 use query_engine::object_store_error::query_error_code_for_object_store_error;
-use query_engine::{
-    error::QueryError,
-    native_error::{cudf_message_fact, query_error_code_for_cudf_error},
-};
+use query_planning::error::QueryError;
+use query_runtime::native_error::{cudf_message_fact, query_error_code_for_cudf_error};
 
 mod code;
 
@@ -1013,7 +1011,8 @@ mod tests {
     use arrow::error::ArrowError;
     use cudf::{ErrorCode as CudfErrorCode, io::parquet::RemoteParquetSource, testing::error::new_with_for_test};
     use datafusion::common::Diagnostic;
-    use query_engine::{error::QueryErrorCode, native_error::cudf_query_error};
+    use query_planning::error::QueryErrorCode;
+    use query_runtime::native_error::cudf_query_error;
 
     use super::*;
 

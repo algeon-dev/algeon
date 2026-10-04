@@ -13,13 +13,15 @@ use std::{
 use cudf::{QueryMemoryDomainOptions, Runtime as CudfRuntime};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
+    correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
 };
 
 use super::{
     super::{
-        CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
-        QueryExecutionConfig, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryResourcePolicy, QueryExecutionConfig,
+        ServiceStreamPool, SourceSchedulerPolicy, SourceStorageProfile,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
@@ -30,7 +32,6 @@ use super::{
     validate_service_stream_pool_device,
 };
 use crate::{
-    metrics::{QueryId, TraceId},
     native_error::cudf_query_error,
     observability::{
         RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationSession, RuntimeStreamLeaseScope,

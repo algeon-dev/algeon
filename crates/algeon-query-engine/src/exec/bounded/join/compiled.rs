@@ -3,6 +3,13 @@ use std::{
     time::Instant,
 };
 
+use query_planning::{
+    admission::JoinStrategy,
+    capability::{JoinForm, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
+    expr::{ColumnQualifier, ColumnRef},
+};
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     common::{
         BoundedJoinSideFrame, join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
@@ -10,12 +17,8 @@ use super::{
     },
     cudf_query_error, *,
 };
-use crate::{
-    admission::JoinStrategy,
-    capability::{JoinForm, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
-    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch},
-    expr::{ColumnQualifier, ColumnRef},
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
+use crate::exec::bounded::compiled::{
+    ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch,
 };
 
 mod cross;
@@ -1495,8 +1498,9 @@ fn materialize_compiled_indices_output(
 
 #[cfg(test)]
 mod tests {
+    use query_planning::plan::JoinSpec;
+
     use super::*;
-    use crate::plan::JoinSpec;
 
     fn join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {

@@ -8,12 +8,12 @@ use datafusion::{
     physical_plan::ExecutionPlan,
     physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
 };
-use query_engine::{
+use query_planning::{
     error::{QueryError, QueryErrorCode},
     optimizer::NativeOptimizerOptions,
     plan::NativePlanCostOptions,
-    runtime::DeviceCapability,
 };
+use query_runtime::runtime::DeviceCapability;
 
 use super::*;
 use crate::{planner::AlgeonGpuExecutionMode, session::installed_algeon_native_optimizer_config};

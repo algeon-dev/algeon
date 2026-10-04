@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy, BoundedRootHashJoinBuildState,
     BoundedRootHashJoinProbeState, ExecutionContext, ExecutionMetrics, Instant, JoinNode, JoinSide, NodeId, QueryError,
@@ -9,10 +11,7 @@ use super::{
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
     release_bounded_root_hash_join_build_state, side_metric, sum_bounds,
 };
-use crate::{
-    exec::retry::{is_retryable_resource_error, record_retryable_resource_error},
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
-};
+use crate::exec::retry::{is_retryable_resource_error, record_retryable_resource_error};
 
 #[expect(
     clippy::too_many_arguments,

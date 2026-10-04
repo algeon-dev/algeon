@@ -1,0 +1,353 @@
+pub mod cuml
+#[repr(i32)] pub enum cuml::ClusterSelectionMethod
+pub cuml::ClusterSelectionMethod::Eom = 0
+pub cuml::ClusterSelectionMethod::Leaf = 1
+pub enum cuml::CumlErrorFailureSource
+pub cuml::CumlErrorFailureSource::Physical
+pub cuml::CumlErrorFailureSource::ReservationLimit
+pub cuml::CumlErrorFailureSource::Unknown
+impl core::fmt::Display for cuml::CumlErrorFailureSource
+pub fn cuml::CumlErrorFailureSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum cuml::ErrorCode
+pub cuml::ErrorCode::CudaRuntime
+pub cuml::ErrorCode::EmptyInput
+pub cuml::ErrorCode::FatalCuda
+pub cuml::ErrorCode::ForeignInvalidArgument
+pub cuml::ErrorCode::ForeignInvalidState
+pub cuml::ErrorCode::ForeignUnknown
+pub cuml::ErrorCode::ForeignUnsupported
+pub cuml::ErrorCode::HostOutOfMemory
+pub cuml::ErrorCode::InvariantViolation
+pub cuml::ErrorCode::LabelOutOfRange
+pub cuml::ErrorCode::MemoryResourceUnsupported
+pub cuml::ErrorCode::ModelClosed
+pub cuml::ErrorCode::NativeReleaseFailed
+pub cuml::ErrorCode::NonFiniteInput
+pub cuml::ErrorCode::NullUnexpected
+pub cuml::ErrorCode::OutOfMemory
+pub cuml::ErrorCode::OutputNotFinite
+pub cuml::ErrorCode::OutputOutOfRange
+pub cuml::ErrorCode::ParameterOutOfRange
+pub cuml::ErrorCode::ReservationCoverageMissing
+pub cuml::ErrorCode::ResourcesClosed
+pub cuml::ErrorCode::RuntimeBindingMismatch
+pub cuml::ErrorCode::ShapeMismatch
+pub cuml::ErrorCode::SizeOverflow
+pub cuml::ErrorCode::UnsupportedDtype
+pub cuml::ErrorCode::UnsupportedLayout
+pub cuml::ErrorCode::UnsupportedParameter
+impl core::fmt::Display for cuml::ErrorCode
+pub fn cuml::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuml::ErrorKind
+pub cuml::ErrorKind::DependencyFailure
+pub cuml::ErrorKind::ExecutionContext
+pub cuml::ErrorKind::InvalidInput
+pub cuml::ErrorKind::InvariantViolation
+pub cuml::ErrorKind::ResourceExhausted
+pub cuml::ErrorKind::Unsupported
+impl core::fmt::Display for cuml::ErrorKind
+pub fn cuml::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuml::ErrorStatus
+pub cuml::ErrorStatus::Permanent
+pub cuml::ErrorStatus::Persistent
+pub cuml::ErrorStatus::Temporary
+impl core::fmt::Display for cuml::ErrorStatus
+pub fn cuml::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuml::FailurePhase
+pub cuml::FailurePhase::NativeCall
+pub cuml::FailurePhase::NativeRelease
+pub cuml::FailurePhase::OutputValidation
+pub cuml::FailurePhase::Preflight
+impl core::fmt::Display for cuml::FailurePhase
+pub fn cuml::FailurePhase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cuml::ForestModelFormat
+pub cuml::ForestModelFormat::LightGbm
+pub cuml::ForestModelFormat::TreeliteCheckpoint
+pub cuml::ForestModelFormat::XgboostJson
+pub cuml::ForestModelFormat::XgboostLegacy
+pub cuml::ForestModelFormat::XgboostUbjson
+pub enum cuml::ForestOutput
+pub cuml::ForestOutput::ClassIndex
+pub cuml::ForestOutput::Scores
+pub enum cuml::ForestOutputKind
+pub cuml::ForestOutputKind::ClassIndex
+pub cuml::ForestOutputKind::ClassIndex::classes: usize
+pub cuml::ForestOutputKind::Score
+pub cuml::ForestOutputKind::Vector(usize)
+impl cuml::ForestOutputKind
+pub fn cuml::ForestOutputKind::width(self) -> usize
+pub enum cuml::ForestPrecision
+pub cuml::ForestPrecision::Double
+pub cuml::ForestPrecision::Single
+impl cuml::ForestPrecision
+pub fn cuml::ForestPrecision::element(self) -> cudf::core::types::TypeId
+pub enum cuml::MatrixLayout
+pub cuml::MatrixLayout::ColumnMajor
+pub cuml::MatrixLayout::RowMajor
+impl core::convert::From<cudf::runtime::matrix::DenseMatrixLayout> for cuml::MatrixLayout
+pub fn cuml::MatrixLayout::from(cudf::runtime::matrix::DenseMatrixLayout) -> Self
+impl core::convert::From<cuml::MatrixLayout> for cudf::runtime::matrix::DenseMatrixLayout
+pub fn cudf::runtime::matrix::DenseMatrixLayout::from(cuml::MatrixLayout) -> Self
+#[repr(i32)] pub enum cuml::PcaSolver
+pub cuml::PcaSolver::CovEigDq = 0
+pub cuml::PcaSolver::CovEigJacobi = 1
+pub enum cuml::SplitCriterion
+pub cuml::SplitCriterion::Entropy
+pub cuml::SplitCriterion::Gini
+pub cuml::SplitCriterion::Mse
+pub enum cuml::UmapInit
+pub cuml::UmapInit::Random
+pub cuml::UmapInit::Spectral
+pub struct cuml::CumlErrorDetail
+pub cuml::CumlErrorDetail::alignment: u64
+pub cuml::CumlErrorDetail::cuda_error: i32
+pub cuml::CumlErrorDetail::domain_id: u64
+pub cuml::CumlErrorDetail::failure_source: cuml::CumlErrorFailureSource
+pub cuml::CumlErrorDetail::generation: u64
+pub cuml::CumlErrorDetail::member_id: u64
+pub cuml::CumlErrorDetail::message: alloc::string::String
+pub cuml::CumlErrorDetail::requested_bytes: u64
+pub cuml::CumlErrorDetail::status: u32
+pub struct cuml::CumlResources
+impl cuml::CumlResources
+pub fn cuml::CumlResources::activate_prepared_matrix<'e, 'p, 'c>(&'c self, &'e rapids_interop::prepared::PreparedColumnExport<'p>) -> cuml::Result<cuml::PreparedMatrixLease<'e, 'p, 'c>>
+impl cuml::CumlResources
+pub fn cuml::CumlResources::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuml::CumlResources::device(&self) -> cudf::runtime::device::DeviceId
+pub fn cuml::CumlResources::for_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> cuml::Result<Self>
+pub fn cuml::CumlResources::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
+pub fn cuml::CumlResources::training_streams(&self, core::num::nonzero::NonZeroUsize, core::option::Option<&cudf::core::memory::domain::StreamReservationLease>) -> cuml::Result<cuml::TrainingStreams>
+impl core::fmt::Debug for cuml::CumlResources
+pub fn cuml::CumlResources::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuml::DeviceBuffer<T: cuml::DeviceElement>
+impl<T: cuml::DeviceElement> cuml::DeviceBuffer<T>
+pub fn cuml::DeviceBuffer<T>::as_ptr(&self) -> cuml::Result<*const core::ffi::c_void>
+pub fn cuml::DeviceBuffer<T>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuml::DeviceBuffer<T>::into_column(self) -> cuml::Result<cudf::core::column::owned::Column>
+pub fn cuml::DeviceBuffer<T>::into_series(self) -> cuml::Result<cudf::frame::series::owned::Series>
+pub fn cuml::DeviceBuffer<T>::is_empty(&self) -> bool
+pub fn cuml::DeviceBuffer<T>::len(&self) -> usize
+pub fn cuml::DeviceBuffer<T>::new(&cuml::CumlResources, usize) -> cuml::Result<Self>
+pub struct cuml::DeviceMatrix<'a>
+impl<'a> cuml::DeviceMatrix<'a>
+pub fn cuml::DeviceMatrix<'a>::as_ptr(&self) -> *const core::ffi::c_void
+pub fn cuml::DeviceMatrix<'a>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuml::DeviceMatrix<'a>::columns(&self) -> usize
+pub fn cuml::DeviceMatrix<'a>::element(&self) -> cudf::core::types::TypeId
+pub fn cuml::DeviceMatrix<'a>::from_validated(&'a cudf::runtime::matrix::ValidatedPackedMatrix<'_>) -> cuml::Result<Self>
+pub fn cuml::DeviceMatrix<'a>::from_validated_float64(&'a cudf::runtime::matrix::ValidatedPackedMatrix<'_>) -> cuml::Result<Self>
+pub fn cuml::DeviceMatrix<'a>::layout(&self) -> cuml::MatrixLayout
+pub fn cuml::DeviceMatrix<'a>::rows(&self) -> usize
+pub struct cuml::Error
+impl cuml::Error
+pub fn cuml::Error::call_chain(&self) -> &[&'static str]
+pub fn cuml::Error::code(&self) -> cuml::ErrorCode
+pub fn cuml::Error::detail_value(&self, &str) -> core::option::Option<&str>
+pub fn cuml::Error::details(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&'static str, &str)>
+pub fn cuml::Error::ffi_detail(&self) -> core::option::Option<&cuml::CumlErrorDetail>
+pub fn cuml::Error::is_oom(&self) -> bool
+pub fn cuml::Error::is_temporary(&self) -> bool
+pub fn cuml::Error::kind(&self) -> cuml::ErrorKind
+pub fn cuml::Error::message(&self) -> &str
+pub fn cuml::Error::operation(&self) -> &'static str
+pub fn cuml::Error::phase(&self) -> cuml::FailurePhase
+pub fn cuml::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn cuml::Error::status(&self) -> cuml::ErrorStatus
+impl core::error::Error for cuml::Error
+pub fn cuml::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for cuml::Error
+pub fn cuml::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cuml::Error
+pub fn cuml::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cuml::ForestInferenceModel
+impl cuml::ForestInferenceModel
+pub fn cuml::ForestInferenceModel::close(&mut self) -> cuml::Result<()>
+pub fn cuml::ForestInferenceModel::import(&cuml::CumlResources, &[u8], cuml::ForestOutput) -> cuml::Result<Self>
+pub fn cuml::ForestInferenceModel::info(&self) -> cuml::ForestModelInfo
+pub fn cuml::ForestInferenceModel::output_kind(&self) -> cuml::ForestOutputKind
+pub fn cuml::ForestInferenceModel::predict(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::ForestPrediction>
+pub struct cuml::ForestModelInfo
+pub cuml::ForestModelInfo::native_output_stride: usize
+pub cuml::ForestModelInfo::num_features: usize
+pub cuml::ForestModelInfo::num_trees: usize
+pub cuml::ForestModelInfo::precision: cuml::ForestPrecision
+impl cuml::ForestModelInfo
+pub fn cuml::ForestModelInfo::output_kind(&self, cuml::ForestOutput) -> cuml::Result<cuml::ForestOutputKind>
+pub struct cuml::ForestPrediction
+impl cuml::ForestPrediction
+pub fn cuml::ForestPrediction::into_series(self) -> cuml::Result<alloc::vec::Vec<cudf::frame::series::owned::Series>>
+pub fn cuml::ForestPrediction::output_kind(&self) -> cuml::ForestOutputKind
+pub fn cuml::ForestPrediction::rows(&self) -> usize
+pub struct cuml::HdbscanFit
+pub cuml::HdbscanFit::output: cuml::HdbscanOutputBuffers
+impl cuml::HdbscanFit
+pub fn cuml::HdbscanFit::fit(&cuml::CumlResources, &cuml::DeviceMatrix<'_>, cuml::HdbscanParams) -> cuml::Result<cuml::HdbscanFit>
+pub fn cuml::HdbscanFit::n_clusters(&self) -> usize
+pub fn cuml::HdbscanFit::rows(&self) -> usize
+pub struct cuml::HdbscanOutputBuffers
+pub cuml::HdbscanOutputBuffers::core_distances: cuml::DeviceBuffer<f32>
+pub cuml::HdbscanOutputBuffers::labels: cuml::DeviceBuffer<i64>
+pub cuml::HdbscanOutputBuffers::mst_destinations: cuml::DeviceBuffer<i64>
+pub cuml::HdbscanOutputBuffers::mst_sources: cuml::DeviceBuffer<i64>
+pub cuml::HdbscanOutputBuffers::mst_weights: cuml::DeviceBuffer<f32>
+pub cuml::HdbscanOutputBuffers::probabilities: cuml::DeviceBuffer<f32>
+pub cuml::HdbscanOutputBuffers::single_linkage_children: cuml::DeviceBuffer<i64>
+pub cuml::HdbscanOutputBuffers::single_linkage_distances: cuml::DeviceBuffer<f32>
+pub cuml::HdbscanOutputBuffers::single_linkage_sizes: cuml::DeviceBuffer<i64>
+impl cuml::HdbscanOutputBuffers
+pub fn cuml::HdbscanOutputBuffers::new(&cuml::CumlResources, usize) -> cuml::Result<Self>
+pub struct cuml::HdbscanParams
+pub cuml::HdbscanParams::allow_single_cluster: bool
+pub cuml::HdbscanParams::alpha: f32
+pub cuml::HdbscanParams::cluster_selection_epsilon: f32
+pub cuml::HdbscanParams::cluster_selection_method: cuml::ClusterSelectionMethod
+pub cuml::HdbscanParams::max_cluster_size: usize
+pub cuml::HdbscanParams::min_cluster_size: usize
+pub cuml::HdbscanParams::min_samples: usize
+impl core::default::Default for cuml::HdbscanParams
+pub fn cuml::HdbscanParams::default() -> Self
+pub struct cuml::LogisticRegressionFit
+pub cuml::LogisticRegressionFit::converged: bool
+pub cuml::LogisticRegressionFit::iterations: usize
+pub cuml::LogisticRegressionFit::objective: f64
+pub struct cuml::LogisticRegressionModel
+impl cuml::LogisticRegressionModel
+pub fn cuml::LogisticRegressionModel::coefficients(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::LogisticRegressionModel::fit(&cuml::CumlResources, &cuml::DeviceMatrix<'_>, &cudf::frame::series::owned::Series, cuml::LogisticRegressionParams) -> cuml::Result<(Self, cuml::LogisticRegressionFit)>
+pub fn cuml::LogisticRegressionModel::n_classes(&self) -> usize
+pub fn cuml::LogisticRegressionModel::n_features(&self) -> usize
+pub fn cuml::LogisticRegressionModel::predict(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cudf::frame::series::owned::Series>
+pub struct cuml::LogisticRegressionParams
+pub cuml::LogisticRegressionParams::change_tol: f64
+pub cuml::LogisticRegressionParams::fit_intercept: bool
+pub cuml::LogisticRegressionParams::grad_tol: f64
+pub cuml::LogisticRegressionParams::lbfgs_memory: usize
+pub cuml::LogisticRegressionParams::linesearch_max_iter: usize
+pub cuml::LogisticRegressionParams::max_iter: usize
+pub cuml::LogisticRegressionParams::penalty_l1: f64
+pub cuml::LogisticRegressionParams::penalty_l2: f64
+pub cuml::LogisticRegressionParams::penalty_normalized: bool
+impl core::default::Default for cuml::LogisticRegressionParams
+pub fn cuml::LogisticRegressionParams::default() -> Self
+pub struct cuml::OwnedFloat32Matrix
+impl cuml::OwnedFloat32Matrix
+pub fn cuml::OwnedFloat32Matrix::as_mut_ptr(&mut self) -> cuml::Result<*mut core::ffi::c_void>
+pub fn cuml::OwnedFloat32Matrix::as_ptr(&self) -> cuml::Result<*const core::ffi::c_void>
+pub fn cuml::OwnedFloat32Matrix::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuml::OwnedFloat32Matrix::columns(&self) -> usize
+pub fn cuml::OwnedFloat32Matrix::from_packed(&cuml::CumlResources, cudf::runtime::matrix::PackedMatrix) -> cuml::Result<Self>
+pub fn cuml::OwnedFloat32Matrix::into_column(self) -> cuml::Result<cudf::core::column::owned::Column>
+pub fn cuml::OwnedFloat32Matrix::layout(&self) -> cuml::MatrixLayout
+pub fn cuml::OwnedFloat32Matrix::new(&cuml::CumlResources, usize, usize, cuml::MatrixLayout) -> cuml::Result<Self>
+pub fn cuml::OwnedFloat32Matrix::rows(&self) -> usize
+pub fn cuml::OwnedFloat32Matrix::validate_finite(&mut self, &'static str) -> cuml::Result<()>
+pub struct cuml::PcaModel
+impl cuml::PcaModel
+pub fn cuml::PcaModel::components(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::explained_variance(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::explained_variance_ratio(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::fit(&cuml::CumlResources, &mut cuml::OwnedFloat32Matrix, cuml::PcaParams) -> cuml::Result<Self>
+pub fn cuml::PcaModel::fit_transform(&cuml::CumlResources, &mut cuml::OwnedFloat32Matrix, cuml::PcaParams) -> cuml::Result<(Self, cuml::DeviceBuffer<f32>)>
+pub fn cuml::PcaModel::inverse_transform(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::DeviceBuffer<f32>>
+pub fn cuml::PcaModel::mean(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::n_components(&self) -> usize
+pub fn cuml::PcaModel::n_features(&self) -> usize
+pub fn cuml::PcaModel::noise_variance(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::singular_values(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::PcaModel::transform(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::DeviceBuffer<f32>>
+pub struct cuml::PcaParams
+pub cuml::PcaParams::copy: bool
+pub cuml::PcaParams::iterations: u32
+pub cuml::PcaParams::n_components: usize
+pub cuml::PcaParams::solver: cuml::PcaSolver
+pub cuml::PcaParams::tolerance: f32
+pub cuml::PcaParams::whiten: bool
+impl cuml::PcaParams
+pub fn cuml::PcaParams::new(usize) -> Self
+pub struct cuml::PreparedMatrixLease<'export, 'producer, 'consumer>
+impl cuml::PreparedMatrixLease<'_, '_, '_>
+pub fn cuml::PreparedMatrixLease<'_, '_, '_>::binding_id(&self) -> cudf::runtime::binding_id::ExecutionBindingId
+pub fn cuml::PreparedMatrixLease<'_, '_, '_>::complete(self) -> cuml::Result<rapids_interop::lease::LeaseCompletion>
+pub struct cuml::RandomForestClassifier(_)
+impl cuml::RandomForestClassifier
+pub fn cuml::RandomForestClassifier::close(&mut self) -> cuml::Result<()>
+pub fn cuml::RandomForestClassifier::fit(&cuml::CumlResources, &cuml::TrainingStreams, &cuml::DeviceMatrix<'_>, &cudf::frame::series::owned::Series, cuml::RandomForestParams) -> cuml::Result<Self>
+pub fn cuml::RandomForestClassifier::forest_model(&self, &cuml::CumlResources) -> cuml::Result<cuml::ForestInferenceModel>
+pub fn cuml::RandomForestClassifier::n_features(&self) -> usize
+pub struct cuml::RandomForestParams
+pub cuml::RandomForestParams::bootstrap: bool
+pub cuml::RandomForestParams::max_batch_size: usize
+pub cuml::RandomForestParams::max_depth: i32
+pub cuml::RandomForestParams::max_features: f32
+pub cuml::RandomForestParams::max_leaves: i32
+pub cuml::RandomForestParams::max_n_bins: usize
+pub cuml::RandomForestParams::max_samples: f32
+pub cuml::RandomForestParams::min_impurity_decrease: f32
+pub cuml::RandomForestParams::min_samples_leaf: usize
+pub cuml::RandomForestParams::min_samples_split: usize
+pub cuml::RandomForestParams::n_trees: usize
+pub cuml::RandomForestParams::seed: u64
+pub cuml::RandomForestParams::split_criterion: cuml::SplitCriterion
+impl core::default::Default for cuml::RandomForestParams
+pub fn cuml::RandomForestParams::default() -> Self
+pub struct cuml::RandomForestRegressor(_)
+impl cuml::RandomForestRegressor
+pub fn cuml::RandomForestRegressor::close(&mut self) -> cuml::Result<()>
+pub fn cuml::RandomForestRegressor::fit(&cuml::CumlResources, &cuml::TrainingStreams, &cuml::DeviceMatrix<'_>, &cudf::frame::series::owned::Series, cuml::RandomForestParams) -> cuml::Result<Self>
+pub fn cuml::RandomForestRegressor::forest_model(&self, &cuml::CumlResources) -> cuml::Result<cuml::ForestInferenceModel>
+pub fn cuml::RandomForestRegressor::n_features(&self) -> usize
+pub struct cuml::TrainingStreams
+impl cuml::TrainingStreams
+pub fn cuml::TrainingStreams::usage(&self) -> cuml::Result<alloc::vec::Vec<cudf::core::memory::usage::ReservationUsage>>
+impl core::ops::drop::Drop for cuml::TrainingStreams
+pub fn cuml::TrainingStreams::drop(&mut self)
+pub struct cuml::TsvdModel
+impl cuml::TsvdModel
+pub fn cuml::TsvdModel::components(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::TsvdModel::explained_variance(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::TsvdModel::explained_variance_ratio(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::TsvdModel::fit(&cuml::CumlResources, &mut cuml::OwnedFloat32Matrix, cuml::TsvdParams) -> cuml::Result<Self>
+pub fn cuml::TsvdModel::fit_transform(&cuml::CumlResources, &mut cuml::OwnedFloat32Matrix, cuml::TsvdParams) -> cuml::Result<(Self, cuml::DeviceBuffer<f32>)>
+pub fn cuml::TsvdModel::inverse_transform(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::DeviceBuffer<f32>>
+pub fn cuml::TsvdModel::n_components(&self) -> usize
+pub fn cuml::TsvdModel::n_features(&self) -> usize
+pub fn cuml::TsvdModel::singular_values(&self) -> &cuml::DeviceBuffer<f32>
+pub fn cuml::TsvdModel::transform(&self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::DeviceBuffer<f32>>
+pub struct cuml::TsvdParams
+pub cuml::TsvdParams::iterations: u32
+pub cuml::TsvdParams::n_components: usize
+pub cuml::TsvdParams::solver: cuml::PcaSolver
+pub cuml::TsvdParams::tolerance: f32
+impl cuml::TsvdParams
+pub fn cuml::TsvdParams::new(usize) -> Self
+pub struct cuml::UmapModel
+impl cuml::UmapModel
+pub fn cuml::UmapModel::embedding(&self) -> &cuml::OwnedFloat32Matrix
+pub fn cuml::UmapModel::fit(&cuml::CumlResources, cuml::OwnedFloat32Matrix, cuml::UmapParams) -> cuml::Result<Self>
+pub fn cuml::UmapModel::into_embedding(self) -> cuml::OwnedFloat32Matrix
+pub fn cuml::UmapModel::transform(&mut self, &cuml::CumlResources, &cuml::DeviceMatrix<'_>) -> cuml::Result<cuml::OwnedFloat32Matrix>
+pub struct cuml::UmapParams
+pub cuml::UmapParams::init: cuml::UmapInit
+pub cuml::UmapParams::learning_rate: f32
+pub cuml::UmapParams::local_connectivity: f32
+pub cuml::UmapParams::min_dist: f32
+pub cuml::UmapParams::n_components: usize
+pub cuml::UmapParams::n_epochs: usize
+pub cuml::UmapParams::n_neighbors: usize
+pub cuml::UmapParams::negative_sample_rate: usize
+pub cuml::UmapParams::random_state: u64
+pub cuml::UmapParams::repulsion_strength: f32
+pub cuml::UmapParams::set_op_mix_ratio: f32
+pub cuml::UmapParams::spread: f32
+pub cuml::UmapParams::transform_queue_size: f32
+impl core::default::Default for cuml::UmapParams
+pub fn cuml::UmapParams::default() -> Self
+pub trait cuml::DeviceElement: cudf::core::types::CudfType + core::marker::Copy + 'static
+impl cuml::DeviceElement for f32
+impl cuml::DeviceElement for f64
+impl cuml::DeviceElement for i32
+impl cuml::DeviceElement for i64
+pub fn cuml::allocation_attribution(&cuml::Error) -> cudf::core::error::classification::CudfAllocationAttribution
+pub fn cuml::forest_inference_version() -> cuml::Result<(u16, u16, u16)>
+pub fn cuml::inspect_forest_model(&[u8], cuml::ForestModelFormat) -> cuml::Result<(cuml::ForestModelInfo, alloc::vec::Vec<u8>)>
+pub type cuml::Result<T> = core::result::Result<T, cuml::Error>

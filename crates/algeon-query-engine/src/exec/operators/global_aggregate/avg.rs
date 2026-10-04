@@ -1,11 +1,11 @@
 use arrow::datatypes::{DECIMAL128_MAX_PRECISION, SchemaRef as ArrowSchemaRef};
+use query_planning::expr::CaseWhen;
 
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, LiteralValue, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg,
     budgeted_value, cudf_query_error, frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
 };
-use crate::expr::CaseWhen;
 
 pub(in crate::exec) fn finalize_avg_output_columns(
     context: &ExecutionContext,

@@ -1,4 +1,4 @@
-use query_engine::plan::graph_result_schema_for_vertex_type;
+use query_planning::plan::graph_result_schema_for_vertex_type;
 
 fn int32_graph_spec(
     algorithm: GraphAlgorithm,

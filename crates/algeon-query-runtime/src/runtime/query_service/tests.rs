@@ -16,7 +16,7 @@ use cudf::{
     runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
     testing::device_safety::DeviceSafetyTestScope,
 };
-use query_planning::admission::AttemptCapabilityEvidence;
+use query_planning::{admission::AttemptCapabilityEvidence, error::AttemptFailureCode};
 use tokio::{
     sync::{Barrier as TokioBarrier, Semaphore, mpsc::unbounded_channel, oneshot},
     task::yield_now,
@@ -30,9 +30,9 @@ use crate::{
     observability::{
         AdmissionLifecycleState, AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField,
-        AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureStatus, AttemptFailureSummary,
-        AttemptFaultIsolation, AttemptHealthTransition, AttemptNativeFaultKind, AttemptNativeStatus, AttemptQueryId,
-        AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, AttemptTraceContext,
+        AttemptEvidenceProvenance, AttemptFailureStatus, AttemptFailureSummary, AttemptFaultIsolation,
+        AttemptHealthTransition, AttemptNativeFaultKind, AttemptNativeStatus, AttemptQueryId, AttemptRetryAdvice,
+        AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, AttemptTraceContext,
         CleanupFailurePhase, CleanupFailureSummary, GpuJobLifecycleState, LakehouseCacheFillEvent,
         LakehouseCacheFillOutcome, PlanExecutionId, QueryBoundaryKind, RuntimeObservationConfig,
         RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, StreamLeaseLifecycleState,

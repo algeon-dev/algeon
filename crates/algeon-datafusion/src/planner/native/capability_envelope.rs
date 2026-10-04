@@ -1,10 +1,10 @@
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     error::QueryError,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
 };
 
 use crate::{
@@ -185,7 +185,7 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use query_engine::{
+    use query_planning::{
         capability::KeyedHashJoinStrategyOptions,
         expr::ColumnRef,
         plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType, QueryPlanBuilder},

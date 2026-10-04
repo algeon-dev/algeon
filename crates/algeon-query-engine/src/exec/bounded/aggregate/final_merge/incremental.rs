@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use query_runtime::runtime::resident::GpuDataFrame;
+
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, ArrowSchemaRef, BoundedExecutionAttempt,
     BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, MemoryControlPolicy, NodeId, QueryError,
@@ -16,15 +18,12 @@ use super::{
     execution_budget_token_for_boundary, lower_final_aggregate_spec, observe_device_memory_bytes,
     partition_final_merge_partial, partitioned_aggregate_partition_count, reduce_merge_fan_in,
 };
-use crate::{
-    exec::{
-        bounded::{
-            BoundedPartitionTargetPolicy, ResidentGpuFrame,
-            compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
-        },
-        retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
+use crate::exec::{
+    bounded::{
+        BoundedPartitionTargetPolicy, ResidentGpuFrame,
+        compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
     },
-    runtime::resident::GpuDataFrame,
+    retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
 };
 
 const MAX_PENDING_PARTIALS: usize = 16;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use query_engine::harness::StableFnv1a64;
+use query_planning::util::StableFnv1a64;
 
 use super::{CanonicalField, DataType, RecordBatch, Schema, collect_canonical_rows};
 

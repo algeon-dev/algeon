@@ -6,21 +6,21 @@ use cugraph::ResourceHandle;
 use cugraph::cudf_interop::TableGraphOptions;
 #[cfg(feature = "cugraph")]
 use cugraph::cudf_interop::graph_from_prepared_table_export;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::ResidentGraphKey;
+#[cfg(feature = "cugraph")]
+use query_runtime::runtime::cache::resident_graph::GpuResidentGraphCache;
+#[cfg(feature = "cugraph")]
+use query_runtime::runtime::cache::resident_graph::GpuResidentGraphCacheInsert;
+#[cfg(feature = "cugraph")]
+use query_runtime::runtime::cache::resident_graph::GpuResidentGraphCheckout;
+#[cfg(feature = "cugraph")]
+use query_runtime::runtime::cache::resident_graph::GpuResidentGraphTransposition;
 
 use super::{
     DataFrame, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result, cudf_query_error,
     graph_build_range, map_cugraph_error, run_with_uncached_cugraph_graph,
 };
-#[cfg(feature = "cugraph")]
-use crate::plan::ResidentGraphKey;
-#[cfg(feature = "cugraph")]
-use crate::runtime::cache::resident_graph::GpuResidentGraphCache;
-#[cfg(feature = "cugraph")]
-use crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert;
-#[cfg(feature = "cugraph")]
-use crate::runtime::cache::resident_graph::GpuResidentGraphCheckout;
-#[cfg(feature = "cugraph")]
-use crate::runtime::cache::resident_graph::GpuResidentGraphTransposition;
 
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_cugraph_graph<T, F>(

@@ -1,4 +1,4 @@
-use crate::runtime::MemoryControlPolicy;
+use query_planning::execution_contracts::MemoryControlPolicy;
 
 /// Internal byte-target policy for bounded partitioning and streaming.
 ///

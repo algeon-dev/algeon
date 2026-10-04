@@ -1,5 +1,10 @@
 use std::time::Instant;
 
+use query_planning::{naming::unique_alias_with_suffix, util::sum_optional_u64};
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
+
 use super::{final_merge::partition_final_merge_partial, partitioned::partitioned_aggregate_partition_count, *};
 use crate::{
     exec::{
@@ -12,12 +17,7 @@ use crate::{
         },
         retry::{RetryLimits, backoff_before_retry},
     },
-    naming::unique_alias_with_suffix,
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
     rapids_backend::rapids_analysis_context,
-    util::sum_optional_u64,
 };
 
 /// Source and aggregate ownership needed by a batch worker; downstream plan
@@ -1717,11 +1717,10 @@ mod tests {
         use std::sync::Arc;
 
         use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-
-        use crate::{
+        use query_planning::{
+            execution_contracts::SourceChunkPlanningMode,
             expr::{AggregateSpec, Expr, LiteralValue},
             plan::{AggregateNode, FilterNode, NodeId},
-            runtime::SourceChunkPlanningMode,
             source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
         };
 

@@ -1,15 +1,16 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
-use crate::{
+use query_planning::{
     error::Result,
-    exec::bounded::{
-        compiled::{
-            helpers::{invalid, plan_node, single_input_resource, single_output_resource},
-            resource::CompiledGpuResourcePayload,
-        },
-        execute_bounded_edge_normalize_from_input,
-    },
     pipeline::{PipelineTask, ResidentResourceId},
     plan::PlanNode,
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
+use crate::exec::bounded::{
+    compiled::{
+        helpers::{invalid, plan_node, single_input_resource, single_output_resource},
+        resource::CompiledGpuResourcePayload,
+    },
+    execute_bounded_edge_normalize_from_input,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

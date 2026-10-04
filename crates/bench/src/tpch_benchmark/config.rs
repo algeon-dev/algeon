@@ -5,7 +5,8 @@ use algeon_datafusion::{
     native_exec::SourceChunking,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
 };
-use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode, SourceSchedulerPolicy};
+use query_planning::execution_contracts::SourceChunkPlanningMode;
+use query_runtime::runtime::{GpuDeviceMemoryLimit, SourceSchedulerPolicy};
 
 use super::*;
 use crate::{gpu_backend::build_installed_gpu_backend, report_workload::RelationalExecutionSelection};

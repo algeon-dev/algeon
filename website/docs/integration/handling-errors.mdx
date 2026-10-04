@@ -39,7 +39,7 @@ runtime failure is an error.
 | --- | --- | --- |
 | `query-planning` | `QueryError` | Canonical DataFusion-independent error taxonomy plus IR, optimizer, capability, proof, and admission failures. |
 | `query-runtime` | planning's `QueryError` | Attempt lifecycle, query service, device ledger, grant, cache, observation, and metric failures; it does not define another taxonomy. |
-| `query-engine` | planning's `QueryError` | Native execution failures and the compatible public facade re-export. |
+| `query-engine` | planning's `QueryError` | Native execution failures. |
 | DataFusion adapter | `algeon_datafusion::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
 | DataFusion traits | `DataFusionError` | Framework boundary only. Algeon errors cross it as a typed `External` source. |
 | DataFusion server module | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics under `algeon_datafusion::server`; the `algeon-server` package only launches it. |

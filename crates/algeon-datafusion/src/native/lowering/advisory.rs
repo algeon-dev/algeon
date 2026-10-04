@@ -7,7 +7,7 @@ use datafusion::{
     common::stats::Precision,
     physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext},
 };
-use query_engine::{
+use query_planning::{
     error::QueryError,
     plan::{
         AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason, NodeId,

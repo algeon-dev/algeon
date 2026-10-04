@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes;
 use query_planning::{
+    error::Result,
     pipeline::{
         CompiledPipeline, PipelineTaskKind, ShadowBytes, ShadowMemoryModels, ShadowPipelineEstimate,
         ShadowResourceModel,
@@ -12,8 +13,6 @@ use query_planning::{
     source::SourceNode,
 };
 use serde::{Deserialize, Serialize};
-
-use crate::error::Result;
 
 /// One explicitly requested pre-execution shadow capture.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

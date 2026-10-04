@@ -1,7 +1,4 @@
-use query_engine::{
-    expr::GroupingSetsSpec,
-    optimizer::JoinBuildSideSelectionCandidateDiagnostics,
-};
+use query_planning::{expr::GroupingSetsSpec, optimizer::JoinBuildSideSelectionCandidateDiagnostics};
 
 #[test]
 fn aggregate_join_pushdown_reuses_physical_group_identity_and_preserves_output_aliases() {

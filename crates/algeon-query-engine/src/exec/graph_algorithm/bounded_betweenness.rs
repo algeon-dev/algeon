@@ -2,16 +2,16 @@
 
 #[cfg(feature = "cugraph")]
 use cudf::{Exec, Series, TypeId};
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphAlgorithm;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphAlgorithmParams;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphAlgorithmSpec;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::GraphBetweennessSeeds;
 
 use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphAlgorithm;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphAlgorithmParams;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphAlgorithmSpec;
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphBetweennessSeeds;
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) enum RuntimeGraphSpecResolution {

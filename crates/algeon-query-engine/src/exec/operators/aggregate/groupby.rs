@@ -1,10 +1,11 @@
+use query_runtime::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
+
 use super::{
     DataFrame, DropDuplicatesOptions, DuplicateKeepOption, Exec, ExecutionBudgetToken, ExecutionContext,
     ExecutionMetrics, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_query_error,
-};
-use crate::observability::{
-    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
 };
 
 pub(in crate::exec) fn execute_groupby_aggregate(

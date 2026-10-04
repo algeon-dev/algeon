@@ -18,10 +18,10 @@ pub algeon_datafusion::attempt::GraphClaimCalibrationExecution::NonPhysical(alge
 pub algeon_datafusion::attempt::GraphClaimCalibrationExecution::Physical
 pub enum algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason
 pub algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
-pub algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<query_planning::schedule_projection::AttemptId>
+pub algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<query_runtime::observability::schedule_projection::AttemptId>
 pub struct algeon_datafusion::attempt::AlgeonAttempt
 impl algeon_datafusion::attempt::AlgeonAttempt
-pub fn algeon_datafusion::attempt::AlgeonAttempt::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
+pub fn algeon_datafusion::attempt::AlgeonAttempt::attempt_id(&self) -> query_runtime::observability::schedule_projection::AttemptId
 pub fn algeon_datafusion::attempt::AlgeonAttempt::cancellation(&self) -> query_runtime::attempt::cancellation::AttemptCancellation
 pub fn algeon_datafusion::attempt::AlgeonAttempt::completion(&self) -> query_runtime::attempt::owner::AttemptCompletion
 pub async fn algeon_datafusion::attempt::AlgeonAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>
@@ -55,13 +55,13 @@ pub type algeon_datafusion::attempt::AttemptStream::Item = core::result::Result<
 pub fn algeon_datafusion::attempt::AttemptStream::poll_next(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::option::Option<Self::Item>>
 pub struct algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 impl algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot
-pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
+pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> query_runtime::observability::schedule_projection::AttemptId
 pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&algeon_datafusion::attempt::GraphClaimCalibrationExecution>
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[query_planning::graph_observation::GraphMeasuredPeakRow]
+pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[query_runtime::observability::graph_observation::GraphMeasuredPeakRow]
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 #[non_exhaustive] pub struct algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot
-pub algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: query_planning::schedule_projection::AttemptId
+pub algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: query_runtime::observability::schedule_projection::AttemptId
 pub algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot::coverage: algeon_datafusion::gpu_coverage::FinalPlanCoverage
 pub algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot::intermediate_device_to_host_materialization_count: usize
 pub algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot::metrics: algeon_datafusion::native_report::NativeDataFusionExecutionMetrics
@@ -544,6 +544,7 @@ pub use algeon_datafusion::cuml_sql::DenseVectorBinding
 pub use algeon_datafusion::cuml_sql::GpuOptionDefinition
 pub use algeon_datafusion::cuml_sql::GpuOptionKind
 pub use algeon_datafusion::cuml_sql::GpuOptionValidationError
+pub use algeon_datafusion::cuml_sql::MlForestModelSnapshot
 pub use algeon_datafusion::cuml_sql::MlRelationRole
 pub use algeon_datafusion::cuml_sql::RelationIdType
 pub use algeon_datafusion::cuml_sql::canonicalize_cuml_options
@@ -626,6 +627,7 @@ pub use algeon_datafusion::cuvs_sql::GpuOptionKind
 pub use algeon_datafusion::cuvs_sql::GpuOptionValidationError
 pub use algeon_datafusion::cuvs_sql::RELATION_ID_TYPES
 pub use algeon_datafusion::cuvs_sql::RelationIdType
+pub use algeon_datafusion::cuvs_sql::VectorAlgorithmParams
 pub use algeon_datafusion::cuvs_sql::VectorElementType
 pub use algeon_datafusion::cuvs_sql::canonicalize_cuvs_options
 pub struct algeon_datafusion::cuvs_sql::CuvsExtensionPlanner
@@ -950,6 +952,7 @@ pub use algeon_datafusion::native_exec::AggregateStrategyExecutionOptions
 pub use algeon_datafusion::native_exec::DynamicFilterExecutionOptions
 pub use algeon_datafusion::native_exec::KeyedHashJoinStrategyOptions
 pub use algeon_datafusion::native_exec::LakehouseCacheFillConfig
+pub use algeon_datafusion::native_exec::PlanningPolicy
 pub use algeon_datafusion::native_exec::QueryId
 pub use algeon_datafusion::native_exec::RuntimeObservationConfig
 pub use algeon_datafusion::native_exec::RuntimeObservationLimits
@@ -964,7 +967,7 @@ pub algeon_datafusion::native_exec::GraphClaimCalibrationExecution::NonPhysical(
 pub algeon_datafusion::native_exec::GraphClaimCalibrationExecution::Physical
 pub enum algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason
 pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
-pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<query_planning::schedule_projection::AttemptId>
+pub algeon_datafusion::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<query_runtime::observability::schedule_projection::AttemptId>
 #[non_exhaustive] pub enum algeon_datafusion::native_exec::LakehouseByteCacheFill
 pub algeon_datafusion::native_exec::LakehouseByteCacheFill::Disabled
 pub algeon_datafusion::native_exec::LakehouseByteCacheFill::FillBeforeRead
@@ -1000,7 +1003,7 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::s3_storage(&
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunking(&self) -> algeon_datafusion::native_exec::SourceChunking
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_scheduler_policy(&self) -> query_runtime::runtime::execution_policy::SourceSchedulerPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_aggregate_strategy_execution_options(self, query_planning::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
@@ -1014,7 +1017,7 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_query_i
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_s3_storage(self, query_runtime::runtime::object_store::S3SourceStorageProfile) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_mode(self, query_planning::execution_contracts::SourceChunkPlanningMode) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_options(self, query_planning::chunk::policy::SourceChunkPlanningOptions) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_scheduler_policy(self, query_planning::execution_contracts::SourceSchedulerPolicy) -> Self
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_scheduler_policy(self, query_runtime::runtime::execution_policy::SourceSchedulerPolicy) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_statistical_aggregate_execution_mode(self, query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
 impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
@@ -1029,10 +1032,10 @@ pub fn algeon_datafusion::native_exec::LakehouseByteCache::with_fill(self, algeo
 pub fn algeon_datafusion::native_exec::LakehouseByteCache::with_max_retained_bytes(self, core::num::nonzero::NonZeroU64) -> Self
 pub struct algeon_datafusion::native_exec::SealedAttemptGraphClaimCalibrationSnapshot
 impl algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot
-pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> query_planning::schedule_projection::AttemptId
+pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> query_runtime::observability::schedule_projection::AttemptId
 pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&algeon_datafusion::attempt::GraphClaimCalibrationExecution>
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[query_planning::graph_observation::GraphMeasuredPeakRow]
+pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[query_runtime::observability::graph_observation::GraphMeasuredPeakRow]
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub struct algeon_datafusion::native_exec::SourceChunking
 pub algeon_datafusion::native_exec::SourceChunking::max_retry_attempts: core::num::nonzero::NonZeroUsize
@@ -1857,6 +1860,7 @@ pub mod algeon_datafusion::report
 pub use algeon_datafusion::report::NativePlanCostReason
 pub use algeon_datafusion::report::PlanNodeId
 pub use algeon_datafusion::report::QueryId
+pub use algeon_datafusion::report::Rejection
 pub use algeon_datafusion::report::TraceId
 pub use algeon_datafusion::report::TriageCode
 pub use algeon_datafusion::report::TriageSummary

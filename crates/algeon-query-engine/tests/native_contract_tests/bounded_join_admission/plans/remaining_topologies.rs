@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::{
+use query_planning::{
     plan::{NodeId, QueryPlan},
     source::LocalParquetSource,
 };

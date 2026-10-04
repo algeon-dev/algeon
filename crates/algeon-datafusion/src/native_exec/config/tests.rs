@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::error::QueryError;
+use query_planning::error::QueryError;
 
 use super::*;
 use crate::{

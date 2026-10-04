@@ -3,6 +3,19 @@ use std::{fs, slice, sync::Arc, time::Instant};
 use arrow::datatypes::SchemaRef;
 pub use lakehouse_cache::sanitize_cache_component;
 use parquet::file::reader::FileReader;
+use query_planning::{
+    policy::PlanningPolicy,
+    source::{
+        LiteralBatchSource, ParquetReadStrategy, parquet_source_path_fact, redacted_path_diagnostic,
+        validate_literal_batch_source,
+    },
+};
+use query_runtime::runtime::{
+    cache::local_parquet::{
+        GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheLoad, GpuLocalParquetSourceCacheLoadClaim,
+    },
+    source_identity::GpuLocalParquetSourceCacheKey,
+};
 
 use super::{
     ArrowDataType, BinaryOp, BoundedExecutionAttempt, DataFrame, ExecutionBudgetRequest, ExecutionBudgetToken,
@@ -14,21 +27,7 @@ use super::{
     plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
-use crate::{
-    chunk::SourceChunkBatch,
-    policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
-    runtime::{
-        cache::local_parquet::{
-            GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheLoad, GpuLocalParquetSourceCacheLoadClaim,
-        },
-        source_identity::GpuLocalParquetSourceCacheKey,
-    },
-    source::{
-        LiteralBatchSource, ParquetReadStrategy, parquet_source_path_fact, redacted_path_diagnostic,
-        validate_literal_batch_source,
-    },
-};
+use crate::{chunk::SourceChunkBatch, rapids_backend::rapids_analysis_context};
 
 mod cache_runtime;
 mod cudf_contract;
@@ -55,6 +54,11 @@ pub(super) use metrics::{
     attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
 };
 use partition::inject_partition_columns;
+use query_planning::source::{local_parquet_execution_frame_schema, validate_local_parquet_source};
+pub(in crate::exec) use query_planning::source::{
+    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
+};
+use query_runtime::{metrics::SourceReadParquetEvidenceMetrics, observability::SourceReadFact};
 use read::read_local_parquet_file;
 pub(in crate::exec) use read_runtime_metrics::observed_chunk_row_group_count;
 use read_runtime_metrics::*;
@@ -63,15 +67,6 @@ use scan_limit::*;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
-
-pub(in crate::exec) use crate::source::{
-    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
-};
-use crate::{
-    metrics::SourceReadParquetEvidenceMetrics,
-    observability::SourceReadFact,
-    source::{local_parquet_execution_frame_schema, validate_local_parquet_source},
-};
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     parquet_source_path_fact(&chunk.location, &chunk.path)
@@ -896,17 +891,19 @@ mod tests {
         io::parquet::{ParquetPruningEvidence, ParquetReadEvidence, RemoteParquetBackendBuildStatus},
         testing::error::new_with_for_test,
     };
-
-    use super::*;
-    use crate::{
-        chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+    use query_planning::{
+        chunk::SourceChunkPlanningPolicy,
+        source::{CredentialMode, LakehouseCacheFillMode, MissingColumn, ResolvedParquetSource},
+    };
+    use query_runtime::{
         observability::{
             PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
         },
-        rapids_backend::rapids_analysis_context,
         runtime::{LakehouseCacheFillConfig, StandaloneConfig},
-        source::{CredentialMode, LakehouseCacheFillMode, MissingColumn, ResolvedParquetSource},
     };
+
+    use super::*;
+    use crate::{chunk::plan_local_parquet_source_chunks, rapids_backend::rapids_analysis_context};
 
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
         let schema = Arc::new(Schema::new(vec![Field::new("c1", ArrowDataType::Int32, true)]));

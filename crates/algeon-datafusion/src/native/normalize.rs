@@ -21,7 +21,7 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec},
     },
 };
-use query_engine::expr::LimitSpec as NativeLimitSpec;
+use query_planning::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
     capability::CapabilityReason,

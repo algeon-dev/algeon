@@ -1,11 +1,4 @@
-use query_engine::{
-    optimizer::{
-        DimensionKeyFilter as OptionsDimensionKeyFilter,
-        DIMENSION_KEY_FILTER_MAX_RUNS as OPTIONS_DIMENSION_KEY_FILTER_MAX_RUNS,
-        JoinFilterReassociationOptions as OptionsJoinFilterReassociationOptions,
-        OuterJoinNullRejectionOptions as OptionsOuterJoinNullRejectionOptions,
-    },
-};
+use query_planning::{optimizer::DimensionKeyFilter as OptionsDimensionKeyFilter, optimizer::DIMENSION_KEY_FILTER_MAX_RUNS as OPTIONS_DIMENSION_KEY_FILTER_MAX_RUNS, optimizer::JoinFilterReassociationOptions as OptionsJoinFilterReassociationOptions, optimizer::OuterJoinNullRejectionOptions as OptionsOuterJoinNullRejectionOptions};
 
 #[test]
 fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {

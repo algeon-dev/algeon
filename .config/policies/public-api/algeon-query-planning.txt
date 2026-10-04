@@ -1059,33 +1059,6 @@ pub struct query_planning::expr::SortSpec
 pub query_planning::expr::SortSpec::expressions: alloc::vec::Vec<query_planning::expr::SortExpr>
 impl query_planning::expr::SortSpec
 pub fn query_planning::expr::SortSpec::new(alloc::vec::Vec<query_planning::expr::SortExpr>) -> Self
-pub mod query_planning::graph_observation
-pub enum query_planning::graph_observation::GraphClaimExecutionState
-pub query_planning::graph_observation::GraphClaimExecutionState::AlgorithmStarted
-pub query_planning::graph_observation::GraphClaimExecutionState::Pending
-impl query_planning::graph_observation::GraphClaimExecutionState
-pub const fn query_planning::graph_observation::GraphClaimExecutionState::as_str(self) -> &'static str
-impl core::fmt::Display for query_planning::graph_observation::GraphClaimExecutionState
-pub fn query_planning::graph_observation::GraphClaimExecutionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum query_planning::graph_observation::GraphMeasuredPeakProvenance
-pub query_planning::graph_observation::GraphMeasuredPeakProvenance::CacheScopeHighWater
-pub query_planning::graph_observation::GraphMeasuredPeakProvenance::Unavailable
-impl query_planning::graph_observation::GraphMeasuredPeakProvenance
-pub const fn query_planning::graph_observation::GraphMeasuredPeakProvenance::as_str(self) -> &'static str
-impl core::fmt::Display for query_planning::graph_observation::GraphMeasuredPeakProvenance
-pub fn query_planning::graph_observation::GraphMeasuredPeakProvenance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct query_planning::graph_observation::GraphMeasuredPeakRow
-pub query_planning::graph_observation::GraphMeasuredPeakRow::algorithm: query_planning::plan::GraphAlgorithm
-pub query_planning::graph_observation::GraphMeasuredPeakRow::execution_state: query_planning::graph_observation::GraphClaimExecutionState
-pub query_planning::graph_observation::GraphMeasuredPeakRow::measured_peak_bytes: core::option::Option<u64>
-pub query_planning::graph_observation::GraphMeasuredPeakRow::measured_peak_provenance: query_planning::graph_observation::GraphMeasuredPeakProvenance
-pub query_planning::graph_observation::GraphMeasuredPeakRow::node_id: alloc::string::String
-pub query_planning::graph_observation::GraphMeasuredPeakRow::node_index: usize
-pub query_planning::graph_observation::GraphMeasuredPeakRow::query_id: core::option::Option<crate::correlation::QueryId>
-impl query_planning::graph_observation::GraphMeasuredPeakRow
-pub fn query_planning::graph_observation::GraphMeasuredPeakRow::pending(core::option::Option<QueryId>, impl core::convert::Into<alloc::string::String>, usize, query_planning::plan::GraphAlgorithm) -> Self
-pub fn query_planning::graph_observation::GraphMeasuredPeakRow::record_measured_peak(&mut self, core::option::Option<u64>, query_planning::graph_observation::GraphMeasuredPeakProvenance)
-pub fn query_planning::graph_observation::GraphMeasuredPeakRow::to_json(&self) -> serde_json::value::Value
 pub mod query_planning::mode
 pub enum query_planning::mode::CapabilityEnvelopeStatus
 pub query_planning::mode::CapabilityEnvelopeStatus::Admitted

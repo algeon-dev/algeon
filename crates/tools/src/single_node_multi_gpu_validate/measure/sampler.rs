@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_engine::runtime::{BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, DeviceLedgerReport};
+use query_runtime::runtime::{BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, DeviceLedgerReport};
 
 use super::*;
 

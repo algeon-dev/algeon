@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
-use query_engine::contract_report::CapabilityDecisionRow;
+use query_planning::contract_report::CapabilityDecisionRow;
 
 use super::*;
 

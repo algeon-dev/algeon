@@ -1,18 +1,16 @@
-//! Algeon native-rs query engine contracts.
+//! Algeon native query engine: execution composition over RAPIDS.
+//!
+//! The native IR, validation, capability and admission contracts, and the
+//! optimizer belong to `query_planning`; attempts, device ledgers, contexts,
+//! and observation belong to `query_runtime`. Callers import those owners
+//! directly. This crate composes them: [`exec`] runs a validated
+//! `query_planning::plan::QueryPlan` and returns host Arrow output or
+//! GPU-resident handles according to its result sink, and [`rapids_backend`]
+//! answers planning's backend capability questions for RAPIDS.
 //!
 //! This crate does not depend on any query-engine adapter. DataFusion-specific
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `algeon-datafusion`.
-//!
-//! Public APIs fall into four groups:
-//!
-//! - [`plan`] and [`expr`] define the native query IR.
-//! - [`capability`], [`admission`], and [`pipeline`] prove and compile bounded-execution
-//!   contracts without assigning plans to named execution families.
-//! - [`runtime`] owns device, memory, boundary, and scheduler policy.
-//! - [`exec`] executes a validated [`plan::QueryPlan`] and returns
-//!   either host Arrow output or GPU-resident handles according to its
-//!   [`plan::ResultSink`].
 //!
 //! Byte counts in native reports and runtime contracts are device bytes unless
 //! explicitly labeled as host or Arrow bytes. Native ids and cache keys are
@@ -31,50 +29,24 @@ extern crate self as query_engine;
 #[path = "execution_integration_tests/runtime_observability.rs"]
 mod runtime_observability_integration_tests;
 
-pub use query_planning::admission;
-/// Backend capability contract plan validation asks the execution owner.
-pub use query_planning::backend;
-/// Capability-analysis model and admission helpers for native execution.
-pub use query_planning::capability;
-pub use query_runtime::attempt;
 pub mod chunk;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
 pub mod datatypes;
 /// Local-filesystem implementation of the planning dimension-pruning resolver contract.
 pub mod dimension_pruning;
-/// Native dynamic-filter producer/consumer route IR.
-pub use query_planning::dynamic_filter;
-pub use query_planning::{contract_report, error};
 pub mod exec;
-/// Expression IR used by native query plans.
-pub use query_planning::expr;
-pub(crate) use query_planning::expression_lowering_policy;
-/// Measured graph-execution observation rows.
-pub use query_planning::graph_observation;
-/// Stable helper primitives shared by report and benchmark harnesses.
-pub mod harness;
-/// Stable name-generation helpers shared across native planning code.
-pub use query_planning::naming;
+/// Backend materialized-output sizing, applying the component's formula.
+#[doc(hidden)]
+pub mod materialization_sizing;
 /// Native error projection: cuDF from the runtime boundary, cuVS from here.
 pub mod native_error;
 #[doc(hidden)]
 pub mod object_store_error;
-/// RAPIDS implementation of the planning backend capability contract.
-pub mod rapids_backend;
-/// Shared Parquet footer/statistics helpers for native pruning and sizing.
-pub use query_planning::parquet_stats;
-/// Native query plan IR and graph operators.
-pub use query_planning::plan;
-/// Backend materialized-output sizing, applying the component's formula.
-#[doc(hidden)]
-pub mod materialization_sizing;
-pub use query_planning::{mode, optimizer, pipeline, policy, source, triage, validate_query_plan};
+pub(crate) mod parquet_metadata;
 /// Native cuDF expression, aggregate, and sort lowering.
 pub(crate) mod prepared;
-#[doc(hidden)]
-pub use query_planning::{util, validation};
-pub(crate) mod parquet_metadata;
-pub use query_runtime::{metrics, observability, runtime};
+/// RAPIDS implementation of the planning backend capability contract.
+pub mod rapids_backend;
 
 pub mod shadow;
 pub(crate) mod source_chunk;

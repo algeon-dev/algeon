@@ -1,6 +1,6 @@
-use query_engine::{
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     admission::{admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
-    dimension_pruning::local_dimension_pruning_resolver,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerLowering},
     optimizer::{
         AggregateJoinPushdownRejectedReason, NativeOptimizerChange, NativeOptimizerOptions, SemijoinReductionOptions,
@@ -8,7 +8,6 @@ use query_engine::{
     },
     plan::{AggregateNode, JoinNode},
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

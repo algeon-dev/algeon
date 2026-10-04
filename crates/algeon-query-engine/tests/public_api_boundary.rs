@@ -28,10 +28,10 @@
 //! same fact for free, in the same build the rest of this binary already
 //! pays for.
 
+use query_planning::error::Result;
 #[cfg(feature = "qualification")]
-use query_engine::runtime::GpuBackendFaultInjector;
-use query_engine::{
-    error::Result,
+use query_runtime::runtime::GpuBackendFaultInjector;
+use query_runtime::{
     observability::RuntimeObservationHandle,
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,

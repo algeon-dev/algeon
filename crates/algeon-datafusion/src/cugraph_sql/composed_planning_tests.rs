@@ -12,7 +12,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 use parquet::arrow::ArrowWriter;
-use query_engine::{
+use query_planning::{
     expr::Expr,
     plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder, ResultSink},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},

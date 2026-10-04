@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::runtime::{ExecutionCancellation, GpuBackendSession};
+use query_runtime::runtime::{ExecutionCancellation, GpuBackendSession};
 
 use super::{
     AlgeonNativeExecutionConfig, QueryAdmissionSource, QueryAdmissionTicket, TaskContext, invocation_admission_ticket,

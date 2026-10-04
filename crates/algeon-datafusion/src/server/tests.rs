@@ -4,7 +4,7 @@ use std::{
 };
 
 use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
-use query_engine::observability::RuntimeObservationConfig;
+use query_runtime::observability::RuntimeObservationConfig;
 use tokio::time::timeout;
 
 use super::*;

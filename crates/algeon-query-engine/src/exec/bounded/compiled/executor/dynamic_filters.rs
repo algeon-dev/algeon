@@ -2,11 +2,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Schema, SchemaRef as ArrowSchemaRef};
 use cudf::{DataFrame, Exec};
-
-use super::{
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor, cudf_query_error,
-};
-use crate::{
+use query_planning::{
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterProducer,
         DynamicFilterRoute, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
@@ -14,24 +10,30 @@ use crate::{
         dynamic_filter_predicate_for_schema,
     },
     error::{QueryError, Result},
-    exec::{
-        bounded::{
-            BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
-            compiled::{
-                ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid,
-                resource::CompiledGpuResourcePayload,
-            },
-            run_budgeted,
-        },
-        operators::execute_filter_with_budget,
-        util::record_batch_memory_size,
-    },
     expr::Expr,
-    metrics::DynamicFilterSourceSnapshot,
     pipeline::ResidentResourceId,
     plan::{FilterNode, JoinNode, JoinNullEquality, JoinSide, NodeId, PlanNode},
-    runtime::resident::{GpuDataFrame, GpuResultHandle},
     source::SourceNode,
+};
+use query_runtime::{
+    metrics::DynamicFilterSourceSnapshot,
+    runtime::resident::{GpuDataFrame, GpuResultHandle},
+};
+
+use super::{
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor, cudf_query_error,
+};
+use crate::exec::{
+    bounded::{
+        BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
+        compiled::{
+            ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid,
+            resource::CompiledGpuResourcePayload,
+        },
+        run_budgeted,
+    },
+    operators::execute_filter_with_budget,
+    util::record_batch_memory_size,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

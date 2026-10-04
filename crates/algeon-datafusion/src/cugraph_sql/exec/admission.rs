@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::datasource::source::DataSourceExec;
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
 };

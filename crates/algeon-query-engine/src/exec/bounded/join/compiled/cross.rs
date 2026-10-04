@@ -1,12 +1,13 @@
 use std::time::Instant;
 
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result,
     bounded_invariant_violation, cudf_query_error, dataframe_cross_join_options, materialize_compiled_indices_output,
     observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
 };
-use crate::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
 pub(super) fn execute_compiled_projected_cross_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

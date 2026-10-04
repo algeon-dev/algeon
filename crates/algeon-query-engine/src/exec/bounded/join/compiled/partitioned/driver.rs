@@ -1,3 +1,5 @@
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame,
     JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinPartitionOutput,
@@ -6,9 +8,8 @@ use super::{
     partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
     release_partitioned_join_side, side_metric, slice_partition_join_side_range, sum_bounds, with_partition_side,
 };
-use crate::{
-    exec::retry::{RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
-    metrics::{JoinOperatorMetrics, OperatorMetrics},
+use crate::exec::retry::{
+    RetryLimits, backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error,
 };
 
 // Retry subdivision constants are deliberately fixed because they describe the
@@ -905,9 +906,9 @@ pub(super) fn record_partitioned_join_operator_metrics(
 #[cfg(test)]
 mod tests {
     use cudf::{CudfErrorDetail, CudfErrorFailureSource, testing::error as cudf_error};
+    use query_planning::plan::JoinSpec;
 
     use super::*;
-    use crate::plan::JoinSpec;
 
     fn retry_join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {

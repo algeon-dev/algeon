@@ -1,12 +1,13 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor};
-use crate::{
+use query_planning::{
     error::{QueryError, Result},
-    exec::bounded::{
-        ResidentGpuFrame,
-        compiled::{helpers::invalid, resource::CompiledGpuResourcePayload},
-        materialize_bounded_join_leaf_local_parquet_source_stream,
-    },
     pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing},
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor};
+use crate::exec::bounded::{
+    ResidentGpuFrame,
+    compiled::{helpers::invalid, resource::CompiledGpuResourcePayload},
+    materialize_bounded_join_leaf_local_parquet_source_stream,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

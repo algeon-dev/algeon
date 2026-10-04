@@ -2,14 +2,14 @@ use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
-
-use super::{ExecutionMetrics, cudf_query_error};
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},
     plan::{JoinSide, JoinType, PlanNode, QueryPlan},
-    runtime::ExecutionContext,
 };
+use query_runtime::runtime::ExecutionContext;
+
+use super::{ExecutionMetrics, cudf_query_error};
 
 const SOURCE_ORDER_MAJOR_COLUMN: &str = "__algeon_native_df_order_0";
 const SOURCE_ORDER_ROW_COLUMN: &str = "__algeon_native_df_order_1";

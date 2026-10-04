@@ -5,17 +5,14 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, SchemaRef as ArrowSchemaRef},
     record_batch::RecordBatchOptions,
 };
+use query_planning::pipeline::AggregateInputHints;
+use query_runtime::observability::{
+    RuntimeObservationRecordClass, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind,
+    RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, TaskDefinitionRow, stage_context_from_execution,
+};
 
 use super::{compiled::ResidentFrameStreamPayload, *};
-use crate::{
-    exec::operators::final_global_aggregate_spec,
-    observability::{
-        RuntimeObservationRecordClass, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity,
-        RuntimeOperatorStageKind, RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, TaskDefinitionRow,
-        stage_context_from_execution,
-    },
-    pipeline::AggregateInputHints,
-};
+use crate::exec::operators::final_global_aggregate_spec;
 
 mod final_merge;
 mod final_merge_policy;
@@ -399,8 +396,9 @@ pub(in crate::exec::bounded) fn start_aggregate_chunk_stage(
 
 #[cfg(test)]
 mod tests {
+    use query_planning::execution_contracts::SourceChunkPlanningMode;
+
     use super::*;
-    use crate::runtime::SourceChunkPlanningMode;
 
     fn throughput_like_policy() -> SourceChunkPlanningPolicy {
         let mut policy = SourceChunkPlanningPolicy::new(Some(32 * 1024 * 1024 * 1024), 1024);

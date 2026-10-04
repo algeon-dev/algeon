@@ -4,7 +4,14 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
-use query_planning::util::fnv1a64;
+use query_planning::{
+    capability::{
+        AggregateExecutionStage, AggregateExecutionStrategy, AggregateStrategyCandidateRejection,
+        AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
+    },
+    mode::StatisticalAggregateExecutionMode,
+    util::fnv1a64,
+};
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
@@ -23,14 +30,9 @@ use super::{
     schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
 };
 use crate::{
-    capability::{
-        AggregateExecutionStage, AggregateExecutionStrategy, AggregateStrategyCandidateRejection,
-        AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
-    },
     chunk::SourceChunk,
     exec::retry::is_retryable_resource_error,
     materialization_sizing::{PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE},
-    mode::StatisticalAggregateExecutionMode,
 };
 
 mod filter_inputs;

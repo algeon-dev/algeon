@@ -2,13 +2,11 @@
 
 use std::fmt;
 
-use query_planning::{
-    correlation::QueryId,
-    execution_contracts::{RuntimeTaskId, TaskAttemptId},
-};
+use query_planning::correlation::{QueryId, TraceId};
 use serde::{Deserialize, Serialize};
 
 use super::attempt_report::{CleanupFailureSummary, QueryAttemptReport, RuntimeTerminalOutcome};
+use crate::observability::{RuntimeTaskId, TaskAttemptId};
 
 /// JSONL schema emitted by sealed runtime observation snapshots.
 pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "query_engine.runtime_observation";
@@ -53,7 +51,6 @@ macro_rules! string_id {
 }
 
 string_id!(PlanExecutionId, "Identity for one invocation of a native plan.");
-string_id!(RuntimeTraceId, "Optional parent trace identity for one observation session.");
 string_id!(RuntimePlanNodeId, "Plan-node identity scoped to one plan execution.");
 string_id!(RuntimeReservationId, "Reservation identity scoped to one plan execution.");
 string_id!(RuntimeResourceId, "Resident-resource identity scoped to one plan execution.");
@@ -115,57 +112,6 @@ impl fmt::Display for RuntimeSourceLocationId {
     }
 }
 
-/// Immutable canonical query identity for one observation session.
-///
-/// This delegates to [`QueryId`] so manifests and execution contexts cannot
-/// retain different representations of blank or whitespace-only identities.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub struct RuntimeQueryId(String);
-
-impl RuntimeQueryId {
-    /// Creates an identity using the native query-id canonicalization policy.
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(QueryId::new(value).to_string())
-    }
-
-    /// Returns the canonical query identity.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<QueryId> for RuntimeQueryId {
-    fn from(value: QueryId) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for RuntimeQueryId {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<&str> for RuntimeQueryId {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl fmt::Display for RuntimeQueryId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for RuntimeQueryId {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
-        String::deserialize(deserializer).map(Self::new)
-    }
-}
-
 /// Total recorder order assigned to every attempted record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -222,9 +168,9 @@ pub struct RuntimeObservationManifest {
     /// JSONL schema label.
     pub schema: String,
     /// Query-wide diagnostic identity.
-    pub query_id: RuntimeQueryId,
+    pub query_id: QueryId,
     /// Optional parent trace identity.
-    pub trace_id: Option<RuntimeTraceId>,
+    pub trace_id: Option<TraceId>,
     /// Optional wall-clock anchor captured once when the session is created.
     pub unix_epoch_ns: Option<u64>,
     /// Clock domain used by timeline offsets.

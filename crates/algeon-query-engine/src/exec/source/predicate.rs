@@ -13,6 +13,11 @@ use cudf::{
     },
     ops::ast::{AstExpression, AstOperator},
 };
+use query_planning::source::{
+    ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
+    reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
+    reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
+};
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, LiteralValue, LocalParquetSource, QueryError, QueryErrorCode,
@@ -23,11 +28,6 @@ use crate::{
         UnrepresentableLiteral, arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, cudf_scalar_value,
     },
     rapids_backend::rapids_analysis_context,
-    source::{
-        ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
-        reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
-        reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
-    },
 };
 
 const OP_READER_PREDICATE: &str = "query_engine.local_parquet_source.reader_predicate";

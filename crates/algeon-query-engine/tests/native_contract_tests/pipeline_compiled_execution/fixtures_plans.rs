@@ -1,7 +1,5 @@
-use query_engine::{
-    capability::{Reason, RejectionOwner},
-    rapids_backend::rapids_analysis_context,
-};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::capability::{Reason, RejectionOwner};
 
 use super::*;
 use crate::projection_outputs;

@@ -1,4 +1,5 @@
-use query_engine::{pipeline::CompiledPipeline, policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{pipeline::CompiledPipeline, policy::PlanningPolicy};
 
 use super::*;
 

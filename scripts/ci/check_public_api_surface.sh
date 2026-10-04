@@ -56,6 +56,8 @@ CRATES=(
   "bench"
   "algeon-cudf"
   "algeon-cugraph"
+  "algeon-cuvs"
+  "algeon-cuml"
 )
 
 current_toolchain_identity() {
@@ -192,7 +194,7 @@ if [[ "${PUBLIC_API_SKIP_NATIVE_COMPONENT_POLICY:-0}" != "1" ]]; then
 fi
 
 if [[ "${PUBLIC_API_SKIP_FACADE_POLICY:-0}" != "1" ]]; then
-  ledger="${SNAPSHOT_DIR}/algeon-datafusion-engine-types.tsv"
+  ledger="${SNAPSHOT_DIR}/algeon-datafusion-owner-types.tsv"
   if ! python3 scripts/ci/check_public_api_facade.py "${SNAPSHOT_DIR}/algeon-datafusion.txt" "${ledger}"; then
     status=1
   fi

@@ -350,16 +350,18 @@ mod tests {
         time::Duration,
     };
 
+    use query_planning::correlation::QueryId;
+
     use super::*;
     use crate::observability::{
         DeterministicRuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationPayload,
-        RuntimeObservationSession, RuntimeOperatorStageKind, RuntimeQueryId, RuntimeTerminalOutcome,
-        RuntimeTimelineEvent, write_runtime_observation_jsonl,
+        RuntimeObservationSession, RuntimeOperatorStageKind, RuntimeTerminalOutcome, RuntimeTimelineEvent,
+        write_runtime_observation_jsonl,
     };
 
     fn session_with_limits(max_records: u64) -> RuntimeObservationSession {
         RuntimeObservationSession::with_clock(
-            RuntimeQueryId::new("operator-stage"),
+            QueryId::new("operator-stage"),
             None,
             RuntimeObservationConfig::bounded(max_records, 256 * 1024),
             Arc::new(DeterministicRuntimeObservationClock::new(Some(1_000))),

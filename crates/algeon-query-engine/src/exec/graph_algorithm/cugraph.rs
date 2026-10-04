@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use crate::{
-    exec::{
-        nvtx::{NvtxRange, graph_build_range},
-        *,
-    },
-    graph_observation::GraphMeasuredPeakProvenance,
-    metrics::GraphAlgorithmRuntimeMetrics,
-    plan::{GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmSpec},
+use query_planning::plan::{GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmSpec};
+use query_runtime::{
+    metrics::GraphAlgorithmRuntimeMetrics, observability::graph_observation::GraphMeasuredPeakProvenance,
+};
+
+use crate::exec::{
+    nvtx::{NvtxRange, graph_build_range},
+    *,
 };
 
 pub(in crate::exec) mod bounded_betweenness;
@@ -254,12 +254,11 @@ fn graph_algorithm_executor(algorithm: GraphAlgorithm) -> Result<GraphAlgorithmE
 
 #[cfg(test)]
 mod graph_peak_measurement_tests {
+    use query_planning::plan::{GraphAlgorithm, NodeId};
+    use query_runtime::observability::graph_observation::GraphMeasuredPeakProvenance;
+
     use super::{graph_peak_measurement, max_graph_peak, record_graph_claim_peak_on_error};
-    use crate::{
-        exec::ExecutionMetrics,
-        graph_observation::GraphMeasuredPeakProvenance,
-        plan::{GraphAlgorithm, NodeId},
-    };
+    use crate::exec::ExecutionMetrics;
 
     #[test]
     fn cache_scope_peak_is_the_direct_attributed_measurement() {

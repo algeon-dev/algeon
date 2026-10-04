@@ -6,7 +6,7 @@ use std::{
 
 use arrow_flight::FlightData;
 use prost::Message as _;
-use query_engine::observability::{
+use query_runtime::observability::{
     AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptRetryAdvice,
     RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA,
     SealedAttemptProjection,

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use query_engine::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
+use query_runtime::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit};
 
 const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "admission_sequence",

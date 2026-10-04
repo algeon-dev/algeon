@@ -29,12 +29,12 @@ use datafusion::{
         expressions::{BinaryExpr, CastExpr, Literal},
     },
 };
-use query_engine::{
+use query_engine::rapids_backend::rapids_backend;
+use query_planning::{
     datatypes::{
         is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{AggregateFunction as NativeAggregateFunction, UnaryMathOp},
-    rapids_backend::rapids_backend,
     validation::{is_integral_type, is_string_type, target_integral_max},
 };
 

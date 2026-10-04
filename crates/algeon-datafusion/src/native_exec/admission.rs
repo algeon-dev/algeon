@@ -23,15 +23,17 @@ use datafusion::{
         StatisticsContext, coalesce_partitions::CoalescePartitionsExec,
     },
 };
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
+    error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
+    plan::QueryPlan,
+};
+use query_runtime::{
     attempt::{
         AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCancellation, AttemptExecutionRound, AttemptHandle,
         AttemptHostOccurrence,
     },
-    error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
     observability::{AttemptAdmissionWaitFact, AttemptComposedScheduleProjection},
-    plan::QueryPlan,
     runtime::{AdmittedQueryContext, ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryHandle},
 };
 use tokio::sync::Notify;

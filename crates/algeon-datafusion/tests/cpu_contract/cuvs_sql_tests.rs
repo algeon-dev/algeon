@@ -57,7 +57,7 @@ use datafusion::{
 };
 #[cfg(feature = "cugraph")]
 use parquet::arrow::ArrowWriter;
-use query_engine::plan::{
+use query_planning::plan::{
     CuvsOutputContract, RELATION_ID_TYPES, RelationIdType, VectorElementType, vector_kmeans_output_schema,
     vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
     vector_top_k_output_schema,

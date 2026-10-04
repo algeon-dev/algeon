@@ -14,13 +14,11 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
 };
+use query_runtime::runtime::{ExecutionContext, S3ObjectStoreKey};
 use tokio::task::JoinHandle;
 
-use crate::{
-    parquet_metadata::{
-        fetch_object_store_parquet_metadata, read_parquet_footer_sidecar, write_parquet_footer_sidecar_from_file,
-    },
-    runtime::{ExecutionContext, S3ObjectStoreKey},
+use crate::parquet_metadata::{
+    fetch_object_store_parquet_metadata, read_parquet_footer_sidecar, write_parquet_footer_sidecar_from_file,
 };
 
 const OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);

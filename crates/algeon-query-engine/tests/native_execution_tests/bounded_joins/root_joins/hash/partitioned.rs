@@ -1,4 +1,4 @@
-use query_engine::expr::CaseWhen;
+use query_planning::expr::CaseWhen;
 
 #[test]
 fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {

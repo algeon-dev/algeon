@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use algeon_datafusion::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm};
 use arrow::datatypes::{DataType, Field, Schema};
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     admission::{AttemptCapabilityEvidence, CUGRAPH_GRAPH_EXECUTION_CAPABILITY},
     capability::{CapabilityDecision, NodeOperator},
     plan::{
@@ -25,7 +26,6 @@ use query_engine::{
         GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
 

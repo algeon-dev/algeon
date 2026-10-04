@@ -12,8 +12,8 @@ use datafusion::{
         },
     },
 };
-use query_engine::{
-    datatypes::is_supported_arrow_type,
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::{
     expr::{
         BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
         LiteralValue as NativeLiteralValue, UnaryMathOp,

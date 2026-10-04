@@ -1,6 +1,6 @@
 //! Stable actionable guidance for native candidate-selection outcomes.
 
-use query_engine::plan::NativePlanCostReason;
+use query_planning::plan::NativePlanCostReason;
 
 use super::model::{QueryGpuRemedy, QueryGpuRemedyKind};
 

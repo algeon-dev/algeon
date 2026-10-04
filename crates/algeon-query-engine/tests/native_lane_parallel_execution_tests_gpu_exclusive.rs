@@ -22,33 +22,37 @@ use cudf_sys::test_support::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
-    admission::{AttemptCapabilityEvidence, admit},
-    attempt::{AttemptOwner, BeginAttemptRequest},
-    error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
         QueryExecutionRequest, admit_query_plan, execute_query_plan, materialize_gpu_result_to_host,
         output::QueryOutput, run_resident_lane_borrow,
     },
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
+    admission::{AttemptCapabilityEvidence, admit},
+    error::{QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec},
-    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
+    pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
+    plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
+    policy::PlanningPolicy,
+    source::{LiteralBatchSource, LocalParquetSource, SourceNode},
+};
+use query_runtime::{
+    attempt::{AttemptOwner, BeginAttemptRequest},
+    metrics::QueryMetrics,
     observability::{
         AttemptDisposition, AttemptQueryId, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
         RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTaskId, RuntimeTerminalOutcome,
         RuntimeTimelineEvent, RuntimeWorkerId, StreamLeaseLifecycleState,
     },
-    pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
-    plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
-    policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
         GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
         resident::GpuResidentInputMap,
     },
-    source::{LiteralBatchSource, LocalParquetSource, SourceNode},
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 
@@ -859,7 +863,7 @@ fn union_output_data_form(pipeline: &CompiledPipeline, task_kind: PipelineTaskKi
 }
 
 fn literal_union_count_plan() -> QueryPlan {
-    use query_engine::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
+    use query_planning::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
     let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
     let left_batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
@@ -944,7 +948,7 @@ fn union_streaming_output_contract_matches_its_consumer_form() {
 }
 
 fn row_grouped_count_plan(path: &Path, schema: &Arc<Schema>) -> QueryPlan {
-    use query_engine::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
+    use query_planning::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
     let count_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
@@ -969,7 +973,7 @@ fn row_grouped_count_plan(path: &Path, schema: &Arc<Schema>) -> QueryPlan {
 #[test]
 fn wide_union_branches_stream_into_narrow_aggregate_without_concat() {
     use arrow::array::StringArray;
-    use query_engine::{
+    use query_planning::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec},
         pipeline::{PipelineTaskKind, ResidentDataForm},
     };

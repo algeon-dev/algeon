@@ -8,17 +8,16 @@ use datafusion::{
     physical_expr::EquivalenceProperties,
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
-use query_engine::{
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan},
     capability::CapabilityRejectionCategory,
-    dimension_pruning::local_dimension_pruning_resolver,
     error::QueryError,
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions, optimize_query_plan},
     plan::{
         NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, PlanNode, QueryPlan, QueryPlanBuilder,
         native_plan_cost_decision,
     },
-    rapids_backend::rapids_analysis_context,
     source::{SourceDiagnostics, SourceNode},
 };
 
@@ -722,7 +721,7 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use query_engine::{
+    use query_planning::{
         capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions, Reason},
         chunk::SourceChunkPlanningOptions,
         dynamic_filter::DynamicFilterExecutionOptions,

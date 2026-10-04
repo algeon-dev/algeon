@@ -1,6 +1,6 @@
 //! SQL-facing projection of the canonical cuML planning registry.
 
-pub use query_engine::plan::{
+pub use query_planning::plan::{
     CUML_FOREST_PREDICT_FUNCTION, CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
     CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
     CUML_UMAP_FUNCTION, CumlOperation, CumlOperationDescriptor, CumlOutputContract, DenseVectorBinding,

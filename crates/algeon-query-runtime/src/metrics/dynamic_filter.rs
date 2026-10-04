@@ -1,6 +1,9 @@
-use query_planning::dynamic_filter::{DynamicFilter, DynamicFilterConsumerReductionStage, DynamicFilterRoute};
+use query_planning::{
+    correlation::QueryId,
+    dynamic_filter::{DynamicFilter, DynamicFilterConsumerReductionStage, DynamicFilterRoute},
+};
 
-use super::{QueryId, QueryMetrics, optional_i64, optional_str, optional_u64};
+use super::{QueryMetrics, optional_i64, optional_str, optional_u64};
 
 /// Source-read footprint before or after applying a dynamic filter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

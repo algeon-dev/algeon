@@ -23,10 +23,8 @@ use algeon_datafusion::{
         ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AuthMode, ServerConfig, hash_password,
     },
 };
-use query_engine::{
-    mode::StatisticalAggregateExecutionMode,
-    runtime::{S3SourceStorageCredential, SourceChunkPlanningMode},
-};
+use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
+use query_runtime::runtime::S3SourceStorageCredential;
 
 // Server config contract tests are split by concern while staying in this
 // integration-test module via include! so existing test names remain stable.

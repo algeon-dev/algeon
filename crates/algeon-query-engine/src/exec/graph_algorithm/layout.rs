@@ -5,15 +5,15 @@ use cugraph::{
     random::RngState,
     types::{CugraphElement, DataType},
 };
+use query_planning::plan::{
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphForceAtlas2InitialPositionsInput,
+    GraphForceAtlas2VertexAttributesInput,
+};
 
 use super::{
     DataFrame, Exec, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
     QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params, map_cugraph_error,
     normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
-};
-use crate::plan::{
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphForceAtlas2InitialPositionsInput,
-    GraphForceAtlas2VertexAttributesInput,
 };
 
 pub(super) fn execute_force_atlas2(

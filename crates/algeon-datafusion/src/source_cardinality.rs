@@ -8,7 +8,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use arrow::datatypes::Schema;
-use query_engine::expr::{BinaryOp, Expr, LiteralValue};
+use query_planning::expr::{BinaryOp, Expr, LiteralValue};
 
 /// Arrow schema/field metadata key carrying a JSON array of source unique-key
 /// column-name arrays.

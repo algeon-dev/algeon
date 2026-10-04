@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
-use query_engine::{expr::ColumnRef, metrics::JoinStrategyDecisionMetrics, runtime::ExecutionCancellation};
+use query_planning::expr::ColumnRef;
+use query_runtime::{metrics::JoinStrategyDecisionMetrics, runtime::ExecutionCancellation};
 
 include!("support.rs");
 include!("dynamic_filter.rs");

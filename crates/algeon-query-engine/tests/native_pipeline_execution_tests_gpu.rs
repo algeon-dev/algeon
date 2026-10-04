@@ -21,26 +21,26 @@ use arrow::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
-    admission::{
-        AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
-        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-    },
-    attempt::{AttemptOwner, BeginAttemptRequest},
-    capability::{JoinForm, JoinStrategy, Rejection},
-    dynamic_filter::DynamicFilterProducer,
-    error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest, admit_query_plan,
         execute_query_plan as execute_engine_query_plan, materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
     },
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
+    admission::{
+        AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
+        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+    },
+    capability::{JoinForm, JoinStrategy, Rejection},
+    dynamic_filter::DynamicFilterProducer,
+    error::{QueryErrorCode, Result},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
         LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
-    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeObservationHandle},
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         AggregateInputHints, CompiledPipeline, JoinPlan, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind,
@@ -53,15 +53,19 @@ use query_engine::{
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
+    source::{
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+        PartitionColumn, SourceNode,
+    },
+};
+use query_runtime::{
+    attempt::{AttemptOwner, BeginAttemptRequest},
+    metrics::QueryMetrics,
+    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeObservationHandle},
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
         QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
-    },
-    source::{
-        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
-        PartitionColumn, SourceNode,
     },
 };
 

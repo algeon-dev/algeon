@@ -7,7 +7,8 @@ use algeon_datafusion::{
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER, native_report_metric_descriptor, native_report_metric_descriptors,
     },
 };
-use query_engine::metrics::{MetricAggregation, MetricUnit, QUERY_METRICS_JSON_SCHEMA, QueryId, QueryMetrics, TraceId};
+use query_planning::correlation::{QueryId, TraceId};
+use query_runtime::metrics::{MetricAggregation, MetricUnit, QUERY_METRICS_JSON_SCHEMA, QueryMetrics};
 
 #[test]
 fn query_metrics_records_peak_device_memory_observation() {

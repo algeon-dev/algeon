@@ -4,13 +4,13 @@
 //! through [`rapids_analysis_context`].
 
 use arrow::datatypes::DataType as ArrowDataType;
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions, GraphEdgeColumnBindings,
         QueryPlan, graph_result_schema_for_vertex_type,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
     validate_query_plan,
 };
 

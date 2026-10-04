@@ -8,7 +8,7 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{common::Result as DataFusionResult, physical_expr::LexOrdering, physical_plan::ExecutionPlan};
-use query_engine::plan::{MlForestModelSnapshot, QueryPlan};
+use query_planning::plan::{MlForestModelSnapshot, QueryPlan};
 
 use super::{
     super::{

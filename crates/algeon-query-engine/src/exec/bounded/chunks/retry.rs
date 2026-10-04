@@ -180,12 +180,13 @@ pub(in crate::exec::bounded) fn chunk_retry_facts(
 mod tests {
     use std::path::PathBuf;
 
-    use super::*;
-    use crate::{
+    use query_planning::{
+        execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
-        runtime::SourceChunkPlanningMode,
         source::{ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource},
     };
+
+    use super::*;
 
     fn retry_parent_chunk() -> SourceChunk {
         SourceChunk {

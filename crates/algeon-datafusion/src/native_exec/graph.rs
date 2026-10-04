@@ -4,7 +4,7 @@
 //! implement it without creating a core-to-frontend dependency.
 
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::admission::AttemptCapabilityEvidence;
+use query_planning::admission::AttemptCapabilityEvidence;
 
 use super::native_node::native_node;
 use crate::{

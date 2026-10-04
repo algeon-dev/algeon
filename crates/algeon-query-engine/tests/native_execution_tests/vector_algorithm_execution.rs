@@ -10,14 +10,16 @@ use arrow::{
 };
 use cudf::{DataFrame, ReservationUsage};
 use query_engine::{
-    admission::admit,
-    error::{QueryError, QueryErrorCode},
     exec::{
         QueryExecutionRequest, admit_query_plan, materialize_gpu_result_to_host, output::QueryOutput,
         set_vector_after_index_build_hook_for_tests, set_vector_pool_coverage_hook_for_tests,
     },
+    rapids_backend::rapids_analysis_context,
+};
+use query_planning::{
+    admission::admit,
+    error::{QueryError, QueryErrorCode},
     expr::{Expr, SortExpr},
-    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
@@ -27,12 +29,14 @@ use query_engine::{
         vector_pca_output_schema,
     },
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
+    source::{GpuResidentSource, LocalParquetSource, SourceNode},
+};
+use query_runtime::{
+    metrics::QueryMetrics,
     runtime::{
         ExecutionContext, StandaloneConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
-    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
 use super::{

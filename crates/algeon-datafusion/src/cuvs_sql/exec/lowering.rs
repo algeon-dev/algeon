@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use query_engine::plan::{QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec};
+use query_planning::plan::{QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec};
 
 use crate::{
     cuvs_sql::{CuvsOperation, CuvsValidatedOptions, error::invalid_call},

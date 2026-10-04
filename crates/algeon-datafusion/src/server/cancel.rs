@@ -21,7 +21,7 @@
 //! reaches the attempt through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
-use query_engine::attempt::AttemptCancellation;
+use query_runtime::attempt::AttemptCancellation;
 use tokio_util::sync::CancellationToken;
 
 /// Registry of in-flight statement cancellation handles, keyed by query id.

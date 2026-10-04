@@ -1,5 +1,5 @@
 use arrow::datatypes::DataType;
-use query_engine::plan::GraphAlgorithm as NativeGraphAlgorithm;
+use query_planning::plan::GraphAlgorithm as NativeGraphAlgorithm;
 
 use super::types::CugraphGraphOptions;
 
@@ -102,7 +102,7 @@ impl CugraphAlgorithm {
 /// Registry-level metadata for a SQL-visible cuGraph operation.
 ///
 /// One entry per [`CugraphAlgorithm`] variant. Mirrors
-/// [`query_engine::plan::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
+/// [`query_planning::plan::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
 /// the same native algorithm advertised by the engine, and the SQL function
 /// name follows the `cugraph_<native_name>` convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

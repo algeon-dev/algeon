@@ -19,14 +19,16 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
-use query_engine::{
+#[cfg(test)]
+use query_engine::exec::admit_query_plan;
+use query_engine::exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput};
+use query_planning::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::{QueryPlan, ResultSink, row_bounds::query_plan_hard_row_upper_bound},
-    runtime::{ExecutionContext, resident::GpuResultHandle},
 };
 #[cfg(test)]
-use query_engine::{exec::admit_query_plan, mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
+use query_planning::{mode::StatisticalAggregateExecutionMode, policy::PlanningPolicy};
+use query_runtime::runtime::{ExecutionContext, resident::GpuResultHandle};
 
 #[cfg(test)]
 use super::metrics::NativeMetricsCapture;

@@ -51,7 +51,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::source::SourceDiagnostics;
+use query_planning::source::SourceDiagnostics;
 use tokio::sync::Mutex;
 use workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 

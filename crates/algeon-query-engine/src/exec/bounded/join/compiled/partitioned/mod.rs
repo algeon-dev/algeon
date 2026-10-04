@@ -1,3 +1,5 @@
+use query_planning::error::ResourceBoundary;
+
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
@@ -16,12 +18,9 @@ use super::{
     side_metric, stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
     sum_bounds, validate_executable_join_subset,
 };
-use crate::{
-    error::ResourceBoundary,
-    exec::{
-        bounded::compiled::ResidentFrameStreamSource,
-        retry::{ResourceFailureRecovery, resource_failure_recovery},
-    },
+use crate::exec::{
+    bounded::compiled::ResidentFrameStreamSource,
+    retry::{ResourceFailureRecovery, resource_failure_recovery},
 };
 
 mod build;

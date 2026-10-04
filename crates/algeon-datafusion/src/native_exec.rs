@@ -13,15 +13,21 @@ use datafusion::{
     physical_plan::{ExecutionPlan, metrics::ExecutionPlanMetricsSet},
 };
 #[cfg(test)]
-use query_engine::{admission::AdmittedPlan, exec::admit_query_plan, plan::QueryPlan};
-pub use query_engine::{
+use query_engine::exec::admit_query_plan;
+#[cfg(test)]
+use query_planning::{admission::AdmittedPlan, plan::QueryPlan};
+pub use query_planning::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
+    correlation::{QueryId, TraceId},
     dynamic_filter::DynamicFilterExecutionOptions,
-    metrics::{QueryId, TraceId},
+    execution_contracts::SourceChunkPlanningMode,
     mode::StatisticalAggregateExecutionMode,
+    policy::PlanningPolicy,
+};
+pub use query_runtime::{
     observability::{RuntimeObservationConfig, RuntimeObservationLimits},
-    runtime::{LakehouseCacheFillConfig, S3SourceStorageProfile, SourceChunkPlanningMode, SourceSchedulerPolicy},
+    runtime::{LakehouseCacheFillConfig, S3SourceStorageProfile, SourceSchedulerPolicy},
 };
 
 #[cfg(test)]

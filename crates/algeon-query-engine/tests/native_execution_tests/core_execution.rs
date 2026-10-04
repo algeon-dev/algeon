@@ -1,7 +1,7 @@
 use arrow::datatypes::{
     Decimal32Type, Decimal64Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType,
 };
-use query_engine::expr::ColumnRef;
+use query_planning::expr::ColumnRef;
 
 use super::*;
 

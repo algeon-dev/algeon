@@ -24,13 +24,15 @@ use futures::{
     future::join,
     stream::{empty, once, poll_fn},
 };
-use query_engine::{
+use query_planning::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence, ExecutionCapability},
     error::QueryErrorCode,
-    observability::{QueryAttemptReport, RuntimeTerminalOutcome},
     plan::{QueryPlan, QueryPlanBuilder},
-    runtime::{DeviceCapabilities, GpuDeviceMemoryLimit},
     source::{GpuResidentSource, SourceNode},
+};
+use query_runtime::{
+    observability::{QueryAttemptReport, RuntimeTerminalOutcome},
+    runtime::{DeviceCapabilities, GpuDeviceMemoryLimit},
 };
 use tokio::time::timeout;
 

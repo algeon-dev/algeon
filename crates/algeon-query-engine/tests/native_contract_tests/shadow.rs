@@ -2,10 +2,10 @@
 //! [`RapidsBackend`](query_engine::rapids_backend::RapidsBackend)
 //! through [`rapids_analysis_context`].
 
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     pipeline::{ShadowBytes, ShadowMemoryModels, ShadowResourceModel, compile_pipeline},
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

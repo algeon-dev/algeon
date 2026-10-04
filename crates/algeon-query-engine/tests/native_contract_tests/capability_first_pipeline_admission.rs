@@ -10,7 +10,8 @@
 //! backend, which planning does not implement.
 
 use arrow::array::Int64Array;
-use query_engine::{
+use query_engine::rapids_backend::rapids_analysis_context;
+use query_planning::{
     admission::{AdmissionDecision, admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     capability::{Reason, RejectionOwner, UnsupportedPart},
     dynamic_filter::{
@@ -26,7 +27,6 @@ use query_engine::{
     },
     plan::QueryPlan,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

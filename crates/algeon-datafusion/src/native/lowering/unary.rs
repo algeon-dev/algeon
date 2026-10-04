@@ -5,7 +5,7 @@ use datafusion::{
     physical_expr::PhysicalExpr,
     physical_plan::{ExecutionPlan, filter::FilterExec, projection::ProjectionExec},
 };
-use query_engine::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder};
+use query_planning::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder};
 
 use super::{
     Demand, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,

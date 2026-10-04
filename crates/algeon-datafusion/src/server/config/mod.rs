@@ -4,10 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_engine::{
-    mode::StatisticalAggregateExecutionMode,
-    runtime::{SourceChunkPlanningMode, SourceSchedulerPolicy},
-};
+use query_planning::{execution_contracts::SourceChunkPlanningMode, mode::StatisticalAggregateExecutionMode};
+use query_runtime::runtime::SourceSchedulerPolicy;
 use serde::Deserialize;
 
 use super::{

@@ -26,7 +26,7 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
-use query_engine::observability::QueryAttemptReport;
+use query_runtime::observability::QueryAttemptReport;
 use tokio::{
     task::JoinHandle,
     time::{sleep, timeout},

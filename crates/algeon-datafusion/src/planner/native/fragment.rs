@@ -38,7 +38,7 @@ use datafusion::{
         repartition::RepartitionExec,
     },
 };
-use query_engine::{
+use query_planning::{
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions},
     source::SourceDiagnostics,
 };

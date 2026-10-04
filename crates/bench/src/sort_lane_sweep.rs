@@ -45,10 +45,8 @@ use datafusion::{
 };
 use futures::StreamExt as _;
 use parquet::arrow::ArrowWriter;
-use query_engine::{
-    harness::StableFnv1a64,
-    observability::{AttemptCleanupDisposition, RuntimeTerminalOutcome},
-};
+use query_planning::util::StableFnv1a64;
+use query_runtime::observability::{AttemptCleanupDisposition, RuntimeTerminalOutcome};
 use tokio::time::{sleep, timeout};
 
 const ENV_ROWS_PER_BRANCH: &str = "ALGEON_SORT_SWEEP_ROWS_PER_BRANCH";

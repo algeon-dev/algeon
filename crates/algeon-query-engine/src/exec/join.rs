@@ -1,10 +1,10 @@
 use cudf::{DataFrame, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, NullEquality as CudfNullEquality};
+use query_planning::plan::{JoinNullEquality, JoinSide, JoinType};
 
 use super::{
     ArrowDataType, BinaryOp, Exec, ExecutionContext, Expr, JoinNode, LiteralValue, QueryError, QueryErrorCode, Result,
     col, cudf_query_error,
 };
-use crate::plan::{JoinNullEquality, JoinSide, JoinType};
 
 mod output;
 mod residual;

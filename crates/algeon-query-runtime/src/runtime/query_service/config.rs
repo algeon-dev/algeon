@@ -4,12 +4,12 @@ use query_planning::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
-    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     mode::StatisticalAggregateExecutionMode,
     policy::PlanningPolicy,
 };
 
-use crate::runtime::{LakehouseCacheFillConfig, SourceStorageProfile};
+use crate::runtime::{LakehouseCacheFillConfig, SourceSchedulerPolicy, SourceStorageProfile};
 
 /// Bounded admission-queue policy.
 #[derive(Debug, Clone, PartialEq, Eq)]

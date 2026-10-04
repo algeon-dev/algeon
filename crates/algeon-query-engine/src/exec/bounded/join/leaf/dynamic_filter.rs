@@ -1,12 +1,14 @@
 use std::collections::BTreeSet;
 
+use query_planning::policy::PlanningPolicy;
+
 use super::{
     BoundedJoinLeafSourceStreamDynamicFilterStage, DynamicFilter, DynamicFilterConsumerLowering,
     DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterRoute, DynamicFilterSet, DynamicFilterSourceSnapshot,
     ExecutionMetrics, FilterNode, GpuDataFrame, LocalParquetSource, NodeId, Result, SourceChunk, SourceChunkBatch,
     SourceFooterFacts, dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
 };
-use crate::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use crate::rapids_backend::rapids_analysis_context;
 
 pub(super) fn merged_reader_predicate_route_ids(
     source: &LocalParquetSource,

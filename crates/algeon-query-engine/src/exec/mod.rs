@@ -70,7 +70,43 @@ use ml_algorithm::ml_algorithm_execution_unavailable;
 pub use ml_algorithm::{set_forest_after_import_hook_for_tests, set_forest_batch_element_limit_for_tests};
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
-use query_planning::validate_query_plan;
+#[cfg(any(not(feature = "cuml"), not(feature = "cuvs")))]
+use query_planning::plan::PlanNode;
+use query_planning::{
+    admission::AdmittedPlan,
+    chunk::{SourceChunkPlanningPolicy, SourceTaskMemoryModel},
+    correlation::{QueryId, TraceId},
+    datatypes::is_supported_arrow_implicit_cast,
+    error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::MemoryControlPolicy,
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue},
+    mode::StatisticalAggregateExecutionMode,
+    plan::{
+        AggregateNode, FilterNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId, ProjectionNode,
+        QueryPlan, SortNode, WindowFrame, WindowNode,
+    },
+    policy::PlanningPolicy,
+    source::{
+        GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
+        validate_local_parquet_source,
+    },
+    validate_query_plan,
+    validation::*,
+};
+use query_runtime::{
+    metrics::{QueryMetrics, SourceReadRuntimeMetrics},
+    native_error::cudf_query_error,
+    observability::{
+        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
+        RuntimePlanNodeId, RuntimeTerminalOutcome, RuntimeTopologyRecord,
+    },
+    runtime::{
+        ExecutionContext, RetryFacts,
+        resident::{
+            GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
+        },
+    },
+};
 #[doc(hidden)]
 pub use source::sanitize_cache_component;
 use source::{read_gpu_resident_source, read_literal_batch_source};
@@ -92,43 +128,16 @@ use self::{
 };
 #[cfg(feature = "cuvs")]
 use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
-#[cfg(any(not(feature = "cuml"), not(feature = "cuvs")))]
-use crate::plan::PlanNode;
 use crate::{
-    admission::AdmittedPlan,
     chunk::{
-        SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-        annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks_with_execution_context,
-        plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
+        SourceChunk, SourceChunkBatch, SourceChunkPlan, annotate_source_chunk_batching_reasons,
+        plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
+        plan_source_chunk_batches_with_row_cap,
     },
-    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
-    error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue},
-    metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
-    mode::StatisticalAggregateExecutionMode,
-    native_error::{cudf_query_error, cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure},
-    observability::{
-        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
-        RuntimePlanNodeId, RuntimeTerminalOutcome, RuntimeTopologyRecord,
-    },
-    plan::{
-        AggregateNode, FilterNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId, ProjectionNode,
-        QueryPlan, SortNode, WindowFrame, WindowNode,
-    },
-    policy::PlanningPolicy,
+    datatypes::{cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
+    native_error::{cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure},
     prepared::*,
     rapids_backend::rapids_analysis_context,
-    runtime::{
-        ExecutionContext, MemoryControlPolicy, RetryFacts,
-        resident::{
-            GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
-        },
-    },
-    source::{
-        GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
-        validate_local_parquet_source,
-    },
-    validation::*,
 };
 
 /// Validates a complete native plan without constructing a runtime or touching
@@ -366,17 +375,19 @@ pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut Que
 #[cfg(test)]
 mod tests {
     use arrow::{array::Int32Array, datatypes::DataType};
-
-    use super::*;
-    use crate::{
+    use query_planning::{
+        plan::QueryPlanBuilder,
+        source::{LiteralBatchSource, SourceNode},
+    };
+    use query_runtime::{
         observability::{
             RuntimeObservationConfig, RuntimeObservationLossReason, RuntimeObservationSession,
             write_runtime_observation_jsonl,
         },
-        plan::QueryPlanBuilder,
         runtime::{ExecutionCancellation, RuntimeObservedExecutionContext, StandaloneConfig},
-        source::{LiteralBatchSource, SourceNode},
     };
+
+    use super::*;
 
     const SENSITIVE_SOURCE_LOCATION: &str = "s3://alice:secret@private-bucket/orders.parquet?token=top-secret";
 

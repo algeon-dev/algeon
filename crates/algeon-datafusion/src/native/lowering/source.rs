@@ -9,7 +9,7 @@ use datafusion::{
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{ExecutionPlan, filter::FilterExec},
 };
-use query_engine::{
+use query_planning::{
     expr::Expr as NativeExpr,
     plan::{NodeId, QueryPlanBuilder as NativeQueryPlanBuilder},
     source::SourceDiagnostics as NativeSourceDiagnostics,

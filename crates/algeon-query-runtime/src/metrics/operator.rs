@@ -1,4 +1,6 @@
-use super::{JoinOperatorMetrics, QueryId, QueryMetrics};
+use query_planning::correlation::QueryId;
+
+use super::{JoinOperatorMetrics, QueryMetrics};
 
 /// Generic operator metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

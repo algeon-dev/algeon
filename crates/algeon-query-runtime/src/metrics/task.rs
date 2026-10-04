@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use cudf::ExecutionBudgetReport;
+use query_planning::correlation::{PlanNodeId, QueryId};
 
-use super::{CompiledTaskId, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics};
+use super::{CompiledTaskId, PlanTaskMapping, QueryMetrics};
 
 /// Metrics aggregated across tasks of the same operator kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::Result as DataFusionResult;
-use query_engine::plan::{
+use query_planning::plan::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithmParams as NativeGraphAlgorithmParams,
     GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphConstructionOptions as NativeGraphConstructionOptions,
     GraphConstructionPolicy as NativeGraphConstructionPolicy, GraphKCoreDegreeType as NativeGraphKCoreDegreeType,
@@ -994,7 +994,7 @@ pub struct CugraphEigenvectorCentralityParams {
 
 impl Default for CugraphEigenvectorCentralityParams {
     fn default() -> Self {
-        // Mirrors `query_engine::plan::GraphEigenvectorCentralityParams::default`.
+        // Mirrors `query_planning::plan::GraphEigenvectorCentralityParams::default`.
         Self { epsilon: 1.0e-6, max_iterations: 200 }
     }
 }
@@ -1009,7 +1009,7 @@ pub struct CugraphKatzCentralityParams {
 
 impl Default for CugraphKatzCentralityParams {
     fn default() -> Self {
-        // Mirrors `query_engine::plan::GraphKatzCentralityParams::default`.
+        // Mirrors `query_planning::plan::GraphKatzCentralityParams::default`.
         Self { alpha: 0.01, beta: 1.0, epsilon: 1.0e-6, max_iterations: 1000 }
     }
 }
@@ -1023,7 +1023,7 @@ pub struct CugraphHitsParams {
 
 impl Default for CugraphHitsParams {
     fn default() -> Self {
-        // Mirrors `query_engine::plan::GraphHitsParams::default`.
+        // Mirrors `query_planning::plan::GraphHitsParams::default`.
         Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
     }
 }
@@ -1121,7 +1121,7 @@ pub struct CugraphTriangleCountAllParams;
 
 /// Degree direction for core-number and k-core SQL parameters.
 ///
-/// Mirrors `query_engine::plan::GraphKCoreDegreeType`.
+/// Mirrors `query_planning::plan::GraphKCoreDegreeType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CugraphKCoreDegreeType {
     In,
@@ -1167,7 +1167,7 @@ pub struct CugraphKCoreParams {
 
 impl Default for CugraphKCoreParams {
     fn default() -> Self {
-        // Mirrors `query_engine::plan::GraphKCoreParams::default`.
+        // Mirrors `query_planning::plan::GraphKCoreParams::default`.
         Self { k: 2, degree_type: CugraphKCoreDegreeType::InOut }
     }
 }
@@ -1190,7 +1190,7 @@ pub struct CugraphLeidenParams {
 
 impl Default for CugraphLeidenParams {
     fn default() -> Self {
-        // Matches query_engine::plan::GraphLeidenParams::default().
+        // Matches query_planning::plan::GraphLeidenParams::default().
         Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
     }
 }
@@ -1214,7 +1214,7 @@ pub struct CugraphEcgParams {
 
 impl Default for CugraphEcgParams {
     fn default() -> Self {
-        // Matches query_engine::plan::GraphEcgParams::default().
+        // Matches query_planning::plan::GraphEcgParams::default().
         Self { min_weight: 0.001, ensemble_size: 10, max_level: 100, threshold: 1.0e-7, resolution: 1.0, seed: 0 }
     }
 }
@@ -1246,7 +1246,7 @@ pub struct CugraphSpectralClusteringParams {
 
 impl Default for CugraphSpectralClusteringParams {
     fn default() -> Self {
-        // Matches query_engine::plan::GraphSpectralClusteringParams::default().
+        // Matches query_planning::plan::GraphSpectralClusteringParams::default().
         Self {
             n_clusters: 2,
             n_eigenvectors: 2,
@@ -1335,7 +1335,7 @@ impl CugraphForceAtlas2InitialPositionsTable {
 
 impl Default for CugraphForceAtlas2Params {
     fn default() -> Self {
-        // Matches query_engine::plan::GraphForceAtlas2Params::default().
+        // Matches query_planning::plan::GraphForceAtlas2Params::default().
         Self {
             max_iter: 500,
             outbound_attraction_distribution: false,
@@ -1445,7 +1445,7 @@ pub fn result_schema_for_params(algorithm: CugraphAlgorithm, params: &CugraphAlg
 
 #[cfg(test)]
 mod tests {
-    use query_engine::plan::stable_graph_result_schema;
+    use query_planning::plan::stable_graph_result_schema;
 
     use super::stable_result_schema;
     use crate::cugraph_sql::registry::CUGRAPH_OPERATION_REGISTRY;

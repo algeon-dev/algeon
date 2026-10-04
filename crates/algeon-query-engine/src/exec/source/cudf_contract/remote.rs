@@ -9,11 +9,9 @@ use cudf::io::{
 };
 use object_store::aws::AwsCredential;
 use query_planning::source::{CredentialMode, ParquetReadStrategy, ResolvedParquetInput, ResolvedParquetSource};
+use query_runtime::runtime::{S3ObjectStoreKey, S3SourceStorageCredential, SourceStorageProfile};
 
-use crate::{
-    exec::source::{cudf_query_error_without_source, *},
-    runtime::{S3ObjectStoreKey, S3SourceStorageCredential, SourceStorageProfile},
-};
+use crate::exec::source::{cudf_query_error_without_source, *};
 
 pub(in crate::exec::source) fn attach_cudf_remote_parquet_contract(
     context: &ExecutionContext,

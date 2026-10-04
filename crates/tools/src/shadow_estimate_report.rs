@@ -39,15 +39,17 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use futures::TryStreamExt;
-use query_engine::{
-    observability::AttemptFinalDomainUsage,
+use query_engine::shadow::{estimate_compiled_pipeline, frontend_output_records};
+use query_planning::{
     pipeline::{ShadowBytes, ShadowPipelineEstimate, ShadowTaskEnvelope},
     plan::QueryPlan,
+};
+use query_runtime::{
+    observability::AttemptFinalDomainUsage,
     runtime::{
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    shadow::{estimate_compiled_pipeline, frontend_output_records},
 };
 use serde::Serialize;
 use serde_json::Value;

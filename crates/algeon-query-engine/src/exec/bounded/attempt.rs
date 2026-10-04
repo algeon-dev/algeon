@@ -1,5 +1,6 @@
+use query_runtime::observability::SourceReadFact;
+
 use super::{ExecutionContext, ExecutionMetrics};
-use crate::observability::SourceReadFact;
 
 /// One admitted bounded execution attempt.
 ///

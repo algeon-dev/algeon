@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
 use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, Exec};
+use query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    plan::{JoinOutputColumn, JoinSide, JoinType},
+};
+use query_runtime::runtime::ExecutionContext;
 
 use super::cudf_query_error;
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    exec::{append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order},
-    plan::{JoinOutputColumn, JoinSide, JoinType},
-    runtime::ExecutionContext,
+use crate::exec::{
+    append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order,
 };
 
 pub(in crate::exec) fn dataframe_cross_join_options(projection: &[JoinOutputColumn]) -> DataFrameCrossJoinOptions {

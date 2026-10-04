@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{
         CompiledPipeline, PipelineTask, PipelineTaskId, ResidentLifetime, ResidentResource, ResidentResourceId,

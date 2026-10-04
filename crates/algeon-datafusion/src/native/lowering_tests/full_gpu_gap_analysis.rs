@@ -1,4 +1,4 @@
-use query_engine::plan::{ShiftDirection, WindowFunction};
+use query_planning::plan::{ShiftDirection, WindowFunction};
 
 use super::*;
 use crate::native::ParquetReadStrategyConfig;

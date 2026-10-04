@@ -1,12 +1,13 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
-#[cfg(not(feature = "cuml"))]
-use crate::exec::ml_algorithm_execution_unavailable;
-use crate::{
+use query_planning::{
     error::Result,
-    exec::bounded::compiled::helpers::{invalid, plan_node},
     pipeline::{PipelineTask, ResidentResourceId},
     plan::PlanNode,
 };
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
+use crate::exec::bounded::compiled::helpers::{invalid, plan_node};
+#[cfg(not(feature = "cuml"))]
+use crate::exec::ml_algorithm_execution_unavailable;
 #[cfg(feature = "cuml")]
 use crate::{
     exec::bounded::compiled::helpers::{attach_task_facts, single_output_resource},

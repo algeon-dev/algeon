@@ -14,7 +14,9 @@ use cudf::{QueryMemoryDomain, Runtime as CudfRuntime, StreamReservationLease};
 use query_planning::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
+    correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     mode::StatisticalAggregateExecutionMode,
     policy::PlanningPolicy,
 };
@@ -26,8 +28,8 @@ use super::super::{
 };
 use super::{
     super::{
-        CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
-        ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, StreamLease,
+        CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryGrant, ServiceStreamPool,
+        SourceSchedulerPolicy, StreamLease,
         attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
         cache::local_parquet::GpuLocalParquetSourceCache,
         cache_fill::CacheFillConcurrencyGate,
@@ -39,7 +41,6 @@ use super::{
 };
 use crate::{
     attempt::AttemptHandle,
-    metrics::{QueryId, TraceId},
     native_error::cudf_query_error,
     observability::{
         AttemptId, RuntimeExecutionObservationScope, RuntimeObservationHandle, RuntimeObservationOwner,

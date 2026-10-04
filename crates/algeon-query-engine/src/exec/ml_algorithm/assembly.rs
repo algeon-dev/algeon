@@ -1,16 +1,13 @@
 use cudf::{Series, TypeId};
-
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::{
-        GpuDataFrame,
-        dense_relation::{
-            ML_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_series_contract_for,
-        },
-    },
-    native_error::cudf_query_error,
     plan::MlRelationBinding,
-    runtime::ExecutionContext,
+};
+use query_runtime::{native_error::cudf_query_error, runtime::ExecutionContext};
+
+use crate::exec::{
+    GpuDataFrame,
+    dense_relation::{ML_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_series_contract_for},
 };
 
 const ASSEMBLE: &str = "query_engine.ml_algorithm.assemble";

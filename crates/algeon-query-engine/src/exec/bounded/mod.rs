@@ -1,12 +1,13 @@
-use super::{source::record_bounded_parquet_source_metrics, *};
-use crate::{
+use query_planning::{
     admission::{AdmissionDecision, AdmittedPlan, admit},
     mode::StatisticalAggregateExecutionMode,
-    observability::RuntimeExecutionObservationScope,
     plan::ResultSink,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
+use query_runtime::observability::RuntimeExecutionObservationScope;
+
+use super::{source::record_bounded_parquet_source_metrics, *};
+use crate::rapids_backend::rapids_analysis_context;
 
 // Bounded execution ownership boundary:
 // - pipeline: the bounded execution facade.

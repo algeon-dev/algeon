@@ -111,8 +111,8 @@ crates:
   DataFusion adapter; IR, optimizer, capability, proof, admission contracts, and
   pipeline belong in `crates/algeon-query-planning`; lifecycle, query service,
   ledger, grant, cache, observation, and metrics belong in
-  `crates/algeon-query-runtime`; native execution and public facade compatibility
-  belong in `crates/algeon-query-engine`. Native cuDF, cuGraph, cuVS, and cuML
+  `crates/algeon-query-runtime`; native execution composition belongs in
+  `crates/algeon-query-engine`. Native cuDF, cuGraph, cuVS, and cuML
   operations belong in their respective component crates. Never paper over an owner or
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against

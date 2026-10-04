@@ -10,12 +10,10 @@ use datafusion::{
     physical_plan::filter::FilterExec,
 };
 use parquet::arrow::parquet_to_arrow_schema;
-use query_engine::{
-    datatypes::is_supported_arrow_type,
-    source::{
-        MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
-        SourceColumnRef as NativeSourceColumnRef,
-    },
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::source::{
+    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
+    SourceColumnRef as NativeSourceColumnRef,
 };
 
 use crate::{

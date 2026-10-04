@@ -4,16 +4,18 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{DenseMatrixLayout, PackedMatrix, Runtime, Series, TypeId, frame::dataframe::GpuRecordBatch};
-
-use crate::{
+use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::{cudf_query_error, invalid_node_reference},
+    plan::{DenseVectorBinding, NodeId, QueryPlan, VectorRowIdBinding},
+};
+use query_runtime::{
     observability::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
-    plan::{DenseVectorBinding, NodeId, QueryPlan, VectorRowIdBinding},
     runtime::{ExecutionContext, resident::GpuDataFrame},
 };
+
+use crate::exec::{cudf_query_error, invalid_node_reference};
 
 /// Evaluated relation frames of one dense-relation node. Bindings name a
 /// relation by its position in the node's `inputs`; the frames are keyed by

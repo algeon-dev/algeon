@@ -68,7 +68,7 @@ fn optimizer_rule_retains_configured_native_optimizer_config() {
 
 #[test]
 fn execution_policy_configured_via_native_execution_config() {
-    use query_engine::runtime::SourceSchedulerPolicy;
+    use query_runtime::runtime::SourceSchedulerPolicy;
 
     let execution_config =
         AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 8, 5, 1).expect("valid source chunking"))

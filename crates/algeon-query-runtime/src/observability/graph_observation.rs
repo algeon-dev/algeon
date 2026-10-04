@@ -6,9 +6,8 @@
 //! fact. Keeping only the measurement leaves future capacity decisions with
 //! evidence instead of a model to calibrate.
 
+use query_planning::{correlation::QueryId, plan::GraphAlgorithm};
 use serde_json::{Value, json};
-
-use crate::{correlation::QueryId, plan::GraphAlgorithm};
 
 /// Direct source for one graph attempt's measured device-memory peak.
 ///

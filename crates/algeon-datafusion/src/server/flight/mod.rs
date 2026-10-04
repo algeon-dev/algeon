@@ -31,7 +31,8 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use prost::Message;
-use query_engine::{observability::RuntimeObservationConfig, plan::MlForestModelDigest};
+use query_planning::plan::MlForestModelDigest;
+use query_runtime::observability::RuntimeObservationConfig;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};

@@ -1,4 +1,4 @@
-use query_engine::source::GraphSimpleDirectedEdgeTopology;
+use query_planning::source::GraphSimpleDirectedEdgeTopology;
 
 #[test]
 fn graph_residency_descriptor_sees_through_edge_projection() {

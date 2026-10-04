@@ -32,16 +32,15 @@ use datafusion::{
     },
 };
 use futures::{Stream, TryStreamExt, future::BoxFuture};
-use query_engine::{
+use query_engine::exec::{
+    QueryExecutionRequest, execute_query_plan,
+    output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
+};
+use query_planning::{
     error::QueryError,
-    exec::{
-        QueryExecutionRequest, execute_query_plan,
-        output::{PlanMetrics, QueryExecutionOutcome, QueryOutput},
-    },
     expr::{
         AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
-    metrics::GraphAlgorithmRuntimeMetrics,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
         GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
@@ -59,11 +58,14 @@ use query_engine::{
         JoinType, PlanNode, ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec,
         graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
     },
+    source::{GpuResidentSource, LiteralBatchSource, SourceNode},
+};
+use query_runtime::{
+    metrics::GraphAlgorithmRuntimeMetrics,
     runtime::{
         ExecutionContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
-    source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
 use self::singleflight::{

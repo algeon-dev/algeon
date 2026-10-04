@@ -1,9 +1,10 @@
-use super::CompiledGpuTaskExecutor;
-use crate::{
+use query_planning::{
     pipeline::{PipelineTaskKind, ResidentDataForm, ResidentResourceId, ResourceSharing},
     plan::{NodeId, PlanNode},
     source::SourceNode,
 };
+
+use super::CompiledGpuTaskExecutor;
 
 impl CompiledGpuTaskExecutor<'_> {
     /// The compiled contract for how this resource's consumers read it.

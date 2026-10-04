@@ -9,7 +9,7 @@
 //! DataFusion metrics, and `QueryMetrics` are projections of the same
 //! runtime observation snapshot, not a second event store.
 
-pub use query_engine::{
+pub use query_runtime::{
     metrics::{
         BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DESCRIPTORS, BackendDurationProjectionError, BackendMetric,
         BackendMetricDescriptor, BackendMetricKind, BackendMetricLabel, BackendMetricUnit, BackendMetricUpdatePoint,

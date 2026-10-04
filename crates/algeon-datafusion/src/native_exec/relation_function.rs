@@ -16,19 +16,19 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
-use query_engine::{
+use query_engine::exec::{
+    QueryExecutionRequest, admit_query_plan, execute_query_plan,
+    output::{QueryExecutionOutcome, QueryOutput},
+    preflight_query_plan,
+};
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     error::QueryError,
-    exec::{
-        QueryExecutionRequest, admit_query_plan, execute_query_plan,
-        output::{QueryExecutionOutcome, QueryOutput},
-        preflight_query_plan,
-    },
     expr::Expr as NativeExpr,
     plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
-    runtime::{ExecutionContext, resident::GpuResultHandle},
     source::{GpuResidentSource, SourceNode},
 };
+use query_runtime::runtime::{ExecutionContext, resident::GpuResultHandle};
 
 use crate::{
     error::{Error, ErrorCode, Result},

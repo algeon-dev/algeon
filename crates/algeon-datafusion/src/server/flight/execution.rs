@@ -18,7 +18,7 @@ use futures::{
     future::BoxFuture,
     stream::{BoxStream, empty, once, poll_fn},
 };
-use query_engine::attempt::AttemptCancellation;
+use query_runtime::attempt::AttemptCancellation;
 
 use super::*;
 use crate::server::attempt::AlgeonAttempt;

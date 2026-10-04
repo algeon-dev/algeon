@@ -198,8 +198,9 @@ pub(crate) fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result<LoweredA
 
 #[cfg(test)]
 mod tests {
+    use query_planning::expr::Expr;
+
     use super::*;
-    use crate::expr::Expr;
 
     fn median_spec() -> AggregateSpec {
         AggregateSpec::new(

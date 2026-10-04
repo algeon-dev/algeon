@@ -1317,12 +1317,14 @@ pub(super) fn service_closed_error() -> QueryError {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use query_planning::error::AttemptFailureCode;
+
     use super::*;
     use crate::{
         attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
         observability::{
-            AttemptDisposition, AttemptFailureCode, AttemptFailureFactKey, AttemptFailureFactValue,
-            AttemptFailureOperation, RuntimeObservationConfig,
+            AttemptDisposition, AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation,
+            RuntimeObservationConfig,
         },
         runtime::BackendLifecycle,
     };

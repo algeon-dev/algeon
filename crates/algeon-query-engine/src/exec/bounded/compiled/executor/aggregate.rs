@@ -1,27 +1,28 @@
 use std::sync::Arc;
 
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
-use crate::{
+use query_planning::{
     error::Result,
-    exec::{
-        bounded::{
-            BoundedUnaryStage, ResidentGpuFrame, SourceAggregateTopK,
-            compiled::{
-                helpers::{
-                    attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
-                    sort_node,
-                },
-                resource::CompiledGpuResourcePayload,
-            },
-            execute_bounded_unary, execute_compiled_bounded_aggregate_from_frame,
-            execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
-            execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
-            execute_final_sort_node_from_stream_with_retry,
-        },
-        operators::execute_window,
-    },
     pipeline::{AggregatePlan, PipelineTask, ResidentDataForm, ResidentResourceId, SortStrategy, TaskPhysical},
     plan::{PlanNode, QueryPlan},
+};
+
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
+use crate::exec::{
+    bounded::{
+        BoundedUnaryStage, ResidentGpuFrame, SourceAggregateTopK,
+        compiled::{
+            helpers::{
+                attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
+                sort_node,
+            },
+            resource::CompiledGpuResourcePayload,
+        },
+        execute_bounded_unary, execute_compiled_bounded_aggregate_from_frame,
+        execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
+        execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
+        execute_final_sort_node_from_stream_with_retry,
+    },
+    operators::execute_window,
 };
 
 impl CompiledGpuTaskExecutor<'_> {

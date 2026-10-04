@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use query_engine::{error::Result as QueryEngineResult, plan::QueryPlan};
+use query_planning::{error::Result as QueryEngineResult, plan::QueryPlan};
 
 use super::*;
 

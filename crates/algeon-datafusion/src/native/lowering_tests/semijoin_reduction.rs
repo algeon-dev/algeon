@@ -5,12 +5,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver,
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
     optimizer::{NativeOptimizerChange, SEMIJOIN_REDUCTION_RULE_NAME, optimize_query_plan},
     plan::JoinNode,
     policy::PlanningPolicy,
-    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;

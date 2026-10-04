@@ -16,7 +16,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use query_engine::runtime::SourceChunkPlanningMode;
+use query_planning::execution_contracts::SourceChunkPlanningMode;
 use workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchQuery, WorkloadResult, discover_clickbench_layout, register_clickbench_table,
 };

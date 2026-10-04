@@ -8,7 +8,7 @@ use std::{
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{common::Result as DataFusionResult, physical_expr::LexOrdering, physical_plan::ExecutionPlan};
-use query_engine::plan::QueryPlan;
+use query_planning::plan::QueryPlan;
 
 use super::{
     super::{

@@ -1,9 +1,8 @@
 use std::path::Path;
 
-use crate::{
-    exec::source::{cudf_query_error, cudf_query_error_without_source, *},
-    source::{ParquetSourceLocation, redacted_path_diagnostic},
-};
+use query_planning::source::{ParquetSourceLocation, redacted_path_diagnostic};
+
+use crate::exec::source::{cudf_query_error, cudf_query_error_without_source, *};
 
 pub(in crate::exec::source) fn path_fact(path: &Path) -> String {
     redacted_path_diagnostic(path)

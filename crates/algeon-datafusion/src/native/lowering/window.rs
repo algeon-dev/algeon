@@ -16,8 +16,9 @@ use datafusion::{
     },
     physical_plan::windows::WindowUDFExpr,
 };
-use query_engine::{
-    datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
+use query_engine::datatypes::is_supported_arrow_type;
+use query_planning::{
+    datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{
         Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
         SortExpr as NativeSortExpr,

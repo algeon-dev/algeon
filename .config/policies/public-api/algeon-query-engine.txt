@@ -1,29 +1,5 @@
 pub mod query_engine
-pub use query_engine::admission
-pub use query_engine::attempt
-pub use query_engine::backend
-pub use query_engine::capability
-pub use query_engine::contract_report
-pub use query_engine::dynamic_filter
-pub use query_engine::error
-pub use query_engine::expr
-pub use query_engine::graph_observation
-pub use query_engine::metrics
-pub use query_engine::mode
-pub use query_engine::naming
-pub use query_engine::observability
-pub use query_engine::optimizer
-pub use query_engine::parquet_stats
-pub use query_engine::pipeline
-pub use query_engine::plan
-pub use query_engine::policy
-pub use query_engine::runtime
-pub use query_engine::source
-pub use query_engine::triage
 pub mod query_engine::chunk
-pub use query_engine::chunk::SourceChunkPlanningOptions
-pub use query_engine::chunk::SourceChunkPlanningPolicy
-pub use query_engine::chunk::SourceTaskMemoryModel
 pub struct query_engine::chunk::SourceMetadataCache
 impl query_engine::chunk::SourceMetadataCache
 pub fn query_engine::chunk::SourceMetadataCache::cached_footer_count(&self) -> usize
@@ -31,13 +7,7 @@ pub fn query_engine::chunk::plan_local_parquet_source_chunks(query_planning::pla
 pub fn query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache(query_planning::plan::core::NodeId, &query_planning::source::parquet::LocalParquetSource, query_planning::chunk::policy::SourceChunkPlanningPolicy, &mut query_engine::chunk::SourceMetadataCache) -> query_planning::error::Result<query_planning::chunk::model::SourceChunkPlan>
 pub mod query_engine::datatypes
 pub use query_engine::datatypes::cudf_dtype_from_arrow_type
-pub use query_engine::datatypes::diagnostic_arrow_type
-pub use query_engine::datatypes::is_narrow_decimal_carry_type
-pub use query_engine::datatypes::is_supported_arrow_cast
-pub use query_engine::datatypes::is_supported_arrow_implicit_cast
 pub use query_engine::datatypes::is_supported_arrow_type
-pub use query_engine::datatypes::is_supported_list_carry_type
-pub use query_engine::datatypes::is_timestamp_with_timezone
 pub mod query_engine::dimension_pruning
 pub struct query_engine::dimension_pruning::LocalDimensionPruningResolver
 impl query_planning::optimizer::dimension_pruning::resolver::LocalParquetPruningResolver for query_engine::dimension_pruning::LocalDimensionPruningResolver
@@ -78,12 +48,7 @@ pub fn query_engine::exec::admit_query_plan(&query_planning::plan::core::QueryPl
 pub fn query_engine::exec::execute_query_plan(&query_runtime::runtime::context::ExecutionContext, query_engine::exec::QueryExecutionRequest<'_>) -> query_engine::exec::output::QueryExecutionOutcome
 pub fn query_engine::exec::materialize_gpu_result_to_host(query_runtime::runtime::resident::GpuResultHandle, &mut query_runtime::metrics::QueryMetrics) -> query_planning::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn query_engine::exec::preflight_query_plan(&query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
-pub mod query_engine::harness
-pub use query_engine::harness::StableFnv1a64
 pub mod query_engine::native_error
-pub use query_engine::native_error::cudf_message_fact
-pub use query_engine::native_error::cudf_query_error
-pub use query_engine::native_error::query_error_code_for_cudf_error
 pub fn query_engine::native_error::cuml_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cuml::error::Error) -> query_planning::error::QueryError
 pub fn query_engine::native_error::query_error_code_for_cuml_error(&cuml::error::Error) -> query_planning::error::QueryErrorCode
 pub mod query_engine::rapids_backend

@@ -5,7 +5,7 @@ use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetSource, parquet::ParquetAccessPlan},
     physical_plan::filter::FilterExec,
 };
-use query_engine::source::{
+use query_planning::source::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
     ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,

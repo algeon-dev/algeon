@@ -12,11 +12,8 @@ use datafusion::{
     physical_plan::{ExecutionPlan, coop::CooperativeExec, metrics::ExecutionPlanMetricsSet},
 };
 use futures::future::BoxFuture;
-use query_engine::{
-    admission::AttemptCapabilityEvidence,
-    plan::QueryPlan,
-    runtime::{ExecutionContext, resident::GpuResultHandle},
-};
+use query_planning::{admission::AttemptCapabilityEvidence, plan::QueryPlan};
+use query_runtime::runtime::{ExecutionContext, resident::GpuResultHandle};
 
 use super::{admission::QueryAdmissionTicket, native_node::native_node};
 use crate::error::{Error, ErrorCode, Result};

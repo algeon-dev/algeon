@@ -13,13 +13,14 @@ use std::{
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
 use futures::future::BoxFuture;
-use query_engine::{
+use query_planning::{
+    correlation::QueryId,
     error::{QueryError, QueryErrorCode},
-    observability::{
-        AttemptDisposition, AttemptFailureOperation, AttemptFailureSummary, AttemptRetryAdvice,
-        AttemptRetryPrerequisite, AttemptRetryRecovery, QueryAttemptReport, RuntimeObservationConfig,
-        RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
-    },
+};
+use query_runtime::observability::{
+    AttemptDisposition, AttemptFailureOperation, AttemptFailureSummary, AttemptRetryAdvice, AttemptRetryPrerequisite,
+    AttemptRetryRecovery, QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner,
+    RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
 };
 use tokio::{task::yield_now, time::timeout};
 
@@ -166,12 +167,9 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
         .register_new_with_attempt_observation("select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = cpu_attempt_report(&query_id);
-    let owner = RuntimeObservationOwner::new(
-        RuntimeQueryId::new(query_id.clone()),
-        None,
-        RuntimeObservationConfig::bounded(16, 4096),
-    )
-    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let owner =
+        RuntimeObservationOwner::new(QueryId::new(query_id.clone()), None, RuntimeObservationConfig::bounded(16, 4096))
+            .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner
         .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
         .expect("attempt observation seals before its report is handed off");
@@ -475,12 +473,9 @@ fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
         .expect("attempt-owned registration succeeds");
     let sealed_report = queue_backoff_attempt_report(&query_id);
     let terminal = sealed_report.outcome.clone();
-    let owner = RuntimeObservationOwner::new(
-        RuntimeQueryId::new(query_id.clone()),
-        None,
-        RuntimeObservationConfig::bounded(16, 4096),
-    )
-    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let owner =
+        RuntimeObservationOwner::new(QueryId::new(query_id.clone()), None, RuntimeObservationConfig::bounded(16, 4096))
+            .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner.finish_query(Some(terminal)).expect("failed attempt observation seals before handoff");
     let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
 
@@ -523,9 +518,8 @@ fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
         .register_new_with_attempt_observation("select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = cpu_attempt_report(&query_id);
-    let owner =
-        RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
-            .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let owner = RuntimeObservationOwner::new(QueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
+        .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner
         .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
         .expect("attempt observation seals before its report is handed off");

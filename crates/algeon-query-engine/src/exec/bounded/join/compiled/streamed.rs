@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
+use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
+
 use super::{
     BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, ExecutionMetrics, JoinNode, JoinSide, NodeId,
     OneShotJoinChunkMetrics, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, StreamedPartitionedJoinSummary,
     concatenate_streamed_hash_join_outputs, probe_side, release_bounded_join_side_frame,
 };
-use crate::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
 pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

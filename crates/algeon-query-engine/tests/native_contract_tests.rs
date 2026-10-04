@@ -18,30 +18,30 @@ use arrow::{
 use cudf::{DataType as CudfDataType, TypeId};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
+    chunk::{
+        SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
+    },
+    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
+};
+use query_planning::{
     capability::{
         AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, EdgeContractKind,
         KeyedHashJoinStrategyOptions, NodeOperator, SourceFormatCapability, SubgraphInvariantKind,
         aggregate_strategy_capability_decision,
     },
-    chunk::{
-        SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel, plan_local_parquet_source_chunks,
-        plan_local_parquet_source_chunks_with_metadata_cache,
-    },
-    datatypes::{
-        cudf_dtype_from_arrow_type, is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
-        is_supported_list_carry_type,
-    },
+    chunk::{SourceChunkPlanningPolicy, SourceTaskMemoryModel},
+    correlation::{QueryId, TraceId},
+    datatypes::{is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_list_carry_type},
     error::{QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus},
+    execution_contracts::MemoryControlPolicy,
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, DatePart, Expr, LimitSpec,
         LiteralValue, SortExpr, SortSpec,
     },
-    metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
         QueryPlanBuilder, ResultSink, WindowFunction, WindowSpec,
     },
-    runtime::{ExecutionCancellation, MemoryControlPolicy, ReservationKind, SourceSchedulerPolicy},
     source::{
         CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
         LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetReaderDecimalType,
@@ -49,6 +49,10 @@ use query_engine::{
         RejectedSourceFeature, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
         SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
     },
+};
+use query_runtime::{
+    metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryMetrics},
+    runtime::{ExecutionCancellation, SourceSchedulerPolicy},
 };
 
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
@@ -227,23 +231,6 @@ fn source_storage_error_codes_have_stable_policy() {
         assert_eq!(code.kind(), QueryErrorKind::DependencyFailure);
         assert_eq!(code.status(), status);
     }
-}
-
-#[test]
-fn reservation_kind_labels_are_stable() {
-    assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
-    assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
-    assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
-    assert_eq!(ReservationKind::FinalMerge.as_str(), "final_merge");
-    assert_eq!(ReservationKind::BuildSide.as_str(), "build_side");
-    assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
-    assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
-    assert_eq!(ReservationKind::FilteredProbeState.as_str(), "filtered_probe_state");
-    assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
-    assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
-    assert_eq!(ReservationKind::PartialState.as_str(), "partial_state");
-    assert_eq!(ReservationKind::FinalSort.as_str(), "final_sort");
-    assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
 }
 
 #[test]

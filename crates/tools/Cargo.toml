@@ -28,6 +28,8 @@ clickbench-stage-probe = [
   "dep:bench",
   "dep:workloads",
   "dep:query-engine",
+  "dep:query-planning",
+  "dep:query-runtime",
   "algeon-datafusion/bench-support",
 ]
 shadow-estimate-report = [
@@ -40,6 +42,8 @@ shadow-estimate-report = [
   "dep:bench",
   "dep:workloads",
   "dep:query-engine",
+  "dep:query-planning",
+  "dep:query-runtime",
   "algeon-datafusion/bench-support",
 ]
 cugraph-oracle = [
@@ -50,13 +54,15 @@ cugraph-oracle = [
   "dep:datafusion",
   "dep:algeon-datafusion",
   "dep:query-engine",
+  "dep:query-planning",
+  "dep:query-runtime",
   "algeon-datafusion/cugraph",
   "algeon-datafusion/bench-support",
 ]
 # Explicit black-box E2E runners; each drives a child process over the network.
-# The runtime-observability runner reads only the engine's JSONL schema constant,
-# to validate retained artifacts.
-server-runtime-observability-e2e = ["dep:query-engine"]
+# The runtime-observability runner reads only the runtime's JSONL schema
+# constant, to validate retained artifacts.
+server-runtime-observability-e2e = ["dep:query-runtime"]
 embedded-backend-e2e = ["dep:reqwest"]
 # One S3 configuration serving DataFusion and native reads, for a library and a
 # server-configured backend, against an external S3-compatible service.
@@ -74,7 +80,8 @@ single-node-multi-gpu-validate-run = [
   "dep:cuml-sys",
   "dep:datafusion",
   "dep:algeon-datafusion",
-  "dep:query-engine",
+  "dep:query-planning",
+  "dep:query-runtime",
   "algeon-datafusion/qualification",
   # Device identity (model name, UUID, physical framebuffer) comes from NVML,
   # and the artifact contract requires recording it.
@@ -115,6 +122,8 @@ bench = { path = "../bench", optional = true }
 examples = { path = "../examples", optional = true, features = ["otlp-metrics"] }
 workloads = { workspace = true, optional = true }
 query-engine = { workspace = true, optional = true }
+query-planning = { workspace = true, optional = true }
+query-runtime = { workspace = true, optional = true }
 futures = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }

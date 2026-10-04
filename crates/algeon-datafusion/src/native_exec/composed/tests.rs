@@ -14,16 +14,16 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     expr::{Expr, LimitSpec, SortExpr, SortSpec},
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
         GraphEdgeColumnBindings, ProjectionOutput, QueryPlan, QueryPlanBuilder,
     },
-    runtime::{ExecutionContext, QueryAdmissionRequest, resident::GpuResultHandle},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
+use query_runtime::runtime::{ExecutionContext, QueryAdmissionRequest, resident::GpuResultHandle};
 
 use super::*;
 use crate::{

@@ -11,7 +11,7 @@ use datafusion::{
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
     prelude::SessionContext,
 };
-use query_engine::{
+use query_planning::{
     admission::AttemptCapabilityEvidence,
     plan::{MlAlgorithmParams, PlanNode, QueryPlanBuilder},
     source::{LocalParquetSource, SourceNode},

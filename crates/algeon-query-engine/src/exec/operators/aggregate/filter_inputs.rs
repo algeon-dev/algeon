@@ -1,13 +1,13 @@
 use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::naming::unique_alias_with_suffix;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, CaseWhen, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, Field, LiteralValue, QueryError, QueryErrorCode, Result, Schema,
     aggregate_spec_has_filters, budgeted_value, cudf_query_error, global_count_star_expr, lower_expr,
 };
-use crate::naming::unique_alias_with_suffix;
 
 pub(in crate::exec) fn prepare_filtered_aggregate_frame(
     context: &ExecutionContext,

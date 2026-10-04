@@ -1,4 +1,4 @@
-use query_engine::runtime::SourceChunkPlanningMode;
+use query_planning::execution_contracts::SourceChunkPlanningMode;
 
 use super::*;
 

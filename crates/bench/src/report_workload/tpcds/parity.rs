@@ -28,7 +28,7 @@ use datafusion::{
 };
 use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use query_engine::runtime::GpuDeviceMemoryLimit;
+use query_runtime::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::TpcdsQuery;
 
 use super::{

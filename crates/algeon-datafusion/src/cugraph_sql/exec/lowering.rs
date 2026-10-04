@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use query_engine::{
+use query_engine::exec::{admit_query_plan, preflight_query_plan};
+use query_planning::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence},
     error::{QueryError, QueryErrorKind},
-    exec::{admit_query_plan, preflight_query_plan},
     expr::Expr,
     plan::{
         GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, QueryPlan, graph_result_schema_for_vertex_type,

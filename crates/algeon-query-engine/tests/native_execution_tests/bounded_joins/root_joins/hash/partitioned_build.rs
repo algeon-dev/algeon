@@ -2,10 +2,7 @@
 // streams in chunk by chunk and is hash-partitioned as it arrives, so neither
 // a whole-leaf concat nor an upstream join-output concat is ever resident.
 
-use query_engine::{
-    capability::{JoinStrategy, KeyedHashJoinStrategyOptions},
-    pipeline::{PipelineTaskKind, compile_pipeline},
-};
+use query_planning::{capability::JoinStrategy, capability::KeyedHashJoinStrategyOptions, pipeline::PipelineTaskKind, pipeline::compile_pipeline};
 
 const PARTITIONED_BUILD_PAYLOAD_BYTES: usize = 8192;
 

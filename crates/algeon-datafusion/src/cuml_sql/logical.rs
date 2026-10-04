@@ -8,8 +8,8 @@ use datafusion::{
     logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 #[cfg(feature = "server")]
-use query_engine::plan::MlForestModelDigest;
-use query_engine::plan::{
+use query_planning::plan::MlForestModelDigest;
+use query_planning::plan::{
     MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, ml_embedding_output_schema, ml_forest_output_schema,
     ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
 };
