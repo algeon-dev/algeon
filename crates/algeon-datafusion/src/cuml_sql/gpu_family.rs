@@ -1,12 +1,12 @@
 use std::{any::Any, sync::Arc};
 
-use datafusion::{catalog::Session, common::DataFusionError, execution::context::SessionConfig};
+use datafusion::{catalog::Session, common::DataFusionError};
 use serde_json::{Map, Value, json};
 
 use super::{
     CUML_OPERATION_REGISTRY, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
     model_store::{CumlModelStore, bind_operation_model},
-    options::{options_from_named_values, validate_options},
+    options::{dense_relation_function, validate_options},
 };
 use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
@@ -29,13 +29,6 @@ impl CumlGpuFunctionFamily {
         }
         self.availability.clone()
     }
-}
-
-pub(crate) fn cuml_gpu_function_availability(_config: Option<&SessionConfig>) -> GpuFunctionAvailability {
-    if !cfg!(feature = "cuml") {
-        return GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() };
-    }
-    GpuFunctionAvailability::Available
 }
 
 #[async_trait::async_trait]
@@ -119,28 +112,18 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
             }
         }
         let values = request.options.as_object().cloned().unwrap_or_default();
-        let result =
-            options_from_named_values(operation, &inputs, values).map_err(DataFusionError::from).and_then(|json| {
+        let result = dense_relation_function(operation)
+            .options_json(&inputs, values)
+            .map_err(DataFusionError::from)
+            .and_then(|json| {
                 let model =
                     bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &json)?)?;
                 CumlLogicalNode::try_new_with_model(operation, inputs, &json, model)
             });
         match result {
             Ok(node) => {
-                let canonical: Value =
-                    serde_json::from_str(node.validated_options().canonical_json()).expect("canonical cuML JSON");
                 let mut normalized = request.clone();
-                normalized.options = Value::Object(
-                    operation
-                        .descriptor()
-                        .options
-                        .iter()
-                        .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
-                        .filter_map(|option| {
-                            canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value))
-                        })
-                        .collect(),
-                );
+                normalized.options = Value::Object(node.validated_options().value_options().clone());
                 GpuCallValidation {
                     valid: true,
                     error_code: None,

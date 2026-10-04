@@ -397,10 +397,7 @@ impl CugraphAlgoExec {
     }
 
     pub(super) fn bfs_singleflight_key(&self, device_ordinal: usize) -> Option<GraphBfsSingleflightKey> {
-        if !self.native_execution_config.graph_execution_services().bfs_singleflight_enabled()
-            || !self.native_execution_config.has_query_admission_authority()
-            || !self.predicate_sources.is_empty()
-        {
+        if !self.native_execution_config.has_query_admission_authority() || !self.predicate_sources.is_empty() {
             return None;
         }
         let CugraphAlgorithmParams::Bfs(params) = &self.spec.params else {
@@ -461,7 +458,7 @@ impl CugraphAlgoExec {
                 )
                 .await;
         };
-        let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
+        let coordinator = self.native_execution_config.bfs_singleflight().clone();
         let correlation_fingerprint =
             native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
         let attempt_id =
@@ -711,7 +708,7 @@ impl CugraphAlgoExec {
                 .await?
                 .record_datafusion_output(metrics));
         };
-        let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
+        let coordinator = self.native_execution_config.bfs_singleflight().clone();
         let correlation_fingerprint =
             native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
         let attempt_id =

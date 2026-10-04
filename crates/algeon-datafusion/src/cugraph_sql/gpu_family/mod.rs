@@ -31,6 +31,7 @@ use crate::{
     error::DataFusionErrorExt,
     gpu_functions::{
         GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+        REQUIRED_FEATURE_DISABLED,
     },
 };
 
@@ -43,18 +44,9 @@ pub(crate) struct CugraphGpuFunctionFamily {
 
 impl CugraphGpuFunctionFamily {
     pub(crate) fn new(config: CugraphSqlConfig) -> Self {
-        Self { config, availability: cugraph_gpu_function_availability() }
-    }
-}
-
-/// Build-level cuGraph execution availability projected through the common
-/// discovery catalog. The SQL parser and schema validator remain available in
-/// either build; only native graph execution is feature-owned.
-pub(crate) fn cugraph_gpu_function_availability() -> GpuFunctionAvailability {
-    if cfg!(feature = "cugraph") {
-        GpuFunctionAvailability::Available
-    } else {
-        GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() }
+        // The SQL parser and schema validator remain available in either
+        // build; only native graph execution is feature-owned.
+        Self { config, availability: GpuFunctionAvailability::of_build_feature(cfg!(feature = "cugraph")) }
     }
 }
 
@@ -87,7 +79,7 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
         };
         if !self.availability.is_available() {
             return GpuCallValidation::invalid(
-                self.availability.unavailable_reason().unwrap_or("required_feature_disabled"),
+                self.availability.unavailable_reason().unwrap_or(REQUIRED_FEATURE_DISABLED),
                 "cuGraph execution is unavailable in this build",
                 function_name,
                 request.normalized_json(),

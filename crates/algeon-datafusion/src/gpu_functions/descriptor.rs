@@ -11,7 +11,16 @@ pub(crate) enum GpuFunctionAvailability {
     Unavailable { reason: String },
 }
 
+/// The reason code of a family whose execution the build leaves out.
+pub(crate) const REQUIRED_FEATURE_DISABLED: &str = "required_feature_disabled";
+
 impl GpuFunctionAvailability {
+    /// The availability of a family whose execution its Cargo feature
+    /// enables.
+    pub(crate) fn of_build_feature(enabled: bool) -> Self {
+        if enabled { Self::Available } else { Self::Unavailable { reason: REQUIRED_FEATURE_DISABLED.to_string() } }
+    }
+
     /// Returns whether the function is statically plannable.
     pub(crate) const fn is_available(&self) -> bool {
         matches!(self, Self::Available)

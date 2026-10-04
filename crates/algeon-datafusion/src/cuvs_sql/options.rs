@@ -1,11 +1,24 @@
-use datafusion::logical_expr::LogicalPlan;
+use std::{
+    cmp::Ordering,
+    hash::{Hash, Hasher},
+};
+
+use query_engine::plan::{
+    VectorAlgorithmParams, VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo,
+    VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit,
+    VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
+    VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
+};
 use serde_json::{Map, Value};
 
 use super::{
-    CuvsOperation, CuvsOutputContract, CuvsRelationRole, DenseVectorBinding, GpuOptionKind, canonicalize_cuvs_options,
-    error::{invalid_call, invalid_option},
+    CuvsOperation, CuvsRelationRole, DenseVectorBinding, canonicalize_cuvs_options,
+    error::{ERRORS, invalid_option},
 };
-use crate::{error::Result, gpu_functions::dense_relation::infer_dense_relation_binding};
+use crate::{
+    error::Result,
+    gpu_functions::dense_relation::{CanonicalOptions, DenseRelationArgument, DenseRelationFunction, LabelColumn},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CuvsVectorRelationBinding {
@@ -28,14 +41,15 @@ impl CuvsVectorRelationBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Options of one cuVS call, validated and parsed once. The canonical JSON
+/// is the call's identity and serialized form; validation and lowering read
+/// the typed parameters.
+#[derive(Debug, Clone)]
 pub struct CuvsValidatedOptions {
     canonical_json: String,
+    value_options: Map<String, Value>,
     bindings: Vec<CuvsVectorRelationBinding>,
-    knn_k: Option<u32>,
-    top_k_k: Option<u32>,
-    kmeans_clusters: Option<u32>,
-    pca_components: Option<u32>,
+    params: VectorAlgorithmParams,
 }
 
 impl CuvsValidatedOptions {
@@ -47,127 +61,211 @@ impl CuvsValidatedOptions {
         &self.bindings
     }
 
-    pub fn knn_k(&self) -> Option<u32> {
-        self.knn_k
+    /// The native vector algorithm parameters. Their relation `n` reads the
+    /// `n`th binding.
+    pub fn params(&self) -> &VectorAlgorithmParams {
+        &self.params
     }
 
-    pub fn top_k_k(&self) -> Option<u32> {
-        self.top_k_k
+    /// The value options by name, without relation bindings.
+    pub(super) fn value_options(&self) -> &Map<String, Value> {
+        &self.value_options
     }
+}
 
-    pub fn kmeans_clusters(&self) -> Option<u32> {
-        self.kmeans_clusters
+// The canonical JSON determines every other field, so it is the identity.
+impl PartialEq for CuvsValidatedOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.canonical_json == other.canonical_json
     }
+}
 
-    pub fn pca_components(&self) -> Option<u32> {
-        self.pca_components
+impl Eq for CuvsValidatedOptions {}
+
+impl Hash for CuvsValidatedOptions {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.canonical_json.hash(state);
     }
+}
 
-    pub(super) fn named_values(&self, operation: CuvsOperation) -> Map<String, Value> {
-        let canonical: Value =
-            serde_json::from_str(&self.canonical_json).expect("validated cuVS options contain canonical JSON");
-        let canonical = canonical.as_object().expect("validated cuVS options are an object");
-        operation
-            .descriptor()
-            .options
-            .iter()
-            .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
-            .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
-            .collect()
+impl PartialOrd for CuvsValidatedOptions {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CuvsValidatedOptions {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.canonical_json.cmp(&other.canonical_json)
     }
 }
 
 pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<CuvsValidatedOptions> {
     let canonical = canonicalize_cuvs_options(operation, raw)
         .map_err(|error| invalid_option(operation, error.code(), error.argument(), error.message()))?;
-    let object = canonical.as_object().expect("canonical cuVS options are always a JSON object");
-    let bindings =
-        operation.descriptor().relation_roles.iter().copied().map(|role| binding(object, role)).collect::<Vec<_>>();
-    let option_u32 = |name: &str| object.get(name).and_then(Value::as_u64).map(|value| value as u32);
-    let knn_k = (operation.descriptor().output_contract == CuvsOutputContract::KnnNeighbors)
-        .then(|| option_u32("k").expect("canonical kNN options contain k"));
-    let top_k_k =
-        (operation == CuvsOperation::TopK).then(|| option_u32("k").expect("canonical Top-K options contain k"));
-    let kmeans_clusters = (operation.descriptor().output_contract == CuvsOutputContract::KMeansAssignments)
-        .then(|| option_u32("n_clusters").expect("canonical KMeans options contain n_clusters"));
-    let pca_components = (operation.descriptor().output_contract == CuvsOutputContract::PcaComponents)
-        .then(|| option_u32("n_components").expect("canonical PCA options contain n_components"));
-    Ok(CuvsValidatedOptions {
-        canonical_json: canonical.to_string(),
-        bindings,
-        knn_k,
-        top_k_k,
-        kmeans_clusters,
-        pca_components,
+    let options = dense_relation_function(operation).canonical_options(&canonical);
+    let bindings = operation
+        .descriptor()
+        .relation_roles
+        .iter()
+        .map(|&relation_role| {
+            let binding = options.relation_binding(relation_role.as_str())?;
+            Ok(CuvsVectorRelationBinding { relation_role, id: binding.id, vector: binding.vector })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let params = algorithm_params(operation, &options, &bindings)?;
+    let value_options = options.value_options(operation.descriptor().options);
+    Ok(CuvsValidatedOptions { canonical_json: Value::Object(canonical).to_string(), value_options, bindings, params })
+}
+
+const DISTANCE_METRICS: [(&str, VectorDistanceMetric); 4] = [
+    ("l2_expanded", VectorDistanceMetric::L2Expanded),
+    ("l2_sqrt_expanded", VectorDistanceMetric::L2SqrtExpanded),
+    ("cosine", VectorDistanceMetric::CosineExpanded),
+    ("inner_product", VectorDistanceMetric::InnerProduct),
+];
+
+fn algorithm_params(
+    operation: CuvsOperation,
+    options: &CanonicalOptions<'_>,
+    bindings: &[CuvsVectorRelationBinding],
+) -> Result<VectorAlgorithmParams> {
+    let relation = |ordinal: usize| {
+        let binding = &bindings[ordinal];
+        let row_id = VectorRowIdBinding::column(binding.id());
+        match binding.vector() {
+            DenseVectorBinding::Columns(columns) => {
+                VectorRelationBinding::new(ordinal, row_id, columns.iter().cloned())
+            },
+            DenseVectorBinding::VectorColumn(column) => {
+                VectorRelationBinding::new_vector_column(ordinal, row_id, column.clone())
+            },
+        }
+    };
+    Ok(match operation {
+        CuvsOperation::BruteForceKnn => VectorAlgorithmParams::BruteForceKnn(VectorBruteForceKnnParams::new(
+            relation(0),
+            relation(1),
+            options.usize("k")?,
+            options.choice("metric", &DISTANCE_METRICS)?,
+        )),
+        CuvsOperation::IvfFlat => {
+            let mut params = VectorIvfFlatParams::new(
+                relation(0),
+                relation(1),
+                options.usize("k")?,
+                options.choice("metric", &DISTANCE_METRICS)?,
+                options.u32("n_lists")?,
+            );
+            params.n_probes = options.u32("n_probes")?;
+            params.kmeans_n_iters = options.u32("kmeans_n_iters")?;
+            params.kmeans_trainset_fraction = options.f64("kmeans_trainset_fraction")?;
+            VectorAlgorithmParams::IvfFlat(params)
+        },
+        CuvsOperation::IvfPq => {
+            let mut params = VectorIvfPqParams::new(
+                relation(0),
+                relation(1),
+                options.usize("k")?,
+                options.choice("metric", &DISTANCE_METRICS)?,
+                options.u32("n_lists")?,
+            );
+            params.n_probes = options.u32("n_probes")?;
+            params.kmeans_n_iters = options.u32("kmeans_n_iters")?;
+            params.kmeans_trainset_fraction = options.f64("kmeans_trainset_fraction")?;
+            params.pq_dim = options.u32("pq_dim")?;
+            params.pq_bits = options.u32("pq_bits")?;
+            params.codebook_kind = options.choice(
+                "codebook_kind",
+                &[
+                    ("per_subspace", VectorIvfPqCodebookKind::PerSubspace),
+                    ("per_cluster", VectorIvfPqCodebookKind::PerCluster),
+                ],
+            )?;
+            VectorAlgorithmParams::IvfPq(params)
+        },
+        CuvsOperation::Cagra => {
+            let mut params = VectorCagraParams::new(
+                relation(0),
+                relation(1),
+                options.usize("k")?,
+                options.choice("metric", &DISTANCE_METRICS)?,
+            );
+            params.graph_degree = options.u32("graph_degree")?;
+            params.intermediate_graph_degree = options.u32("intermediate_graph_degree")?;
+            params.build_algo = options.choice(
+                "build_algo",
+                &[("ivf_pq", VectorCagraBuildAlgo::IvfPq), ("nn_descent", VectorCagraBuildAlgo::NnDescent)],
+            )?;
+            params.itopk_size = options.u32("itopk_size")?;
+            params.search_width = options.u32("search_width")?;
+            params.max_iterations = options.u32("max_iterations")?;
+            params.search_algo = options.choice(
+                "search_algo",
+                &[
+                    ("auto", VectorCagraSearchAlgo::Auto),
+                    ("single_cta", VectorCagraSearchAlgo::SingleCta),
+                    ("multi_cta", VectorCagraSearchAlgo::MultiCta),
+                    ("multi_kernel", VectorCagraSearchAlgo::MultiKernel),
+                ],
+            )?;
+            VectorAlgorithmParams::Cagra(params)
+        },
+        CuvsOperation::PairwiseDistance => VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
+            x: relation(0),
+            y: relation(1),
+            metric: options.choice("metric", &DISTANCE_METRICS)?,
+        }),
+        CuvsOperation::TopK => VectorAlgorithmParams::TopK(VectorTopKParams {
+            input: relation(0),
+            k: options.usize("k")?,
+            select_min: options.choice("select", &[("min", true), ("max", false)])?,
+        }),
+        CuvsOperation::KMeans => {
+            let mut params = VectorKMeansParams::new(relation(0), options.usize("n_clusters")?);
+            params.metric = options.choice(
+                "metric",
+                &[
+                    ("l2_expanded", VectorKMeansMetric::L2Expanded),
+                    ("l2_sqrt_expanded", VectorKMeansMetric::L2SqrtExpanded),
+                ],
+            )?;
+            params.max_iterations = options.u32("max_iter")?;
+            params.tolerance = options.f64("tol")?;
+            params.n_init = options.u32("n_init")?;
+            params.init = options.choice(
+                "init",
+                &[("kmeans++", VectorKMeansInit::KMeansPlusPlus), ("random", VectorKMeansInit::Random)],
+            )?;
+            VectorAlgorithmParams::KMeans(params)
+        },
+        CuvsOperation::Pca => {
+            let mut params = VectorPcaParams::new(relation(0), options.usize("n_components")?);
+            params.whiten = options.bool("whiten")?;
+            params.solver = options.choice(
+                "solver",
+                &[("cov_eig_dq", VectorPcaSolver::CovEigDq), ("cov_eig_jacobi", VectorPcaSolver::CovEigJacobi)],
+            )?;
+            params.tolerance = options.f64("tol")?;
+            params.n_iterations = options.u32("n_iterations")?;
+            params.flip_signs_based_on_u = options.bool("flip_signs_based_on_u")?;
+            VectorAlgorithmParams::Pca(params)
+        },
     })
 }
 
-pub(super) fn options_from_named_values(
-    operation: CuvsOperation,
-    inputs: &[LogicalPlan],
-    mut values: Map<String, Value>,
-) -> Result<String> {
-    let roles = operation.descriptor().relation_roles;
-    if inputs.len() != roles.len() {
-        return Err(invalid_call(
-            operation,
-            "invalid_relation_count",
-            format!("{} requires {} relation argument(s)", operation.descriptor().sql_function_name, roles.len()),
-        ));
+/// The cuVS operation as a dense-relation function. No cuVS relation trains
+/// on a label, so a `label` column is a feature.
+pub(super) fn dense_relation_function(operation: CuvsOperation) -> DenseRelationFunction {
+    let descriptor = operation.descriptor();
+    DenseRelationFunction {
+        errors: &ERRORS,
+        sql_function_name: descriptor.sql_function_name,
+        relations: descriptor
+            .relation_roles
+            .iter()
+            .map(|role| DenseRelationArgument { role: role.as_str(), label: LabelColumn::Feature })
+            .collect(),
+        options: descriptor.options,
     }
-    for (role, input) in roles.iter().copied().zip(inputs) {
-        if values.contains_key(role.as_str()) {
-            return Err(invalid_call(
-                operation,
-                "unknown_argument",
-                format!("cuVS relation role '{}' cannot appear in the value options object", role.as_str()),
-            ));
-        }
-        values.insert(role.as_str().to_string(), relation_binding(operation, role, input)?);
-    }
-    Ok(Value::Object(values).to_string())
-}
-
-fn relation_binding(operation: CuvsOperation, role: CuvsRelationRole, input: &LogicalPlan) -> Result<Value> {
-    infer_dense_relation_binding(
-        input,
-        role.as_str(),
-        "cuVS",
-        || super::error::field_not_found(operation, role.as_str(), "id"),
-        |reason, message| invalid_call(operation, reason, message),
-    )
-}
-
-fn binding(object: &Map<String, Value>, role: CuvsRelationRole) -> CuvsVectorRelationBinding {
-    let name = role.as_str();
-    let binding =
-        object.get(name).and_then(Value::as_object).expect("canonical cuVS relation binding must be an object");
-    let id = binding
-        .get("id")
-        .and_then(Value::as_str)
-        .expect("canonical cuVS relation binding must contain an id")
-        .to_string();
-    let vector_object = binding
-        .get("vector")
-        .and_then(Value::as_object)
-        .expect("canonical cuVS relation binding must contain a vector object");
-    let vector = if let Some(columns) = vector_object.get("columns") {
-        DenseVectorBinding::Columns(
-            columns
-                .as_array()
-                .expect("canonical cuVS columns binding must be an array")
-                .iter()
-                .map(|column| column.as_str().expect("canonical cuVS vector column must be a string").to_string())
-                .collect(),
-        )
-    } else {
-        DenseVectorBinding::VectorColumn(
-            vector_object
-                .get("column")
-                .and_then(Value::as_str)
-                .expect("canonical cuVS vector-column binding must contain a column")
-                .to_string(),
-        )
-    };
-    CuvsVectorRelationBinding { relation_role: role, id, vector }
 }

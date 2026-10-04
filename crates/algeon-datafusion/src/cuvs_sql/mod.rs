@@ -15,7 +15,7 @@ mod relation_planner;
 
 pub use exec::CuvsAlgoExec;
 pub use extension_planner::CuvsExtensionPlanner;
-pub(crate) use gpu_family::{CuvsGpuFunctionFamily, cuvs_gpu_function_availability};
+pub(crate) use gpu_family::CuvsGpuFunctionFamily;
 pub use logical::CuvsLogicalNode;
 pub use options::{CuvsValidatedOptions, CuvsVectorRelationBinding};
 pub use registry::{

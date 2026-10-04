@@ -1,7 +1,7 @@
 use super::CumlOperation;
 use crate::{error::Error, gpu_functions::dense_relation_errors::DenseRelationErrorContext};
 
-const ERRORS: DenseRelationErrorContext = DenseRelationErrorContext {
+pub(super) const ERRORS: DenseRelationErrorContext = DenseRelationErrorContext {
     family: "cuML",
     operation_fact: "cuml_operation",
     validate_operation: "algeon_datafusion.cuml_sql.validate",
@@ -22,14 +22,6 @@ pub(super) fn invalid_option(
     message: impl Into<String>,
 ) -> Error {
     ERRORS.invalid_option(operation.descriptor().sql_function_name, reason, argument, message)
-}
-
-pub(super) fn input_ordering_key_not_projected(
-    operation: CumlOperation,
-    relation_role: &'static str,
-    key: String,
-) -> Error {
-    ERRORS.input_ordering_key_not_projected(operation.descriptor().sql_function_name, relation_role, key)
 }
 
 pub(super) fn field_not_found(operation: CumlOperation, relation_role: &'static str, field: &str) -> Error {

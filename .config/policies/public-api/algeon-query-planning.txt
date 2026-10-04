@@ -3138,8 +3138,8 @@ pub const query_planning::plan::CUVS_TOP_K_FUNCTION: &str
 pub const query_planning::plan::DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD: u64
 pub const query_planning::plan::GRAPH_OPERATION_REGISTRY: &[query_planning::plan::GraphOperationDefinition]
 pub const query_planning::plan::RELATION_ID_TYPES: &[query_planning::plan::RelationIdType]
-pub fn query_planning::plan::canonicalize_cuml_options(query_planning::plan::CumlOperation, &str) -> core::result::Result<serde_json::value::Value, query_planning::plan::GpuOptionValidationError>
-pub fn query_planning::plan::canonicalize_cuvs_options(query_planning::plan::CuvsOperation, &str) -> core::result::Result<serde_json::value::Value, query_planning::plan::GpuOptionValidationError>
+pub fn query_planning::plan::canonicalize_cuml_options(query_planning::plan::CumlOperation, &str) -> core::result::Result<serde_json::map::Map<alloc::string::String, serde_json::value::Value>, query_planning::plan::GpuOptionValidationError>
+pub fn query_planning::plan::canonicalize_cuvs_options(query_planning::plan::CuvsOperation, &str) -> core::result::Result<serde_json::map::Map<alloc::string::String, serde_json::value::Value>, query_planning::plan::GpuOptionValidationError>
 pub fn query_planning::plan::edge_plan_has_simple_directed_edge_topology(&query_planning::plan::QueryPlan, &str, &str) -> bool
 pub fn query_planning::plan::graph_residency_descriptor_for_edge_plan(&query_planning::plan::QueryPlan, &query_planning::plan::GraphAlgorithmSpec) -> query_planning::plan::GraphResidencyPlanAnalysis
 pub fn query_planning::plan::graph_residency_descriptor_for_local_parquet_source(&query_planning::source::LocalParquetSource, &query_planning::plan::GraphAlgorithmSpec) -> query_planning::plan::GraphResidencyPlanAnalysis

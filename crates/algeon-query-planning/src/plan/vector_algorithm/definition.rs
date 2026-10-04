@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::plan::{
     GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition, VectorElementType,
@@ -874,7 +874,10 @@ fn option_schema(kind: GpuOptionKind, element_support: &[CuvsVectorElementSuppor
 /// Validate and canonicalize the scalar portion of an options JSON object.
 /// Relation binding field names/types are checked by the SQL adapter against
 /// its child schema, but presence and object shape are enforced here.
-pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<Value, GpuOptionValidationError> {
+pub fn canonicalize_cuvs_options(
+    operation: CuvsOperation,
+    raw: &str,
+) -> Result<Map<String, Value>, GpuOptionValidationError> {
     let descriptor = operation.descriptor();
     let object = canonicalize_options(descriptor.options, raw, "cuVS", |option, value| {
         validate_dense_relation_binding_value("cuVS", option, value, false)
@@ -919,7 +922,7 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
                 .for_argument("pq_dim"));
         }
     }
-    Ok(Value::Object(object))
+    Ok(object)
 }
 
 fn option_error(code: &'static str, message: impl Into<String>) -> GpuOptionValidationError {

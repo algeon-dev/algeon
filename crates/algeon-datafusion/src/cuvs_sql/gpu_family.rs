@@ -4,15 +4,16 @@
 //! Named validation relations become schema-only `TableScan` logical inputs, so
 //! no relation scan, GPU allocation, or cuVS operation is performed here.
 
-use datafusion::{catalog::Session, execution::context::SessionConfig};
+use datafusion::catalog::Session;
 use serde_json::{Map, Value, json};
 
 use super::{
     CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOutputContract, CuvsRelationRole, GpuOptionKind,
-    options::options_from_named_values,
+    error::ERRORS, options::dense_relation_function,
 };
 use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+    REQUIRED_FEATURE_DISABLED,
     dense_relation::{
         adapter_validation_error, resolve_schema_only_input, schema_json, validation_error, validation_request_schema,
     },
@@ -32,14 +33,6 @@ impl CuvsGpuFunctionFamily {
     pub(crate) fn new(availability: GpuFunctionAvailability) -> Self {
         Self { availability }
     }
-}
-
-/// Determine cuVS planning availability for the session being built.
-pub(crate) fn cuvs_gpu_function_availability(_config: Option<&SessionConfig>) -> GpuFunctionAvailability {
-    if !cfg!(feature = "cuvs") {
-        return GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() };
-    }
-    GpuFunctionAvailability::Available
 }
 
 #[async_trait::async_trait]
@@ -111,7 +104,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
         }
 
         let option_values = request.options.as_object().cloned().unwrap_or_default();
-        let options_json = match options_from_named_values(operation, &inputs, option_values) {
+        let options_json = match dense_relation_function(operation).options_json(&inputs, option_values) {
             Ok(options_json) => options_json,
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
@@ -131,10 +124,8 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
         };
         match CuvsLogicalNode::try_new(operation, inputs, &options_json) {
             Ok(node) => {
-                let canonical_options: Value = serde_json::from_str(node.validated_options().canonical_json())
-                    .expect("canonical cuVS options are valid JSON");
                 let mut normalized = request.clone();
-                normalized.options = canonical_value_options(operation, &canonical_options);
+                normalized.options = Value::Object(node.validated_options().value_options().clone());
                 let mut details = base_details(operation, relation_details);
                 details["output_contract"] =
                     Value::String(output_contract_name(operation.descriptor().output_contract).to_string());
@@ -282,19 +273,6 @@ fn argument_descriptions(operation: CuvsOperation) -> Value {
     )
 }
 
-fn canonical_value_options(operation: CuvsOperation, canonical: &Value) -> Value {
-    let canonical = canonical.as_object().expect("canonical cuVS options are an object");
-    Value::Object(
-        operation
-            .descriptor()
-            .options
-            .iter()
-            .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
-            .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
-            .collect(),
-    )
-}
-
 fn result_schemas(operation: CuvsOperation) -> Value {
     let descriptor = operation.descriptor();
     let fields = descriptor
@@ -398,9 +376,7 @@ fn unavailable_validation(
         valid: false,
         error_code: Some(reason.to_string()),
         message: match reason {
-            "required_feature_disabled" => {
-                "cuVS vector algorithm execution requires the cuvs Cargo feature".to_string()
-            },
+            REQUIRED_FEATURE_DISABLED => ERRORS.feature_disabled_message.to_string(),
             _ => "cuVS function is unavailable in this session/build".to_string(),
         },
         function_name: operation.descriptor().sql_function_name.to_string(),
@@ -467,15 +443,5 @@ mod tests {
                 && descriptor.examples.is_array()
                 && descriptor.limitations.is_array()
         }));
-    }
-
-    #[test]
-    fn availability_follows_the_cuvs_build_feature() {
-        let availability = cuvs_gpu_function_availability(None);
-        if cfg!(feature = "cuvs") {
-            assert!(availability.is_available());
-        } else {
-            assert_eq!(availability.unavailable_reason(), Some("required_feature_disabled"));
-        }
     }
 }

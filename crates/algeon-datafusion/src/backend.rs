@@ -35,7 +35,7 @@ use query_engine::{
 use query_engine::{error::Result as QueryEngineResult, runtime::QueryHandle};
 
 #[cfg(feature = "cugraph")]
-use crate::native_exec::GraphBfsSingleflightSnapshot;
+use crate::cugraph_sql::GraphBfsSingleflightSnapshot;
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
@@ -390,7 +390,7 @@ impl AlgeonGpuBackend {
     /// Exact-request BFS coalescing counters shared by sessions from this backend.
     #[cfg(feature = "cugraph")]
     pub fn cugraph_bfs_singleflight_snapshot(&self) -> GraphBfsSingleflightSnapshot {
-        self.optimizer_config.native_execution_config().graph_bfs_singleflight_snapshot()
+        self.optimizer_config.native_execution_config().bfs_singleflight().snapshot()
     }
 
     pub fn devices(&self) -> &[AlgeonGpuDeviceConfig] {

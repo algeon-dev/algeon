@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot;
+use algeon_datafusion::cugraph_sql::GraphBfsSingleflightSnapshot;
 
 use super::*;
 

@@ -34,13 +34,12 @@ use datafusion::{
 use crate::{
     cugraph_sql::{CugraphExtensionPlanner, CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_relation_planner},
     cuml_sql::{
-        CumlExtensionPlanner, CumlGpuFunctionFamily, CumlModelStore, CumlSqlConfig, cuml_gpu_function_availability,
-        cuml_relation_planner_with_store,
+        CumlExtensionPlanner, CumlGpuFunctionFamily, CumlModelStore, CumlSqlConfig, cuml_relation_planner_with_store,
     },
-    cuvs_sql::{CuvsExtensionPlanner, CuvsGpuFunctionFamily, cuvs_gpu_function_availability, cuvs_relation_planner},
+    cuvs_sql::{CuvsExtensionPlanner, CuvsGpuFunctionFamily, cuvs_relation_planner},
     error::{Error, ErrorCode},
     gpu_coverage::gpu_coverage_table_function,
-    gpu_functions::{GpuFunctionCatalog, GpuFunctionFamily, install_gpu_function_family},
+    gpu_functions::{GpuFunctionAvailability, GpuFunctionCatalog, GpuFunctionFamily, install_gpu_function_family},
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::Invocation},
 };
@@ -111,8 +110,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
         self.with_physical_optimizer_rules(rules)
     }
 
-    fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
-        let availability = cuvs_gpu_function_availability(self.config().as_ref());
+    fn try_with_cuvs_sql(self) -> DataFusionResult<Self> {
+        let availability = GpuFunctionAvailability::of_build_feature(cfg!(feature = "cuvs"));
         install_gpu_sql_family(
             self,
             GpuSqlFamilyInstall {
@@ -130,8 +129,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
         self.try_with_cuml_sql_config(CumlSqlConfig::default())
     }
 
-    fn try_with_cuml_sql_config(mut self, config: CumlSqlConfig) -> DataFusionResult<Self> {
-        let availability = cuml_gpu_function_availability(self.config().as_ref());
+    fn try_with_cuml_sql_config(self, config: CumlSqlConfig) -> DataFusionResult<Self> {
+        let availability = GpuFunctionAvailability::of_build_feature(cfg!(feature = "cuml"));
         let model_store = config.model_store.map(CumlModelStore::try_new).transpose()?.map(Arc::new);
         install_gpu_sql_family(
             self,
