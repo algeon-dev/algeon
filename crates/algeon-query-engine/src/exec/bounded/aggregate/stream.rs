@@ -9,7 +9,7 @@ use super::{
     execute_bounded_union, execute_compiled_bounded_aggregate_consuming_frame,
     execute_compiled_bounded_aggregate_from_empty_input, execute_compiled_bounded_aggregate_from_frame,
     execute_compiled_bounded_final_aggregate_merge, execute_partial_aggregate_with_budget,
-    execution_budget_token_for_boundary, execution_overrides,
+    execution_budget_token_for_boundary,
     final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
     observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes, run_budgeted,
     should_execute_incremental_partitioned_final_aggregate_merge, stream_bounded_join_leaf_local_parquet_source_chunks,
@@ -699,7 +699,7 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
             },
         };
         let other_frame_refs = frames.iter().map(|frame| frame.frame.frame()).collect::<Vec<_>>();
-        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
+        first_frame.on(token.exec()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
                 cudf_query_error(
                     "query_engine.bounded.aggregate.distinct_stream_concat",
@@ -915,9 +915,9 @@ fn split_compiled_aggregate_stream_frame(
         .with_fact("input_rows", rows));
     }
     let source_frame = input.frame.into_frame();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let left = match source_frame.on(overrides).slice(0, split_at) {
         Ok(left) => left,
         Err(error) => {
             return Err(cudf_query_error(
@@ -932,7 +932,7 @@ fn split_compiled_aggregate_stream_frame(
         },
     };
     let right_len = rows.saturating_sub(split_at);
-    let right = match source_frame.with_execution(&overrides).slice(split_at, right_len) {
+    let right = match source_frame.on(overrides).slice(split_at, right_len) {
         Ok(right) => right,
         Err(error) => {
             return Err(cudf_query_error(

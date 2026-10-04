@@ -1,7 +1,7 @@
 //! Tests for high-level multi-file Parquet reads.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind,
+    DataFrame, ErrorCode, ErrorKind, Exec,
     core::{Column, Table},
     frame::dataframe::MultiParquetReadOptions,
     io::parquet::{ParquetTableWriteOptions, write_parquet},
@@ -47,7 +47,11 @@ fn test_read_parquet_many_preserves_file_order_and_schema() {
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30i64, 40]).unwrap()],
     );
 
-    let df = DataFrame::read_parquet_many(&rt, &[first_path, second_path]).unwrap();
+    let df = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[first_path, second_path]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
 
     assert_eq!(df.column_names(), vec!["id", "value"]);
     assert_eq!(df.num_rows(), 4);
@@ -86,7 +90,7 @@ fn test_read_parquet_many_projection_applies_to_all_files() {
         .columns(&["value"])
         .with_runtime(&rt)
         .build();
-    let df = DataFrame::read_parquet_many_with_options(opts).unwrap();
+    let df = DataFrame::read_parquet_many(opts, Exec::RETAINED).unwrap();
 
     assert_eq!(df.column_names(), vec!["value"]);
     assert_eq!(df.num_columns(), 1);
@@ -113,11 +117,11 @@ fn test_read_parquet_many_rejects_mismatched_schema_with_stable_error() {
     );
 
     let opts = MultiParquetReadOptions::builder().filepaths(&[&first_path, &second_path]).with_runtime(&rt).build();
-    let err = DataFrame::read_parquet_many_with_options(opts).expect_err("schema mismatch should fail");
+    let err = DataFrame::read_parquet_many(opts, Exec::RETAINED).expect_err("schema mismatch should fail");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "left_column").as_deref(), Some("value"));
     assert_eq!(error_context_value(&err, "right_column").as_deref(), Some("amount"));
     assert_eq!(error_context_value(&err, "reference_file_index").as_deref(), Some("0"));
@@ -136,11 +140,11 @@ fn test_read_parquet_many_rejects_empty_file_list_as_invalid_input() {
     let rt = sample_runtime();
     let paths: Vec<std::path::PathBuf> = Vec::new();
     let opts = MultiParquetReadOptions::builder().filepaths(&paths).with_runtime(&rt).build();
-    let err = DataFrame::read_parquet_many_with_options(opts).expect_err("empty file list should fail");
+    let err = DataFrame::read_parquet_many(opts, Exec::RETAINED).expect_err("empty file list should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::EmptyInput);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("filepaths"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_input"));
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide one or more concrete Parquet file paths"));
@@ -155,11 +159,11 @@ fn test_read_parquet_many_rejects_empty_projection_as_invalid_input() {
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
     let opts = MultiParquetReadOptions::builder().filepaths(&[path]).columns(&[]).with_runtime(&rt).build();
-    let err = DataFrame::read_parquet_many_with_options(opts).expect_err("empty projection should fail clearly");
+    let err = DataFrame::read_parquet_many(opts, Exec::RETAINED).expect_err("empty projection should fail clearly");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::EmptyInput);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("columns"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_projection"));
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
@@ -174,10 +178,14 @@ fn test_read_parquet_many_rejects_directory_via_shared_input_validator() {
     let dir = TempDir::new().unwrap();
     let rt = sample_runtime();
 
-    let dir_err = DataFrame::read_parquet_many(&rt, [dir.path()]).expect_err("directory input should fail");
+    let dir_err = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[dir.path()]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("directory input should fail");
     assert_eq!(dir_err.kind(), ErrorKind::InvalidInput);
     assert_eq!(dir_err.code(), ErrorCode::PathIsDirectory);
-    assert_eq!(dir_err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(dir_err.operation(), "dataframe::read_parquet_many");
     assert!(
         dir_err.call_chain().contains(&"io::parquet::read_parquet_table"),
         "expected low-level parquet reader in call chain, got {:?}",
@@ -194,12 +202,15 @@ fn test_read_parquet_many_missing_file_reports_file_index_and_path() {
 
     write_parquet_df(&first_path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
-    let err = DataFrame::read_parquet_many(&rt, [&first_path, &missing_path])
-        .expect_err("missing file should fail with multi-file context");
+    let err = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[&first_path, &missing_path]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("missing file should fail with multi-file context");
 
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
     assert_eq!(err.code(), ErrorCode::IoFailure);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "file_index").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "path").as_deref(), Some(missing_path.to_string_lossy().as_ref()));
     assert!(
@@ -219,11 +230,15 @@ fn test_read_parquet_many_metadata_fault_reports_file_index_and_path() {
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
     arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
-    let err = DataFrame::read_parquet_many(&rt, [&path]).expect_err("metadata fault should fail");
+    let err = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[&path]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("metadata fault should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "file_index").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "path").as_deref(), Some(path.to_string_lossy().as_ref()));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_reader_schema_names"));
@@ -237,7 +252,11 @@ fn test_read_parquet_many_accepts_literal_glob_metacharacters_in_filename() {
 
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[7i32, 8]).unwrap()]);
 
-    let df = DataFrame::read_parquet_many(&rt, [&path]).unwrap();
+    let df = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[&path]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.num_rows(), 2);
@@ -253,11 +272,15 @@ fn test_read_parquet_many_does_not_expand_glob_patterns() {
 
     write_parquet_df(&existing_path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
-    let err = DataFrame::read_parquet_many(&rt, [&glob_pattern]).expect_err("glob patterns should not be expanded");
+    let err = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[&glob_pattern]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("glob patterns should not be expanded");
 
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
     assert_eq!(err.code(), ErrorCode::IoFailure);
-    assert_eq!(err.operation(), "dataframe::read_parquet_many_with_options");
+    assert_eq!(err.operation(), "dataframe::read_parquet_many");
     assert_eq!(error_context_value(&err, "file_index").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "path").as_deref(), Some(glob_pattern.to_string_lossy().as_ref()));
 }
@@ -275,7 +298,11 @@ fn test_read_parquet_many_retains_runtime_execution_domain_provenance() {
     write_parquet_df(&second_path, &["id"], vec![column_from_slice(&[3i32, 4]).unwrap()]);
 
     reset_exec_observation();
-    let df = DataFrame::read_parquet_many(&rt, &[first_path, second_path]).unwrap();
+    let df = DataFrame::read_parquet_many(
+        MultiParquetReadOptions::builder().filepaths(&[first_path, second_path]).with_runtime(&rt).build(),
+        Exec::RETAINED,
+    )
+    .unwrap();
 
     assert_eq!(df.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(df.testing_execution_domain_stream_value(), expected_stream);

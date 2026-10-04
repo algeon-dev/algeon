@@ -2,15 +2,9 @@
 use cudf::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions,
     DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
-    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, TypeId,
+    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, Exec, JoinType, MergeOptions,
     frame::dataframe::InfoDetail,
-    ops::{
-        ast::AstExpression,
-        join::{
-            FilteredJoin, FilteredJoinOptions, HashJoinKeyMetadata, HashJoinStringOffsetWidth,
-            filtered_join_allocation_preflight_for_metadata, filtered_join_probe_allocation_preflight,
-        },
-    },
+    ops::ast::AstExpression,
     testing::{
         join::{
             trigger_merge_reassembly_key_count_error_for_test, trigger_projected_cross_join_input_row_limit_for_test,
@@ -22,9 +16,9 @@ use cudf::{
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    column_from_strs_nullable, dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value,
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -131,8 +125,9 @@ fn test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_
     ])
     .unwrap();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let result = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_single_side_indices_reservation_matches_allocated(&indices);
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -151,8 +146,9 @@ fn test_dataframe_left_anti_join_materializes_only_non_matching_left_rows() {
     .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
 
-    let indices = left.left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_single_side_indices_reservation_matches_allocated(&indices);
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -172,8 +168,9 @@ fn test_dataframe_join_indices_materialize_selected_payload_columns() {
     .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["payload"]).unwrap();
 
     assert_eq!(indices.len(), 2);
     assert_eq!(materialized.column_names(), vec!["payload"]);
@@ -193,9 +190,11 @@ fn test_dataframe_join_indices_materialization_reservation_matches_output_alloca
     .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
-    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let reservation =
+        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["payload"]).unwrap();
 
     assert_eq!(reservation, device_allocated_bytes(&materialized));
     assert!(reservation > 0);
@@ -211,9 +210,11 @@ fn test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gat
     .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[999i32]).unwrap())]).unwrap();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
-    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let reservation =
+        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["payload"]).unwrap();
 
     assert!(indices.is_empty());
     assert_eq!(reservation, 0);
@@ -236,8 +237,8 @@ fn test_projected_cross_join_plan_reports_size_and_materializes_both_sides() {
 
     assert_eq!(plan.output_rows(), 6);
     assert_eq!(plan.output_column_names(), ["left_id", "left_val", "right_id", "right_val"]);
-    let reservation = plan.reservation_size_bytes().unwrap();
-    let materialized = plan.materialize().unwrap();
+    let reservation = plan.reservation_size_bytes(Exec::RETAINED).unwrap();
+    let materialized = plan.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(materialized.num_rows(), 6);
     assert_eq!(materialized.column_names(), vec!["left_id", "left_val", "right_id", "right_val"]);
@@ -260,8 +261,8 @@ fn test_projected_cross_join_plan_supports_left_only_projection() {
             DataFrameCrossJoinOptions::new().left_projection([("left_val", "left_only")]),
         )
         .unwrap();
-    let reservation = plan.reservation_size_bytes().unwrap();
-    let materialized = plan.materialize().unwrap();
+    let reservation = plan.reservation_size_bytes(Exec::RETAINED).unwrap();
+    let materialized = plan.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(plan.output_rows(), 6);
     assert_eq!(materialized.column_names(), vec!["left_only"]);
@@ -280,8 +281,8 @@ fn test_projected_cross_join_plan_supports_right_only_projection() {
             DataFrameCrossJoinOptions::new().right_projection([("right_val", "right_only")]),
         )
         .unwrap();
-    let reservation = plan.reservation_size_bytes().unwrap();
-    let materialized = plan.materialize().unwrap();
+    let reservation = plan.reservation_size_bytes(Exec::RETAINED).unwrap();
+    let materialized = plan.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(plan.output_rows(), 6);
     assert_eq!(materialized.column_names(), vec!["right_only"]);
@@ -295,9 +296,11 @@ fn test_legacy_projected_cross_join_supports_one_sided_projection() {
     let right = cross_right_df(&rt);
 
     let left_only = left
+        .on(Exec::RETAINED)
         .cross_join_projected(&right, DataFrameCrossJoinOptions::new().left_projection([("left_val", "left_only")]))
         .unwrap();
     let right_only = left
+        .on(Exec::RETAINED)
         .cross_join_projected(&right, DataFrameCrossJoinOptions::new().right_projection([("right_val", "right_only")]))
         .unwrap();
 
@@ -312,7 +315,7 @@ fn test_projected_cross_join_plan_reservation_and_materialize_use_execution_over
     let exec_rt = sample_runtime();
     let left = cross_left_df(&data_rt);
     let right = cross_right_df(&data_rt);
-    let ctx = ExecutionOverrides::new().with_stream(exec_rt.stream()).with_memory_resource(exec_rt.memory_resource());
+    let ctx = exec_rt.exec();
     let plan = left
         .projected_cross_join_plan(
             &right,
@@ -323,12 +326,12 @@ fn test_projected_cross_join_plan_reservation_and_materialize_use_execution_over
         .unwrap();
 
     reset_exec_observation();
-    let reservation = plan.reservation_size_bytes_in(&ctx).unwrap();
+    let reservation = plan.reservation_size_bytes(ctx).unwrap();
     assert_eq!(last_exec_stream_value(), exec_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), exec_rt.memory_resource().testing_raw_handle_value());
 
     reset_exec_observation();
-    let materialized = plan.materialize_in(&ctx).unwrap();
+    let materialized = plan.materialize(ctx).unwrap();
     assert_eq!(last_exec_stream_value(), exec_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), exec_rt.memory_resource().testing_raw_handle_value());
     assert_eq!(materialized.testing_execution_domain_stream_value(), exec_rt.stream().testing_raw_handle_value());
@@ -351,7 +354,7 @@ fn test_projected_cross_join_one_sided_projection_does_not_order_unselected_side
 
     reset_dependency_observation();
     let output_stream = left.testing_execution_domain_stream_value();
-    let materialized = plan.materialize().unwrap();
+    let materialized = plan.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(materialized.testing_execution_domain_stream_value(), output_stream);
     assert_eq!(dependency_wait_call_count_for_stream(output_stream), 0);
@@ -417,23 +420,20 @@ fn test_dataframe_join_indices_materialization_reservation_orders_mixed_domains(
     ])
     .unwrap();
     let right = DataFrame::from_series([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
-    let indices_ctx =
-        ExecutionOverrides::new().with_stream(indices_rt.stream()).with_memory_resource(indices_rt.memory_resource());
-    let indices = left
-        .with_execution(&indices_ctx)
-        .left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"]))
-        .unwrap();
+    let indices_ctx = indices_rt.exec();
+    let indices = left.on(indices_ctx).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
 
     reset_dependency_observation();
     reset_exec_observation();
-    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["score"]).unwrap();
+    let reservation =
+        left.on(Exec::RETAINED).materialize_join_indices_reservation_size_bytes(&indices, ["score"]).unwrap();
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
-    let materialized = left.materialize_join_indices(&indices, ["score"]).unwrap();
+    let materialized = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["score"]).unwrap();
     assert_eq!(reservation, device_allocated_bytes(&materialized));
 }
 
@@ -450,10 +450,12 @@ fn test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates
     ])
     .unwrap();
 
-    let indices =
-        left.inner_join_indices(&right, DataFrameJoinOptions::new().left_on(["id"]).right_on(["rid"])).unwrap();
-    let left_rows = left.materialize_join_indices(indices.left(), ["score"]).unwrap();
-    let right_rows = right.materialize_join_indices(indices.right(), ["value"]).unwrap();
+    let indices = left
+        .on(Exec::RETAINED)
+        .inner_join_indices(&right, DataFrameJoinOptions::new().left_on(["id"]).right_on(["rid"]))
+        .unwrap();
+    let left_rows = left.on(Exec::RETAINED).materialize_join_indices(indices.left(), ["score"]).unwrap();
+    let right_rows = right.on(Exec::RETAINED).materialize_join_indices(indices.right(), ["value"]).unwrap();
 
     assert_eq!(indices.len(), 4);
     assert_eq!(
@@ -478,9 +480,9 @@ fn test_dataframe_left_join_indices_nullify_unmatched_right_projection() {
     let right = DataFrame::from_series([("id", rt.series(&[2i32]).unwrap()), ("value", rt.series(&[200i32]).unwrap())])
         .unwrap();
 
-    let indices = left.left_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let left_rows = left.materialize_join_indices(indices.left(), ["id"]).unwrap();
-    let right_rows = right.materialize_join_indices(indices.right(), ["value"]).unwrap();
+    let indices = left.on(Exec::RETAINED).left_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let left_rows = left.on(Exec::RETAINED).materialize_join_indices(indices.left(), ["id"]).unwrap();
+    let right_rows = right.on(Exec::RETAINED).materialize_join_indices(indices.right(), ["value"]).unwrap();
 
     assert_eq!(indices.len(), 3);
     let mut rows: Vec<_> =
@@ -498,9 +500,9 @@ fn test_dataframe_full_join_indices_nullify_unmatched_sides() {
         DataFrame::from_series([("id", rt.series(&[2i32, 3]).unwrap()), ("value", rt.series(&[200i32, 300]).unwrap())])
             .unwrap();
 
-    let indices = left.full_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let left_rows = left.materialize_join_indices(indices.left(), ["score"]).unwrap();
-    let right_rows = right.materialize_join_indices(indices.right(), ["value"]).unwrap();
+    let indices = left.on(Exec::RETAINED).full_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let left_rows = left.on(Exec::RETAINED).materialize_join_indices(indices.left(), ["score"]).unwrap();
+    let right_rows = right.on(Exec::RETAINED).materialize_join_indices(indices.right(), ["value"]).unwrap();
 
     assert_eq!(indices.len(), 3);
     let mut rows: Vec<_> =
@@ -518,32 +520,33 @@ fn test_dataframe_filtered_join_probe_state_materializes_without_second_size_pro
     ])
     .unwrap();
 
-    let filtered_join = build.build_filtered_join(["id"], DataFrameFilteredJoinOptions::new()).unwrap();
+    let filtered_join =
+        build.on(Exec::RETAINED).build_filtered_join(["id"], DataFrameFilteredJoinOptions::new()).unwrap();
     assert!(filtered_join.device_allocated_size_bytes().unwrap() > 0);
 
-    let semi_state = filtered_join.begin_left_semi_probe(&probe, ["pid"]).unwrap();
+    let semi_state = filtered_join.begin_left_semi_probe(&probe, ["pid"], Exec::RETAINED).unwrap();
     assert_eq!(semi_state.output_size(), 3);
     assert!(semi_state.device_allocated_size_bytes().unwrap() > 0);
     assert_eq!(
         semi_state.probe_gather_map_reservation_size_bytes().unwrap(),
         DataFrameJoinIndices::reservation_size_bytes_for_len(semi_state.output_size()).unwrap()
     );
-    let semi_indices = semi_state.materialize_indices().unwrap();
+    let semi_indices = semi_state.materialize_indices(Exec::RETAINED).unwrap();
     assert_eq!(semi_indices.len(), 3);
-    let semi = filtered_join.materialize_probe(&probe, &semi_indices, ["score"]).unwrap();
+    let semi = filtered_join.materialize_probe(&probe, &semi_indices, ["score"], Exec::RETAINED).unwrap();
     let mut semi_scores = i32_column(&semi, "score");
     semi_scores.sort();
     assert_eq!(semi_scores, vec![20, 21, 40]);
 
-    let anti_state = filtered_join.begin_left_anti_probe(&probe, ["pid"]).unwrap();
+    let anti_state = filtered_join.begin_left_anti_probe(&probe, ["pid"], Exec::RETAINED).unwrap();
     assert_eq!(anti_state.output_size(), 1);
     assert!(anti_state.device_allocated_size_bytes().unwrap() > 0);
-    let anti_indices = anti_state.materialize_indices().unwrap();
-    let anti = filtered_join.materialize_probe(&probe, &anti_indices, ["score"]).unwrap();
+    let anti_indices = anti_state.materialize_indices(Exec::RETAINED).unwrap();
+    let anti = filtered_join.materialize_probe(&probe, &anti_indices, ["score"], Exec::RETAINED).unwrap();
     assert_eq!(i32_column(&anti, "score"), vec![10]);
 }
 
-fn test_filtered_join_fixed_width_metadata_preflight_matches_built_owner() {
+fn test_filtered_join_fixed_width_preflight_matches_built_owner() {
     let build = dataframe_from_columns(
         vec!["leftKey".to_string(), "rightKey".to_string()],
         vec![
@@ -553,55 +556,13 @@ fn test_filtered_join_fixed_width_metadata_preflight_matches_built_owner() {
     )
     .unwrap();
     let options = DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal);
-    let metadata_bytes = FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(
-        &[TypeId::Int64, TypeId::Int64],
-        build.num_rows(),
-        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal),
-    )
-    .unwrap();
-    let frame_bytes = build.filtered_join_pre_build_reservation_size_bytes(["leftKey", "rightKey"], options).unwrap();
-    let owner = build.build_filtered_join(["leftKey", "rightKey"], options).unwrap();
-
-    assert_eq!(metadata_bytes, frame_bytes);
-    assert_eq!(metadata_bytes, owner.device_allocated_size_bytes().unwrap());
-}
-
-fn test_filtered_join_string_metadata_and_probe_preflights_match_built_owners() {
-    let rt = sample_runtime();
-    let build = DataFrame::from_series([("id", rt.series(&["a", "cc"]).unwrap())]).unwrap();
-    let probe = DataFrame::from_series([("id", rt.series(&["a", "b", "cc"]).unwrap())]).unwrap();
-    let options = DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal);
-    let metadata = filtered_join_allocation_preflight_for_metadata(
-        &[HashJoinKeyMetadata::string(3, HashJoinStringOffsetWidth::I32, false)],
-        build.num_rows() as u64,
-        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal),
-    )
-    .unwrap();
-    let owner = build.build_filtered_join(["id"], options).unwrap();
-
-    assert_eq!(metadata.retained_build_bytes(), owner.device_allocated_size_bytes().unwrap());
-    let probe_state = owner.begin_left_semi_probe(&probe, ["id"]).unwrap();
-    let probe_preflight =
-        filtered_join_probe_allocation_preflight(probe.num_rows() as u64, probe_state.output_size() as u64).unwrap();
-    assert_eq!(probe_preflight.retained_probe_state_bytes(), probe_state.device_allocated_size_bytes().unwrap());
-    assert_eq!(probe_preflight.gather_map_bytes(), probe_state.probe_gather_map_reservation_size_bytes().unwrap());
-
-    let nullable_build = dataframe_from_columns(
-        vec!["id".to_string()],
-        vec![column_from_strs_nullable(&["a", "", "cc"], &[true, false, true]).unwrap()],
-    )
-    .unwrap();
-    let nullable_metadata = filtered_join_allocation_preflight_for_metadata(
-        &[HashJoinKeyMetadata::string(3, HashJoinStringOffsetWidth::I32, true)],
-        nullable_build.num_rows() as u64,
-        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Equal),
-    )
-    .unwrap();
-    let nullable_owner = nullable_build
-        .build_filtered_join(["id"], DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Equal))
+    let frame_bytes = build
+        .on(Exec::RETAINED)
+        .filtered_join_pre_build_reservation_size_bytes(["leftKey", "rightKey"], options)
         .unwrap();
-    assert_eq!(nullable_metadata.retained_build_bytes(), nullable_owner.device_allocated_size_bytes().unwrap());
-    assert_eq!(nullable_metadata.temporary_row_validity_workspace_bytes(), 0);
+    let owner = build.on(Exec::RETAINED).build_filtered_join(["leftKey", "rightKey"], options).unwrap();
+
+    assert_eq!(frame_bytes, owner.device_allocated_size_bytes().unwrap());
 }
 
 fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates() {
@@ -620,28 +581,33 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
         DataFrame::from_series([("pid", rt.series(&[4i32, 5]).unwrap()), ("score", rt.series(&[40i32, 50]).unwrap())])
             .unwrap();
 
-    let hash_join = build.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    let hash_join = build.on(Exec::RETAINED).build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
     assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
-    let first_output_size = hash_join.inner_probe_size(&first_probe, ["pid"]).unwrap();
+    let first_output_size = hash_join.inner_probe_size(&first_probe, ["pid"], Exec::RETAINED).unwrap();
     let first_reservation_size =
         DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(first_output_size).unwrap();
     assert_eq!(hash_join.probe_gather_map_reservation_size_bytes(first_output_size).unwrap(), first_reservation_size);
-    let first_indices = hash_join.inner_probe(&first_probe, ["pid"]).unwrap();
+    let first_indices = hash_join.inner_probe(&first_probe, ["pid"], Exec::RETAINED).unwrap();
     assert_eq!(first_reservation_size, first_indices.device_allocated_size_bytes().unwrap());
     assert!(first_indices.device_allocated_size_bytes().unwrap() > 0);
-    let probe_output_reservation =
-        first_probe.materialize_join_indices_reservation_size_bytes(first_indices.probe(), ["score"]).unwrap();
-    let build_output_reservation =
-        hash_join.build().materialize_join_indices_reservation_size_bytes(first_indices.build(), ["value"]).unwrap();
-    let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"]).unwrap();
-    let second_indices = hash_join.inner_probe(&second_probe, ["pid"]).unwrap();
-    let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"]).unwrap();
+    let probe_output_reservation = first_probe
+        .on(Exec::RETAINED)
+        .materialize_join_indices_reservation_size_bytes(first_indices.probe(), ["score"])
+        .unwrap();
+    let build_output_reservation = hash_join
+        .build()
+        .on(Exec::RETAINED)
+        .materialize_join_indices_reservation_size_bytes(first_indices.build(), ["value"])
+        .unwrap();
+    let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"], Exec::RETAINED).unwrap();
+    let second_indices = hash_join.inner_probe(&second_probe, ["pid"], Exec::RETAINED).unwrap();
+    let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"], Exec::RETAINED).unwrap();
 
     assert_eq!(probe_output_reservation, device_allocated_bytes(&first.probe));
     assert_eq!(build_output_reservation, device_allocated_bytes(&first.build));
     assert_eq!(hash_join.build_keys(), &["id".to_string()]);
-    assert_eq!(hash_join.inner_probe_size(&first_probe, ["pid"]).unwrap(), first_indices.len());
-    assert_eq!(hash_join.inner_probe_size(&second_probe, ["pid"]).unwrap(), second_indices.len());
+    assert_eq!(hash_join.inner_probe_size(&first_probe, ["pid"], Exec::RETAINED).unwrap(), first_indices.len());
+    assert_eq!(hash_join.inner_probe_size(&second_probe, ["pid"], Exec::RETAINED).unwrap(), second_indices.len());
     assert_eq!(first_indices.len(), 4);
     let mut first_rows: Vec<_> =
         i32_column(&first.probe, "score").into_iter().zip(i32_column(&first.build, "value")).collect();
@@ -672,7 +638,7 @@ fn test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recom
         .right_predicate_columns(["right_cond"]);
     let predicate = left_less_than_right_predicate();
 
-    let inner_state = left.mixed_inner_join_size_data(&right, &predicate, options.clone()).unwrap();
+    let inner_state = left.on(Exec::RETAINED).mixed_inner_join_size_data(&right, &predicate, options.clone()).unwrap();
     assert_eq!(inner_state.output_size(), 5);
     assert!(inner_state.device_allocated_size_bytes().unwrap() > 0);
     assert_eq!(
@@ -680,14 +646,14 @@ fn test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recom
         DataFrameJoinPairIndices::reservation_size_bytes_for_len(inner_state.output_size()).unwrap()
     );
     let inner_gather_reservation = inner_state.gather_map_reservation_size_bytes().unwrap();
-    let inner_indices = inner_state.materialize_indices().unwrap();
+    let inner_indices = inner_state.materialize_indices(Exec::RETAINED).unwrap();
     assert_eq!(inner_indices.device_allocated_size_bytes().unwrap(), inner_gather_reservation);
     assert_eq!(sorted_pair_indices(&inner_indices), vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
 
-    let left_state = left.mixed_left_join_size_data(&right, &predicate, options).unwrap();
+    let left_state = left.on(Exec::RETAINED).mixed_left_join_size_data(&right, &predicate, options).unwrap();
     assert_eq!(left_state.output_size(), 7);
     assert!(left_state.device_allocated_size_bytes().unwrap() > 0);
-    let left_indices = left_state.materialize_indices().unwrap();
+    let left_indices = left_state.materialize_indices(Exec::RETAINED).unwrap();
     assert_eq!(
         sorted_pair_indices(&left_indices),
         vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3), (3, i32::MIN), (4, i32::MIN)]
@@ -703,16 +669,16 @@ fn test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection() 
         DataFrame::from_series([("pid", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
             .unwrap();
 
-    let hash_join = build.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
-    let left_indices = hash_join.left_probe(&probe, ["pid"]).unwrap();
-    let left_probe = hash_join.materialize_probe(&probe, &left_indices, ["score"]).unwrap();
-    let left_build = hash_join.materialize_build(&left_indices, ["value"]).unwrap();
-    let full_indices = hash_join.full_probe(&probe, ["pid"]).unwrap();
-    let full_probe = hash_join.materialize_probe(&probe, &full_indices, ["score"]).unwrap();
-    let full_build = hash_join.materialize_build(&full_indices, ["value"]).unwrap();
+    let hash_join = build.on(Exec::RETAINED).build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    let left_indices = hash_join.left_probe(&probe, ["pid"], Exec::RETAINED).unwrap();
+    let left_probe = hash_join.materialize_probe(&probe, &left_indices, ["score"], Exec::RETAINED).unwrap();
+    let left_build = hash_join.materialize_build(&left_indices, ["value"], Exec::RETAINED).unwrap();
+    let full_indices = hash_join.full_probe(&probe, ["pid"], Exec::RETAINED).unwrap();
+    let full_probe = hash_join.materialize_probe(&probe, &full_indices, ["score"], Exec::RETAINED).unwrap();
+    let full_build = hash_join.materialize_build(&full_indices, ["value"], Exec::RETAINED).unwrap();
 
-    assert_eq!(hash_join.left_probe_size(&probe, ["pid"]).unwrap(), left_indices.len());
-    assert_eq!(hash_join.full_probe_size(&probe, ["pid"]).unwrap(), full_indices.len());
+    assert_eq!(hash_join.left_probe_size(&probe, ["pid"], Exec::RETAINED).unwrap(), left_indices.len());
+    assert_eq!(hash_join.full_probe_size(&probe, ["pid"], Exec::RETAINED).unwrap(), full_indices.len());
 
     let mut left_rows: Vec<_> =
         i32_column(&left_probe, "score").into_iter().zip(nullable_i32_column(&left_build, "value")).collect();
@@ -733,9 +699,11 @@ fn test_dataframe_left_semi_join_honors_null_equality() {
     let right = dataframe_from_columns(vec!["id".to_string()], vec![right_ids]).unwrap();
 
     let nulls_equal = left
+        .on(Exec::RETAINED)
         .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).null_equality(cudf::NullEquality::Equal))
         .unwrap();
     let nulls_unequal = left
+        .on(Exec::RETAINED)
         .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).null_equality(cudf::NullEquality::Unequal))
         .unwrap();
 
@@ -754,15 +722,14 @@ fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() 
     ])
     .unwrap();
     let right = DataFrame::from_series([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(query_rt.stream()).with_memory_resource(query_rt.memory_resource());
+    let ctx = query_rt.exec();
 
     reset_exec_observation();
-    let indices =
-        left.with_execution(&ctx).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices = left.on(ctx).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_eq!(last_exec_stream_value(), query_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), query_rt.memory_resource().testing_raw_handle_value());
-    assert_eq!(indices.placement().device, query_rt.device());
+    assert_eq!(indices.device(), query_rt.device());
 }
 
 fn test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles() {
@@ -775,21 +742,21 @@ fn test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles() {
     ])
     .unwrap();
     let right = DataFrame::from_series([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(query_rt.stream()).with_memory_resource(query_rt.memory_resource());
+    let ctx = query_rt.exec();
 
     reset_exec_observation();
-    let indices = left.with_execution(&ctx).inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices = left.on(ctx).inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_eq!(last_exec_stream_value(), query_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), query_rt.memory_resource().testing_raw_handle_value());
-    assert_eq!(indices.placement().device, query_rt.device());
+    assert_eq!(indices.device(), query_rt.device());
 }
 
 fn test_dataframe_left_semi_join_rejects_missing_join_keys() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.left_semi_join(&right, DataFrameJoinOptions::new()).unwrap_err();
+    let err = left.on(Exec::RETAINED).left_semi_join(&right, DataFrameJoinOptions::new()).unwrap_err();
 
     assert_merge_validation_error(
         &err,
@@ -803,7 +770,10 @@ fn test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).left_on(["id"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).left_on(["id"]))
+        .unwrap_err();
 
     assert_merge_validation_error(
         &err,
@@ -817,7 +787,7 @@ fn test_dataframe_left_anti_join_rejects_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.left_anti_join(&right, DataFrameJoinOptions::new().left_on(["id"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).left_anti_join(&right, DataFrameJoinOptions::new().left_on(["id"])).unwrap_err();
 
     assert_merge_validation_error(
         &err,
@@ -832,6 +802,7 @@ fn test_dataframe_left_semi_join_indices_rejects_key_count_mismatch() {
     let right = right_df_asym();
 
     let err = left
+        .on(Exec::RETAINED)
         .left_semi_join_indices(
             &right,
             DataFrameJoinOptions::new().left_on(["left_id"]).right_on(["right_id", "value"]),
@@ -852,8 +823,9 @@ fn test_dataframe_materialize_join_indices_reanchors_unknown_column() {
     let left = left_df();
     let right = right_df();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let err = left.materialize_join_indices(&indices, ["missing_payload"]).unwrap_err();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let err = left.on(Exec::RETAINED).materialize_join_indices(&indices, ["missing_payload"]).unwrap_err();
 
     assert_missing_column_error(&err, "missing_payload");
     assert_eq!(err.operation(), "dataframe::materialize_join_indices");
@@ -866,8 +838,9 @@ fn test_dataframe_left_semi_join_empty_result_preserves_schema() {
             .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[3i32, 4]).unwrap())]).unwrap();
 
-    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let result = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert!(indices.is_empty());
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -883,8 +856,9 @@ fn test_dataframe_left_anti_join_empty_result_preserves_schema() {
             .unwrap();
     let right = DataFrame::from_series([("id", rt.series(&[1i32, 2]).unwrap())]).unwrap();
 
-    let indices = left.left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
-    let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let indices =
+        left.on(Exec::RETAINED).left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert!(indices.is_empty());
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -942,7 +916,7 @@ fn test_inner_merge_same_key() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // Inner: matches on 2 and 3 → 2 rows.
     assert_eq!(result.num_rows(), 2);
@@ -977,7 +951,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
@@ -1007,8 +981,10 @@ fn test_left_merge_asymmetric_keys() {
     let left = left_df_asym();
     let right = right_df_asym();
 
-    let result =
-        left.merge(&right, MergeOptions::new().how_left().left_on(["left_id"]).right_on(["right_id"])).unwrap();
+    let result = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().how_left().left_on(["left_id"]).right_on(["right_id"]))
+        .unwrap();
 
     // Left: all 3 left rows preserved.
     assert_eq!(result.num_rows(), 3);
@@ -1045,7 +1021,7 @@ fn test_merge_suffix_overlapping_payload() {
     let right =
         dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // Default suffixes: _left, _right for conflicting payloads.
     assert_eq!(result.column_names(), vec!["id", "score_left", "score_right"]);
@@ -1067,7 +1043,7 @@ fn test_merge_custom_suffixes() {
     let right =
         dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(["id"]).suffixes("_x", "_y")).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["id"]).suffixes("_x", "_y")).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "score_x", "score_y"]);
 }
@@ -1076,7 +1052,7 @@ fn test_merge_no_suffix_when_no_conflict() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
     // No conflict: "score" and "value" are distinct.
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
@@ -1090,7 +1066,7 @@ fn test_full_merge() {
     let left = left_df();
     let right = right_df();
 
-    let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     // Full: keys 1,2,3,4 → 4 rows.
     assert_eq!(result.num_rows(), 4);
@@ -1132,7 +1108,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
@@ -1193,13 +1169,12 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
     .unwrap();
-    let ctx =
-        ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let ctx = target_rt.exec();
     let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
     let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = left.with_execution(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
+    let result = left.on(ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_stream_value(), expected_exec_stream);
@@ -1248,8 +1223,10 @@ fn test_full_merge_asymmetric_keys_preserves_separate_key_columns() {
     let left = left_df_asym();
     let right = right_df_asym();
 
-    let result =
-        left.merge(&right, MergeOptions::new().how_full().left_on(["left_id"]).right_on(["right_id"])).unwrap();
+    let result = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().how_full().left_on(["left_id"]).right_on(["right_id"]))
+        .unwrap();
 
     assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["left_id", "score", "right_id", "value"]);
@@ -1282,7 +1259,7 @@ fn test_merge_missing_on_key_in_left() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().on(["nonexistent"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["nonexistent"])).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
     assert_eq!(err.operation(), "dataframe::merge");
 }
@@ -1291,7 +1268,7 @@ fn test_merge_missing_on_key_in_right() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().on(["score"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["score"])).unwrap_err();
     assert_missing_column_error(&err, "score");
 }
 
@@ -1299,7 +1276,7 @@ fn test_merge_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
     assert_merge_validation_error(&err, "dataframe::merge", "left_on_without_right_on", "set right_on() or use on()");
 }
 
@@ -1307,7 +1284,7 @@ fn test_merge_right_on_without_left_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
     assert_merge_validation_error(&err, "dataframe::merge", "right_on_without_left_on", "set left_on() or use on()");
 }
 
@@ -1315,7 +1292,10 @@ fn test_merge_left_on_right_on_length_mismatch() {
     let left = left_df_asym();
     let right = right_df_asym();
 
-    let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"]))
+        .unwrap_err();
     assert_merge_validation_error(
         &err,
         "dataframe::merge",
@@ -1330,7 +1310,7 @@ fn test_merge_no_keys_specified() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new()).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge(&right, MergeOptions::new()).unwrap_err();
     assert_merge_validation_error(&err, "dataframe::merge", "missing_join_keys", "set on() or left_on() + right_on()");
 }
 
@@ -1338,16 +1318,11 @@ fn test_merge_in_context_no_keys_specified() {
     let left = left_df();
     let right = right_df();
     let rt = sample_runtime();
-    let ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
+    let ctx = rt.exec();
 
-    let err = left.with_execution(&ctx).merge(&right, MergeOptions::new()).unwrap_err();
+    let err = left.on(ctx).merge(&right, MergeOptions::new()).unwrap_err();
 
-    assert_merge_validation_error(
-        &err,
-        "dataframe::with_execution::merge",
-        "missing_join_keys",
-        "set on() or left_on() + right_on()",
-    );
+    assert_merge_validation_error(&err, "dataframe::merge", "missing_join_keys", "set on() or left_on() + right_on()");
 }
 
 fn test_merge_reassembly_key_count_invariant_uses_stable_error_contract() {
@@ -1373,7 +1348,10 @@ fn test_merge_rejects_ambiguous_join_key_configuration() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"]))
+        .unwrap_err();
 
     assert_merge_validation_error(
         &err,
@@ -1396,7 +1374,10 @@ fn test_merge_rejects_duplicate_output_names_after_reassembly() {
         dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![right_ids, right_values])
             .unwrap();
 
-    let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"]))
+        .unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "dataframe::merge");
@@ -1420,7 +1401,7 @@ fn test_merge_multi_key_inner() {
     let right =
         dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "rval".to_string()], vec![rk0, rk1, rp]).unwrap();
 
-    let result = left.merge(&right, MergeOptions::new().on(["a", "b"])).unwrap();
+    let result = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().on(["a", "b"])).unwrap();
 
     // Matches: (1,10) and (2,10) → 2 rows.
     assert_eq!(result.num_rows(), 2);
@@ -1455,7 +1436,10 @@ fn test_merge_null_equality_unequal() {
     use cudf::NullEquality;
 
     // With Equal: null == null matches, and the joined key remains null.
-    let eq_result = left.merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal)).unwrap();
+    let eq_result = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal))
+        .unwrap();
     assert_eq!(eq_result.num_rows(), 3);
     let mut eq_rows: Vec<_> = nullable_i32_column(&eq_result, "id")
         .into_iter()
@@ -1467,7 +1451,10 @@ fn test_merge_null_equality_unequal() {
     assert_eq!(eq_rows, vec![(None, 20, 200), (Some(1), 10, 100), (Some(3), 30, 300)]);
 
     // With Unequal: null != null → only rows with id=1 and id=3 match → 2 rows.
-    let ne_result = left.merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Unequal)).unwrap();
+    let ne_result = left
+        .on(Exec::RETAINED)
+        .merge(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Unequal))
+        .unwrap();
     assert_eq!(ne_result.num_rows(), 2);
     let mut ne_rows: Vec<_> = nullable_i32_column(&ne_result, "id")
         .into_iter()
@@ -1563,12 +1550,8 @@ fn dataframe_merge_tests_cases() {
             test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe,
         ),
         (
-            "test_filtered_join_fixed_width_metadata_preflight_matches_built_owner",
-            test_filtered_join_fixed_width_metadata_preflight_matches_built_owner,
-        ),
-        (
-            "test_filtered_join_string_metadata_and_probe_preflights_match_built_owners",
-            test_filtered_join_string_metadata_and_probe_preflights_match_built_owners,
+            "test_filtered_join_fixed_width_preflight_matches_built_owner",
+            test_filtered_join_fixed_width_preflight_matches_built_owner,
         ),
         (
             "test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates",

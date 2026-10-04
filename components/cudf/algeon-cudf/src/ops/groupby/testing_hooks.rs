@@ -68,7 +68,7 @@ pub fn trigger_groupby_duplicate_result_column_consumption_for_test() -> Result<
     take_groupby_result_columns_for_output(grouped_results, &[(0, 0), (0, 0)], "groupby::GroupBy::agg").map(|_| ())
 }
 
-/// Trigger the `Series::value_counts` missing-key-columns result-shape path
+/// Trigger the `SeriesOps::value_counts` missing-key-columns result-shape path
 /// used by integration tests.
 pub fn trigger_value_counts_missing_key_columns_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";
@@ -85,7 +85,7 @@ pub fn trigger_value_counts_missing_key_columns_for_test() -> Result<DataFrame> 
     .map_err(|e| e.reanchor(operation))
 }
 
-/// Trigger the `Series::value_counts` missing-count-results result-shape path
+/// Trigger the `SeriesOps::value_counts` missing-count-results result-shape path
 /// used by integration tests.
 pub fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";
@@ -103,7 +103,7 @@ pub fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame
     .map_err(|e| e.reanchor(operation))
 }
 
-/// Trigger the `Series::value_counts` empty-count-result result-shape path
+/// Trigger the `SeriesOps::value_counts` empty-count-result result-shape path
 /// used by integration tests.
 pub fn trigger_value_counts_empty_count_result_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";

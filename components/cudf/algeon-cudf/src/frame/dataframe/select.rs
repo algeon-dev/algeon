@@ -6,10 +6,7 @@ use super::{
 };
 use crate::{
     core::{column::Column, error::Result},
-    frame::{
-        factorization::{Codebook, Factorized},
-        series::Series,
-    },
+    frame::series::Series,
     hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
     internal::resolve::{duplicate_column_name_error, missing_column_error},
 };
@@ -81,46 +78,6 @@ impl DataFrame {
         })
     }
 
-    /// Build a reusable codebook from a named column's distinct values.
-    ///
-    /// The returned [`Codebook`] owns both the distinct key series and an
-    /// explicit positional code series, so it can be reused safely across
-    /// later `encode` / `decode` calls.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `column` is not in the schema.
-    pub fn codebook(&self, column: &str) -> Result<Codebook> {
-        let series = self.series(column).map_err(|e| e.reanchor("dataframe::codebook"))?;
-        series.codebook().map_err(|e| e.reanchor("dataframe::codebook").with_column(column.to_string()))
-    }
-
-    /// Factorize a named column into row-aligned encoded indices plus a reusable codebook.
-    ///
-    /// This is equivalent to `pandas.factorize()` but returns a typed
-    /// [`Factorized`] result instead of a raw `(codes, uniques)` tuple.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `column` is not in the schema.
-    pub fn factorize(&self, column: &str) -> Result<Factorized> {
-        let series = self.series(column).map_err(|e| e.reanchor("dataframe::factorize"))?;
-        series.factorize().map_err(|e| e.reanchor("dataframe::factorize").with_column(column.to_string()))
-    }
-
-    pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
-        let encoded = codebook
-            .encode(&self.series(input_column).map_err(|e| e.reanchor("dataframe::with_encoded_column"))?)
-            .map_err(|e| e.reanchor("dataframe::with_encoded_column").with_column(input_column.to_string()))?;
-        self.with_column(output_name, encoded).map_err(|e| e.reanchor("dataframe::with_encoded_column"))
-    }
-
-    pub fn with_decoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
-        let decoded = codebook
-            .decode_series(&self.series(input_column).map_err(|e| e.reanchor("dataframe::with_decoded_column"))?)
-            .map_err(|e| e.reanchor("dataframe::with_decoded_column").with_column(input_column.to_string()))?;
-        self.with_column(output_name, decoded).map_err(|e| e.reanchor("dataframe::with_decoded_column"))
-    }
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// This is a schema-only operation. The columns appear in the order given

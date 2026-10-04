@@ -13,8 +13,8 @@ use crate::{
         types::TypeId,
     },
     runtime::{
-        ExecutionBindingId, ExecutionPlacement, execution_context::ExecutionOverrides,
-        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        ExecutionBindingId, ExecutionPlacement, execution_context::Exec, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
     },
 };
 
@@ -492,8 +492,7 @@ fn validate_float32_type(input: &ColumnView<'_>) -> Result<()> {
 /// is made host-visible before this function returns.
 pub(crate) fn validate_finite_float32(input: &ColumnView<'_>) -> Result<FiniteValidationProof> {
     validate_float32_type(input)?;
-    let execution =
-        ResolvedExecution::unary(input.execution_domain(), &ExecutionOverrides::new(), FINITE_FLOAT32_OPERATION)?;
+    let execution = ResolvedExecution::unary(input.execution_domain(), Exec::RETAINED, FINITE_FLOAT32_OPERATION)?;
     validate_finite_with_exec(
         input,
         execution.output_domain(),
@@ -574,8 +573,7 @@ pub(crate) fn validate_finite_float64(input: &ColumnView<'_>) -> Result<FiniteVa
         .with_fact(FACT_LEFT_TYPE_ID, actual)
         .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float64));
     }
-    let execution =
-        ResolvedExecution::unary(input.execution_domain(), &ExecutionOverrides::new(), FINITE_FLOAT64_OPERATION)?;
+    let execution = ResolvedExecution::unary(input.execution_domain(), Exec::RETAINED, FINITE_FLOAT64_OPERATION)?;
     validate_finite_with_exec(
         input,
         execution.output_domain(),

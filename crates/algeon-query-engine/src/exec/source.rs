@@ -1,4 +1,4 @@
-use std::{fs, sync::Arc, time::Instant};
+use std::{fs, slice, sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef;
 pub use lakehouse_cache::sanitize_cache_component;
@@ -8,9 +8,9 @@ use super::{
     ArrowDataType, BinaryOp, BoundedExecutionAttempt, DataFrame, ExecutionBudgetRequest, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, GpuResidentInputMap, GpuResultHandle, LiteralValue,
     LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode, Result, SourceChunk,
-    SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode, SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN,
-    append_source_order_columns, budgeted_value, comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_without_source, cudf_unsupported_type_error, execution_overrides,
+    SourceChunkPlan, SourceChunkPlanningPolicy, SourceRead, SourceReadMode, SourceReadRuntimeMetrics,
+    ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, comma_separated_usize,
+    cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_without_source, cudf_unsupported_type_error,
     plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
@@ -282,10 +282,10 @@ fn read_local_parquet_source_uncached(
     }
 
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+    let output = frame.on(overrides).concat_many(&other_frame_refs).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_source.concat",
             "failed to concatenate native local parquet files",
@@ -490,28 +490,28 @@ fn read_local_parquet_chunk_uncached(
         })?;
     let _io_lease = context.acquire_io_lease("query_engine.local_parquet_chunk.read")?;
     let read_timer = Instant::now();
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
-        &context.runtime()?,
-        &cudf_source,
-        &cudf_chunk,
-        SourceReadMode::ExecutionFrame,
-        &token,
-    )
-    .map_err(|error| {
-        attach_row_group_facts(
-            cudf_error_for_chunk_with_budget_details(
-                "query_engine.local_parquet_chunk.read",
-                "failed to read bounded native local parquet source chunk with cudf",
-                error,
+    let runtime = context.runtime()?;
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            let request = SourceRead::new(&cudf_source, slice::from_ref(&cudf_chunk), SourceReadMode::ExecutionFrame)
+                .with_pass_read_limit_for_budget(token.member_limit_bytes()?);
+            DataFrame::read_parquet_source(request, &runtime, exec)
+        })
+        .map_err(|error| {
+            attach_row_group_facts(
+                cudf_error_for_chunk_with_budget_details(
+                    "query_engine.local_parquet_chunk.read",
+                    "failed to read bounded native local parquet source chunk with cudf",
+                    error,
+                    chunk,
+                )
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len()),
                 chunk,
             )
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len()),
-            chunk,
-        )
-    })?;
+        })?;
     record_background_cache_chunk_fill_enqueue(context, chunk);
     let observed_row_group_count = None;
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk.read", outcome.report());
@@ -737,25 +737,27 @@ fn read_local_parquet_chunk_batch_uncached(
 
     let _io_lease = context.acquire_io_lease("query_engine.local_parquet_chunk_batch.read")?;
     let read_timer = Instant::now();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        &context.runtime()?,
-        &cudf_source,
-        &cudf_chunks,
-        SourceReadMode::ExecutionFrame,
-        &token,
-    )
-    .map_err(|error| {
-        cudf_error_for_chunk_batch_with_budget_details(
-            "query_engine.local_parquet_chunk_batch.read",
-            "failed to read bounded native local parquet source chunk batch with cudf",
-            error,
-            &batch.chunks,
-        )
-        .with_fact("batch_index", batch.batch_index)
-        .with_fact("chunk_count", batch.chunk_count())
-        .with_fact("first_chunk_index", batch.chunks[0].chunk_index)
-        .with_fact("first_file_index", batch.chunks[0].file_index)
-    })?;
+    let runtime = context.runtime()?;
+    let outcome = token
+        .run("dataframe::read_parquet_source", |exec| {
+            DataFrame::read_parquet_source(
+                SourceRead::new(&cudf_source, &cudf_chunks, SourceReadMode::ExecutionFrame),
+                &runtime,
+                exec,
+            )
+        })
+        .map_err(|error| {
+            cudf_error_for_chunk_batch_with_budget_details(
+                "query_engine.local_parquet_chunk_batch.read",
+                "failed to read bounded native local parquet source chunk batch with cudf",
+                error,
+                &batch.chunks,
+            )
+            .with_fact("batch_index", batch.batch_index)
+            .with_fact("chunk_count", batch.chunk_count())
+            .with_fact("first_chunk_index", batch.chunks[0].chunk_index)
+            .with_fact("first_file_index", batch.chunks[0].file_index)
+        })?;
     for chunk in &batch.chunks {
         record_background_cache_chunk_fill_enqueue(context, chunk);
     }

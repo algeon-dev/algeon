@@ -1200,10 +1200,8 @@ fn hash_partition_source_adjacent_raw_chunk(
         SourceAdjacentAggregatePartitioner::RowBalanced => {
             let partition_column = unique_source_adjacent_partition_column_name(&raw_frame);
             let row_count = raw_frame.num_rows();
-            let with_partition_column = raw_frame
-                .with_execution(&token.execution_overrides())
-                .with_position_column(&partition_column)
-                .map_err(|error| {
+            let with_partition_column =
+                raw_frame.on(token.exec()).with_position_column(&partition_column).map_err(|error| {
                     attach_budget_token_failure_facts(
                         cudf_query_error(
                             "query_engine.bounded.aggregate.source_adjacent_partition_column",
@@ -1224,7 +1222,7 @@ fn hash_partition_source_adjacent_raw_chunk(
                 },
             };
             with_partition_column
-                .with_execution(&token.execution_overrides())
+                .on(token.exec())
                 .hash_partition_by([partition_column.as_str()], partition_count)
                 .map_err(|error| {
                     attach_budget_token_failure_facts(
@@ -1241,7 +1239,7 @@ fn hash_partition_source_adjacent_raw_chunk(
                 })
         },
         SourceAdjacentAggregatePartitioner::GroupKey { key_columns } => raw_frame
-            .with_execution(&token.execution_overrides())
+            .on(token.exec())
             .hash_partition_by(key_columns.iter().map(String::as_str), partition_count)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
@@ -1309,7 +1307,7 @@ fn slice_source_adjacent_aggregate_partition(
         return Ok(None);
     }
     let sliced = budgeted_value(
-        frame.slice_with_budget(start, len, token).map_err(|error| {
+        token.run("dataframe::slice", |exec| frame.on(exec).slice(start, len)).map_err(|error| {
             cudf_query_error(
                 "query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
                 "failed to slice source-adjacent hash-partitioned aggregate input",
@@ -1538,14 +1536,14 @@ fn split_source_adjacent_partition_aggregate_input(
         ));
     }
     let source_frame = input.frame.into_frame();
-    let overrides_lease = match execution_overrides(execution.context()) {
-        Ok(lease) => lease,
+    let exec_runtime = match execution.context().runtime() {
+        Ok(runtime) => runtime,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(error, node_id, stage, partition_index));
         },
     };
-    let overrides = overrides_lease.overrides();
-    let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
+    let overrides = exec_runtime.exec();
+    let left = match source_frame.on(overrides).slice(0, split_at) {
         Ok(frame) => frame,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(
@@ -1564,7 +1562,7 @@ fn split_source_adjacent_partition_aggregate_input(
         },
     };
     let right_len = input_rows.saturating_sub(split_at);
-    let right = match source_frame.with_execution(&overrides).slice(split_at, right_len) {
+    let right = match source_frame.on(overrides).slice(split_at, right_len) {
         Ok(frame) => frame,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(
@@ -1649,7 +1647,7 @@ fn concatenate_committed_frames(
     let concatenated = {
         let other_frames = inputs.iter().map(|input| input.frame.frame().clone()).collect::<Vec<_>>();
         let other_refs = other_frames.iter().collect::<Vec<_>>();
-        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_refs).map_err(|error| {
+        first_frame.on(token.exec()).concat_many(&other_refs).map_err(|error| {
             attach_budget_token_failure_facts(
                 cudf_query_error(concat_operation, concat_message, error)
                     .with_fact("node_id", node_id)

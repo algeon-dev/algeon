@@ -1,158 +1,6 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::core::{error::FACT_TYPE_ID, types::cudf_null_mask_allocation_size_bytes};
-
-/// Stable owner contract for metadata-only filtered-join allocation sizing.
-pub const FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str = "libcudf_filtered_join_allocation_preflight_v1";
-
-const FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION: &str = "ops::join::filtered_join_allocation_preflight_for_metadata";
-
-/// Owner allocation components for a reusable filtered-join build.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FilteredJoinAllocationPreflight {
-    retained_build_bytes: usize,
-    temporary_row_validity_workspace_bytes: usize,
-    active_build_phase_peak_bytes: usize,
-}
-
-impl FilteredJoinAllocationPreflight {
-    /// Bytes retained by the reusable build artifact.
-    pub fn retained_build_bytes(&self) -> usize {
-        self.retained_build_bytes
-    }
-
-    /// Temporary row-validity bytes live while the build artifact is created.
-    pub fn temporary_row_validity_workspace_bytes(&self) -> usize {
-        self.temporary_row_validity_workspace_bytes
-    }
-
-    /// Peak owner bytes during reusable build construction.
-    pub fn active_build_phase_peak_bytes(&self) -> usize {
-        self.active_build_phase_peak_bytes
-    }
-}
-
-/// Owner allocation components for one filtered semi or anti probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FilteredJoinProbeAllocationPreflight {
-    retained_probe_state_bytes: usize,
-    gather_map_bytes: usize,
-}
-
-impl FilteredJoinProbeAllocationPreflight {
-    /// Bytes retained by the probe membership state.
-    pub fn retained_probe_state_bytes(self) -> usize {
-        self.retained_probe_state_bytes
-    }
-
-    /// Bytes required for the output gather map.
-    pub fn gather_map_bytes(self) -> usize {
-        self.gather_map_bytes
-    }
-}
-
-fn filtered_join_preflight_error(component: &'static str) -> Error {
-    Error::new_with(
-        ErrorCode::SizeOverflow,
-        FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
-        "filtered join allocation preflight component overflowed usize",
-    )
-    .with_detail("component", component)
-    .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
-}
-
-fn checked_filtered_join_add(lhs: usize, rhs: usize, component: &'static str) -> Result<usize> {
-    lhs.checked_add(rhs).ok_or_else(|| filtered_join_preflight_error(component))
-}
-
-fn checked_filtered_join_mul(lhs: usize, rhs: usize, component: &'static str) -> Result<usize> {
-    lhs.checked_mul(rhs).ok_or_else(|| filtered_join_preflight_error(component))
-}
-
-/// Computes reusable filtered-join build allocation bounds without device work.
-pub fn filtered_join_allocation_preflight_for_metadata(
-    keys: &[HashJoinKeyMetadata],
-    rows: u64,
-    options: FilteredJoinOptions,
-) -> Result<FilteredJoinAllocationPreflight> {
-    if keys.is_empty() {
-        return Err(Error::new_with(
-            ErrorCode::ForeignInvalidArgument,
-            FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
-            "filtered join requires at least one key column",
-        )
-        .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
-    }
-    let rows = usize::try_from(rows).map_err(|_| filtered_join_preflight_error("rows"))?;
-    let mut flattened_types = Vec::new();
-    let mut nullable_key_count = 0usize;
-    for key in keys {
-        nullable_key_count += usize::from(key.nullable());
-        match key.storage() {
-            HashJoinKeyStorage::FixedWidth { type_id } => {
-                if type_id.size_in_bytes()?.is_none() {
-                    return Err(Error::new_with(
-                        ErrorCode::UnsupportedDtype,
-                        FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
-                        "fixed-width filtered join key metadata carried a variable-width dtype",
-                    )
-                    .with_fact(FACT_TYPE_ID, type_id)
-                    .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
-                }
-                flattened_types.push(type_id);
-            },
-            HashJoinKeyStorage::String { .. } => {
-                flattened_types.extend([TypeId::Int32, TypeId::Int8]);
-            },
-        }
-    }
-    let retained_build_bytes =
-        FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(&flattened_types, rows, options)?;
-    let temporary_row_validity_workspace_bytes = if options.null_eq() == NullEquality::Unequal && nullable_key_count > 1
-    {
-        cudf_null_mask_allocation_size_bytes(rows)
-    } else {
-        0
-    };
-    let active_build_phase_peak_bytes = checked_filtered_join_add(
-        retained_build_bytes,
-        temporary_row_validity_workspace_bytes,
-        "active_build_phase_peak_bytes",
-    )?;
-    Ok(FilteredJoinAllocationPreflight {
-        retained_build_bytes,
-        temporary_row_validity_workspace_bytes,
-        active_build_phase_peak_bytes,
-    })
-}
-
-/// Computes retained probe-state and gather-map bounds from row counts.
-pub fn filtered_join_probe_allocation_preflight(
-    probe_rows: u64,
-    output_rows: u64,
-) -> Result<FilteredJoinProbeAllocationPreflight> {
-    if output_rows > probe_rows {
-        return Err(Error::new_with(
-            ErrorCode::ForeignInvalidArgument,
-            FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
-            "filtered semi or anti join output cannot exceed its probe rows",
-        )
-        .with_detail("probe_rows", probe_rows.to_string())
-        .with_detail("output_rows", output_rows.to_string())
-        .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
-    }
-    let probe_rows = usize::try_from(probe_rows).map_err(|_| filtered_join_preflight_error("probe_rows"))?;
-    let output_rows = usize::try_from(output_rows).map_err(|_| filtered_join_preflight_error("output_rows"))?;
-    Ok(FilteredJoinProbeAllocationPreflight {
-        retained_probe_state_bytes: checked_filtered_join_mul(
-            probe_rows,
-            std::mem::size_of::<bool>(),
-            "retained_probe_state_bytes",
-        )?,
-        gather_map_bytes: checked_filtered_join_mul(output_rows, std::mem::size_of::<i32>(), "gather_map_bytes")?,
-    })
-}
 
 fn filter_join_kind_raw(join_type: JoinType) -> cudf_sys::cudf_join_kind_t {
     match join_type {
@@ -255,7 +103,7 @@ fn filter_join_indices_impl(
 fn filter_join_indices_with_context(
     inputs: FilterJoinInputs<'_, '_>,
     join_type: JoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let execution = compatible_filter_join_indices_domain(inputs, ctx, operation)?;
@@ -266,54 +114,18 @@ fn filter_join_indices_with_context(
     )
 }
 
-/// Filter existing join-index pairs with an AST predicate.
-///
-/// This is a two-step mixed-join primitive: callers first produce equality
-/// join maps, then pass those non-nullable `INT32` index columns here with the
-/// conditional tables used by `predicate`. The result is new `INT32` device
-/// gather maps only; payload columns are not gathered or copied. `Inner`
-/// keeps passing valid pairs, `Left` preserves left rows with right-side
-/// no-match sentinels where no predicate-passing match remains, and `Full`
-/// preserves raw input-pair semantics by passing through existing no-match
-/// pairs and splitting predicate-failing valid pairs into separate no-match
-/// sentinel pairs. `Full` filtering does not deduplicate rows already covered
-/// by other passing pairs; call [`mixed_full_join_indices`] for libcudf's
-/// complete mixed full-join row coverage.
-///
-/// The output keeps provenance from `left_indices`; same-device table, index,
-/// and predicate literal inputs are ordered against the resolved output stream,
-/// and cross-device inputs are rejected before calling libcudf. This call
-/// enqueues work on the resolved stream and does not materialize host-visible
-/// data before returning.
-pub fn filter_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    left_indices: &ColumnView<'_>,
-    right_indices: &ColumnView<'_>,
-    predicate: &AstExpression,
-    join_type: JoinType,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    filter_join_indices_with_context(
-        FilterJoinInputs { left, right, left_indices, right_indices, predicate },
-        join_type,
-        &ctx,
-        "join::filter_join_indices",
-    )
-}
-
 /// Filter existing join-index pairs using a borrowed execution override.
 ///
 /// Same result semantics as [`filter_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn filter_join_indices_in(
+pub(crate) fn filter_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     left_indices: &ColumnView<'_>,
     right_indices: &ColumnView<'_>,
     predicate: &AstExpression,
     join_type: JoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     filter_join_indices_with_context(
         FilterJoinInputs { left, right, left_indices, right_indices, predicate },
@@ -324,89 +136,15 @@ pub fn filter_join_indices_in(
 }
 
 impl FilteredJoin {
-    /// Return exact retained build bytes for fixed-width keys from schema and row metadata.
-    pub fn pre_build_reservation_size_bytes_for_fixed_width_metadata(
-        build_key_types: &[TypeId],
-        build_rows: usize,
-        options: FilteredJoinOptions,
-    ) -> Result<usize> {
-        let operation = "filtered_join::pre_build_reservation_size_bytes_for_fixed_width_metadata";
-        let raw_types = build_key_types.iter().copied().map(TypeId::to_raw).collect::<Vec<_>>();
-        let mut out = 0usize;
-        error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size(
-                    raw_types.as_ptr(),
-                    raw_types.len(),
-                    build_rows,
-                    options.load_factor_value(),
-                    &mut out,
-                )
-            },
-            operation,
-            [
-                ("build_key_count", raw_types.len().to_string()),
-                ("build_rows", build_rows.to_string()),
-                ("load_factor", options.load_factor_value().to_string()),
-                ("reservation_contract", "filtered_join_fixed_width_metadata".to_string()),
-            ],
-        )?;
-        Ok(out)
-    }
-
-    /// Return exact device bytes that must be reserved before building a
-    /// reusable filtered-join artifact from this right-side build key table.
-    ///
-    /// This is a planning contract for bounded engines, computed from
-    /// libcudf's formula-only sizing entry point
-    /// (`cudf::filtered_join::pre_build_reservation_size`): hash-table bucket
-    /// storage plus the flat preprocessed device view of the build table. No
-    /// join artifact is constructed to answer the query.
-    pub fn pre_build_reservation_size_bytes(build: &Table, options: FilteredJoinOptions) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        Self::pre_build_reservation_size_bytes_in(build, options, &ctx)
-    }
-
-    /// Return exact device bytes that must be reserved before building a
-    /// reusable filtered-join artifact using a borrowed execution override.
-    pub fn pre_build_reservation_size_bytes_in(
-        build: &Table,
-        options: FilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<usize> {
-        Self::pre_build_reservation_size_bytes_with_context(
-            build,
-            options,
-            ctx,
-            "filtered_join::pre_build_reservation_size_bytes_in",
-        )
-    }
-
-    /// Build a reusable filtered-join artifact from an owned right-side build key table.
-    pub fn new(build: Table, options: FilteredJoinOptions) -> Result<Self> {
-        let ctx = ExecutionOverrides::new();
-        Self::new_with_context(build, options, &ctx, "filtered_join::new")
-    }
-
     /// Build a reusable filtered-join artifact using a borrowed execution override.
-    pub fn new_in(build: Table, options: FilteredJoinOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub fn new_in(build: Table, options: FilteredJoinOptions, ctx: Exec<'_>) -> Result<Self> {
         Self::new_with_context(build, options, ctx, "filtered_join::new_in")
-    }
-
-    fn pre_build_reservation_size_bytes_with_context(
-        build: &Table,
-        options: FilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<usize> {
-        let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
-        Self::pre_build_reservation_size_bytes_for_view(&build_view, options, ctx, operation)
     }
 
     pub(crate) fn pre_build_reservation_size_bytes_for_view(
         build_view: &TableView<'_>,
         options: FilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         let execution = ResolvedExecution::unary(build_view.execution_domain(), ctx, operation)?;
@@ -435,7 +173,7 @@ impl FilteredJoin {
     fn new_with_context(
         build: Table,
         options: FilteredJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let handle = {
@@ -468,26 +206,6 @@ impl FilteredJoin {
         Ok(Self { handle: Arc::new(handle), build: Arc::new(build), options })
     }
 
-    /// Returns the retained right-side build key table.
-    pub fn build_keys(&self) -> &Table {
-        &self.build
-    }
-
-    /// Returns the options used when this filtered join was built.
-    pub fn options(&self) -> FilteredJoinOptions {
-        self.options
-    }
-
-    /// Returns the configured null equality setting.
-    pub fn null_eq(&self) -> NullEquality {
-        self.options.null_eq()
-    }
-
-    /// Returns the configured hash-table load factor.
-    pub fn load_factor_value(&self) -> f64 {
-        self.options.load_factor_value()
-    }
-
     /// Returns bytes retained by this reusable filtered-join build artifact.
     ///
     /// This excludes the retained build key table and any per-probe output
@@ -501,47 +219,22 @@ impl FilteredJoin {
         Ok(out)
     }
 
-    /// Begin a retained left-semi probe.
-    ///
-    /// This probes the filtered hash table once and returns a state object
-    /// that exposes the exact output size before the gather map is allocated.
-    pub fn begin_left_semi_probe(&self, probe_keys: &TableView<'_>) -> Result<FilteredJoinProbeState> {
-        let ctx = ExecutionOverrides::new();
-        self.begin_probe_with_context(probe_keys, true, &ctx, "filtered_join::begin_left_semi_probe")
-    }
-
     /// Begin a retained left-semi probe using a borrowed execution override.
     pub fn begin_left_semi_probe_in(
         &self,
         probe_keys: &TableView<'_>,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<FilteredJoinProbeState> {
         self.begin_probe_with_context(probe_keys, true, ctx, "filtered_join::begin_left_semi_probe_in")
-    }
-
-    /// Begin a retained left-anti probe.
-    pub fn begin_left_anti_probe(&self, probe_keys: &TableView<'_>) -> Result<FilteredJoinProbeState> {
-        let ctx = ExecutionOverrides::new();
-        self.begin_probe_with_context(probe_keys, false, &ctx, "filtered_join::begin_left_anti_probe")
     }
 
     /// Begin a retained left-anti probe using a borrowed execution override.
     pub fn begin_left_anti_probe_in(
         &self,
         probe_keys: &TableView<'_>,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<FilteredJoinProbeState> {
         self.begin_probe_with_context(probe_keys, false, ctx, "filtered_join::begin_left_anti_probe_in")
-    }
-
-    /// Return the exact output row count for a left semi probe.
-    ///
-    /// This legacy sizing API does not retain probe membership. Bounded
-    /// callers that need to reserve state and then materialize indices from
-    /// the same probe must use [`Self::begin_left_semi_probe`] instead.
-    pub fn left_semi_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_size_with_context(probe_keys, true, &ctx, "filtered_join::left_semi_join_size")
     }
 
     /// Return the exact output row count for a left semi probe using a borrowed execution override.
@@ -549,18 +242,8 @@ impl FilteredJoin {
     /// This legacy sizing API does not retain probe membership. Bounded
     /// callers that need to reserve state and then materialize indices from
     /// the same probe must use [`Self::begin_left_semi_probe_in`] instead.
-    pub fn left_semi_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+    pub fn left_semi_join_size_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, true, ctx, "filtered_join::left_semi_join_size_in")
-    }
-
-    /// Return the exact output row count for a left anti probe.
-    ///
-    /// This legacy sizing API does not retain probe membership. Bounded
-    /// callers that need to reserve state and then materialize indices from
-    /// the same probe must use [`Self::begin_left_anti_probe`] instead.
-    pub fn left_anti_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_size_with_context(probe_keys, false, &ctx, "filtered_join::left_anti_join_size")
     }
 
     /// Return the exact output row count for a left anti probe using a borrowed execution override.
@@ -568,28 +251,8 @@ impl FilteredJoin {
     /// This legacy sizing API does not retain probe membership. Bounded
     /// callers that need to reserve state and then materialize indices from
     /// the same probe must use [`Self::begin_left_anti_probe_in`] instead.
-    pub fn left_anti_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+    pub fn left_anti_join_size_in(&self, probe_keys: &TableView<'_>, ctx: Exec<'_>) -> Result<usize> {
         self.probe_size_with_context(probe_keys, false, ctx, "filtered_join::left_anti_join_size_in")
-    }
-
-    /// Probe with left semi semantics using an exact caller-supplied output row count.
-    ///
-    /// The supplied size is a validation hint, not a retained-probe bounded
-    /// memory contract. Bounded callers must use [`Self::begin_left_semi_probe`]
-    /// and materialize indices from the returned probe state.
-    pub fn left_semi_join_indices_with_output_size(
-        &self,
-        probe_keys: &TableView<'_>,
-        output_size: usize,
-    ) -> Result<SingleSideJoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_output_size_in(
-            probe_keys,
-            true,
-            output_size,
-            &ctx,
-            "filtered_join::left_semi_join_indices_with_output_size",
-        )
     }
 
     /// Probe with left semi semantics using a borrowed execution override and
@@ -603,7 +266,7 @@ impl FilteredJoin {
         &self,
         probe_keys: &TableView<'_>,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<SingleSideJoinIndices> {
         self.probe_indices_with_output_size_in(
             probe_keys,
@@ -611,26 +274,6 @@ impl FilteredJoin {
             output_size,
             ctx,
             "filtered_join::left_semi_join_indices_with_output_size_in",
-        )
-    }
-
-    /// Probe with left anti semantics using an exact caller-supplied output row count.
-    ///
-    /// The supplied size is a validation hint, not a retained-probe bounded
-    /// memory contract. Bounded callers must use [`Self::begin_left_anti_probe`]
-    /// and materialize indices from the returned probe state.
-    pub fn left_anti_join_indices_with_output_size(
-        &self,
-        probe_keys: &TableView<'_>,
-        output_size: usize,
-    ) -> Result<SingleSideJoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.probe_indices_with_output_size_in(
-            probe_keys,
-            false,
-            output_size,
-            &ctx,
-            "filtered_join::left_anti_join_indices_with_output_size",
         )
     }
 
@@ -645,7 +288,7 @@ impl FilteredJoin {
         &self,
         probe_keys: &TableView<'_>,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<SingleSideJoinIndices> {
         self.probe_indices_with_output_size_in(
             probe_keys,
@@ -660,7 +303,7 @@ impl FilteredJoin {
         &self,
         probe_keys: &TableView<'_>,
         semi_join: bool,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<usize> {
         let execution =
@@ -704,7 +347,7 @@ impl FilteredJoin {
         probe_keys: &TableView<'_>,
         semi_join: bool,
         output_size: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<SingleSideJoinIndices> {
         let execution =
@@ -753,7 +396,7 @@ impl FilteredJoin {
         &self,
         probe_keys: &TableView<'_>,
         semi_join: bool,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<FilteredJoinProbeState> {
         let execution =
@@ -809,11 +452,6 @@ impl FilteredJoin {
 }
 
 impl FilteredJoinProbeState {
-    /// Returns the reusable filtered join that produced this probe state.
-    pub fn join(&self) -> &FilteredJoin {
-        &self.join
-    }
-
     /// Returns the exact selected row count for this probe.
     pub fn output_size(&self) -> usize {
         self.output_size
@@ -829,30 +467,9 @@ impl FilteredJoinProbeState {
         Ok(out)
     }
 
-    /// Return exact bytes that must be reserved for this probe state's output
-    /// gather map.
-    pub fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
-        self.output_size.checked_mul(std::mem::size_of::<i32>()).ok_or_else(|| {
-            Error::new_with(
-                ErrorCode::ValueOutOfRange,
-                "filtered_join_probe_state::gather_map_reservation_size_bytes",
-                "filtered join gather-map reservation size overflowed usize",
-            )
-            .with_detail("reason", "size_overflowed_usize")
-            .with_detail("output_rows", self.output_size.to_string())
-            .with_detail("index_size_bytes", std::mem::size_of::<i32>().to_string())
-        })
-    }
-
-    /// Materialize selected probe indices from retained membership state.
-    pub fn materialize_indices(self) -> Result<SingleSideJoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.materialize_indices_in(&ctx)
-    }
-
     /// Materialize selected probe indices from retained membership state using
     /// a borrowed execution override.
-    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<SingleSideJoinIndices> {
+    pub fn materialize_indices_in(self, ctx: Exec<'_>) -> Result<SingleSideJoinIndices> {
         let operation = "filtered_join_probe_state::materialize_indices_in";
         let execution =
             ResolvedExecution::many(&self.output_domain, [self.join.build.execution_domain()], ctx, operation)?;

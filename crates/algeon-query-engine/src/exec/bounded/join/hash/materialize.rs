@@ -1,8 +1,8 @@
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
-    CommittedPartial, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, NodeId,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, cudf_query_error, execution_overrides,
-    join_side_output_upper_bound_bytes, materialize_join_output_projection, observe_device_memory_bytes,
+    CommittedPartial, Exec, GpuDataFrame, Instant, JoinNode, JoinSide, NodeId, ResidentFrameStreamPayload,
+    ResidentGpuFrame, Result, cudf_query_error, join_side_output_upper_bound_bytes, materialize_join_output_projection,
+    observe_device_memory_bytes,
     probe::reusable_hash_join_execution_strategy,
     projected_output_columns_for_retained_sizing, release_bounded_root_hash_join_build_state,
     reusable_hash_join_stream_target_output_bytes, side_metric,
@@ -75,8 +75,8 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     gather_map_bytes: u64,
     timer: Instant,
 ) -> Result<CommittedPartial> {
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let build_side = build.build_side;
     let probe_side = build.probe_side;
     let hash_table_bytes = build.hash_table_bytes;
@@ -130,7 +130,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         &right.frame,
         &left_indices,
         &right_indices,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
@@ -198,7 +198,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     right_indices: &cudf::DataFrameJoinIndices,
     offset: usize,
     len: usize,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<Vec<RootHashJoinStreamChunkOutput>> {
     match materialize_bounded_root_hash_join_index_slice_once(
         execution,
@@ -270,9 +270,9 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     right_indices: &cudf::DataFrameJoinIndices,
     offset: usize,
     len: usize,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<RootHashJoinStreamChunkOutput> {
-    let left_slice = match left_indices.indices().slice(offset, len) {
+    let left_slice = match left_indices.indices().on(Exec::RETAINED).slice(offset, len) {
         Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
         Err(error) => {
             return Err(cudf_query_error(
@@ -283,7 +283,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
             .with_fact("join_type", &node.spec.join_type));
         },
     };
-    let right_slice = match right_indices.indices().slice(offset, len) {
+    let right_slice = match right_indices.indices().on(Exec::RETAINED).slice(offset, len) {
         Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
         Err(error) => {
             return Err(cudf_query_error(

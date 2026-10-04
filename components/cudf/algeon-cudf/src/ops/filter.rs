@@ -12,7 +12,7 @@
 //! .unwrap();
 //! let mask = rt.series(&[true, false, true, false]).unwrap();
 //!
-//! let result = df.filter(&mask).unwrap();
+//! let result = df.on(rt.exec()).filter(&mask).unwrap();
 //! assert_eq!(
 //!     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
 //!     vec![10, 30]
@@ -31,9 +31,7 @@ use crate::{
         table::{Table, TableView},
         types::TypeId,
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 pub(crate) fn validate_boolean_mask(
@@ -86,15 +84,15 @@ pub(crate) fn apply_boolean_mask_impl(
 /// Rows where the mask is `true` are kept; rows where the mask is `false`
 /// or null are dropped. The mask must be a `BOOL8` column with the same
 /// number of rows as the input table.
-pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
+pub(crate) fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
     let input_rows = input.num_rows()?;
     validate_boolean_mask(mask, input_rows, "table row count", "filter::apply_boolean_mask")?;
 
-    let ctx = ExecutionOverrides::new();
+    let ctx = Exec::RETAINED;
     let execution = ResolvedExecution::binary(
         input.execution_domain(),
         mask.execution_domain(),
-        &ctx,
+        ctx,
         "filter::apply_boolean_mask",
     )?;
     apply_boolean_mask_impl(

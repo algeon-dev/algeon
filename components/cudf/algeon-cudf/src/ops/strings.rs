@@ -15,8 +15,8 @@ use crate::{
     },
     frame::series::Series,
     runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
-        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::Exec, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
     },
 };
 
@@ -76,13 +76,6 @@ impl Default for StringSliceOptions {
     }
 }
 
-/// Convert each string element to lowercase. Returns a new STRING column.
-pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_lower")?;
-    to_lower_impl(input, execution.output_domain(), execution.exec_options(), "strings::to_lower")
-}
-
 pub(crate) fn to_lower_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -93,13 +86,6 @@ pub(crate) fn to_lower_impl(
     let status = unsafe { cudf_sys::cudf_strings_to_lower_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Convert each string element to uppercase. Returns a new STRING column.
-pub fn to_upper(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_upper")?;
-    to_upper_impl(input, execution.output_domain(), execution.exec_options(), "strings::to_upper")
 }
 
 pub(crate) fn to_upper_impl(
@@ -114,16 +100,6 @@ pub(crate) fn to_upper_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Element-wise literal substring containment test. Returns a BOOL8 column.
-///
-/// `target` must be a valid (non-null) string scalar.
-pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::contains")?;
-    str_contains_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::contains")
-}
-
 pub(crate) fn str_contains_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
@@ -136,22 +112,6 @@ pub(crate) fn str_contains_impl(
         unsafe { cudf_sys::cudf_strings_contains_ex(input.raw_handle(), target.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// SQL `LIKE` pattern match against a literal pattern. Returns a BOOL8 column.
-///
-/// The pattern uses SQL wildcard semantics: `%` matches zero or more
-/// characters and `_` matches one character. `escape` may specify zero or one
-/// ASCII escape character for literal wildcard matching. This is not a regex
-/// API.
-///
-/// # Synchronization
-/// The C shim synchronizes the selected stream before returning so libcudf no
-/// longer borrows the host pattern or escape bytes.
-pub fn like(input: &ColumnView<'_>, pattern: &str, escape: Option<&str>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::like")?;
-    like_impl(input, pattern, escape, execution.output_domain(), execution.exec_options(), "strings::like")
 }
 
 pub(crate) fn like_impl(
@@ -182,31 +142,11 @@ pub(crate) fn like_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Regex replacement using a back-reference replacement template.
-///
-/// The pattern uses libcudf regex syntax. The replacement template may include
-/// back-reference markers such as `\1`.
-///
-/// # Synchronization
-/// The C shim synchronizes the selected stream before returning so libcudf no
-/// longer borrows the host pattern or replacement bytes.
-pub fn replace_with_backrefs(input: &ColumnView<'_>, pattern: &str, replacement: &str) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::replace_with_backrefs")?;
-    replace_with_backrefs_impl(
-        input,
-        pattern,
-        replacement,
-        execution.output_domain(),
-        execution.exec_options(),
-        "strings::replace_with_backrefs",
-    )
-}
-
 /// Stable contract label for the libcudf-owned replace-with-backrefs size preflight.
 pub const REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT: &str = "regexp_replace_output_size_preflight";
 
-/// Exact output bytes and conservative workspace preflight for [`replace_with_backrefs`].
+/// Exact output bytes and conservative workspace preflight for string
+/// replacement with back-references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplaceWithBackrefsOutputSizePreflight {
     retained_output_bytes: usize,
@@ -242,28 +182,6 @@ impl ReplaceWithBackrefsOutputSizePreflight {
     pub fn required_budget_bytes(self) -> usize {
         self.reservation_required_bytes
     }
-}
-
-/// Exact retained-output and conservative temporary-workspace preflight for
-/// replace-with-backrefs.
-///
-/// This is the lower-level size API that retires the previous unresolved-preflight
-/// gap for native `REGEXP_REPLACE` output accounting.
-pub fn replace_with_backrefs_output_size(
-    input: &ColumnView<'_>,
-    pattern: &str,
-    replacement: &str,
-) -> Result<ReplaceWithBackrefsOutputSizePreflight> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::replace_with_backrefs_output_size")?;
-    replace_with_backrefs_output_size_impl(
-        input,
-        pattern,
-        replacement,
-        execution.exec_options(),
-        "strings::replace_with_backrefs_output_size",
-    )
 }
 
 pub(crate) fn replace_with_backrefs_impl(
@@ -396,8 +314,8 @@ impl SeriesPreparedReplaceWithBackrefs {
     /// Consume the prepared handle and materialize the replaced strings column.
     pub fn execute(self) -> Result<Series> {
         let operation = "series::prepared_replace_with_backrefs::execute";
-        let ctx = ExecutionOverrides::new();
-        self.execute_in_context(&ctx, operation, |error| error)
+        let ctx = Exec::RETAINED;
+        self.execute_in_context(ctx, operation, |error| error)
     }
 
     /// Consume the prepared handle under a hard execution-budget token.
@@ -409,8 +327,8 @@ impl SeriesPreparedReplaceWithBackrefs {
     pub fn execute_with_budget(self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<Series>> {
         let operation = "series::prepared_replace_with_backrefs::execute_with_budget";
         let facts = self.facts;
-        let ctx = token.execution_overrides();
-        let output = self.execute_in_context(&ctx, operation, |error| token.annotate_error(error, operation))?;
+        let ctx = token.exec();
+        let output = self.execute_in_context(ctx, operation, |error| token.annotate_error(error, operation))?;
         let output_bytes =
             output.device_allocated_size_bytes().map_err(|error| token.annotate_error(error, operation))?;
         let report = token
@@ -435,7 +353,7 @@ impl SeriesPreparedReplaceWithBackrefs {
 
     fn execute_in_context(
         mut self,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
         map_execution_error: impl Fn(Error) -> Error,
     ) -> Result<Series> {
@@ -493,15 +411,15 @@ impl Drop for SeriesPreparedReplaceWithBackrefs {
 /// Retains the input [`Series`] and borrows its column for the prepared
 /// handle's lifetime. Device allocations use the explicit preflight token's
 /// execution memory resource when a token is supplied.
-pub fn prepare_replace_with_backrefs_with_budget(
+pub(crate) fn prepare_replace_with_backrefs_with_budget(
     input: &Series,
     pattern: &str,
     replacement: &str,
     token: &ExecutionBudgetToken,
 ) -> Result<BudgetedExecutionOutcome<SeriesPreparedReplaceWithBackrefs>> {
     let operation = "strings::prepare_replace_with_backrefs_with_budget";
-    let ctx = token.execution_overrides();
-    let prepared = prepare_replace_with_backrefs_in_context(input, pattern, replacement, &ctx, operation)
+    let ctx = token.exec();
+    let prepared = prepare_replace_with_backrefs_in_context(input, pattern, replacement, ctx, operation)
         .map_err(|error| token.annotate_error(error, operation))?;
     let facts = prepared.output_size_facts();
     let report = token
@@ -521,7 +439,7 @@ pub fn prepare_replace_with_backrefs_with_budget(
 }
 
 /// Prepare reusable replace-with-backrefs state using the default execution context.
-pub fn prepare_replace_with_backrefs(
+pub(crate) fn prepare_replace_with_backrefs(
     input: &Series,
     pattern: &str,
     replacement: &str,
@@ -530,7 +448,7 @@ pub fn prepare_replace_with_backrefs(
         input,
         pattern,
         replacement,
-        &ExecutionOverrides::new(),
+        Exec::RETAINED,
         "strings::prepare_replace_with_backrefs",
     )
 }
@@ -539,7 +457,7 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
     input: &Series,
     pattern: &str,
     replacement: &str,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<SeriesPreparedReplaceWithBackrefs> {
     let execution = ResolvedExecution::unary(input.as_column().execution_domain(), ctx, operation)?;
@@ -597,14 +515,6 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
     })
 }
 
-/// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
-pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::starts_with")?;
-    starts_with_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::starts_with")
-}
-
 pub(crate) fn starts_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
@@ -620,14 +530,6 @@ pub(crate) fn starts_with_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Element-wise ends-with test against a scalar string. Returns a BOOL8 column.
-pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::ends_with")?;
-    ends_with_impl(input, target, execution.output_domain(), execution.exec_options(), "strings::ends_with")
-}
-
 pub(crate) fn ends_with_impl(
     input: &ColumnView<'_>,
     target: &Scalar,
@@ -640,16 +542,6 @@ pub(crate) fn ends_with_impl(
         unsafe { cudf_sys::cudf_strings_ends_with_ex(input.raw_handle(), target.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Slice each string using zero-based character positions. Returns a STRING column.
-///
-/// Bounds use libcudf's `[start, stop)` character-position semantics. This
-/// allocates a new GPU string column and preserves nulls.
-pub fn slice(input: &ColumnView<'_>, options: StringSliceOptions) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::slice")?;
-    slice_impl(input, options, execution.output_domain(), execution.exec_options(), "strings::slice")
 }
 
 pub(crate) fn slice_impl(
@@ -684,14 +576,6 @@ pub(crate) fn slice_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Row-wise concatenate string columns with an empty separator.
-///
-/// Null input values are treated as empty strings, matching DataFusion SQL
-/// `concat` semantics. At least two input columns are required.
-pub fn concatenate(inputs: &[&ColumnView<'_>]) -> Result<Column> {
-    concatenate_impl(inputs, "strings::concatenate")
-}
-
 pub(crate) fn concatenate_impl(inputs: &[&ColumnView<'_>], operation: &'static str) -> Result<Column> {
     if inputs.len() < 2 {
         return Err(error::Error::new_with(
@@ -701,11 +585,11 @@ pub(crate) fn concatenate_impl(inputs: &[&ColumnView<'_>], operation: &'static s
         ));
     }
     let num_columns = error::usize_to_i32(inputs.len(), operation, "num_columns")?;
-    let ctx = ExecutionOverrides::new();
+    let ctx = Exec::RETAINED;
     let execution = ResolvedExecution::many(
         inputs[0].execution_domain(),
         inputs.iter().skip(1).map(|input| input.execution_domain()),
-        &ctx,
+        ctx,
         operation,
     )?;
     let handles = inputs.iter().map(|input| input.raw_handle()).collect::<Vec<_>>();
@@ -715,17 +599,6 @@ pub(crate) fn concatenate_impl(inputs: &[&ColumnView<'_>], operation: &'static s
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
-}
-
-/// Strip characters from one or both sides of each string.
-///
-/// `to_strip` specifies the set of characters to remove. Pass a valid empty
-/// string scalar to strip whitespace.
-pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution =
-        ResolvedExecution::binary(input.execution_domain(), to_strip.execution_domain(), &ctx, "strings::strip")?;
-    strip_impl(input, side, to_strip, execution.output_domain(), execution.exec_options(), "strings::strip")
 }
 
 pub(crate) fn strip_impl(
@@ -745,15 +618,6 @@ pub(crate) fn strip_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Character count (not byte count) per string. Returns an INT32 column.
-///
-/// Equivalent to cuDF Python's `Series.str.len()`.
-pub fn count_characters(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_characters")?;
-    count_characters_impl(input, execution.output_domain(), execution.exec_options(), "strings::count_characters")
-}
-
 pub(crate) fn count_characters_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -766,13 +630,6 @@ pub(crate) fn count_characters_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Byte count per string. Returns an INT32 column.
-pub fn count_bytes(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_bytes")?;
-    count_bytes_impl(input, execution.output_domain(), execution.exec_options(), "strings::count_bytes")
-}
-
 pub(crate) fn count_bytes_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -783,24 +640,6 @@ pub(crate) fn count_bytes_impl(
     let status = unsafe { cudf_sys::cudf_strings_count_bytes_ex(input.raw_handle(), &mut out, exec_options) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Parse each string element as an integer of `output_type`, producing null
-/// rows for any element that does not parse cleanly or whose value would
-/// overflow the target type. Null inputs stay null. Mirrors SQL `TRY_CAST`
-/// semantics for `STRING → INTEGER`.
-///
-/// `output_type` must be an integral type. Boolean is not accepted.
-pub fn try_to_integers(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::try_to_integers")?;
-    try_to_integers_impl(
-        input,
-        output_type,
-        execution.output_domain(),
-        execution.exec_options(),
-        "strings::try_to_integers",
-    )
 }
 
 pub(crate) fn try_to_integers_impl(
@@ -832,7 +671,8 @@ mod tests {
         let runtime = Runtime::new().expect("test runtime");
         let input = runtime.series(&["abc-123", "def-456"]).expect("input series");
         let (pattern, replacement) = (r"([a-z]+)-(\d+)", r"\2/\1");
-        let facts = input.str().replace_with_backrefs_output_size(pattern, replacement).expect("size pass");
+        let facts =
+            input.on(Exec::RETAINED).str().replace_with_backrefs_output_size(pattern, replacement).expect("size pass");
         let domain = runtime
             .device_memory_manager()
             .expect("memory manager")
@@ -844,17 +684,14 @@ mod tests {
             ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("replace_backrefs_domain"),
             lease,
         );
-        let execution_domain = token
-            .execution_overrides()
-            .resolve_output_domain(input.as_column().execution_domain())
-            .expect("token output domain");
+        let execution_domain =
+            token.exec().resolve_output_domain(input.as_column().execution_domain()).expect("token output domain");
         assert!(
             !ExecutionDomain::same_provenance(&execution_domain, input.as_column().execution_domain()),
             "the token must allocate through its own memory resource"
         );
 
         let (prepared, _) = input
-            .str()
             .prepare_replace_with_backrefs_with_budget(pattern, replacement, &token)
             .expect("prepare")
             .into_parts();

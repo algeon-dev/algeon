@@ -1,9 +1,8 @@
 use super::{
-    BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
-    ExecutionOverrides, Instant, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, cudf_query_error,
-    execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
-    prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
-    release_bounded_join_side_frame, state::validate_root_hash_join,
+    BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, Exec,
+    Instant, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, cudf_query_error, join_index_error,
+    join_side_output_upper_bound_bytes_for_row_counts, prepare_bounded_join_side_input_from_resident_frame,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, state::validate_root_hash_join,
     stream::materialize_bounded_root_hash_join_probe_stream, sum_bounds,
 };
 
@@ -12,9 +11,9 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
     build: &BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,
     probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, u64)> {
-    let indices = match build.hash_join.hash_join().inner_probe_in(&probe.frame, probe_keys, overrides) {
+    let indices = match build.hash_join.hash_join().inner_probe(&probe.frame, probe_keys, overrides) {
         Ok(indices) => indices,
         Err(error) => {
             release_bounded_join_side_frame(probe);
@@ -41,7 +40,7 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi
     build: &BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,
     probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, u64)> {
     let output_size = match root_hash_join_multi_pass_probe_size(node, build, &probe, probe_keys, overrides) {
         Ok(output_size) => output_size,
@@ -78,12 +77,12 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_size
     build: &BoundedRootHashJoinBuildState,
     probe: &BoundedJoinSideFrame,
     probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<usize> {
     match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, overrides),
-        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, overrides),
-        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, overrides),
+        JoinType::Inner => build.hash_join.hash_join().inner_probe_size(&probe.frame, probe_keys, overrides),
+        JoinType::Left => build.hash_join.hash_join().left_probe_size(&probe.frame, probe_keys, overrides),
+        JoinType::Full => build.hash_join.hash_join().full_probe_size(&probe.frame, probe_keys, overrides),
         JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
@@ -97,20 +96,17 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_with
     probe: &BoundedJoinSideFrame,
     probe_keys: &[String],
     output_size: usize,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<cudf::DataFrameHashJoinPairIndices> {
     match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            overrides,
-        ),
+        JoinType::Inner => {
+            build.hash_join.hash_join().inner_probe_with_output_size(&probe.frame, probe_keys, output_size, overrides)
+        },
         JoinType::Left => {
-            build.hash_join.hash_join().left_probe_with_output_size_in(&probe.frame, probe_keys, output_size, overrides)
+            build.hash_join.hash_join().left_probe_with_output_size(&probe.frame, probe_keys, output_size, overrides)
         },
         JoinType::Full => {
-            build.hash_join.hash_join().full_probe_with_output_size_in(&probe.frame, probe_keys, output_size, overrides)
+            build.hash_join.hash_join().full_probe_with_output_size(&probe.frame, probe_keys, output_size, overrides)
         },
         JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
@@ -200,12 +196,12 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let (probe, indices, gather_map_bytes) = if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-        execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, &build, probe, probe_keys, &overrides)?
+        execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, &build, probe, probe_keys, overrides)?
     } else {
-        execute_bounded_root_hash_join_multi_pass_probe_indices(node, &build, probe, probe_keys, &overrides)?
+        execute_bounded_root_hash_join_multi_pass_probe_indices(node, &build, probe, probe_keys, overrides)?
     };
     let output_reservation_bounds =
         match root_hash_join_output_reservation_bounds(execution, node_id, node, &build, &probe, &indices) {
@@ -242,12 +238,12 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     if reusable_hash_join_single_pass_inner_probe_supported(node, build) {
         let (probe, indices, gather_map_bytes) =
-            execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, build, probe, probe_keys, &overrides)?;
+            execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, build, probe, probe_keys, overrides)?;
         return materialize_bounded_root_hash_join_probe_stream(
             execution,
             node_id,
@@ -261,7 +257,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
     }
 
     let (probe, indices, gather_map_bytes) =
-        execute_bounded_root_hash_join_multi_pass_probe_indices(node, build, probe, probe_keys, &overrides)?;
+        execute_bounded_root_hash_join_multi_pass_probe_indices(node, build, probe, probe_keys, overrides)?;
 
     materialize_bounded_root_hash_join_probe_stream(
         execution,

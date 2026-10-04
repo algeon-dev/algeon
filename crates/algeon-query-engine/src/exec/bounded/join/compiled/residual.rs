@@ -7,8 +7,8 @@ use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, Expr, GpuDataFrame,
     JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics, QueryError,
     QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts, cudf_query_error,
-    datafusion_order_columns, execution_budget_token_for_boundary, execution_overrides, lower_expr,
-    observe_device_memory_bytes, probe_side, residual_input_columns, side_metric,
+    datafusion_order_columns, execution_budget_token_for_boundary, lower_expr, observe_device_memory_bytes, probe_side,
+    residual_input_columns, side_metric,
 };
 use crate::expr::CaseWhen;
 
@@ -29,8 +29,8 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
 ) -> Result<(ResidentGpuFrame, OneShotJoinChunkMetrics)> {
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     txn.set_indices(indices);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let residual_candidate = match one_shot_residual_candidate_projection(node) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -65,7 +65,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let candidate = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
-        &overrides,
+        overrides,
         &residual_candidate.projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
@@ -108,8 +108,8 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             return Err(error);
         },
     };
-    let filter_overrides = token.execution_overrides();
-    let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
+    let filter_overrides = token.exec();
+    let filtered = match candidate.on(filter_overrides).filter_expr(predicate) {
         Ok(filtered) => filtered,
         Err(error) => {
             txn.rollback();

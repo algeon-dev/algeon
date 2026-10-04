@@ -4,8 +4,7 @@ use super::{
     super::owned::DataFrame,
     require_reader_schema_names,
     source_budget::{
-        ParquetSourceChunkReadOutput, local_parquet_source_kind_str, parquet_source_budget_context,
-        source_chunk_continues_previous_reader_input,
+        ParquetSourceChunkReadOutput, local_parquet_source_kind_str, source_chunk_continues_previous_reader_input,
     },
     source_columns::{
         materialize_all_null_read_columns, materialize_missing_null_columns, materialize_partition_columns,
@@ -13,6 +12,7 @@ use super::{
     },
 };
 use crate::{
+    Exec,
     core::error::{Error, ErrorCode, Result},
     hash::FastHashSet,
     io::{
@@ -21,12 +21,59 @@ use crate::{
         },
         source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode, ZERO_COLUMN_COUNT_COLUMN},
     },
-    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime},
+    runtime::Runtime,
 };
 
-pub(super) enum SourceChunkReadInput<'a> {
+/// Where a source read takes its Parquet bytes from.
+#[derive(Debug, Clone, Copy)]
+pub enum SourceReadInput<'a> {
+    /// Read each chunk's file through its path or remote source.
     Path,
+    /// Read the one requested chunk from a caller-owned buffer holding the
+    /// full Parquet file. The buffer is borrowed only for the call.
     HostBuffer(&'a [u8]),
+}
+
+/// One read of planned chunks of a checked local Parquet source, for
+/// [`DataFrame::read_parquet_source`].
+#[derive(Debug, Clone, Copy)]
+pub struct SourceRead<'a> {
+    /// The checked source the chunks belong to.
+    pub source: &'a LocalParquetSource,
+    /// Planned chunks to read; see [`DataFrame::read_parquet_source`] for how
+    /// the chunk count selects the reader.
+    pub chunks: &'a [SourceChunk],
+    /// Final source output or the query-execution frame.
+    pub mode: SourceReadMode,
+    /// Path-based or host-buffer input.
+    pub input: SourceReadInput<'a>,
+    /// Bound on Parquet read and decompression scratch in bytes. The rows
+    /// returned are unchanged; a row group larger than the bound still loads.
+    pub pass_read_limit: Option<u64>,
+}
+
+impl<'a> SourceRead<'a> {
+    /// Read `chunks` of `source` from their paths in `mode`, with unbounded
+    /// read scratch.
+    pub fn new(source: &'a LocalParquetSource, chunks: &'a [SourceChunk], mode: SourceReadMode) -> Self {
+        Self { source, chunks, mode, input: SourceReadInput::Path, pass_read_limit: None }
+    }
+
+    /// Read the one requested chunk from `buffer` instead of its path.
+    pub fn from_host_buffer(mut self, buffer: &'a [u8]) -> Self {
+        self.input = SourceReadInput::HostBuffer(buffer);
+        self
+    }
+
+    /// Bound read and decompression scratch to a share of `budget_bytes`, the
+    /// allocation limit the read runs under. The decoded output must fit in
+    /// the same budget, so scratch takes half of it; the divisor is a starting
+    /// point, not a measured optimum.
+    pub fn with_pass_read_limit_for_budget(mut self, budget_bytes: usize) -> Self {
+        const SCRATCH_SHARE_DIVISOR: u64 = 2;
+        self.pass_read_limit = Some((budget_bytes as u64) / SCRATCH_SHARE_DIVISOR);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -65,13 +112,13 @@ impl ParquetPhysicalReadPlan {
 fn parquet_physical_read_plan(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    input: &SourceChunkReadInput<'_>,
+    input: &SourceReadInput<'_>,
 ) -> Result<ParquetPhysicalReadPlan> {
     let read_columns = chunk.read_columns().to_vec();
     if read_columns.is_empty()
         || source.reader_predicate().is_some()
         || chunk.remote_source().is_some()
-        || !matches!(input, SourceChunkReadInput::Path)
+        || !matches!(input, SourceReadInput::Path)
     {
         return Ok(ParquetPhysicalReadPlan::new(read_columns));
     }
@@ -143,7 +190,7 @@ fn parquet_multi_physical_read_plan(
     let mut chunk_plans = Vec::with_capacity(chunks.len());
     let mut selected_row_count = 0usize;
     for chunk in chunks {
-        let plan = parquet_physical_read_plan(source, chunk, &SourceChunkReadInput::Path)?;
+        let plan = parquet_physical_read_plan(source, chunk, &SourceReadInput::Path)?;
         if let Some(row_count) = plan.row_count {
             selected_row_count = selected_row_count.checked_add(row_count).ok_or_else(|| {
                 Error::new_with(
@@ -192,36 +239,9 @@ pub(super) fn read_parquet_source_chunk_frame(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     mode: SourceReadMode,
+    input: SourceReadInput<'_>,
+    pass_read_limit: Option<u64>,
     operation: &'static str,
-) -> Result<ParquetSourceChunkReadOutput> {
-    read_parquet_source_chunk_frame_with_input(runtime, source, chunk, mode, operation, SourceChunkReadInput::Path)
-}
-
-pub(super) fn read_parquet_source_chunk_frame_from_host_buffer(
-    runtime: &Runtime,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    mode: SourceReadMode,
-    host_buffer: &[u8],
-    operation: &'static str,
-) -> Result<ParquetSourceChunkReadOutput> {
-    read_parquet_source_chunk_frame_with_input(
-        runtime,
-        source,
-        chunk,
-        mode,
-        operation,
-        SourceChunkReadInput::HostBuffer(host_buffer),
-    )
-}
-
-fn read_parquet_source_chunk_frame_with_input(
-    runtime: &Runtime,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    mode: SourceReadMode,
-    operation: &'static str,
-    input: SourceChunkReadInput<'_>,
 ) -> Result<ParquetSourceChunkReadOutput> {
     source.validate_chunk_partition_values(chunk, operation)?;
 
@@ -253,7 +273,7 @@ fn read_parquet_source_chunk_frame_with_input(
     } else {
         let row_groups = if chunk.reads_all_row_groups() { None } else { Some(chunk.row_group_indexes_i32()?) };
         let table_options = match input {
-            SourceChunkReadInput::Path => {
+            SourceReadInput::Path => {
                 if let Some(remote_source) = chunk.remote_source() {
                     let mut remote_source = remote_source.clone();
                     if let Some(known_file_bytes) = chunk.known_file_bytes() {
@@ -280,7 +300,7 @@ fn read_parquet_source_chunk_frame_with_input(
                     )
                 }
             },
-            SourceChunkReadInput::HostBuffer(buffer) => ParquetTableReadOptions::from_host_buffer_parts(
+            SourceReadInput::HostBuffer(buffer) => ParquetTableReadOptions::from_host_buffer_parts(
                 buffer,
                 Some(physical_read_plan.read_columns.clone()),
                 0,
@@ -289,7 +309,8 @@ fn read_parquet_source_chunk_frame_with_input(
                 source.reader_predicate().cloned(),
                 runtime.clone(),
             ),
-        };
+        }
+        .with_pass_read_limit(pass_read_limit);
         let result = parquet::read_parquet_table_with_evidence(&table_options).map_err(|error| {
             error
                 .reanchor(operation)
@@ -336,6 +357,7 @@ pub(super) fn read_parquet_source_chunks_frame(
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     mode: SourceReadMode,
+    pass_read_limit: Option<u64>,
     operation: &'static str,
 ) -> Result<ParquetSourceChunkReadOutput> {
     if chunks.is_empty() {
@@ -423,7 +445,7 @@ pub(super) fn read_parquet_source_chunks_frame(
 
     let physical_read_plan = parquet_multi_physical_read_plan(source, chunks)?;
     if physical_read_plan.requires_per_chunk_batch {
-        return read_parquet_source_chunks_frame_per_chunk(runtime, source, chunks, mode, operation);
+        return read_parquet_source_chunks_frame_per_chunk(runtime, source, chunks, mode, pass_read_limit, operation);
     }
     let (mut frame, read_evidence) = if physical_read_plan.read_columns.is_empty() {
         (runtime.empty_dataframe(), Some(ParquetReadEvidence::local_path_multi_footer_materialized()))
@@ -435,6 +457,7 @@ pub(super) fn read_parquet_source_chunks_frame(
             source.reader_predicate().cloned(),
             runtime.clone(),
         );
+        let table_options = ParquetMultiTableReadOptions { pass_read_limit, ..table_options };
         let result = parquet::read_parquet_multi_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let read_evidence = result.read_evidence().cloned();
         let (table, names) =
@@ -461,17 +484,19 @@ fn read_parquet_source_chunks_frame_per_chunk(
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     mode: SourceReadMode,
+    pass_read_limit: Option<u64>,
     operation: &'static str,
 ) -> Result<ParquetSourceChunkReadOutput> {
     let mut frames = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        let (frame, _read_evidence) = read_parquet_source_chunk_frame_with_input(
+        let (frame, _read_evidence) = read_parquet_source_chunk_frame(
             runtime,
             source,
             chunk,
             mode,
+            SourceReadInput::Path,
+            pass_read_limit,
             operation,
-            SourceChunkReadInput::Path,
         )?
         .into_parts();
         frames.push(frame);
@@ -482,7 +507,7 @@ fn read_parquet_source_chunks_frame_per_chunk(
             .with_detail("reason", "empty_source_chunk_batch"));
     };
     let rest_refs: Vec<&DataFrame> = rest.iter().collect();
-    let frame = first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?;
+    let frame = first.on(Exec::RETAINED).concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?;
     Ok(ParquetSourceChunkReadOutput::new(frame, Some(ParquetReadEvidence::local_path_multi_footer_materialized())))
 }
 
@@ -493,73 +518,4 @@ pub(super) fn dataframe_from_parquet_table_options(
     let result = parquet::read_parquet_table(table_options).map_err(|error| error.reanchor(operation))?;
     let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
     DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))
-}
-
-/// Read/decompression scratch budget for one source-chunk read.
-///
-/// The decoded output must fit inside the same budget, so scratch takes a share
-/// of it rather than all of it. The divisor is a starting point, not a measured
-/// optimum.
-fn parquet_pass_read_limit_for_budget(budget_bytes: usize) -> u64 {
-    const SCRATCH_SHARE_DIVISOR: u64 = 2;
-    (budget_bytes as u64) / SCRATCH_SHARE_DIVISOR
-}
-
-pub(super) fn read_parquet_source_chunk_with_budget_input(
-    runtime: &Runtime,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    mode: SourceReadMode,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-    input: SourceChunkReadInput<'_>,
-) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
-    // Shapes the read only; the allocator remains the single arbiter of the
-    // query's allocation limit.
-    let budget_runtime = runtime
-        .with_memory_resource_override_and_parquet_pass_read_limit(
-            token.memory_resource(),
-            parquet_pass_read_limit_for_budget(token.member_limit_bytes().map_err(|error| error.reanchor(operation))?),
-            operation,
-        )
-        .map_err(|error| token.annotate_error(error, operation))?;
-    let output = match input {
-        SourceChunkReadInput::Path => read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode, operation),
-        SourceChunkReadInput::HostBuffer(buffer) => {
-            read_parquet_source_chunk_frame_from_host_buffer(&budget_runtime, source, chunk, mode, buffer, operation)
-        },
-    }
-    .map_err(|error| token.annotate_error(error, operation))?;
-    let output_rows = output.frame().num_rows();
-    let output_bytes = output
-        .frame()
-        .device_allocated_size_bytes()
-        .map_err(|error| error.reanchor(operation))
-        .map_err(|error| token.annotate_error(error, operation))?;
-    let report = token
-        .reservation_enforced_report()
-        .with_retained_bytes(output_bytes)
-        .with_output_bytes(output_bytes)
-        .with_output_rows(output_rows)
-        .with_context_facts(parquet_source_budget_context(source, chunk, mode));
-    // The preflight only describes the finished read in the report. When the
-    // byte model cannot bound it, the frame stays and the report says so; the
-    // read itself already passed the source validation the preflight repeats.
-    let report = match DataFrame::parquet_source_chunk_exact_preflight(source, chunk, mode) {
-        Ok(Some(preflight)) => report.with_context_facts([
-            ("source_read_preflight_contract", "exact_retained_output_upper_bound".to_string()),
-            ("source_read_preflight_retained_output_bytes", preflight.retained_output_bytes().to_string()),
-            ("source_read_preflight_required_budget_bytes", preflight.required_budget_bytes().to_string()),
-        ]),
-        Ok(None) => report.with_context_facts([("source_read_preflight_contract", "unavailable".to_string())]),
-        Err(error) => report.with_context_facts([
-            ("source_read_preflight_contract", "unavailable".to_string()),
-            (
-                "source_read_preflight_unavailable_reason",
-                error.detail_value("reason").map_or_else(|| error.code().to_string(), str::to_string),
-            ),
-        ]),
-    };
-
-    Ok(BudgetedExecutionOutcome::new(output, report))
 }

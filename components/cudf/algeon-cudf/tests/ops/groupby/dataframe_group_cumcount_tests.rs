@@ -1,6 +1,6 @@
 //! Tests for sorted per-group cumcount workflows on DataFrames.
 
-use cudf::{DataFrame, ErrorCode, ErrorKind, SortOptions};
+use cudf::{DataFrame, ErrorCode, ErrorKind, Exec, SortOptions};
 
 use crate::common::{error_context_value, run_named_cases, sample_runtime};
 
@@ -22,13 +22,14 @@ fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
     .unwrap();
 
     let sorted = edges
+        .on(Exec::RETAINED)
         .sort_values(
             ["_sp", "weight", "id_fc"],
             SortOptions::new().with_descending(vec![false, true, false]).with_stable(true),
         )
         .unwrap();
 
-    let rank = sorted.group_cumcount(["_sp"]).unwrap();
+    let rank = sorted.on(Exec::RETAINED).group_cumcount(["_sp"]).unwrap();
     assert_eq!(rank.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 0, 1, 0]);
 }
 
@@ -41,7 +42,7 @@ fn group_cumcount_supports_multi_column_group_keys() {
     ])
     .unwrap();
 
-    let rank = df.group_cumcount(["partition", "entityType"]).unwrap();
+    let rank = df.on(Exec::RETAINED).group_cumcount(["partition", "entityType"]).unwrap();
 
     assert_eq!(rank.to_vec_strict::<i32>().unwrap(), vec![0, 1, 0, 0, 1, 0]);
 }
@@ -54,7 +55,7 @@ fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
     ])
     .unwrap();
 
-    let err = df.group_cumcount(Vec::<&str>::new()).unwrap_err();
+    let err = df.on(Exec::RETAINED).group_cumcount(Vec::<&str>::new()).unwrap_err();
 
     assert_group_cumcount_validation_error(
         &err,

@@ -3,21 +3,17 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::{
-        error::{Error, ErrorCode, ErrorKind, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
-        scalar::Scalar,
+        error::{Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
         types::DataType,
     },
     frame::series::{IntoSeries, Series},
     hash::{FastIndexMap, fast_index_map_with_capacity},
     internal::resolve::missing_column_error,
-    ops::{self, replace::replace_nulls_with_exec_options, unary},
-    runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution,
-    },
+    ops::{self, unary},
+    runtime::{Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
-/// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
+/// One item accepted by [`DataFrame::with_columns`](super::FrameOps::with_columns).
 ///
 /// This models the two supported ways to provide computed columns:
 ///
@@ -84,7 +80,7 @@ impl DataFrame {
     /// DataFrame. `DataFrame` is the schema authority for column naming.
     ///
     /// Use [`assign`](Self::assign) for batch addition of multiple columns,
-    /// or [`with_columns`](Self::with_columns) for expression-based computed
+    /// or [`with_columns`](crate::FrameOps::with_columns) for expression-based computed
     /// columns.
     ///
     /// # Cost
@@ -198,124 +194,7 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
-    /// Evaluate expressions against this DataFrame and add/replace the
-    /// resulting columns.
-    ///
-    /// Use this for declarative computed columns. For pre-computed Series,
-    /// use [`with_column`](Self::with_column) (single) or
-    /// [`assign`](Self::assign) (batch).
-    ///
-    /// All expressions are evaluated against the **original** state of `self`,
-    /// not an incrementally mutated copy. This ensures that expressions can
-    /// reference columns that other expressions will overwrite, and the order
-    /// of evaluation does not matter.
-    ///
-    /// Each item must resolve to an output name. You can provide either:
-    ///
-    /// - a bare expression, which uses [`Expr::output_name()`](crate::ops::expr::Expr::output_name)
-    /// - an explicit `(name, expr)` pair, which always uses the provided name
-    ///
-    /// Bare expressions can still get their names via
-    /// [`.alias()`](crate::ops::expr::Expr::alias), by being a bare
-    /// [`col()`](crate::ops::expr::col) reference, or by being a single-input
-    /// transform that inherits its input name (for example `cast`, `is_null`,
-    /// `fillna`, cumulative scans, and string unary operations). Broadcast
-    /// reductions do **not** inherit an output name; give them an alias or an
-    /// explicit `(name, expr)` pair. Items without a resolvable name produce
-    /// an error **before** any GPU work.
-    ///
-    /// # Execution and Cost
-    ///
-    /// This convenience path evaluates through the DataFrame's retained
-    /// provenance. Unchanged columns are shared with `Arc::clone` and do not
-    /// copy GPU data. Use [`DataFrame::with_execution`](Self::with_execution)
-    /// and call `.with_columns(...)` on the returned scope to evaluate
-    /// expressions with borrowed stream / memory-resource overrides; that
-    /// scoped path may device-copy unchanged columns when the override changes
-    /// the result frame's retained provenance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any item lacks an output name, or if
-    /// evaluation of any expression fails.
-    pub fn with_columns<I, T>(&self, exprs: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<WithColumnExpr>,
-    {
-        self.with_columns_in_context(exprs, &ExecutionOverrides::new(), "dataframe::with_columns")
-    }
-
-    /// Evaluate expressions and add/replace columns under a hard execution-budget token.
-    ///
-    /// This has the same expression semantics and validation as
-    /// [`with_columns`](Self::with_columns), but expression evaluation and any
-    /// required unchanged-column relocation are routed through the token's
-    /// execution overrides. The returned report records the resulting
-    /// DataFrame device footprint and row count.
-    pub fn with_columns_with_budget<I, T>(
-        &self,
-        exprs: I,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Self>>
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<WithColumnExpr>,
-    {
-        let operation = "dataframe::with_columns_with_budget";
-        let ctx = token.execution_overrides();
-        let exprs = resolve_with_column_exprs(exprs, operation)?;
-        let output = self
-            .with_resolved_columns_in_context(&exprs, &ctx, operation)
-            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
-        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows());
-
-        Ok(BudgetedExecutionOutcome::new(output, report))
-    }
-
-    /// Add or replace one precomputed column under a hard execution-budget
-    /// token.
-    ///
-    /// The result takes the token's output domain, which `series` must
-    /// already carry, for example the output of a budgeted operation under
-    /// the same token. As in
-    /// [`with_columns_with_budget`](Self::with_columns_with_budget), unchanged
-    /// columns of another provenance are copied into that domain through the
-    /// token. The report records the resulting DataFrame device footprint and
-    /// row count.
-    pub fn with_column_with_budget(
-        &self,
-        name: &str,
-        series: Series,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Self>> {
-        let operation = "dataframe::with_column_with_budget";
-        let output = token
-            .execution_overrides()
-            .resolve_output_domain(&self.domain)
-            .and_then(|output_domain| self.with_column_in_domain(name, series, output_domain, operation))
-            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
-        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows());
-
-        Ok(BudgetedExecutionOutcome::new(output, report))
-    }
-
-    pub(crate) fn with_columns_in_context<I, T>(
-        &self,
-        exprs: I,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<Self>
+    pub(crate) fn with_columns_in_context<I, T>(&self, exprs: I, ctx: Exec<'_>, operation: &'static str) -> Result<Self>
     where
         I: IntoIterator<Item = T>,
         T: Into<WithColumnExpr>,
@@ -327,7 +206,7 @@ impl DataFrame {
     fn with_resolved_columns_in_context(
         &self,
         exprs: &[(String, ops::expr::Expr)],
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let (output_domain, results) =
@@ -406,49 +285,11 @@ impl DataFrame {
         .map_err(|error| error.with_column(column_name.to_string()))
     }
 
-    /// Return a new DataFrame with the named column cast to a different type.
-    ///
-    /// All other columns are preserved unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `column` is not in the schema, or if the cast
-    /// is unsupported.
-    pub fn cast_column(&self, column: &str, target_type: impl Into<DataType>) -> Result<Self> {
-        self.cast_column_in_context(column, target_type.into(), &ExecutionOverrides::new(), "dataframe::cast_column")
-    }
-
-    /// Return a new DataFrame with one column cast under a hard execution-budget token.
-    ///
-    /// This is the budgeted counterpart to [`cast_column`](Self::cast_column).
-    /// The direct cast allocation and any required unchanged-column relocation
-    /// into the budgeted output provenance are routed through the token's
-    /// stream-bound reservation.
-    pub fn cast_column_with_budget(
-        &self,
-        column: &str,
-        target_type: impl Into<DataType>,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Self>> {
-        let operation = "dataframe::cast_column_with_budget";
-        let context = token.execution_overrides();
-        let output = self
-            .cast_column_in_context(column, target_type.into(), &context, operation)
-            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
-        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows());
-        Ok(BudgetedExecutionOutcome::new(output, report))
-    }
-
-    fn cast_column_in_context(
+    pub(super) fn cast_column_in_context(
         &self,
         column: &str,
         target_type: DataType,
-        context: &ExecutionOverrides<'_>,
+        context: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let input = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
@@ -468,43 +309,5 @@ impl DataFrame {
             Arc::clone(execution.output_domain()),
             operation,
         )
-    }
-
-    /// Return a new DataFrame with null values in the named column replaced
-    /// by a scalar value.
-    ///
-    /// All other columns are preserved unchanged. The scalar type must be
-    /// compatible with the column type.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `column` is not in the schema.
-    pub(crate) fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
-        let operation = "dataframe::replace_nulls";
-        let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
-
-        let _consumer_fence =
-            ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
-        let cv = col.view()?;
-        let exec_options = col.execution_domain().enter_execution()?;
-        let new_col =
-            replace_nulls_with_exec_options(&cv, value, col.execution_domain(), exec_options.options(), operation)?;
-
-        let mut new_columns = self.columns.clone();
-        new_columns.insert(column.to_string(), Arc::new(new_col));
-
-        let domain = Arc::clone(&self.domain);
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
-    }
-}
-
-fn annotate_dataframe_budget_execution_error(
-    error: Error,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-) -> Error {
-    match error.kind() {
-        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
-        _ => error.reanchor_if_needed(operation),
     }
 }

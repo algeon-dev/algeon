@@ -397,7 +397,7 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
+    let byte_counts = match series.on(token.exec()).str().byte_count() {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
             return Err(cudf_query_error(
@@ -408,7 +408,7 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
+    let max_len = match byte_counts.on(token.exec()).max_value::<i32>() {
         Ok(max_len) => max_len,
         Err(error) => {
             return Err(cudf_query_error(
@@ -419,7 +419,7 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
+    let total_bytes = match byte_counts.on(token.exec()).sum_value::<i64>() {
         Ok(total_bytes) => total_bytes,
         Err(error) => {
             return Err(cudf_query_error(

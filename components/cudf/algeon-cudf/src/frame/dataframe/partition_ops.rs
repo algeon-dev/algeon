@@ -7,9 +7,7 @@ use crate::{
     core::error::Result,
     internal::resolve::resolve_column_names,
     ops::partitioning,
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 const PARTITION_KEY_INLINE_CAPACITY: usize = 4;
@@ -36,27 +34,18 @@ impl HashPartitionedDataFrame {
 }
 
 impl DataFrame {
-    /// Hash-partition rows by the supplied key columns.
-    pub fn hash_partition_by<I, S>(&self, by: I, num_partitions: usize) -> Result<HashPartitionedDataFrame>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        self.hash_partition_by_impl(by, num_partitions, Arc::clone(&self.domain), "dataframe::hash_partition_by")
-    }
-
     pub(crate) fn hash_partition_by_in_context<I, S>(
         &self,
         by: I,
         num_partitions: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<HashPartitionedDataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.hash_partition_by_impl(by, num_partitions, output_domain, "dataframe::with_execution::hash_partition_by")
+        self.hash_partition_by_impl(by, num_partitions, output_domain, "dataframe::hash_partition_by")
     }
 
     fn hash_partition_by_impl<I, S>(

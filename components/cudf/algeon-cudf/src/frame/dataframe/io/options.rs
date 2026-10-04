@@ -11,10 +11,10 @@ use crate::{
     core::error::{Error, ErrorCode, Result},
     io::parquet::{ParquetDictionaryPolicy, ParquetTableReadOptions, ParquetTableWriteOptions},
     ops::ast::AstExpression,
-    runtime::Runtime,
+    runtime::{Exec, Runtime},
 };
 
-/// Options for [`DataFrame::read_parquet_with_options`](crate::DataFrame::read_parquet_with_options).
+/// Options for [`DataFrame::read_parquet`](crate::DataFrame::read_parquet).
 ///
 /// This is the schema-aware Parquet reader API for `DataFrame`. It selects one
 /// source (`filepath` for path-based reads, or `filebytes` for borrowed
@@ -44,62 +44,60 @@ pub struct ParquetReadOptions<'a> {
     predicate: Option<Arc<AstExpression>>,
     #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
     pub(super) runtime: Runtime,
+    /// Bound on Parquet read and decompression scratch in bytes. The rows
+    /// returned are unchanged; a row group larger than the bound still loads.
+    #[builder(default, setter(strip_option))]
+    pass_read_limit: Option<u64>,
 }
 
 impl<'a> ParquetReadOptions<'a> {
-    pub(super) fn to_table_options(&self) -> Result<ParquetTableReadOptions<'a>> {
-        match (self.filepath.clone(), self.filebytes) {
-            (Some(filepath), None) => Ok(ParquetTableReadOptions::from_parts(
+    pub(super) fn to_table_options(&self, exec: Exec<'_>) -> Result<ParquetTableReadOptions<'a>> {
+        let runtime = self.runtime.on(exec)?;
+        let options = match (self.filepath.clone(), self.filebytes) {
+            (Some(filepath), None) => ParquetTableReadOptions::from_parts(
                 filepath,
                 self.columns.clone(),
                 self.skip_rows,
                 self.num_rows,
                 self.row_groups.clone(),
                 self.predicate.clone(),
-                self.runtime.clone(),
-            )),
-            (None, Some(filebytes)) => Ok(ParquetTableReadOptions::from_host_buffer_parts(
+                runtime,
+            ),
+            (None, Some(filebytes)) => ParquetTableReadOptions::from_host_buffer_parts(
                 filebytes,
                 self.columns.clone(),
                 self.skip_rows,
                 self.num_rows,
                 self.row_groups.clone(),
                 self.predicate.clone(),
-                self.runtime.clone(),
-            )),
-            (Some(_), Some(_)) => Err(Error::new_with(
-                ErrorCode::ForeignInvalidArgument,
-                "dataframe::read_parquet_with_options",
-                "Parquet read options must select exactly one source",
-            )
-            .with_detail("resource", "parquet_source")
-            .with_detail("reason", "ambiguous_source")
-            .with_detail("remedy", "set either filepath or filebytes, not both")),
-            (None, None) => Err(Error::new_with(
-                ErrorCode::ForeignInvalidArgument,
-                "dataframe::read_parquet_with_options",
-                "Parquet read options must select a source",
-            )
-            .with_detail("resource", "parquet_source")
-            .with_detail("reason", "missing_source")
-            .with_detail("remedy", "set filepath for path reads or filebytes for host-buffer reads")),
-        }
-    }
-
-    pub(super) fn to_host_buffer_table_options<'b>(&self, filebytes: &'b [u8]) -> ParquetTableReadOptions<'b> {
-        ParquetTableReadOptions::from_host_buffer_parts(
-            filebytes,
-            self.columns.clone(),
-            self.skip_rows,
-            self.num_rows,
-            self.row_groups.clone(),
-            self.predicate.clone(),
-            self.runtime.clone(),
-        )
+                runtime,
+            ),
+            (Some(_), Some(_)) => {
+                return Err(Error::new_with(
+                    ErrorCode::ForeignInvalidArgument,
+                    "dataframe::read_parquet",
+                    "Parquet read options must select exactly one source",
+                )
+                .with_detail("resource", "parquet_source")
+                .with_detail("reason", "ambiguous_source")
+                .with_detail("remedy", "set either filepath or filebytes, not both"));
+            },
+            (None, None) => {
+                return Err(Error::new_with(
+                    ErrorCode::ForeignInvalidArgument,
+                    "dataframe::read_parquet",
+                    "Parquet read options must select a source",
+                )
+                .with_detail("resource", "parquet_source")
+                .with_detail("reason", "missing_source")
+                .with_detail("remedy", "set filepath for path reads or filebytes for host-buffer reads"));
+            },
+        };
+        Ok(options.with_pass_read_limit(self.pass_read_limit))
     }
 }
 
-/// Options for [`DataFrame::read_parquet_many_with_options`](crate::DataFrame::read_parquet_many_with_options).
+/// Options for [`DataFrame::read_parquet_many`](crate::DataFrame::read_parquet_many).
 ///
 /// This is a conservative host-filesystem convenience for reading multiple
 /// Parquet files in caller-provided order, then concatenating the decoded
@@ -120,12 +118,16 @@ pub struct MultiParquetReadOptions {
 }
 
 impl MultiParquetReadOptions {
-    pub(super) fn from_parts(filepaths: Vec<PathBuf>, columns: Option<Vec<String>>, runtime: Runtime) -> Self {
-        Self { filepaths, columns, runtime }
+    pub(super) fn runtime(&self) -> &Runtime {
+        &self.runtime
     }
 
-    pub(super) fn to_single_file_options(&self, filepath: PathBuf) -> ParquetTableReadOptions<'static> {
-        ParquetTableReadOptions::from_parts(filepath, self.columns.clone(), 0, None, None, None, self.runtime.clone())
+    pub(super) fn to_single_file_options(
+        &self,
+        filepath: PathBuf,
+        runtime: &Runtime,
+    ) -> ParquetTableReadOptions<'static> {
+        ParquetTableReadOptions::from_parts(filepath, self.columns.clone(), 0, None, None, None, runtime.clone())
     }
 }
 

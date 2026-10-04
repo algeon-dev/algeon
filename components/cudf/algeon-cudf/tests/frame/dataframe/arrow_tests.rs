@@ -14,7 +14,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, TypeId,
     frame::dataframe::GpuRecordBatch,
     interop::arrow_host::{all_null_list_series, cudf_dtype_from_arrow_type, estimate_list_import_device_memory_bytes},
     testing::{
@@ -112,19 +112,23 @@ fn assert_float64_large_list_value(array: &LargeListArray, index: usize, expecte
 }
 
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
-    series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale).unwrap())
+    series("amount", values)?.on(Exec::RETAINED).astype(DataType::fixed_point(TypeId::Decimal128, scale).unwrap())
 }
 
 fn nullable_decimal32_series(values: &[i32], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
-    nullable_series("amount32", values, validity)?.astype(DataType::fixed_point(TypeId::Decimal32, scale).unwrap())
+    nullable_series("amount32", values, validity)?
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal32, scale).unwrap())
 }
 
 fn nullable_decimal64_series(values: &[i64], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
-    nullable_series("amount64", values, validity)?.astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap())
+    nullable_series("amount64", values, validity)?
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap())
 }
 
 fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
-    series("ts", values)?.astype(duration_type)?.astype(timestamp_type)
+    series("ts", values)?.on(Exec::RETAINED).astype(duration_type)?.on(Exec::RETAINED).astype(timestamp_type)
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,7 +1590,7 @@ fn test_round_trip_nullable_bool8() {
 fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
-    let flag = lhs.eq(&rhs).unwrap();
+    let flag = lhs.on(Exec::RETAINED).eq(&rhs).unwrap();
     let df = DataFrame::from_series([("flag", flag)]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
@@ -2019,9 +2023,9 @@ fn test_from_record_batches_crosses_staging_slab_boundaries() {
 
     assert_eq!(staged.num_rows(), 3 * per_batch as usize);
     let series = staged.series("id").unwrap();
-    assert_eq!(series.min_value::<i64>().unwrap(), Some(0));
-    assert_eq!(series.max_value::<i64>().unwrap(), Some(3 * per_batch - 1));
-    assert_eq!(series.sum_value::<i64>().unwrap(), (0..3 * per_batch).sum::<i64>());
+    assert_eq!(series.on(Exec::RETAINED).min_value::<i64>().unwrap(), Some(0));
+    assert_eq!(series.on(Exec::RETAINED).max_value::<i64>().unwrap(), Some(3 * per_batch - 1));
+    assert_eq!(series.on(Exec::RETAINED).sum_value::<i64>().unwrap(), (0..3 * per_batch).sum::<i64>());
 }
 
 fn test_from_record_batches_nullable_and_string_fallback() {

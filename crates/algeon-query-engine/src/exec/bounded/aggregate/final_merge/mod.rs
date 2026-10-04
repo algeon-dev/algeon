@@ -79,7 +79,7 @@ pub(super) fn partition_final_merge_partial(
         RuntimeOperatorStageIdentity::new().with_node_id(node_id.to_string()).with_input_rows(input_rows),
     );
     let partitioned = match frame
-        .with_execution(&token.execution_overrides())
+        .on(token.exec())
         .hash_partition_by(key_columns.iter().map(String::as_str), partition_count)
         .map_err(|error| {
             attach_budget_token_failure_facts(
@@ -156,9 +156,9 @@ pub(super) fn slice_partitioned_final_merge_partition(
         )
     })?;
     let len = end.saturating_sub(start);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let sliced = frame.on(overrides).slice(start, len).map_err(|error| {
         cudf_query_error(
             "query_engine.final_merge.hash_partition_slice",
             "failed to slice partitioned final aggregate input",
@@ -309,7 +309,7 @@ pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_o
     let concatenated = {
         let other_frames = inputs.iter().map(|input| input.frame.frame().clone()).collect::<Vec<_>>();
         let other_refs = other_frames.iter().collect::<Vec<_>>();
-        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_refs).map_err(|error| {
+        first_frame.on(token.exec()).concat_many(&other_refs).map_err(|error| {
             attach_budget_token_failure_facts(
                 cudf_query_error(
                     "query_engine.final_merge.partitioned_output_concat",

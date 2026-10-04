@@ -3,10 +3,11 @@
 use std::{ffi::c_void, fmt, sync::Arc};
 
 use super::{
-    ExecutionBindingId, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
+    DeviceId, ExecutionBindingId, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
     execution_resolver::ResolvedExecution,
 };
 use crate::{
+    Exec,
     core::{
         Column,
         error::{
@@ -132,6 +133,11 @@ impl PackedMatrix {
         self.values.execution_domain().placement()
     }
 
+    /// The CUDA device the packed values live on.
+    pub fn device(&self) -> DeviceId {
+        self.values.execution_domain().device_id()
+    }
+
     /// Stable identity for the exact retained stream and memory-resource
     /// binding.
     pub fn binding_id(&self) -> ExecutionBindingId {
@@ -225,6 +231,11 @@ impl ValidatedPackedMatrix<'_> {
     /// Execution placement associated with the validated payload.
     pub fn placement(&self) -> ExecutionPlacement {
         self.matrix.placement()
+    }
+
+    /// The CUDA device the validated payload lives on.
+    pub fn device(&self) -> DeviceId {
+        self.matrix.device()
     }
 }
 
@@ -374,10 +385,10 @@ impl Runtime {
         (0..columns)
             .map(|index| {
                 let series = match layout {
-                    DenseMatrixLayout::ColumnMajor => flat.slice(index * rows, rows),
+                    DenseMatrixLayout::ColumnMajor => flat.on(Exec::RETAINED).slice(index * rows, rows),
                     DenseMatrixLayout::RowMajor => {
                         let indices = self.sequence(index as i32, columns as i32, rows)?;
-                        flat.gather(&indices)
+                        flat.on(Exec::RETAINED).gather(&indices)
                     },
                 }
                 .map_err(|e| e.reanchor(UNPACK_OPERATION))?;

@@ -4,7 +4,10 @@ use std::sync::Arc;
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 
 use super::GpuRecordBatch;
-use crate::core::error::{Error, ErrorCode, Result};
+use crate::{
+    Exec,
+    core::error::{Error, ErrorCode, Result},
+};
 
 /// Bounds one GPU-to-host materialization step by estimated final Arrow buffer
 /// capacity and row count.
@@ -232,6 +235,7 @@ impl HostBatchCursor {
         let frame = self
             .batch
             .frame()
+            .on(Exec::RETAINED)
             .slice(self.offset, rows)
             .map_err(|error| error.reanchor("dataframe::HostBatchCursor::next_batch"))?;
         self.batch.with_validated_slice(frame)

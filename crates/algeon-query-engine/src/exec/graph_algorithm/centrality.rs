@@ -642,9 +642,8 @@ where W: CudfType + CugraphElement {
         .with_fact("column", column)
         .with_fact("dtype", format!("{dtype:?}")));
     }
-    let overrides =
-        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    values.astype_in(CudfDataType::new(target), &overrides).map_err(|error| {
+    let overrides = runtime.exec();
+    values.on(overrides).astype(CudfDataType::new(target)).map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.personalized_pagerank",
             "failed to cast personalized PageRank values to the graph weight dtype",

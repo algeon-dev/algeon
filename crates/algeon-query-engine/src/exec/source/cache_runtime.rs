@@ -93,25 +93,29 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
     let _cache_read_pin = acquire_lakehouse_optimized_batch_read_pin(context, entry)?;
     let _io_lease = context.acquire_io_lease("query_engine.local_parquet_chunk_batch.optimized_cache_read")?;
     let read_timer = Instant::now();
-    let outcome = DataFrame::read_parquet_with_budget(
-        ParquetReadOptions::builder()
-            .filepath(&entry.path)
-            .columns(&read_columns)
-            .with_runtime(&context.runtime()?)
-            .build(),
-        &token,
-    )
-    .map_err(|error| {
-        cudf_query_error(
-            "query_engine.local_parquet_chunk_batch.optimized_cache_read",
-            "failed to read optimized local cache parquet source chunk batch with cudf",
-            error,
-        )
-        .with_fact("batch_index", batch.batch_index)
-        .with_fact("chunk_count", batch.chunk_count())
-        .with_fact("path", optimized_cache_path_fact(entry))
-        .with_fact("stable_id", entry.stable_id.as_str())
-    })?;
+    let runtime = context.runtime()?;
+    let outcome = token
+        .run("dataframe::read_parquet", |exec| {
+            DataFrame::read_parquet(
+                ParquetReadOptions::builder()
+                    .filepath(&entry.path)
+                    .columns(&read_columns)
+                    .with_runtime(&runtime)
+                    .build(),
+                exec,
+            )
+        })
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.local_parquet_chunk_batch.optimized_cache_read",
+                "failed to read optimized local cache parquet source chunk batch with cudf",
+                error,
+            )
+            .with_fact("batch_index", batch.batch_index)
+            .with_fact("chunk_count", batch.chunk_count())
+            .with_fact("path", optimized_cache_path_fact(entry))
+            .with_fact("stable_id", entry.stable_id.as_str())
+        })?;
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk_batch.optimized_cache_read", outcome.report());
     let read_elapsed = read_timer.elapsed();
     record_source_read(context, SourceReadFact::ParquetReadTime(read_elapsed));

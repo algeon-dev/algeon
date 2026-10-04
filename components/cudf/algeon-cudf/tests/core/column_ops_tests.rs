@@ -1,640 +1,98 @@
-//! Tests for Column-level arithmetic, comparison, and scalar operations.
+//! Tests for binary and scalar operations that Series and Expr expose beyond the basic arithmetic coverage.
 
-use std::sync::Arc;
-
-use arrow::{
-    array::Decimal128Array,
-    datatypes::{DataType as ArrowDataType, Field, Schema},
-    record_batch::RecordBatch,
-};
 use cudf::{
-    DataFrame, DataType, Runtime, Series, TypeId,
-    ops::binary::{self, BinaryOperator},
-    testing::prelude::*,
+    DataFrame, DataType, Exec, TypeId,
+    ops::{
+        binary::BinaryOperator,
+        expr::{col, lit_null},
+    },
 };
 
-use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, host_export_i64_values, null_scalar,
-    run_named_cases, scalar, series, string_scalar,
-};
+use crate::common::{run_named_cases, series};
 
-fn decimal128_pair_df_from_arrow(
-    left_name: &str,
-    left_values: Vec<Option<i128>>,
-    right_name: &str,
-    right_values: Vec<Option<i128>>,
-    precision: u8,
-    scale: i8,
-) -> DataFrame {
-    let left = Decimal128Array::from(left_values).with_precision_and_scale(precision, scale).unwrap();
-    let right = Decimal128Array::from(right_values).with_precision_and_scale(precision, scale).unwrap();
-    let schema = Schema::new(vec![
-        Field::new(left_name, ArrowDataType::Decimal128(precision, scale), true),
-        Field::new(right_name, ArrowDataType::Decimal128(precision, scale), true),
-    ]);
-    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap();
-    let runtime = Runtime::builder().build().unwrap();
-    DataFrame::from_record_batch(&runtime, &batch).unwrap()
+fn test_series_div_i32() {
+    let a = series::<i32>("a", &[10, 21, 35]).unwrap();
+    let b = series::<i32>("b", &[2, 7, 5]).unwrap();
+    let result = a.on(Exec::RETAINED).div(&b).unwrap();
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 3, 7]);
 }
 
-fn assert_arrow_decimal128_column(frame: &DataFrame, name: &str, expected_raw_values: &[i128], scale: i8) {
-    let batch = frame.select([name]).unwrap().to_record_batch().unwrap();
-    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, scale));
-    let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
-    assert_eq!(values.precision(), 38);
-    assert_eq!(values.scale(), scale);
-    assert_eq!(values.values().as_ref(), expected_raw_values);
-}
+fn test_expr_true_div_i32_produces_float64() {
+    let a = series::<i32>("a", &[1, 3, 7]).unwrap();
+    let b = series::<i32>("b", &[2, 4, 2]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
-// ---------------------------------------------------------------------------
-// Arithmetic methods on Column
-// ---------------------------------------------------------------------------
-
-fn test_column_add_i32() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let result = a.add(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Int32);
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
-}
-
-fn test_column_sub_i32() {
-    let a = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let b = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let result = a.sub(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![9, 18, 27]);
-}
-
-fn test_column_mul_i32() {
-    let a = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let b = column_from_slice(&[5i32, 6, 7]).unwrap();
-    let result = a.mul(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![10, 18, 28]);
-}
-
-fn test_column_div_i32() {
-    let a = column_from_slice(&[10i32, 21, 35]).unwrap();
-    let b = column_from_slice(&[2i32, 7, 5]).unwrap();
-    let result = a.div(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 3, 7]);
-}
-
-fn test_column_true_div_i32() {
-    let a = column_from_slice(&[1i32, 3, 7]).unwrap();
-    let b = column_from_slice(&[2i32, 4, 2]).unwrap();
-    let result = a.true_div(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    // true_div should produce float output
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
-    let values = rv.to_vec::<f64>().unwrap();
-    assert_eq!(values, vec![0.5, 0.75, 3.5]);
-}
-
-fn test_column_modulo_i32() {
-    let a = column_from_slice(&[10i32, 21, 37]).unwrap();
-    let b = column_from_slice(&[3i32, 7, 5]).unwrap();
-    let result = a.modulo(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 0, 2]);
-}
-
-fn test_column_rem_alias_matches_modulo() {
-    let a = column_from_slice(&[10i32, 21, 37]).unwrap();
-    let b = column_from_slice(&[3i32, 7, 5]).unwrap();
-    let result = a.rem(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 0, 2]);
-}
-
-fn test_column_add_mixed_types() {
-    // Int32 + Float64 → Float64
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[0.5f64, 1.5, 2.5]).unwrap();
-    let result = a.add(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
-    let values = rv.to_vec::<f64>().unwrap();
-    assert_eq!(values, vec![1.5, 3.5, 5.5]);
-}
-
-fn test_column_add_decimal64_same_scale_preserves_scale() {
-    let a = series("a", &[12_345i64, 20_000])
-        .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+    let result = col("a")
+        .binary_op_with_type(col("b"), BinaryOperator::TrueDiv, DataType::new(TypeId::Float64))
+        .eval(&df)
         .unwrap();
-    let b =
-        series("b", &[100i64, -500]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
 
-    let result = a.as_column().add(b.as_column()).unwrap();
-    let result = Series::from_column(result).unwrap();
-
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
-    assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000]);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![0.5, 0.75, 3.5]);
 }
 
-fn test_column_binary_op_with_type() {
-    // Explicit output type override
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let result = a.binary_op_with_type(&b, BinaryOperator::Add, &DataType::new(TypeId::Int64)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
-    assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 22, 33]);
+fn test_expr_binary_op_with_type() {
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[10, 20, 30]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
+
+    let result =
+        col("a").binary_op_with_type(col("b"), BinaryOperator::Add, DataType::new(TypeId::Int64)).eval(&df).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int64);
+    assert_eq!(result.to_vec_strict::<i64>().unwrap(), vec![11, 22, 33]);
 }
 
-fn test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output() {
-    let df = decimal128_pair_df_from_arrow(
-        "numerator",
-        vec![Some(100_000_000), Some(300_000_000)],
-        "denominator",
-        vec![Some(400_000_000), Some(600_000_000)],
-        38,
-        8,
-    );
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
+fn test_expr_floor_div_f64() {
+    let a = series::<f64>("a", &[7.0, 10.0, 15.0]).unwrap();
+    let b = series::<f64>("b", &[2.0, 3.0, 4.0]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
-    let result = df
-        .series("numerator")
-        .unwrap()
-        .as_column()
-        .binary_op_with_type(df.series("denominator").unwrap().as_column(), BinaryOperator::Div, &output_type)
-        .unwrap();
-    let result = Series::from_column(result).unwrap();
+    let result = col("a").floor_div(col("b")).eval(&df).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), output_type);
-    let result = DataFrame::from_series([("ratio", result)]).unwrap();
-    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.0, 3.0, 3.0]);
 }
 
-fn test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output() {
-    let df = decimal128_pair_df_from_arrow(
-        "numerator",
-        vec![Some(100_000_000), Some(300_000_000)],
-        "unused",
-        vec![Some(1), Some(1)],
-        38,
-        8,
-    );
-    let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(400_000_000, -8).unwrap();
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
-
-    let result = df
-        .series("numerator")
-        .unwrap()
-        .as_column()
-        .binary_op_scalar_with_type(&scalar, BinaryOperator::Div, &output_type)
-        .unwrap();
-    let result = Series::from_column(result).unwrap();
-
-    assert_eq!(result.dtype().unwrap(), output_type);
-    let result = DataFrame::from_series([("ratio", result)]).unwrap();
-    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 75_000_000], 8);
-}
-
-fn test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output() {
-    let df = decimal128_pair_df_from_arrow(
-        "unused",
-        vec![Some(1), Some(1)],
-        "denominator",
-        vec![Some(400_000_000), Some(200_000_000)],
-        38,
-        8,
-    );
-    let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(100_000_000, -8).unwrap();
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
-    let denominator = df.series("denominator").unwrap();
-    let denominator = denominator.as_column().testing_view().unwrap();
-
-    let result = binary::binary_operation_sv(&scalar, &denominator, BinaryOperator::Div, &output_type).unwrap();
-    let result = Series::from_column(result).unwrap();
-
-    assert_eq!(result.dtype().unwrap(), output_type);
-    let result = DataFrame::from_series([("ratio", result)]).unwrap();
-    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
-}
-
-fn test_column_binary_op_error_operation_context() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20]).unwrap(); // length mismatch
-    let err = a.binary_op(&b, BinaryOperator::Add).expect_err("expected error");
-    assert_eq!(err.operation(), "column::binary_op");
-}
-
-fn test_column_binary_op_scalar_error_operation_context() {
-    let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = string_scalar("baz").unwrap();
-    let err = col.binary_op_scalar(&scalar, BinaryOperator::Add).expect_err("expected error");
-    assert_eq!(err.operation(), "column::binary_op_scalar");
-}
-
-fn test_column_add_string_error() {
-    let a = column_from_strs(&["foo", "bar"]).unwrap();
-    let b = column_from_strs(&["baz", "qux"]).unwrap();
-    let err = a.add(&b).expect_err("expected error");
-    assert_eq!(err.operation(), "column::add");
-}
-
-fn test_column_add_nullable() {
-    let a = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
-    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let result = a.add(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    let values = rv.to_vec::<i32>().unwrap();
-    // Element at index 1 should be null; value may be arbitrary but null mask matters
-    let validity = rv.to_host_validity().unwrap().unwrap();
-    assert!(validity[0]);
-    assert!(!validity[1]); // null
-    assert!(validity[2]);
-    assert_eq!(values[0], 11);
-    assert_eq!(values[2], 33);
-}
-
-fn test_column_floor_div_f64() {
-    let a = column_from_slice(&[7.0f64, 10.0, 15.0]).unwrap();
-    let b = column_from_slice(&[2.0f64, 3.0, 4.0]).unwrap();
-    let result = a.floor_div(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
-    let values = rv.to_vec::<f64>().unwrap();
-    assert_eq!(values, vec![3.0, 3.0, 3.0]);
-}
-
-// ---------------------------------------------------------------------------
-// Comparison methods on Column
-// ---------------------------------------------------------------------------
-
-fn test_column_eq_i32() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let result = a.eq(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
-
-fn test_column_ne_i32() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let result = a.ne(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
-}
-
-fn test_column_lt_i32() {
-    let a = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let b = column_from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.lt(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_column_gt_i32() {
-    let a = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let b = column_from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.gt(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
-}
-
-fn test_column_le_i32() {
-    let a = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let b = column_from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.le(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
-
-fn test_column_ge_i32() {
-    let a = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let b = column_from_slice(&[2i32, 2, 3]).unwrap();
-    let result = a.ge(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
-}
-
-fn test_column_eq_string() {
-    let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
-    let b = column_from_strs(&["foo", "qux", "baz"]).unwrap();
-    let result = a.eq(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
-
-fn test_column_lt_string() {
-    let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
-    let result = a.lt(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_column_lt_mixed_numeric() {
-    // Int32 < Float64 → Bool8
-    let a = column_from_slice(&[1i32, 5, 3]).unwrap();
-    let b = column_from_slice(&[2.0f64, 2.0, 3.0]).unwrap();
-    let result = a.lt(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_column_comparison_nullable() {
-    let a = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
-    let b = column_from_slice(&[1i32, 2, 4]).unwrap();
-    let result = a.eq(&b).unwrap();
-    let rv = result.testing_view().unwrap();
-    let validity = rv.to_host_validity().unwrap().unwrap();
-    assert!(validity[0]); // non-null: 1 == 1 → true
-    assert!(!validity[1]); // null
-    assert!(validity[2]); // non-null: 3 == 4 → false
-}
-
-// ---------------------------------------------------------------------------
-// Scalar arithmetic and comparison on Column
-// ---------------------------------------------------------------------------
-
-fn test_column_add_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(10i32).unwrap();
-    let result = col.add_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Int32);
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 12, 13]);
-}
-
-fn test_column_sub_scalar_i32() {
-    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let scalar = scalar(5i32).unwrap();
-    let result = col.sub_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
-}
-
-fn test_column_mul_scalar_mixed_types() {
+fn test_series_mul_scalar_mixed_types() {
     // Int32 * Float64 scalar → Float64
-    let col = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let scalar = scalar(1.5f64).unwrap();
-    let result = col.mul_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Float64);
-    let values = rv.to_vec::<f64>().unwrap();
-    assert_eq!(values, vec![3.0, 4.5, 6.0]);
+    let s = series::<i32>("x", &[2, 3, 4]).unwrap();
+    let result = s.on(Exec::RETAINED).mul_scalar(1.5f64).unwrap();
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.0, 4.5, 6.0]);
 }
 
-fn test_column_div_scalar_i32() {
-    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let scalar = scalar(5i32).unwrap();
-    let result = col.div_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![2, 4, 6]);
+fn test_expr_add_null_literal_produces_all_null() {
+    let df = DataFrame::from_series([("x", series::<i32>("x", &[1, 2, 3]).unwrap())]).unwrap();
+
+    let result = (col("x") + lit_null(TypeId::Int32)).eval(&df).unwrap();
+
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![None, None, None]);
 }
 
-fn test_column_eq_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.eq_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
-}
+fn test_series_scalar_ops_support_narrow_signed_integer_types() {
+    let i8s = series::<i8>("i8s", &[10, 20, 30]).unwrap();
+    let i16s = series::<i16>("i16s", &[2, 4, 6]).unwrap();
 
-fn test_column_ne_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.ne_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
+    let add = i8s.on(Exec::RETAINED).add_scalar(1i8).unwrap();
+    assert_eq!(add.to_vec_strict::<i8>().unwrap(), vec![11, 21, 31]);
 
-fn test_column_lt_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.lt_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_column_gt_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.gt_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
-}
-
-fn test_column_le_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.le_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
-}
-
-fn test_column_ge_scalar_i32() {
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(2i32).unwrap();
-    let result = col.ge_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
-}
-
-fn test_column_eq_scalar_string() {
-    let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = string_scalar("active").unwrap();
-    let result = col.eq_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
-}
-
-fn test_column_lt_scalar_string() {
-    let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = string_scalar("banana").unwrap();
-    let result = col.lt_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
-}
-
-fn test_column_add_scalar_string_error() {
-    let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = string_scalar("baz").unwrap();
-    let err = col.add_scalar(&scalar).expect_err("expected error");
-    assert_eq!(err.operation(), "column::add_scalar");
-}
-
-fn test_column_add_scalar_null() {
-    // Adding a null scalar should produce all-null output
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = null_scalar::<i32>().unwrap();
-    let result = col.add_scalar(&scalar).unwrap();
-    let rv = result.testing_view().unwrap();
-    let validity = rv.to_host_validity().unwrap().unwrap();
-    assert!(validity.iter().all(|&v| !v)); // all null
-}
-
-fn test_column_binary_op_scalar_with_type() {
-    // Explicit output type override for scalar ops
-    let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = scalar(10i32).unwrap();
-    let result = col.binary_op_scalar_with_type(&scalar, BinaryOperator::Add, &DataType::new(TypeId::Int64)).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
-    assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 12, 13]);
-}
-
-// ---------------------------------------------------------------------------
-// Operator overloading via std::ops
-// ---------------------------------------------------------------------------
-
-fn test_ops_add_column_f32_scalar() {
-    let col = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
-    let result = (&col + 1.0f32).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<f32>().unwrap(), vec![2.0, 3.0, 4.0]);
-}
-
-fn test_ops_mul_column_f64_scalar() {
-    let col = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
-    let result = (&col * 100.0f64).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<f64>().unwrap(), vec![100.0, 200.0, 300.0]);
-}
-
-fn test_ops_sub_column_i32_scalar() {
-    let col = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let result = (&col - 5i32).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
-}
-
-fn test_ops_div_column_i64_scalar() {
-    let col = column_from_slice(&[10i64, 20, 30]).unwrap();
-    let result = (&col / 2i64).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i64>().unwrap(), vec![5, 10, 15]);
-}
-
-fn test_ops_column_scalar_supports_remaining_integer_types() {
-    let u8_col = column_from_slice(&[1u8, 2, 3]).unwrap();
-    let u16_col = column_from_slice(&[10u16, 20, 30]).unwrap();
-    let u32_col = column_from_slice(&[2u32, 3, 4]).unwrap();
-    let u64_col = column_from_slice(&[20u64, 40, 60]).unwrap();
-    let i8_col = column_from_slice(&[10i8, 20, 30]).unwrap();
-    let i16_col = column_from_slice(&[2i16, 4, 6]).unwrap();
-
-    let add = (&u8_col + 1u8).unwrap();
-    assert_eq!(add.testing_view().unwrap().to_vec::<u8>().unwrap(), vec![2, 3, 4]);
-
-    let sub = (&u16_col - 5u16).unwrap();
-    assert_eq!(sub.testing_view().unwrap().to_vec::<u16>().unwrap(), vec![5, 15, 25]);
-
-    let mul = (&u32_col * 10u32).unwrap();
-    assert_eq!(mul.testing_view().unwrap().to_vec::<u32>().unwrap(), vec![20, 30, 40]);
-
-    let div = (&u64_col / 10u64).unwrap();
-    assert_eq!(div.testing_view().unwrap().to_vec::<u64>().unwrap(), vec![2, 4, 6]);
-
-    let signed_add = (&i8_col + 1i8).unwrap();
-    assert_eq!(signed_add.testing_view().unwrap().to_vec::<i8>().unwrap(), vec![11, 21, 31]);
-
-    let signed_div = (&i16_col / 2i16).unwrap();
-    assert_eq!(signed_div.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![1, 2, 3]);
-}
-
-fn test_ops_add_column_column() {
-    let a = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let b = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let result = (&a + &b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
-}
-
-fn test_ops_mul_column_column() {
-    let a = column_from_slice(&[2i32, 3, 4]).unwrap();
-    let b = column_from_slice(&[5i32, 6, 7]).unwrap();
-    let result = (&a * &b).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![10, 18, 28]);
-}
-
-fn test_ops_chain() {
-    let col = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
-    let result = (&(&col * 100.0f32).unwrap() + 1.0f32).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<f32>().unwrap(), vec![101.0, 201.0, 301.0]);
+    let div = i16s.on(Exec::RETAINED).div_scalar(2i16).unwrap();
+    assert_eq!(div.to_vec_strict::<i16>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
 fn column_ops_tests_cases() {
     run_named_cases(&[
-        ("test_column_add_i32", test_column_add_i32),
-        ("test_column_sub_i32", test_column_sub_i32),
-        ("test_column_mul_i32", test_column_mul_i32),
-        ("test_column_div_i32", test_column_div_i32),
-        ("test_column_true_div_i32", test_column_true_div_i32),
-        ("test_column_modulo_i32", test_column_modulo_i32),
-        ("test_column_rem_alias_matches_modulo", test_column_rem_alias_matches_modulo),
-        ("test_column_add_mixed_types", test_column_add_mixed_types),
-        ("test_column_add_decimal64_same_scale_preserves_scale", test_column_add_decimal64_same_scale_preserves_scale),
-        ("test_column_binary_op_with_type", test_column_binary_op_with_type),
+        ("test_series_div_i32", test_series_div_i32),
+        ("test_expr_true_div_i32_produces_float64", test_expr_true_div_i32_produces_float64),
+        ("test_expr_binary_op_with_type", test_expr_binary_op_with_type),
+        ("test_expr_floor_div_f64", test_expr_floor_div_f64),
+        ("test_series_mul_scalar_mixed_types", test_series_mul_scalar_mixed_types),
+        ("test_expr_add_null_literal_produces_all_null", test_expr_add_null_literal_produces_all_null),
         (
-            "test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output",
-            test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output,
+            "test_series_scalar_ops_support_narrow_signed_integer_types",
+            test_series_scalar_ops_support_narrow_signed_integer_types,
         ),
-        (
-            "test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output",
-            test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output,
-        ),
-        (
-            "test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output",
-            test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output,
-        ),
-        ("test_column_binary_op_error_operation_context", test_column_binary_op_error_operation_context),
-        ("test_column_binary_op_scalar_error_operation_context", test_column_binary_op_scalar_error_operation_context),
-        ("test_column_add_string_error", test_column_add_string_error),
-        ("test_column_add_nullable", test_column_add_nullable),
-        ("test_column_floor_div_f64", test_column_floor_div_f64),
-        ("test_column_eq_i32", test_column_eq_i32),
-        ("test_column_ne_i32", test_column_ne_i32),
-        ("test_column_lt_i32", test_column_lt_i32),
-        ("test_column_gt_i32", test_column_gt_i32),
-        ("test_column_le_i32", test_column_le_i32),
-        ("test_column_ge_i32", test_column_ge_i32),
-        ("test_column_eq_string", test_column_eq_string),
-        ("test_column_lt_string", test_column_lt_string),
-        ("test_column_lt_mixed_numeric", test_column_lt_mixed_numeric),
-        ("test_column_comparison_nullable", test_column_comparison_nullable),
-        ("test_column_add_scalar_i32", test_column_add_scalar_i32),
-        ("test_column_sub_scalar_i32", test_column_sub_scalar_i32),
-        ("test_column_mul_scalar_mixed_types", test_column_mul_scalar_mixed_types),
-        ("test_column_div_scalar_i32", test_column_div_scalar_i32),
-        ("test_column_eq_scalar_i32", test_column_eq_scalar_i32),
-        ("test_column_ne_scalar_i32", test_column_ne_scalar_i32),
-        ("test_column_lt_scalar_i32", test_column_lt_scalar_i32),
-        ("test_column_gt_scalar_i32", test_column_gt_scalar_i32),
-        ("test_column_le_scalar_i32", test_column_le_scalar_i32),
-        ("test_column_ge_scalar_i32", test_column_ge_scalar_i32),
-        ("test_column_eq_scalar_string", test_column_eq_scalar_string),
-        ("test_column_lt_scalar_string", test_column_lt_scalar_string),
-        ("test_column_add_scalar_string_error", test_column_add_scalar_string_error),
-        ("test_column_add_scalar_null", test_column_add_scalar_null),
-        ("test_column_binary_op_scalar_with_type", test_column_binary_op_scalar_with_type),
-        ("test_ops_add_column_f32_scalar", test_ops_add_column_f32_scalar),
-        ("test_ops_mul_column_f64_scalar", test_ops_mul_column_f64_scalar),
-        ("test_ops_sub_column_i32_scalar", test_ops_sub_column_i32_scalar),
-        ("test_ops_div_column_i64_scalar", test_ops_div_column_i64_scalar),
-        (
-            "test_ops_column_scalar_supports_remaining_integer_types",
-            test_ops_column_scalar_supports_remaining_integer_types,
-        ),
-        ("test_ops_add_column_column", test_ops_add_column_column),
-        ("test_ops_mul_column_column", test_ops_mul_column_column),
-        ("test_ops_chain", test_ops_chain),
     ]);
 }

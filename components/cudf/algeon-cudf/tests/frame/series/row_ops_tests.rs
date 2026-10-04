@@ -6,7 +6,7 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, Series,
+    ErrorCode, ErrorKind, Exec, Series,
     core::{
         error::{FactKeyName, FactValue},
         types::TypeId,
@@ -27,20 +27,20 @@ use crate::common::{column_from_slice, error_context_value, nullable_series, run
 
 fn test_head_basic() {
     let s = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
-    let head = s.head(2).unwrap();
+    let head = s.on(Exec::RETAINED).head(2).unwrap();
     assert_eq!(head.to_vec_strict::<i32>().unwrap(), vec![10, 20]);
 }
 
 fn test_tail_clamps_to_len() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
-    let tail = s.tail(99).unwrap();
+    let tail = s.on(Exec::RETAINED).tail(99).unwrap();
     assert_eq!(tail.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 fn test_slice_preserves_unnamed_series() {
     let column = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let s = Series::from_column(column).unwrap();
-    let sliced = s.slice(1, 2).unwrap();
+    let sliced = s.on(Exec::RETAINED).slice(1, 2).unwrap();
     assert_eq!(sliced.to_vec_strict::<i32>().unwrap(), vec![20, 30]);
 }
 
@@ -48,7 +48,7 @@ fn test_filter_drops_false_and_null_mask_rows() {
     let values = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
     let mask = nullable_series::<bool>("mask", &[true, false, false, true], &[true, true, false, true]).unwrap();
 
-    let filtered = values.filter(&mask).unwrap();
+    let filtered = values.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(filtered.to_vec_strict::<i32>().unwrap(), vec![10, 40]);
 }
 
@@ -56,14 +56,14 @@ fn test_gather_out_of_bounds_nullifies_rows() {
     let values = series::<i32>("x", &[10, 20, 30]).unwrap();
     let indices = series::<i32>("idx", &[2, 99, 0]).unwrap();
 
-    let gathered = values.gather(&indices).unwrap();
+    let gathered = values.on(Exec::RETAINED).gather(&indices).unwrap();
     assert_eq!(gathered.to_optional_vec::<i32>().unwrap(), vec![Some(30), None, Some(10)]);
 }
 
 fn test_dropna_removes_null_rows() {
     let values = series_opt("x", &[Some(10i32), None, Some(30), None]).unwrap();
 
-    let cleaned = values.dropna().unwrap();
+    let cleaned = values.on(Exec::RETAINED).dropna().unwrap();
     assert_eq!(cleaned.null_count(), 0);
     assert_eq!(cleaned.to_vec_strict::<i32>().unwrap(), vec![10, 30]);
 }
@@ -71,7 +71,7 @@ fn test_dropna_removes_null_rows() {
 fn test_drop_duplicates_returns_unique_values() {
     let values = series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
 
-    let deduped = values.drop_duplicates().unwrap();
+    let deduped = values.on(Exec::RETAINED).drop_duplicates().unwrap();
     let mut host = deduped.to_vec_strict::<i32>().unwrap();
     host.sort();
     assert_eq!(host, vec![1, 2, 3]);
@@ -80,7 +80,7 @@ fn test_drop_duplicates_returns_unique_values() {
 fn test_value_counts_returns_schema_neutral_value_and_count_columns() {
     let values = series_opt("x", &[Some(2i32), Some(1), None, Some(2), Some(1), Some(2)]).unwrap();
 
-    let counts = values.value_counts().unwrap();
+    let counts = values.on(Exec::RETAINED).value_counts().unwrap();
 
     assert_eq!(counts.column_names(), vec!["value", "count"]);
     let mut rows: Vec<(i32, i32)> = counts
@@ -99,7 +99,7 @@ fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
     let column = column_from_slice(&[5i32, 5, 7]).unwrap();
     let values = Series::from_column(column).unwrap();
 
-    let counts = values.value_counts().unwrap();
+    let counts = values.on(Exec::RETAINED).value_counts().unwrap();
 
     assert_eq!(counts.column_names(), vec!["value", "count"]);
     let mut rows: Vec<(i32, i32)> = counts
@@ -118,14 +118,14 @@ fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
 
 fn test_head_on_empty_series_returns_empty_with_name() {
     let s = series::<i32>("x", &[]).unwrap();
-    let head = s.head(10).unwrap();
+    let head = s.on(Exec::RETAINED).head(10).unwrap();
     assert_eq!(head.len(), 0);
     assert_eq!(head.to_vec_strict::<i32>().unwrap(), Vec::<i32>::new());
 }
 
 fn test_slice_offset_beyond_len_returns_empty() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let sliced = s.slice(10, 5).unwrap();
+    let sliced = s.on(Exec::RETAINED).slice(10, 5).unwrap();
     assert_eq!(sliced.len(), 0);
 }
 
@@ -133,7 +133,7 @@ fn test_gather_empty_index_returns_empty_with_name() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
     let idx = series::<i32>("idx", &[]).unwrap();
 
-    let gathered = s.gather(&idx).unwrap();
+    let gathered = s.on(Exec::RETAINED).gather(&idx).unwrap();
     assert_eq!(gathered.len(), 0);
 }
 
@@ -142,7 +142,7 @@ fn test_gather_operation_tag_on_dtype_error() {
     // Indices must be Int32; pass Float64 to trigger dtype error.
     let bogus = series::<f64>("idx", &[0.0, 1.0]).unwrap();
 
-    let err = s.gather(&bogus).unwrap_err();
+    let err = s.on(Exec::RETAINED).gather(&bogus).unwrap_err();
     assert_eq!(
         err.operation(),
         "series::gather",
@@ -155,7 +155,7 @@ fn test_filter_operation_tag_on_dtype_error() {
     // Mask must be BOOL8; pass Int32 to trigger dtype error.
     let bogus = series::<i32>("mask", &[1, 0]).unwrap();
 
-    let err = s.filter(&bogus).unwrap_err();
+    let err = s.on(Exec::RETAINED).filter(&bogus).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "series::filter");
@@ -167,7 +167,7 @@ fn test_filter_length_mismatch_uses_canonical_length_contract() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
     let short_mask = series::<bool>("mask", &[true, false]).unwrap();
 
-    let err = s.filter(&short_mask).unwrap_err();
+    let err = s.on(Exec::RETAINED).filter(&short_mask).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "series::filter");
@@ -177,14 +177,14 @@ fn test_filter_length_mismatch_uses_canonical_length_contract() {
 
 fn test_dropna_on_non_nullable_returns_same_values() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let out = s.dropna().unwrap();
+    let out = s.on(Exec::RETAINED).dropna().unwrap();
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 fn test_drop_duplicates_preserves_unnamed_series() {
     let column = column_from_slice(&[2i32, 2, 3]).unwrap();
     let s = Series::from_column(column).unwrap();
-    let deduped = s.drop_duplicates().unwrap();
+    let deduped = s.on(Exec::RETAINED).drop_duplicates().unwrap();
     let mut host = deduped.to_vec_strict::<i32>().unwrap();
     host.sort();
     assert_eq!(host, vec![2, 3]);
@@ -195,7 +195,7 @@ fn test_value_counts_with_sentinel_collision_name() {
     // source series name, including names that match the old sentinel.
     let values = series::<i32>("__cudf_series_value__", &[1, 1, 2]).unwrap();
 
-    let counts = values.value_counts().unwrap();
+    let counts = values.on(Exec::RETAINED).value_counts().unwrap();
     assert_eq!(counts.column_names(), vec!["value", "count"]);
 }
 

@@ -249,7 +249,11 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
         .unwrap();
     let member_before = token.reservation_usage().unwrap();
     assert_eq!(member_before.allocation_limit_bytes, GRANT_BYTES);
-    let error = execution.runtime().unwrap().series_from_value_with_budget(1i32, 1024 * 1024, &token).unwrap_err();
+    let error = token
+        .run("runtime::series_from_value", |exec| {
+            execution.runtime().unwrap().on(exec)?.series_from_value(1i32, 1024 * 1024)
+        })
+        .unwrap_err();
     assert_eq!(error.kind(), cudf::ErrorKind::ResourceExhausted);
     let budget_usage = *error.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage");
     assert_eq!(budget_usage.allocation_limit_bytes, GRANT_BYTES);

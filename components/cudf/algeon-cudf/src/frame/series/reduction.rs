@@ -4,7 +4,7 @@
 //! high-level workflow. They preserve cuDF/libcudf reduction semantics while
 //! avoiding an explicit drop into [`Scalar`](crate::core::Scalar).
 
-use super::{context::default_execution_context, owned::Series};
+use super::{context::SeriesOps, owned::Series};
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::runtime::Runtime;
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
         reduction::{ReduceAgg, ScanAgg, ScanType},
         unary::UnaryOperator,
     },
-    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides},
+    runtime::{BudgetedExecutionOutcome, Exec, ExecutionBudgetToken},
 };
 
 /// Conservative output-shape facts for a prepared scalar reduction.
@@ -72,8 +72,8 @@ impl ScalarReductionOutput {
 /// Prepared scalar reduction over a retained input series.
 ///
 /// Preparation validates the reduction output type and records the stable
-/// scalar output shape. Execution may then be routed through a default
-/// execution context or a hard execution-budget token.
+/// scalar output shape. Execution then runs where an [`Exec`] selects or
+/// under a hard execution-budget token.
 pub struct SeriesPreparedScalarReduction<'a> {
     input: &'a Series,
     aggregation: ReduceAgg,
@@ -106,10 +106,8 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
     }
 
     /// Execute the prepared scalar reduction.
-    pub fn execute(&self) -> Result<ScalarReductionOutput> {
-        self.execute_in_context(&default_execution_context(), "series::prepared_scalar_reduction::execute", |error| {
-            error
-        })
+    pub fn execute(&self, exec: Exec<'_>) -> Result<ScalarReductionOutput> {
+        self.execute_in_context(exec, "series::prepared_scalar_reduction::execute", |error| error)
     }
 
     /// Execute the prepared scalar reduction with a hard execution-budget token.
@@ -122,8 +120,8 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<ScalarReductionOutput>> {
         let operation = "series::prepared_scalar_reduction::execute_with_budget";
-        let ctx = token.execution_overrides();
-        let output = self.execute_in_context(&ctx, operation, |error| {
+        let ctx = token.exec();
+        let output = self.execute_in_context(ctx, operation, |error| {
             annotate_scalar_reduction_budget_execution_error(error, token, operation)
         })?;
         let report = token.reservation_enforced_report().with_output_rows(output.output_rows());
@@ -133,7 +131,7 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
 
     fn execute_in_context<F>(
         &self,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
         map_execution_error: F,
     ) -> Result<ScalarReductionOutput>
@@ -243,13 +241,30 @@ impl Series {
         Ok(SeriesPreparedScalarReduction::new(self, agg, ScalarReductionOutputShape::new(output_type)))
     }
 
-    pub(super) fn nunique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<usize> {
+    pub(super) fn nunique_with_context(&self, ctx: Exec<'_>, operation: &'static str) -> Result<usize> {
         let scalar = self.reduce_in_context(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }, ctx, operation)?;
         scalar_to_usize_count(scalar, operation)
     }
 
     // -- Scalar reductions ---------------------------------------------------
 
+    // -- Scan (cumulative) operations ----------------------------------------
+
+    // -- Unary operations ----------------------------------------------------
+}
+
+fn annotate_scalar_reduction_budget_execution_error(
+    error: Error,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Error {
+    match error.kind() {
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
+        _ => error.reanchor_if_needed(operation),
+    }
+}
+
+impl SeriesOps<'_> {
     /// Reduce the series to a single scalar: sum of all elements.
     ///
     /// Output type: integer types → `Int64`, float → same float, `Bool8` → `Int64`.
@@ -258,7 +273,7 @@ impl Series {
     /// # Cost
     /// GPU computation (synchronizes to return host-accessible scalar).
     pub fn sum(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Sum, &default_execution_context(), "series::sum")
+        self.series.reduce_in_context(ReduceAgg::Sum, self.ctx, "series::sum")
     }
 
     /// Reduce the series to a host value: sum of all elements.
@@ -274,7 +289,7 @@ impl Series {
     ///
     /// let rt = Runtime::new().unwrap();
     /// let s = rt.series(&[10i32, 20, 30]).unwrap();
-    /// let total = s.sum_value::<i64>().unwrap();
+    /// let total = s.on(rt.exec()).sum_value::<i64>().unwrap();
     ///
     /// assert_eq!(total, 60);
     /// ```
@@ -286,7 +301,7 @@ impl Series {
     ///
     /// Output type: same as input. Nulls are excluded.
     pub fn min(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Min, &default_execution_context(), "series::min")
+        self.series.reduce_in_context(ReduceAgg::Min, self.ctx, "series::min")
     }
 
     /// Reduce the series to a host minimum value.
@@ -298,7 +313,7 @@ impl Series {
     ///
     /// let rt = Runtime::new().unwrap();
     /// let s = rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap();
-    /// let min = s.min_value::<i32>().unwrap();
+    /// let min = s.on(rt.exec()).min_value::<i32>().unwrap();
     ///
     /// assert_eq!(min, Some(10));
     /// ```
@@ -310,7 +325,7 @@ impl Series {
     ///
     /// Output type: same as input. Nulls are excluded.
     pub fn max(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Max, &default_execution_context(), "series::max")
+        self.series.reduce_in_context(ReduceAgg::Max, self.ctx, "series::max")
     }
 
     /// Reduce the series to a host maximum value.
@@ -324,7 +339,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn mean(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Mean, &default_execution_context(), "series::mean")
+        self.series.reduce_in_context(ReduceAgg::Mean, self.ctx, "series::mean")
     }
 
     /// Reduce the series to a host mean value.
@@ -336,7 +351,7 @@ impl Series {
     ///
     /// let rt = Runtime::new().unwrap();
     /// let s = rt.series(&[10i32, 20, 30]).unwrap();
-    /// let mean = s.mean_value().unwrap();
+    /// let mean = s.on(rt.exec()).mean_value().unwrap();
     ///
     /// assert_eq!(mean, Some(20.0));
     /// ```
@@ -348,7 +363,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn median(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Median, &default_execution_context(), "series::median")
+        self.series.reduce_in_context(ReduceAgg::Median, self.ctx, "series::median")
     }
 
     /// Reduce the series to a host median value.
@@ -363,7 +378,7 @@ impl Series {
     /// `ddof = 1` gives the sample standard deviation (default in cuDF Python).
     /// Always returns `Float64`. Nulls are excluded.
     pub fn std(&self, ddof: u32) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Std { ddof }, &default_execution_context(), "series::std")
+        self.series.reduce_in_context(ReduceAgg::Std { ddof }, self.ctx, "series::std")
     }
 
     /// Reduce the series to a host standard deviation value.
@@ -378,7 +393,7 @@ impl Series {
     /// `ddof = 1` gives the sample variance. Always returns `Float64`.
     /// Nulls are excluded.
     pub fn var(&self, ddof: u32) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Variance { ddof }, &default_execution_context(), "series::var")
+        self.series.reduce_in_context(ReduceAgg::Variance { ddof }, self.ctx, "series::var")
     }
 
     /// Reduce the series to a host variance value.
@@ -392,7 +407,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn any(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Any, &default_execution_context(), "series::any")
+        self.series.reduce_in_context(ReduceAgg::Any, self.ctx, "series::any")
     }
 
     /// Reduce the series to a host `bool`: `true` if any element is truthy.
@@ -407,7 +422,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn all(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::All, &default_execution_context(), "series::all")
+        self.series.reduce_in_context(ReduceAgg::All, self.ctx, "series::all")
     }
 
     /// Reduce the series to a host `bool`: `true` if all elements are truthy.
@@ -422,7 +437,7 @@ impl Series {
     ///
     /// Nulls are excluded.
     pub fn product(&self) -> Result<Scalar> {
-        self.reduce_in_context(ReduceAgg::Product, &default_execution_context(), "series::product")
+        self.series.reduce_in_context(ReduceAgg::Product, self.ctx, "series::product")
     }
 
     /// Reduce the series to a host product value.
@@ -436,7 +451,7 @@ impl Series {
     ///
     /// Returns `(min_scalar, max_scalar)`.
     pub fn minmax(&self) -> Result<(Scalar, Scalar)> {
-        self.minmax_with_context(&default_execution_context(), "series::minmax")
+        self.series.minmax_with_context(self.ctx, "series::minmax")
     }
 
     /// Reduce the series to host minimum and maximum values in one pass.
@@ -449,7 +464,7 @@ impl Series {
     ///
     /// let rt = Runtime::new().unwrap();
     /// let s = rt.series(&[30i32, 10, 20]).unwrap();
-    /// let (min, max) = s.minmax_values::<i32>().unwrap();
+    /// let (min, max) = s.on(rt.exec()).minmax_values::<i32>().unwrap();
     ///
     /// assert_eq!((min, max), (Some(10), Some(30)));
     /// ```
@@ -458,8 +473,6 @@ impl Series {
         Ok((scalar_to_optional_value(min)?, scalar_to_optional_value(max)?))
     }
 
-    // -- Scan (cumulative) operations ----------------------------------------
-
     /// Inclusive cumulative sum.
     ///
     /// Nulls are excluded from the running total (filled with null in output).
@@ -467,49 +480,47 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn cumsum(&self) -> Result<Series> {
-        self.scan_with_context(
+        self.series.scan_with_context(
             ScanAgg::Sum,
             ScanType::Inclusive,
             NullPolicy::Exclude,
-            &default_execution_context(),
+            self.ctx,
             "series::cumsum",
         )
     }
 
     /// Inclusive cumulative minimum.
     pub fn cummin(&self) -> Result<Series> {
-        self.scan_with_context(
+        self.series.scan_with_context(
             ScanAgg::Min,
             ScanType::Inclusive,
             NullPolicy::Exclude,
-            &default_execution_context(),
+            self.ctx,
             "series::cummin",
         )
     }
 
     /// Inclusive cumulative maximum.
     pub fn cummax(&self) -> Result<Series> {
-        self.scan_with_context(
+        self.series.scan_with_context(
             ScanAgg::Max,
             ScanType::Inclusive,
             NullPolicy::Exclude,
-            &default_execution_context(),
+            self.ctx,
             "series::cummax",
         )
     }
 
     /// Inclusive cumulative product.
     pub fn cumprod(&self) -> Result<Series> {
-        self.scan_with_context(
+        self.series.scan_with_context(
             ScanAgg::Product,
             ScanType::Inclusive,
             NullPolicy::Exclude,
-            &default_execution_context(),
+            self.ctx,
             "series::cumprod",
         )
     }
-
-    // -- Unary operations ----------------------------------------------------
 
     /// Element-wise NaN check. Returns a `BOOL8` mask.
     ///
@@ -518,12 +529,12 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn is_nan(&self) -> Result<Series> {
-        self.is_nan_with_context(&default_execution_context(), "series::is_nan")
+        self.series.is_nan_with_context(self.ctx, "series::is_nan")
     }
 
     /// Element-wise not-NaN check. Returns a `BOOL8` mask.
     pub fn is_not_nan(&self) -> Result<Series> {
-        self.is_not_nan_with_context(&default_execution_context(), "series::is_not_nan")
+        self.series.is_not_nan_with_context(self.ctx, "series::is_not_nan")
     }
 
     /// Element-wise absolute value.
@@ -531,7 +542,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn abs(&self) -> Result<Series> {
-        self.unary_with_context(UnaryOperator::Abs, &default_execution_context(), "series::abs")
+        self.series.unary_with_context(UnaryOperator::Abs, self.ctx, "series::abs")
     }
 
     /// Element-wise arithmetic negation.
@@ -539,7 +550,7 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new column.
     pub fn neg(&self) -> Result<Series> {
-        self.unary_with_context(UnaryOperator::Negate, &default_execution_context(), "series::neg")
+        self.series.unary_with_context(UnaryOperator::Negate, self.ctx, "series::neg")
     }
 
     /// Element-wise logical NOT for `Bool8` columns.
@@ -547,17 +558,6 @@ impl Series {
     /// # Cost
     /// GPU-allocating: produces a new BOOL8 column.
     pub fn logical_not(&self) -> Result<Series> {
-        self.logical_not_with_context(&default_execution_context(), "series::logical_not")
-    }
-}
-
-fn annotate_scalar_reduction_budget_execution_error(
-    error: Error,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-) -> Error {
-    match error.kind() {
-        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
-        _ => error.reanchor_if_needed(operation),
+        self.series.logical_not_with_context(self.ctx, "series::logical_not")
     }
 }

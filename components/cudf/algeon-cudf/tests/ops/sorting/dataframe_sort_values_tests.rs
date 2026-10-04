@@ -1,7 +1,7 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
+    DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     ops::sorting,
@@ -95,7 +95,7 @@ fn test_sort_options_builder() {
 
 fn test_sort_values_single_column_ascending() {
     let df = sample_df();
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
@@ -107,7 +107,7 @@ fn test_sort_values_single_column_ascending() {
 
 fn test_sort_values_single_column_descending() {
     let df = sample_df();
-    let sorted = df.sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
 
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
@@ -122,7 +122,10 @@ fn test_sort_values_multi_column() {
     let scores = series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
-    let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
+    let sorted = df
+        .on(Exec::RETAINED)
+        .sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true]))
+        .unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
@@ -135,7 +138,8 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
     let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
 
     let keys = vec!["id".to_string(), "score".to_string()];
-    let sorted = df.sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
+    let sorted =
+        df.on(Exec::RETAINED).sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
 
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
@@ -152,7 +156,7 @@ fn test_sort_values_stable_preserves_order() {
     let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
 
-    let sorted = df.sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
 
     // Tags should remain in original insertion order since all ids are equal.
     assert_eq!(sorted.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
@@ -165,7 +169,7 @@ fn test_sort_values_stable_preserves_order() {
 fn test_sort_values_rejects_mismatched_descending_length() {
     let df = sample_df();
     // 1 sort key but 2 descending flags
-    let result = df.sort_values(["id"], SortOptions::new().with_descending(vec![true, false]));
+    let result = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![true, false]));
 
     let err = result.unwrap_err();
     assert_sort_options_validation_error(
@@ -184,7 +188,8 @@ fn test_sort_values_rejects_mismatched_descending_length() {
 fn test_sort_values_rejects_mismatched_nulls_first_length() {
     let df = sample_df();
     // 1 sort key but 3 nulls_first flags
-    let result = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true, false, true]));
+    let result =
+        df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_nulls_first(vec![true, false, true]));
 
     let err = result.unwrap_err();
     assert_sort_options_validation_error(
@@ -202,7 +207,7 @@ fn test_sort_values_rejects_mismatched_nulls_first_length() {
 
 fn test_sort_values_preserves_schema() {
     let df = sample_df();
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
 
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
     assert_eq!(sorted.column_index("id"), Some(0));
@@ -215,7 +220,7 @@ fn test_sort_values_preserves_schema() {
 
 fn test_sort_values_nonexistent_column() {
     let df = sample_df();
-    let result = df.sort_values(["missing"], SortOptions::new());
+    let result = df.on(Exec::RETAINED).sort_values(["missing"], SortOptions::new());
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -229,10 +234,10 @@ fn test_sort_values_nonexistent_column() {
 fn test_sort_values_empty_options_means_defaults() {
     let df = sample_df();
     // Empty descending + empty nulls_first → all ascending, nulls last.
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
 
     // Should be same as explicit ascending.
-    let expected = df.sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
     assert_eq!(
         sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
         expected.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
@@ -250,7 +255,7 @@ fn test_sort_values_nulls_first() {
         dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
     // Sort by id ascending, nulls first.
-    let sorted = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
 
     let id_vals = sorted.series("id").unwrap().to_optional_vec::<i32>().unwrap();
     // Nulls should appear first (their host value is 0, but they're null).
@@ -267,16 +272,20 @@ fn test_sort_values_descending_null_placement() {
     let df =
         dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
-    let nulls_first =
-        df.sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true])).unwrap();
+    let nulls_first = df
+        .on(Exec::RETAINED)
+        .sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]))
+        .unwrap();
     assert_eq!(
         nulls_first.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
         vec![None, None, Some(3), Some(2), Some(1)]
     );
     assert_eq!(nulls_first.series("val").unwrap().to_vec_strict::<i32>().unwrap()[2..], [30, 20, 50]);
 
-    let nulls_last =
-        df.sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![false])).unwrap();
+    let nulls_last = df
+        .on(Exec::RETAINED)
+        .sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![false]))
+        .unwrap();
     assert_eq!(
         nulls_last.series("id").unwrap().to_optional_vec::<i32>().unwrap(),
         vec![Some(3), Some(2), Some(1), None, None]
@@ -290,7 +299,7 @@ fn test_sort_values_default_places_nulls_last() {
     let df =
         dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
     let id_col = sorted.series("id").unwrap();
     let id_vals = id_col.to_optional_vec::<i32>().unwrap();
 
@@ -306,7 +315,7 @@ fn test_sort_values_default_places_nulls_last() {
 fn test_sort_values_unstable_by_default() {
     let df = sample_df();
     // Default unstable sort should still produce correct ordering.
-    let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
 
     let ids = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     // Check monotonically non-decreasing.
@@ -321,17 +330,17 @@ fn test_sort_values_unstable_by_default() {
 
 fn test_sort_values_explicit_ascending() {
     let df = sample_df();
-    let sorted = df.sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
 }
 
 fn test_prepare_sort_values_single_key_matches_sort_values() {
     let df = sample_df();
     let options = SortOptions::new();
-    let expected = df.sort_values(["id"], options.clone()).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
 
-    let prepared = df.prepare_sort_values(["id"], options).unwrap();
-    let actual = prepared.materialize().unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(prepared.output_rows(), df.num_rows());
     assert_i32_column_eq(&actual, &expected, "id");
@@ -343,10 +352,10 @@ fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
     let tags = series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_descending(vec![false, true]);
-    let expected = df.sort_values(["id", "score"], options.clone()).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id", "score"], options.clone()).unwrap();
 
-    let prepared = df.prepare_sort_values(["id", "score"], options).unwrap();
-    let actual = prepared.execute().unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id", "score"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
 
     assert_i32_column_eq(&actual, &expected, "id");
     assert_i32_column_eq(&actual, &expected, "score");
@@ -359,10 +368,10 @@ fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
     let df =
         dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
     let options = SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]);
-    let expected = df.sort_values(["id"], options.clone()).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
 
-    let prepared = df.prepare_sort_values(["id"], options).unwrap();
-    let actual = prepared.materialize().unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
 
     assert_i32_column_eq(&actual, &expected, "id");
     assert_i32_column_eq(&actual, &expected, "val");
@@ -373,10 +382,10 @@ fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
     let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_stable(true);
-    let expected = df.sort_values(["id"], options.clone()).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
 
-    let prepared = df.prepare_sort_values(["id"], options).unwrap();
-    let actual = prepared.materialize().unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], options).unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
 
     assert_i32_column_eq(&actual, &expected, "id");
     assert_i32_column_eq(&actual, &expected, "tag");
@@ -384,7 +393,7 @@ fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
 
 fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
     let df = sample_df();
-    let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
     let expected = sorting::sorted_order_reservation_size_bytes_for_len(prepared.output_rows()).unwrap();
 
     assert_eq!(expected, prepared.sorted_order_reservation_size_bytes().unwrap());
@@ -403,10 +412,10 @@ fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_out
     let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let vals = series::<i32>("val", &[30, 10, 20]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
-    let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
+    let prepared = df.on(Exec::RETAINED).prepare_sort_values(["id"], SortOptions::new()).unwrap();
 
-    let reservation = prepared.materialized_output_reservation_size_bytes().unwrap();
-    let materialized = prepared.materialize().unwrap();
+    let reservation = prepared.materialized_output_reservation_size_bytes(Exec::RETAINED).unwrap();
+    let materialized = prepared.materialize(Exec::RETAINED).unwrap();
 
     assert_eq!(reservation, dataframe_device_allocated_size_bytes(&materialized));
     assert_eq!(materialized.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -420,7 +429,9 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     });
 
     reset_exec_observation();
-    let outcome = df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &token).unwrap();
+    let outcome = token
+        .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
+        .unwrap();
     let prepared = outcome.value();
     let report = outcome.report();
     let expected_order_bytes = prepared.sorted_order_reservation_size_bytes().unwrap();
@@ -448,7 +459,7 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_stable(true);
-    let expected = df.sort_values(["id"], options.clone()).unwrap();
+    let expected = df.on(Exec::RETAINED).sort_values(["id"], options.clone()).unwrap();
     let token = with_test_runtime(|runtime| {
         execution_budget_token(
             runtime,
@@ -458,10 +469,11 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     });
 
     reset_exec_observation();
-    let outcome = df.prepare_sort_values_with_budget(["id"], options, &token).unwrap();
+    let outcome =
+        token.run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], options)).unwrap();
     let prepare_exec_mrs = observed_exec_mr_values();
     let prepared = outcome.value();
-    let actual = prepared.materialize().unwrap();
+    let actual = prepared.materialize(Exec::RETAINED).unwrap();
     let manager_mr = token.memory_resource().testing_raw_handle_value();
 
     assert_i32_column_eq(&actual, &expected, "id");
@@ -494,7 +506,10 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
             )
             .unwrap()
         });
-        df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &prepare_token).unwrap().into_value()
+        prepare_token
+            .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
+            .unwrap()
+            .into_value()
     };
     let materialize_token = with_test_runtime(|runtime| {
         execution_budget_token(
@@ -533,8 +548,8 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
         execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("final_sort")).unwrap()
     });
 
-    let err = df
-        .prepare_sort_values_with_budget(["id"], SortOptions::new(), &token)
+    let err = token
+        .run("dataframe::prepare_sort_values", |exec| df.on(exec).prepare_sort_values(["id"], SortOptions::new()))
         .expect_err("one-byte budget should not cover prepared sort allocations");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);

@@ -1,6 +1,6 @@
 //! Tests for shared high-level group-key validation across DataFrame APIs.
 
-use cudf::{AggSpec, ErrorCode, ErrorKind, GroupByAgg};
+use cudf::{AggSpec, ErrorCode, ErrorKind, Exec, GroupByAgg};
 
 use crate::common::{column_from_slice, dataframe_from_columns, error_context_value, run_named_cases};
 
@@ -19,8 +19,9 @@ fn high_level_group_key_apis_share_empty_key_contract() {
     let values = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, values]).unwrap();
 
-    let groupby_err = df.groupby(Vec::<&str>::new()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
-    let cumcount_err = df.group_cumcount(Vec::<&str>::new()).unwrap_err();
+    let groupby_err =
+        df.groupby(Vec::<&str>::new()).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
+    let cumcount_err = df.on(Exec::RETAINED).group_cumcount(Vec::<&str>::new()).unwrap_err();
 
     assert_empty_group_key_contract(&groupby_err, "groupby::GroupBy::agg");
     assert_empty_group_key_contract(&cumcount_err, "dataframe::group_cumcount");

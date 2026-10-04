@@ -1,5 +1,5 @@
 use cudf::{
-    Error, ErrorCode, ErrorKind,
+    Error, ErrorCode, ErrorKind, Exec,
     core::{
         error::{FactKeyName, FactValue},
         types::TypeId,
@@ -35,8 +35,8 @@ fn dataframe_and_series_filter_dtype_validation_use_same_canonical_contract() {
     let values = df.series("id").unwrap();
     let bad_mask = series::<i32>("mask", &[1, 0, 1, 0, 1]).unwrap();
 
-    let dataframe_err = df.filter(&bad_mask).unwrap_err();
-    let series_err = values.filter(&bad_mask).unwrap_err();
+    let dataframe_err = df.on(Exec::RETAINED).filter(&bad_mask).unwrap_err();
+    let series_err = values.on(Exec::RETAINED).filter(&bad_mask).unwrap_err();
 
     assert_eq!(dataframe_err.kind(), ErrorKind::InvalidInput);
     assert_eq!(series_err.kind(), ErrorKind::InvalidInput);
@@ -54,8 +54,8 @@ fn dataframe_and_series_filter_length_validation_use_same_canonical_facts() {
     let values = df.series("id").unwrap();
     let short_mask = series::<bool>("mask", &[true, false]).unwrap();
 
-    let dataframe_err = df.filter(&short_mask).unwrap_err();
-    let series_err = values.filter(&short_mask).unwrap_err();
+    let dataframe_err = df.on(Exec::RETAINED).filter(&short_mask).unwrap_err();
+    let series_err = values.on(Exec::RETAINED).filter(&short_mask).unwrap_err();
 
     assert_eq!(dataframe_err.kind(), ErrorKind::InvalidInput);
     assert_eq!(series_err.kind(), ErrorKind::InvalidInput);

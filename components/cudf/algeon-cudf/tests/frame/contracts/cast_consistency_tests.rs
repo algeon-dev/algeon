@@ -4,7 +4,7 @@
 //! while `TypeId` remains accepted via `Into<DataType>` for convenience.
 
 use cudf::{
-    DataFrame, DataType, TypeId,
+    DataFrame, DataType, Exec, TypeId,
     ops::{expr::col, unary::is_supported_cast},
 };
 
@@ -17,14 +17,14 @@ use crate::common::{run_named_cases, series};
 fn series_astype_accepts_datatype() {
     let s = series::<i32>("x", &[100, 200, 300]).unwrap();
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
-    let result = s.astype(dt).unwrap();
+    let result = s.on(Exec::RETAINED).astype(dt).unwrap();
     assert_eq!(result.dtype().unwrap(), dt);
 }
 
 fn series_astype_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
-    let result = s.astype(TypeId::Float64).unwrap();
+    let result = s.on(Exec::RETAINED).astype(TypeId::Float64).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
 
@@ -60,8 +60,8 @@ fn cast_symmetry() {
     let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("x", s.clone())]).unwrap();
 
-    let via_series = s.astype(dt).unwrap();
-    let via_df = df.cast_column("x", dt).unwrap();
+    let via_series = s.on(Exec::RETAINED).astype(dt).unwrap();
+    let via_df = df.on(Exec::RETAINED).cast_column("x", dt).unwrap();
     let via_df_col = via_df.series("x").unwrap();
 
     assert_eq!(via_series.dtype().unwrap(), via_df_col.dtype().unwrap());

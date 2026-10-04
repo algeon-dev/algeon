@@ -1,7 +1,7 @@
 //! Tests for `DataFrame::merge_split`.
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, NullEquality,
-    frame::dataframe::DataFrameJoinSides, testing::prelude::*,
+    DataFrame, ErrorCode, ErrorKind, Exec, MergeOptions, NullEquality, frame::dataframe::DataFrameJoinSides,
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -55,7 +55,8 @@ fn test_inner_merge_split_on_shared_key() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_inner();
-    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } =
+        left.on(Exec::RETAINED).merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 2);
     assert_eq!(right_result.num_rows(), 2);
@@ -78,7 +79,8 @@ fn test_left_merge_split_preserves_all_left_rows() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_left();
-    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } =
+        left.on(Exec::RETAINED).merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 3);
     assert_eq!(right_result.num_rows(), 3);
@@ -101,7 +103,8 @@ fn test_full_merge_split_preserves_all_rows() {
     let right = right_df();
 
     let opts = MergeOptions::new().on(["id"]).how_full();
-    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } =
+        left.on(Exec::RETAINED).merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 4);
     assert_eq!(right_result.num_rows(), 4);
@@ -124,7 +127,8 @@ fn test_merge_split_asymmetric_keys_preserve_each_side_schema() {
     let right = right_df_asym();
 
     let opts = MergeOptions::new().left_on(["left_id"]).right_on(["right_id"]).how_inner();
-    let DataFrameJoinSides { left: left_result, right: right_result } = left.merge_split(&right, opts).unwrap();
+    let DataFrameJoinSides { left: left_result, right: right_result } =
+        left.on(Exec::RETAINED).merge_split(&right, opts).unwrap();
 
     assert_eq!(left_result.num_rows(), 2);
     assert_eq!(right_result.num_rows(), 2);
@@ -152,8 +156,10 @@ fn test_merge_split_respects_null_equality() {
     let right =
         dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals]).unwrap();
 
-    let eq_result =
-        left.merge_split(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal)).unwrap();
+    let eq_result = left
+        .on(Exec::RETAINED)
+        .merge_split(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal))
+        .unwrap();
     assert_eq!(eq_result.left.num_rows(), 3);
     assert_eq!(eq_result.right.num_rows(), 3);
     let mut eq_left_rows: Vec<_> =
@@ -165,8 +171,10 @@ fn test_merge_split_respects_null_equality() {
     eq_right_rows.sort();
     assert_eq!(eq_right_rows, vec![(None, 200), (Some(1), 100), (Some(3), 300)]);
 
-    let ne_result =
-        left.merge_split(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Unequal)).unwrap();
+    let ne_result = left
+        .on(Exec::RETAINED)
+        .merge_split(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Unequal))
+        .unwrap();
     assert_eq!(ne_result.left.num_rows(), 2);
     assert_eq!(ne_result.right.num_rows(), 2);
     let mut ne_left_rows: Vec<_> =
@@ -194,13 +202,12 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
     .unwrap();
-    let ctx =
-        ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
+    let ctx = target_rt.exec();
     let expected_stream = target_rt.stream().testing_raw_handle_value();
     let expected_mr = target_rt.memory_resource().testing_raw_handle_value();
 
     reset_exec_observation();
-    let split = left.with_execution(&ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let split = left.on(ctx).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(split.left.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(split.right.testing_execution_domain_id(), left.testing_execution_domain_id());
@@ -241,7 +248,7 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let split = left.merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let split = left.on(Exec::RETAINED).merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(split.left.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(split.right.testing_execution_domain_id(), left.testing_execution_domain_id());
@@ -267,7 +274,7 @@ fn test_merge_split_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
@@ -281,7 +288,7 @@ fn test_merge_split_right_on_without_left_on() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge_split(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge_split(&right, MergeOptions::new().right_on(["id"])).unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
@@ -295,8 +302,10 @@ fn test_merge_split_left_on_right_on_length_mismatch() {
     let left = left_df_asym();
     let right = right_df_asym();
 
-    let err =
-        left.merge_split(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .merge_split(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id", "value"]))
+        .unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
@@ -312,7 +321,7 @@ fn test_merge_split_no_keys_specified() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge_split(&right, MergeOptions::new()).unwrap_err();
+    let err = left.on(Exec::RETAINED).merge_split(&right, MergeOptions::new()).unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
@@ -326,7 +335,10 @@ fn test_merge_split_rejects_ambiguous_join_key_configuration() {
     let left = left_df();
     let right = right_df();
 
-    let err = left.merge_split(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"])).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .merge_split(&right, MergeOptions::new().on(["id"]).left_on(["id"]).right_on(["id"]))
+        .unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
@@ -340,13 +352,13 @@ fn test_merge_split_in_context_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
     let rt = sample_runtime();
-    let ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
+    let ctx = rt.exec();
 
-    let err = left.with_execution(&ctx).merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
+    let err = left.on(ctx).merge_split(&right, MergeOptions::new().left_on(["id"])).unwrap_err();
 
     assert_merge_split_validation_error(
         &err,
-        "dataframe::with_execution::merge_split",
+        "dataframe::merge_split",
         "left_on_without_right_on",
         "set right_on() or use on()",
     );

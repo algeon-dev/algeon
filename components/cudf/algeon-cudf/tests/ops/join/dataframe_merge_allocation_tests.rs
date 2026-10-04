@@ -1,4 +1,4 @@
-use cudf::{DataFrame, MergeOptions};
+use cudf::{DataFrame, Exec, MergeOptions};
 
 use crate::{
     allocation::allocation_count_delta,
@@ -36,7 +36,7 @@ fn merge_same_key_allocates_no_more_than_merge_split() {
     let options = MergeOptions::new().on(["id"]);
 
     let merge_allocations = allocation_count_delta(|| {
-        let result = left.merge(&right, options.clone()).unwrap();
+        let result = left.on(Exec::RETAINED).merge(&right, options.clone()).unwrap();
         assert_eq!(result.column_names(), vec!["id", "score", "value"]);
         assert_eq!(result.num_rows(), 2);
         let _ = result.series("id").unwrap().to_vec_strict::<i32>().unwrap();
@@ -44,7 +44,7 @@ fn merge_same_key_allocates_no_more_than_merge_split() {
     });
 
     let split_allocations = allocation_count_delta(|| {
-        let result = left.merge_split(&right, options.clone()).unwrap();
+        let result = left.on(Exec::RETAINED).merge_split(&right, options.clone()).unwrap();
         assert_eq!(result.left.column_names(), vec!["id", "score"]);
         assert_eq!(result.right.column_names(), vec!["id", "value"]);
         assert_eq!(result.left.num_rows(), 2);
@@ -67,7 +67,7 @@ fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
     let options = MergeOptions::new().how_left().left_on(["left_id"]).right_on(["right_id"]);
 
     let merge_allocations = allocation_count_delta(|| {
-        let result = left.merge(&right, options.clone()).unwrap();
+        let result = left.on(Exec::RETAINED).merge(&right, options.clone()).unwrap();
         assert_eq!(result.column_names(), vec!["left_id", "score", "right_id", "value"]);
         assert_eq!(result.num_rows(), 3);
         let _ = result.series("left_id").unwrap().to_vec_strict::<i32>().unwrap();
@@ -75,7 +75,7 @@ fn merge_asymmetric_keys_allocates_no_more_than_merge_split() {
     });
 
     let split_allocations = allocation_count_delta(|| {
-        let result = left.merge_split(&right, options.clone()).unwrap();
+        let result = left.on(Exec::RETAINED).merge_split(&right, options.clone()).unwrap();
         assert_eq!(result.left.column_names(), vec!["left_id", "score"]);
         assert_eq!(result.right.column_names(), vec!["right_id", "value"]);
         assert_eq!(result.left.num_rows(), 3);

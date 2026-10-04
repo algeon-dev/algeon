@@ -2,15 +2,14 @@ use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
-    BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledMixedSizeData, DataFrame,
-    ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode,
-    JoinSide, JoinStrategy, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
+    BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledMixedSizeData, DataFrame, Exec,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
+    JoinStrategy, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
     QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts, StreamedPartitionedJoinSummary,
     VecDeque, bounded_invariant_violation, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
-    cudf_query_error, dataframe_mixed_join_options, execution_overrides, join_index_error,
-    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
-    materialize_bounded_join_leaf_local_parquet_source_stream,
+    cudf_query_error, dataframe_mixed_join_options, join_index_error, join_side_output_upper_bound_bytes,
+    lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame, residual_input_columns,
@@ -160,13 +159,11 @@ pub(super) fn hash_partition_join_side(
     input: BoundedJoinSideFrame,
     keys: &[String],
     partition_count: usize,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
 ) -> Result<PartitionedJoinSide> {
     let BoundedJoinSideFrame { frame, .. } = input;
-    let partitioned = match frame
-        .with_execution(overrides)
-        .hash_partition_by(keys.iter().map(String::as_str), partition_count)
-        .map_err(|error| {
+    let partitioned =
+        match frame.on(overrides).hash_partition_by(keys.iter().map(String::as_str), partition_count).map_err(|error| {
             with_partition_side(
                 cudf_query_error(
                     "query_engine.bounded.join.hash_partition",
@@ -179,11 +176,11 @@ pub(super) fn hash_partition_join_side(
             .with_fact("key_count", keys.len())
             .with_fact("partition_count", partition_count)
         }) {
-        Ok(partitioned) => partitioned,
-        Err(error) => {
-            return Err(error);
-        },
-    };
+            Ok(partitioned) => partitioned,
+            Err(error) => {
+                return Err(error);
+            },
+        };
     let (partitioned, offsets) = partitioned.into_parts();
     let partitioned_frame = GpuDataFrame::new(partitioned.clone());
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, execution.metrics()) {
@@ -242,9 +239,9 @@ pub(super) fn slice_partition_join_side_range(
     }
     let start = partition_start.saturating_add(range.offset);
     let len = range.len;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let frame = partition_frame.with_execution(&overrides).slice(start, len).map_err(|error| {
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let frame = partition_frame.on(overrides).slice(start, len).map_err(|error| {
         with_partition_side(
             cudf_query_error(
                 "query_engine.bounded.join.hash_partition_slice",

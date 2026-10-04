@@ -1,4 +1,5 @@
 use arrow::datatypes::SchemaRef;
+use cudf::Exec;
 #[cfg(feature = "cugraph")]
 use cugraph::AllocationFailureSource;
 #[cfg(feature = "cugraph")]
@@ -213,7 +214,7 @@ pub(super) fn normalize_graph_result_schema(mut frame: DataFrame, schema: &Schem
             .with_fact("field_name", field_name)
         })?;
         if actual_type != target_type {
-            frame = frame.cast_column(field_name, target_type).map_err(|error| {
+            frame = frame.on(Exec::RETAINED).cast_column(field_name, target_type).map_err(|error| {
                 cudf_query_error(
                     "query_engine.graph_algorithm.schema_normalize",
                     "failed to cast cuGraph result column to the stable SQL schema",

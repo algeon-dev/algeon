@@ -1,4 +1,4 @@
-use cudf::{DataFrame, ErrorCode};
+use cudf::{DataFrame, ErrorCode, Exec};
 
 use crate::common::{run_named_cases, series};
 
@@ -11,7 +11,7 @@ fn sample_frame() -> DataFrame {
 fn hash_partition_by_preserves_rows_and_reports_offsets() {
     let df = sample_frame();
 
-    let partitioned = df.hash_partition_by(["id"], 3).unwrap();
+    let partitioned = df.on(Exec::RETAINED).hash_partition_by(["id"], 3).unwrap();
     let offsets = partitioned.offsets();
     assert_eq!(offsets.len(), 4);
     assert_eq!(offsets[0], 0);
@@ -46,7 +46,7 @@ fn hash_partition_by_preserves_rows_and_reports_offsets() {
 fn hash_partition_by_rejects_empty_key_list() {
     let df = sample_frame();
 
-    let err = df.hash_partition_by(std::iter::empty::<&str>(), 2).unwrap_err();
+    let err = df.on(Exec::RETAINED).hash_partition_by(std::iter::empty::<&str>(), 2).unwrap_err();
     assert_eq!(err.code(), ErrorCode::EmptyInput);
     assert_eq!(err.operation(), "dataframe::hash_partition_by");
     assert_eq!(err.detail_value("reason"), Some("empty_partition_keys"));

@@ -2,8 +2,8 @@ use super::{
     BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame,
     JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinPartitionOutput,
     PartitionedJoinRowRange, PartitionedJoinSide, QueryError, ResidentGpuFrame, Result, RetryFacts, VecDeque,
-    cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side, observe_device_memory_bytes,
-    partition_row_range, partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
+    cudf_query_error, hash_partition_join_side, join_keys_for_side, observe_device_memory_bytes, partition_row_range,
+    partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
     release_partitioned_join_side, side_metric, slice_partition_join_side_range, sum_bounds, with_partition_side,
 };
 use crate::{
@@ -174,12 +174,12 @@ impl PartitionedJoinProbeChunk {
         range: PartitionedJoinRowRange,
     ) -> Result<(PartitionedJoinSide, u64, u64)> {
         let side = probe_side(plan.node.spec.build_side);
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         let frame = if range.offset == 0 && range.len == self.input.frame.num_rows() {
             self.input.frame.clone()
         } else {
-            self.input.frame.with_execution(&overrides).slice(range.offset, range.len).map_err(|error| {
+            self.input.frame.on(overrides).slice(range.offset, range.len).map_err(|error| {
                 with_partition_side(
                     cudf_query_error(
                         "query_engine.bounded.join.hash_partition_probe_slice",
@@ -193,7 +193,7 @@ impl PartitionedJoinProbeChunk {
         };
         let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
         let input = BoundedJoinSideFrame { frame, rows: range.len as u64, bytes };
-        let partitioned = hash_partition_join_side(execution, side, input, keys, plan.partition_count, &overrides)?;
+        let partitioned = hash_partition_join_side(execution, side, input, keys, plan.partition_count, overrides)?;
         Ok((partitioned, range.len as u64, bytes))
     }
 }
@@ -581,15 +581,15 @@ fn repartition_partitioned_join_work(
     };
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let left_partitioned = match hash_partition_join_side(
         execution,
         JoinSide::Left,
         left,
         &left_keys,
         PARTITIONED_JOIN_RETRY_REPARTITION_COUNT,
-        &overrides,
+        overrides,
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
@@ -603,7 +603,7 @@ fn repartition_partitioned_join_work(
         right,
         &right_keys,
         PARTITIONED_JOIN_RETRY_REPARTITION_COUNT,
-        &overrides,
+        overrides,
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
@@ -779,24 +779,19 @@ pub(super) fn partition_join_sides(
 ) -> Result<PartitionedJoinSides> {
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let left_partitioned =
-        hash_partition_join_side(execution, JoinSide::Left, left, &left_keys, plan.partition_count, &overrides)?;
-    let right_partitioned = match hash_partition_join_side(
-        execution,
-        JoinSide::Right,
-        right,
-        &right_keys,
-        plan.partition_count,
-        &overrides,
-    ) {
-        Ok(partitioned) => partitioned,
-        Err(error) => {
-            release_partitioned_join_side(left_partitioned);
-            return Err(error);
-        },
-    };
+        hash_partition_join_side(execution, JoinSide::Left, left, &left_keys, plan.partition_count, overrides)?;
+    let right_partitioned =
+        match hash_partition_join_side(execution, JoinSide::Right, right, &right_keys, plan.partition_count, overrides)
+        {
+            Ok(partitioned) => partitioned,
+            Err(error) => {
+                release_partitioned_join_side(left_partitioned);
+                return Err(error);
+            },
+        };
     Ok(PartitionedJoinSides { left: left_partitioned, right: right_partitioned })
 }
 

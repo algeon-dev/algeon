@@ -24,9 +24,7 @@ use crate::{
         types::{DataType, TypeId},
     },
     ops::copying,
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 struct ProbeMetadata {
@@ -174,7 +172,7 @@ fn execute_probe_with_context(
     input: &ColumnView<'_>,
     keys: &ColumnView<'_>,
     values: &ColumnView<'_>,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<Column> {
     let meta = validate_probe_inputs(input, keys, values, operation)?;
@@ -245,15 +243,15 @@ pub(crate) fn probe_prevalidated(
     values: &ColumnView<'_>,
     operation: &'static str,
 ) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    execute_probe_with_context(input, keys, values, &ctx, operation)
+    let ctx = Exec::RETAINED;
+    execute_probe_with_context(input, keys, values, ctx, operation)
 }
 
 pub(crate) fn probe_prevalidated_in(
     input: &ColumnView<'_>,
     keys: &ColumnView<'_>,
     values: &ColumnView<'_>,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<Column> {
     execute_probe_with_context(input, keys, values, ctx, operation)

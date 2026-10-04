@@ -1,16 +1,12 @@
 use std::time::Instant;
 
-use cudf::interop::arrow_host::all_null_list_series;
+use cudf::{Exec, ScalarValue, interop::arrow_host::all_null_list_series};
 
 use super::{
-    ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
+    DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
     QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
-    timestamp_unit_to_cudf_resolution,
 };
-use crate::{
-    datatypes::{arrow_decimal_scale_to_cudf_scale, is_supported_list_carry_type},
-    source::MissingColumn,
-};
+use crate::{datatypes::is_supported_list_carry_type, source::MissingColumn};
 
 pub(super) fn materialize_missing_columns(
     context: &ExecutionContext,
@@ -72,52 +68,16 @@ fn missing_column_series(
         });
     }
 
-    let scalar = match &missing_column.data_type {
-        ArrowDataType::Boolean => context.runtime()?.null_scalar::<bool>(),
-        ArrowDataType::Int8 => context.runtime()?.null_scalar::<i8>(),
-        ArrowDataType::Int16 => context.runtime()?.null_scalar::<i16>(),
-        ArrowDataType::Int32 => context.runtime()?.null_scalar::<i32>(),
-        ArrowDataType::Int64 => context.runtime()?.null_scalar::<i64>(),
-        ArrowDataType::UInt8 => context.runtime()?.null_scalar::<u8>(),
-        ArrowDataType::UInt16 => context.runtime()?.null_scalar::<u16>(),
-        ArrowDataType::UInt32 => context.runtime()?.null_scalar::<u32>(),
-        ArrowDataType::UInt64 => context.runtime()?.null_scalar::<u64>(),
-        ArrowDataType::Float32 => context.runtime()?.null_scalar::<f32>(),
-        ArrowDataType::Float64 => context.runtime()?.null_scalar::<f64>(),
-        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
-            context.runtime()?.null_string_scalar()
-        },
-        ArrowDataType::Decimal128(_precision, scale) => {
-            context.runtime()?.null_decimal128_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
-        },
-        ArrowDataType::Decimal32(_precision, scale) => {
-            context.runtime()?.null_decimal32_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
-        },
-        ArrowDataType::Decimal64(_precision, scale) => {
-            context.runtime()?.null_decimal64_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
-        },
-        ArrowDataType::Date32 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
-        ArrowDataType::Date64 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),
-        ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
-            context.runtime()?.null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
-        },
-        ArrowDataType::Timestamp(unit, _) => {
-            context.runtime()?.null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
-        },
-        ArrowDataType::Duration(unit) => {
-            context.runtime()?.null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
-        },
-        data_type => {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                "query_engine.local_parquet_source.missing_column",
-                "missing source column type is not supported by native execution",
-            )
-            .with_fact("reason", "unsupported_missing_column_type")
-            .with_fact("missing_type", format!("{data_type:?}")));
-        },
-    }
-    .map_err(|error| {
+    let dtype = cudf_dtype_from_arrow_type(&missing_column.data_type).map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "query_engine.local_parquet_source.missing_column",
+            "missing source column type is not supported by native execution",
+        )
+        .with_fact("reason", "unsupported_missing_column_type")
+        .with_fact("missing_type", format!("{:?}", missing_column.data_type))
+    })?;
+    let scalar = context.runtime()?.scalar(ScalarValue::Null(dtype)).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_source.missing_column",
             "failed to construct native parquet missing nullable scalar",
@@ -170,21 +130,25 @@ pub(super) fn coerce_local_parquet_source_schema(
         }
         frame = match token {
             Some(token) => budgeted_value(
-                frame.cast_column_with_budget(field_name.as_str(), expected_dtype, token).map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.local_parquet_source.schema_coerce",
-                        "failed to cast bounded native local parquet source column to declared schema type",
-                        error,
-                    )
-                    .with_fact("field_name", field_name.as_str())
-                    .with_fact("field_index", field_index)
-                    .with_fact("actual_dtype", format!("{actual_dtype:?}"))
-                    .with_fact("expected_type", format!("{:?}", field.data_type()))
-                })?,
+                token
+                    .run("dataframe::cast_column", |exec| {
+                        frame.on(exec).cast_column(field_name.as_str(), expected_dtype)
+                    })
+                    .map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.local_parquet_source.schema_coerce",
+                            "failed to cast bounded native local parquet source column to declared schema type",
+                            error,
+                        )
+                        .with_fact("field_name", field_name.as_str())
+                        .with_fact("field_index", field_index)
+                        .with_fact("actual_dtype", format!("{actual_dtype:?}"))
+                        .with_fact("expected_type", format!("{:?}", field.data_type()))
+                    })?,
                 metrics,
                 "query_engine.local_parquet_source.schema_coerce",
             ),
-            None => frame.cast_column(field_name.as_str(), expected_dtype).map_err(|error| {
+            None => frame.on(Exec::RETAINED).cast_column(field_name.as_str(), expected_dtype).map_err(|error| {
                 cudf_query_error(
                     "query_engine.local_parquet_source.schema_coerce",
                     "failed to cast native local parquet source column to declared schema type",

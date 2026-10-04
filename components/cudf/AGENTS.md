@@ -30,6 +30,13 @@ over libcudf. Query planning and runtime ownership follow the root
 - Keep runtime device, stream, memory-resource, and execution provenance
   explicit across every GPU boundary. Do not silently fall back to ambient
   state where a runtime-bound API exists.
+- `DataFrame`, `Series`, and `GroupBy` methods that submit GPU work, allocate,
+  or materialize run only through `.on(Exec)`; `Exec::RETAINED` selects the
+  inputs' own stream and memory resource. Reusable handles take the `Exec` as
+  their last argument. A handle whose native state binds its execution context
+  at construction, such as the mixed left join state, runs on that context and
+  takes no override. Metadata access and `Expr` construction take no execution
+  scope.
 - Distinguish prepared exports, retained shared ownership, device copies, and
   host materialization. Preserve prepared-read completion ordering.
 - Preserve device-aware destruction and the existing `Send`/`Sync` contract for

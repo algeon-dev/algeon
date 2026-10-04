@@ -11,7 +11,7 @@ pub enum Expr {
     /// Reference to a named column.
     Column(String),
     /// A broadcast literal scalar value. Construct via [`lit()`].
-    Literal(LitValue),
+    Literal(ScalarValue),
     /// Element-wise binary operation.
     BinaryOp { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr> },
     /// Element-wise binary operation with caller-selected output dtype.
@@ -35,7 +35,7 @@ pub enum Expr {
     /// Assign a schema/output name to an inner expression.
     Alias { inner: Box<Expr>, name: String },
     /// Replace nulls with a scalar value.
-    FillNaScalar { input: Box<Expr>, value: LitValue },
+    FillNaScalar { input: Box<Expr>, value: ScalarValue },
     /// Replace nulls with corresponding values from another expression.
     FillNaExpr { input: Box<Expr>, fill: Box<Expr> },
     /// Forward or backward fill of nulls.
@@ -164,10 +164,9 @@ impl Expr {
 
     /// Element-wise binary operation with an explicit output type.
     ///
-    /// This is the expression-level counterpart to
-    /// [`Column::binary_op_with_type`](crate::core::Column::binary_op_with_type)
-    /// for callers that need libcudf's `binary_operation(..., output_type)`
-    /// contract instead of cudf inferred output typing. It is useful for
+    /// Use this when the caller needs libcudf's
+    /// `binary_operation(..., output_type)` contract instead of inferred
+    /// output typing. It is useful for
     /// fixed-point decimal operations where the result scale is a semantic
     /// requirement of the query plan.
     pub fn binary_op_with_type(self, rhs: impl IntoExpr, op: BinaryOperator, output_type: impl Into<DataType>) -> Expr {
@@ -219,13 +218,9 @@ impl Expr {
 
     // -- Null fill / cumulative builders ----------------------------------
 
-    /// Replace null values with a scalar. Name: `fillna` (matches `Series::fillna`).
-    pub fn fillna(self, value: impl IntoLit) -> Expr {
-        let lit_value = match value.into_lit() {
-            Expr::Literal(lv) => lv,
-            _ => unreachable!("IntoLit always produces Expr::Literal"),
-        };
-        Expr::FillNaScalar { input: Box::new(self), value: lit_value }
+    /// Replace null values with a scalar. Name: `fillna` (matches `SeriesOps::fillna`).
+    pub fn fillna(self, value: impl Into<ScalarValue>) -> Expr {
+        Expr::FillNaScalar { input: Box::new(self), value: value.into() }
     }
 
     /// Replace null values with per-row values from another expression.
@@ -317,8 +312,8 @@ impl Expr {
     /// Expression naming is schema metadata handled by DataFrame-level APIs.
     /// The returned [`Series`] itself is unnamed.
     pub fn eval(&self, df: &DataFrame) -> Result<Series> {
-        let ctx = ExecutionOverrides::new();
-        self.eval_in(df, &ctx)
+        let ctx = Exec::RETAINED;
+        self.eval_in(df, ctx)
     }
 
     /// Evaluate this expression against a DataFrame using borrowed execution overrides.
@@ -329,14 +324,14 @@ impl Expr {
     /// provenance. Literal, reduction-broadcast, string, null-fill, and
     /// conditional intermediates are all allocated through the resolved stream
     /// and memory resource.
-    pub fn eval_in(&self, df: &DataFrame, overrides: &ExecutionOverrides<'_>) -> Result<Series> {
+    pub fn eval_in(&self, df: &DataFrame, overrides: Exec<'_>) -> Result<Series> {
         self.eval_in_with_operation(df, overrides, "expr::eval_in")
     }
 
     pub(crate) fn eval_in_with_operation(
         &self,
         df: &DataFrame,
-        overrides: &ExecutionOverrides<'_>,
+        overrides: Exec<'_>,
         operation: &'static str,
     ) -> Result<Series> {
         let ctx = ExprEvalContext::new(df, overrides, operation)?;
@@ -430,7 +425,7 @@ impl Expr {
 
             Expr::FillNaScalar { input, value } => {
                 let series = input.eval_with_context(ctx)?;
-                let scalar = value.to_scalar_in_domain(&ctx.output_domain)?;
+                let scalar = Scalar::from_scalar_value_in_domain(value, &ctx.output_domain)?;
                 let cv = series.view()?;
                 let col = replace::replace_nulls_with_exec_options(
                     &cv,
@@ -932,7 +927,7 @@ fn literal_haystack(values: &[Expr], ctx: &ExprEvalContext<'_>) -> Result<Column
                 )
                 .with_detail("reason", "non_literal_in_list_value"));
             };
-            let scalar = value.to_scalar_in_domain(&ctx.output_domain)?;
+            let scalar = Scalar::from_scalar_value_in_domain(value, &ctx.output_domain)?;
             Column::from_scalar(&scalar, 1)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -966,12 +961,11 @@ impl IntoExpr for Expr {
     }
 }
 
-// SAFETY (coherence): This blanket impl covers every `IntoLit` type. `Expr`
-// itself must *never* implement `IntoLit`, otherwise the compiler will see
-// overlapping implementations of `IntoExpr` and refuse to compile.
-impl<T: IntoLit> IntoExpr for T {
+// Coherence: `ScalarValue` must never gain `From<Expr>`, or this blanket impl
+// overlaps `IntoExpr for Expr`.
+impl<T: Into<ScalarValue>> IntoExpr for T {
     fn into_expr(self) -> Expr {
-        self.into_lit()
+        lit(self)
     }
 }
 

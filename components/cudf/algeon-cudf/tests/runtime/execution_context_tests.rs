@@ -6,7 +6,7 @@
 //!
 //! # Test categories
 //!
-//! 1. **Type properties**: `ExecutionOverrides` is Copy, default has null handles.
+//! 1. **Type properties**: `Exec` is Copy, default has null handles.
 //! 2. **Existing `_ex` FFI**: `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
 //! 3. **High-level execution-context contract**: hidden safe-layer hooks
@@ -22,7 +22,7 @@ use std::{
 };
 
 use cudf::{
-    DeviceId,
+    DeviceId, Exec,
     core::memory::DeviceMemoryResource,
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
@@ -360,12 +360,12 @@ fn pool_mr() -> DeviceMemoryResource {
     DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, None).expect("failed to create pool MR")
 }
 
-fn debug_ctx_with_stream(stream: &CudaStream) -> cudf::ExecutionOverrides<'_> {
-    cudf::ExecutionOverrides::new().with_stream(stream)
+fn debug_ctx_with_stream(stream: &CudaStream) -> cudf::Exec<'_> {
+    cudf::Exec::RETAINED.with_stream(stream)
 }
 
-fn debug_ctx_with_mr(mr: &DeviceMemoryResource) -> cudf::ExecutionOverrides<'_> {
-    cudf::ExecutionOverrides::new().with_memory_resource(mr)
+fn debug_ctx_with_mr(mr: &DeviceMemoryResource) -> cudf::Exec<'_> {
+    cudf::Exec::RETAINED.with_memory_resource(mr)
 }
 
 fn assert_observed_stream(explicit_stream: usize) {
@@ -467,7 +467,7 @@ fn execution_context_is_copy() {
 ///
 /// It is therefore still documented here as `!Send + !Sync` because
 /// `cudf_exec_options_t` contains raw pointers. The public safe-layer
-/// `cudf::ExecutionOverrides` has its own `Send + Sync` contract coverage in the
+/// `cudf::Exec` has its own `Send + Sync` contract coverage in the
 /// `runtime_v1_public_api_tests` suite.
 fn execution_context_send_sync_status_documented() {
     // cudf_exec_options_t contains *mut c_void, so the low-level FFI builder
@@ -952,7 +952,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&sorted, 501, explicit_stream);
@@ -971,7 +971,7 @@ fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), ctx).unwrap();
     assert_observed_stream(explicit_stream);
     assert_eq!(sorted.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&sorted, "id", &[1, 2, 3]);
@@ -986,7 +986,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
     let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
-    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+    let sorted = df.testing_sort_values_in_context(["id"], cudf::SortOptions::default(), ctx).unwrap();
 
     assert_ne!(obs_last_mr() as usize, default_mr);
     assert_dataframe_mr_override(&sorted, 502, explicit_mr);
@@ -1009,7 +1009,7 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let joined = left.testing_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx).unwrap();
+    let joined = left.testing_merge_in_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_eq!(joined.num_rows(), 2);
@@ -1029,7 +1029,7 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
     obs_reset();
     let result =
-        df.groupby(["key"]).testing_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], &ctx).unwrap();
+        df.groupby(["key"]).testing_agg_in_context(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)], ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_eq!(result.num_rows(), 2);
@@ -1045,7 +1045,7 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let gathered = df.testing_gather_in_context(&indices, &ctx).unwrap();
+    let gathered = df.testing_gather_in_context(&indices, ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&gathered, 505, explicit_stream);
@@ -1065,7 +1065,7 @@ fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let gathered = df.testing_gather_in_context(&indices, &ctx).unwrap();
+    let gathered = df.testing_gather_in_context(&indices, ctx).unwrap();
     assert_observed_stream(explicit_stream);
     assert_eq!(gathered.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&gathered, "id", &[2, 3]);
@@ -1080,7 +1080,7 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let filtered = df.testing_filter_in_context(&mask, &ctx).unwrap();
+    let filtered = df.testing_filter_in_context(&mask, ctx).unwrap();
 
     assert_observed_stream(explicit_stream);
     assert_dataframe_stream_override(&filtered, 506, explicit_stream);
@@ -1100,7 +1100,7 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     let ctx = debug_ctx_with_stream(&stream);
 
     obs_reset();
-    let filtered = df.testing_filter_in_context(&mask, &ctx).unwrap();
+    let filtered = df.testing_filter_in_context(&mask, ctx).unwrap();
     assert_observed_stream(explicit_stream);
     assert_eq!(filtered.testing_execution_domain_kind(), "explicit");
     assert_dataframe_i32_values(&filtered, "id", &[3, 2]);
@@ -1133,7 +1133,7 @@ fn sort_values_default_produces_correct_results() {
     let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
-    let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
     let col = sorted.series("id").unwrap();
     let host: Vec<i32> = col.testing_view().unwrap().to_vec().unwrap();
@@ -1151,7 +1151,7 @@ fn merge_default_produces_correct_results() {
     let right_scores = series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
     let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
 
-    let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let joined = left.on(Exec::RETAINED).merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(joined.num_rows(), 2, "inner join on [2,3] should yield 2 rows");
 }
@@ -1163,7 +1163,8 @@ fn groupby_agg_default_produces_correct_results() {
     let vals = series::<i64>("val", &[10, 20, 30, 40]).unwrap();
     let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
 
-    let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
+    let result =
+        df.groupby(["key"]).on(Exec::RETAINED).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
 
     assert_eq!(result.num_rows(), 2, "groupby on 2 unique keys should yield 2 rows");
 }
@@ -1235,7 +1236,7 @@ fn column_copy_ex_stream_and_mr_combined() {
 // Category 6: cudf layer CudaStream / DeviceMemoryResource type contracts
 //
 // These verify that the cudf wrappers (CudaStream, DeviceMemoryResource)
-// have the properties needed for ExecutionOverrides construction.
+// have the properties needed for Exec construction.
 // ===========================================================================
 
 /// CudaStream can be created and synchronized.

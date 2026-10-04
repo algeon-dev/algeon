@@ -16,9 +16,9 @@ use cudf::{
     DataFrame, DeviceId, ErrorCode, Runtime, TypeId,
     core::Table,
     interop::cuda_stream_handle,
-    ops::dictionary,
     runtime::{CudaEvent, CudaStream},
     testing::{
+        dictionary,
         interop::{
             column_export_with_lease_backend_for_test, trigger_interop_column_index_limit_for_test,
             trigger_interop_projection_active_range_overflow_for_test,

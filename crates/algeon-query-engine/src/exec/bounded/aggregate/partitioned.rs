@@ -46,7 +46,7 @@ fn hash_partition_aggregate_input(
             RuntimeOperatorStageIdentity::new().with_node_id(node_id.to_string()).with_input_rows(input_rows),
         );
         match frame
-            .with_execution(&token.execution_overrides())
+            .on(token.exec())
             .hash_partition_by(lowered_keys.key_columns.iter().map(String::as_str), partition_count)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
@@ -143,9 +143,9 @@ fn slice_compiled_aggregate_partition(
         )
     })?;
     let len = end.saturating_sub(start);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
+    let sliced = frame.on(overrides).slice(start, len).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.aggregate.hash_partition_slice",
             "failed to slice compiled bounded hash-partitioned aggregate input",

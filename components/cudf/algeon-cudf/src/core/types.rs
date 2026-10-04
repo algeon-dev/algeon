@@ -2,7 +2,10 @@
 
 use std::{fmt, ptr};
 
-use crate::core::error::{self, Error, ErrorCode, FACT_TYPE_ID, Result};
+use crate::core::{
+    error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
+    scalar::ScalarValue,
+};
 
 macro_rules! define_type_ids {
     (
@@ -340,26 +343,55 @@ impl From<TypeId> for DataType {
 }
 
 mod private {
+    use crate::core::scalar::ScalarValue;
+
     pub trait Sealed: Copy {
         fn from_bool_byte(_raw: u8) -> Option<Self> {
             None
         }
+
+        fn into_scalar_value(self) -> ScalarValue;
     }
 
-    impl Sealed for i8 {}
-    impl Sealed for i16 {}
-    impl Sealed for i32 {}
-    impl Sealed for i64 {}
-    impl Sealed for u8 {}
-    impl Sealed for u16 {}
-    impl Sealed for u32 {}
-    impl Sealed for u64 {}
-    impl Sealed for f32 {}
-    impl Sealed for f64 {}
+    macro_rules! sealed_primitives {
+        ($($ty:ty => $variant:ident),+ $(,)?) => {
+            $(
+                impl Sealed for $ty {
+                    fn into_scalar_value(self) -> ScalarValue {
+                        ScalarValue::$variant(self)
+                    }
+                }
+            )+
+        };
+    }
+
+    sealed_primitives!(
+        i8 => Int8,
+        i16 => Int16,
+        i32 => Int32,
+        i64 => Int64,
+        u8 => UInt8,
+        u16 => UInt16,
+        u32 => UInt32,
+        u64 => UInt64,
+        f32 => Float32,
+        f64 => Float64,
+    );
+
     impl Sealed for bool {
         fn from_bool_byte(raw: u8) -> Option<Self> {
             Some(raw != 0)
         }
+
+        fn into_scalar_value(self) -> ScalarValue {
+            ScalarValue::Bool(self)
+        }
+    }
+}
+
+impl<T: CudfType> From<T> for ScalarValue {
+    fn from(value: T) -> Self {
+        value.into_scalar_value()
     }
 }
 

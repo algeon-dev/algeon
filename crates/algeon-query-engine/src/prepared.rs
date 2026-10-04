@@ -2,18 +2,15 @@ use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 use cudf::{
     AggSpec as CudfAggSpec, Expr as CudfExpr, GroupByAgg,
     ops::{
-        binary::BinaryOperator,
-        col,
-        datetime::DatetimeRoundingFrequency,
-        expr::{concat, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
-        lit, lit_null,
-        strings::StringSliceOptions,
-        when,
+        binary::BinaryOperator, col, datetime::DatetimeRoundingFrequency, expr::concat, lit, lit_null,
+        strings::StringSliceOptions, when,
     },
 };
 
 use crate::{
-    datatypes::{arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
+    datatypes::{
+        UnrepresentableLiteral, cudf_dtype_from_arrow_type, cudf_scalar_value, timestamp_unit_to_cudf_resolution,
+    },
     error::{QueryError, QueryErrorCode, Result},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue, UnaryMathOp,
@@ -195,37 +192,15 @@ fn is_integer_type(data_type: &ArrowDataType) -> bool {
 }
 
 pub(crate) fn lower_literal(value: &LiteralValue) -> Result<CudfExpr> {
-    match value {
-        LiteralValue::Boolean(value) => Ok(lit(*value)),
-        LiteralValue::Int8(value) => Ok(lit(*value)),
-        LiteralValue::Int16(value) => Ok(lit(*value)),
-        LiteralValue::Int32(value) => Ok(lit(*value)),
-        LiteralValue::Int64(value) => Ok(lit(*value)),
-        LiteralValue::UInt8(value) => Ok(lit(*value)),
-        LiteralValue::UInt16(value) => Ok(lit(*value)),
-        LiteralValue::UInt32(value) => Ok(lit(*value)),
-        LiteralValue::UInt64(value) => Ok(lit(*value)),
-        LiteralValue::Float32(value) => Ok(lit(*value)),
-        LiteralValue::Float64(value) => Ok(lit(*value)),
-        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => Ok(lit(value.clone())),
-        LiteralValue::Decimal128 { raw, scale, .. } => {
-            Ok(lit_decimal128_raw(*raw, arrow_decimal_scale_to_cudf_scale(*scale)))
-        },
-        LiteralValue::Date32(value) => Ok(lit_timestamp_raw(i64::from(*value), cudf::TimestampResolution::Days)),
-        LiteralValue::Date64(value) => Ok(lit_timestamp_raw(*value, cudf::TimestampResolution::Milliseconds)),
-        LiteralValue::Time32 { raw, unit } => {
-            Ok(lit_duration_raw(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit)))
-        },
-        LiteralValue::Time64 { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
-        LiteralValue::Timestamp { raw, unit } => Ok(lit_timestamp_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
-        LiteralValue::Duration { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
-        LiteralValue::IntervalMonthDayNano { .. } => Err(QueryError::new(
+    match cudf_scalar_value(value) {
+        Ok(scalar_value) => Ok(lit(scalar_value)),
+        Err(UnrepresentableLiteral::Interval) => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "query_engine.expr.lower_literal",
             "interval literals must be lowered as part of timestamp/date interval arithmetic",
         )
         .with_fact("literal", value)),
-        LiteralValue::Null(data_type) => {
+        Err(UnrepresentableLiteral::Null(data_type)) => {
             let dtype = cudf_dtype_from_arrow_type(data_type).map_err(|error| {
                 cudf_unsupported_type_error(
                     "query_engine.expr.lower_literal",

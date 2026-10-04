@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cudf::ops::ast::{AstExpression, AstOperator};
+use cudf::{
+    ScalarValue, TimestampResolution,
+    ops::ast::{AstExpression, AstOperator},
+};
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinSide, LiteralValue, QueryError, QueryErrorCode,
-    Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
+    Result, cudf_query_error,
 };
 use crate::{
-    datatypes::arrow_decimal_scale_to_cudf_scale,
+    datatypes::{UnrepresentableLiteral, cudf_scalar_value},
     expr::{ColumnQualifier, interval_month_day_nano},
 };
 
@@ -499,8 +502,10 @@ fn interval_date_offset_expr(expr: &Expr) -> Result<Option<(&Expr, i32)>> {
 }
 
 fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Result<AstExpression> {
-    let scalar =
-        context.runtime()?.duration_raw_scalar(i64::from(value), cudf::TimestampResolution::Days).map_err(|error| {
+    let scalar = context
+        .runtime()?
+        .scalar(ScalarValue::Duration { raw: i64::from(value), resolution: TimestampResolution::Days })
+        .map_err(|error| {
             cudf_query_error(
                 "query_engine.join.lower_residual",
                 "failed to build duration-days scalar for join residual interval literal",
@@ -621,38 +626,9 @@ fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
 }
 
 fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> Result<AstExpression> {
-    let runtime = context.runtime()?;
-    let scalar = match value {
-        LiteralValue::Boolean(value) => runtime.scalar(*value),
-        LiteralValue::Int8(value) => runtime.scalar(*value),
-        LiteralValue::Int16(value) => runtime.scalar(*value),
-        LiteralValue::Int32(value) => runtime.scalar(*value),
-        LiteralValue::Int64(value) => runtime.scalar(*value),
-        LiteralValue::UInt8(value) => runtime.scalar(*value),
-        LiteralValue::UInt16(value) => runtime.scalar(*value),
-        LiteralValue::UInt32(value) => runtime.scalar(*value),
-        LiteralValue::UInt64(value) => runtime.scalar(*value),
-        LiteralValue::Float32(value) => runtime.scalar(*value),
-        LiteralValue::Float64(value) => runtime.scalar(*value),
-        LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value),
-        LiteralValue::Decimal128 { raw, scale, .. } => {
-            runtime.decimal128_raw_scalar(*raw, arrow_decimal_scale_to_cudf_scale(*scale))
-        },
-        LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days),
-        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds),
-        LiteralValue::Time32 { raw, unit } => {
-            runtime.duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Time64 { raw, unit } => {
-            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Timestamp { raw, unit } => {
-            runtime.timestamp_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::Duration { raw, unit } => {
-            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
-        },
-        LiteralValue::IntervalMonthDayNano { .. } => {
+    let scalar_value = match cudf_scalar_value(value) {
+        Ok(scalar_value) => scalar_value,
+        Err(UnrepresentableLiteral::Interval) => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 "query_engine.join.lower_residual",
@@ -660,7 +636,7 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
             )
             .with_fact("literal", value));
         },
-        LiteralValue::Null(data_type) => {
+        Err(UnrepresentableLiteral::Null(data_type)) => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 "query_engine.join.lower_residual",
@@ -668,8 +644,8 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
             )
             .with_fact("data_type", format!("{data_type:?}")));
         },
-    }
-    .map_err(|error| {
+    };
+    let scalar = context.runtime()?.scalar(scalar_value).map_err(|error| {
         cudf_query_error(
             "query_engine.join.lower_residual",
             "failed to build cudf scalar for join residual AST literal",

@@ -2,7 +2,7 @@
 //! it runs alone.
 
 use cudf::{
-    AggSpec, CudfErrorFailureSource, DataFrame, ErrorKind, GroupByAgg, MergeOptions, QueryMemoryDomain,
+    AggSpec, CudfErrorFailureSource, DataFrame, ErrorKind, Exec, GroupByAgg, MergeOptions, QueryMemoryDomain,
     QueryMemoryDomainOptions, Runtime, SortOptions, ops::ast::AstExpression,
 };
 use cudf_sys::test_support;
@@ -107,16 +107,16 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             domain,
             member_id,
             || {
-                let ctx = cudf::ExecutionOverrides::new();
+                let ctx = cudf::Exec::RETAINED;
                 let predicate = AstExpression::less(AstExpression::left_column(0)?, AstExpression::right_column(0)?)?;
                 let options = cudf::DataFrameMixedJoinOptions::new()
                     .on(["key"])
                     .left_predicate_columns(["value"])
                     .right_predicate_columns(["value"]);
-                let mut state = cudf::DataFrameMixedLeftJoinState::new_in(&left, predicate, options, &ctx)?;
-                state.consume_in(&right, &ctx)?;
-                let finalized = state.seal_in(false, &ctx)?;
-                finalized.materialize_indices_in(&ctx)
+                let mut state = cudf::DataFrameMixedLeftJoinState::new(&left, predicate, options, ctx)?;
+                state.consume(&right)?;
+                let finalized = state.seal(false)?;
+                finalized.materialize_indices()
             },
             |output| assert_eq!(output.indices().to_vec_strict::<i32>().unwrap(), vec![0, 1]),
         );
@@ -139,7 +139,7 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             runtime,
             domain,
             member_id,
-            || left.merge(&right, options.clone()),
+            || left.on(Exec::RETAINED).merge(&right, options.clone()),
             |output| {
                 assert_eq!(output.num_rows(), 2);
                 assert_eq!(output.column_names(), vec!["id", "score", "value"]);
@@ -158,7 +158,7 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             runtime,
             domain,
             member_id,
-            || frame.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]),
+            || frame.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)]),
             |output| assert_eq!(output.num_rows(), 2),
         );
     });
@@ -174,7 +174,7 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             runtime,
             domain,
             member_id,
-            || frame.sort_values(["id", "score"], SortOptions::new()),
+            || frame.on(Exec::RETAINED).sort_values(["id", "score"], SortOptions::new()),
             |output| {
                 assert_eq!(output.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 2, 2]);
             },
@@ -188,7 +188,7 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             runtime,
             domain,
             member_id,
-            || input.str().upper(),
+            || input.on(Exec::RETAINED).str().upper(),
             |output| {
                 assert_eq!(output.to_strings_strict().unwrap(), vec!["HELLO", "WORLD", "GPU"]);
             },

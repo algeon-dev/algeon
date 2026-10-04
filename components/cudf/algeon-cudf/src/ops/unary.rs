@@ -10,9 +10,7 @@ use crate::{
     },
     frame::series::{Series, reduction::scalar_to_optional_value},
     ops::reduction,
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 /// Unary operators matching `cudf::unary_operator`.
@@ -100,13 +98,6 @@ impl UnaryOperator {
     }
 }
 
-/// Apply a unary operation element-wise.
-pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::unary_operation")?;
-    unary_operation_impl(input, op, execution.output_domain(), execution.exec_options(), "unary::unary_operation")
-}
-
 pub(crate) fn unary_operation_impl(
     input: &ColumnView<'_>,
     op: UnaryOperator,
@@ -124,19 +115,6 @@ pub(crate) fn unary_operation_impl(
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Round values away from zero at half-way ties.
-pub fn round_half_up(input: &ColumnView<'_>, decimal_places: i32) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::round_half_up")?;
-    round_half_up_impl(
-        input,
-        decimal_places,
-        execution.output_domain(),
-        execution.exec_options(),
-        "unary::round_half_up",
-    )
 }
 
 pub(crate) fn round_half_up_impl(
@@ -161,20 +139,6 @@ pub(crate) fn round_half_up_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-/// Return a boolean column with each element logically negated.
-///
-/// Input must be Bool8. Equivalent to `unary_operation(input, UnaryOperator::Not)`.
-pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
-    unary_operation(input, UnaryOperator::Not)
-}
-
-/// Return a boolean column: `true` where elements are null.
-pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_null")?;
-    is_null_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_null")
-}
-
 pub(crate) fn is_null_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -189,9 +153,9 @@ pub(crate) fn is_null_impl(
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
-pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_valid")?;
+pub(crate) fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
+    let ctx = Exec::RETAINED;
+    let execution = ResolvedExecution::unary(input.execution_domain(), ctx, "unary::is_valid")?;
     is_valid_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_valid")
 }
 
@@ -209,9 +173,9 @@ pub(crate) fn is_valid_impl(
 }
 
 /// Cast a column to the specified data type.
-pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::cast")?;
+pub(crate) fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
+    let ctx = Exec::RETAINED;
+    let execution = ResolvedExecution::unary(input.execution_domain(), ctx, "unary::cast")?;
     cast_impl(input, output_type, execution.output_domain(), execution.exec_options(), "unary::cast")
 }
 
@@ -281,7 +245,7 @@ fn validate_float64_to_int64_cast_input(
     }
 
     let nan_mask = is_nan_impl(input, output_domain, exec_options, operation)?;
-    if Series::from_column(nan_mask)?.any_value()? {
+    if Series::from_column(nan_mask)?.on(Exec::RETAINED).any_value()? {
         return Err(float64_to_int64_cast_error(operation, "nan"));
     }
 
@@ -334,13 +298,6 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
     Ok(out != 0)
 }
 
-/// Return a boolean column: `true` where elements are NaN.
-pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_nan")?;
-    is_nan_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_nan")
-}
-
 pub(crate) fn is_nan_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
@@ -352,13 +309,6 @@ pub(crate) fn is_nan_impl(
     error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Return a boolean column: `true` where elements are not NaN.
-pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_not_nan")?;
-    is_not_nan_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_not_nan")
 }
 
 pub(crate) fn is_not_nan_impl(

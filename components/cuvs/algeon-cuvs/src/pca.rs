@@ -1,5 +1,7 @@
 use std::{ptr, ptr::NonNull};
 
+use cudf::Exec;
+
 use crate::{
     device::{DeviceBuffer, DeviceTensorMut, MatrixLayout, OwnedMatrix},
     dlpack::DlpackTensor,
@@ -107,7 +109,11 @@ impl PcaOutputBuffers {
         let flat =
             cudf::Series::from_column(self.transformed.into_column()?).map_err(|error| from_cudf(operation, error))?;
         (0..fit.n_components)
-            .map(|component| flat.slice(component * fit.rows, fit.rows).map_err(|error| from_cudf(operation, error)))
+            .map(|component| {
+                flat.on(Exec::RETAINED)
+                    .slice(component * fit.rows, fit.rows)
+                    .map_err(|error| from_cudf(operation, error))
+            })
             .collect()
     }
 

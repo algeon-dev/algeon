@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use cudf::{CudfErrorFailureSource, DataFrame, DeviceId};
+use cudf::{CudfErrorFailureSource, DataFrame, DeviceId, Exec, ParquetReadOptions};
 use cudf_sys::test_support;
 use query_runtime::runtime::{
     GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
@@ -83,7 +83,11 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
         scope.spawn(move || {
             first_barrier.wait();
             let runtime = first_context.context().runtime().unwrap();
-            let read = DataFrame::read_parquet(&runtime, &first_path).unwrap();
+            let read = DataFrame::read_parquet(
+                ParquetReadOptions::builder().filepath(&first_path).with_runtime(&runtime).build(),
+                Exec::RETAINED,
+            )
+            .unwrap();
             assert_eq!(read.num_rows(), expected_rows);
             let usage = first_context.context().attempt_allocation_domain_usage().unwrap().unwrap();
             assert!(usage.current_bytes <= usage.allocation_limit_bytes);
@@ -95,8 +99,11 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
             second_barrier.wait();
             let runtime = second_context.context().runtime().unwrap();
             unsafe { test_support::cudf_test_query_domain_fail_allocation_after(second_domain_id, 4) };
-            let error = DataFrame::read_parquet(&runtime, &second_path)
-                .expect_err("injected parquet allocation failure must reach the caller");
+            let error = DataFrame::read_parquet(
+                ParquetReadOptions::builder().filepath(&second_path).with_runtime(&runtime).build(),
+                Exec::RETAINED,
+            )
+            .expect_err("injected parquet allocation failure must reach the caller");
             unsafe { test_support::cudf_test_query_domain_reset_allocation_failure() };
             assert_eq!(
                 error.ffi_detail().expect("parquet failure keeps native attribution").failure_source,
@@ -107,7 +114,11 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
             assert_eq!(usage.current_allocations, 0);
             assert!(usage.current_bytes <= usage.allocation_limit_bytes);
 
-            let read = DataFrame::read_parquet(&runtime, &second_path).unwrap();
+            let read = DataFrame::read_parquet(
+                ParquetReadOptions::builder().filepath(&second_path).with_runtime(&runtime).build(),
+                Exec::RETAINED,
+            )
+            .unwrap();
             assert_eq!(read.num_rows(), expected_rows);
         });
     });

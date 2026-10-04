@@ -26,7 +26,7 @@ use crate::{
     },
     frame::dataframe::DataFrame,
     ops::groupby::GroupBy,
-    runtime::{CudaEvent, CudaStream, ExecutionOverrides, Runtime},
+    runtime::{CudaEvent, CudaStream, Exec, Runtime},
 };
 
 /// Trait imports for the testing support surface.
@@ -191,28 +191,18 @@ pub trait BorrowedColumnSliceTestingExt {
 /// Testing-only access to DataFrame operations with borrowed execution
 /// overrides.
 pub trait DataFrameInContextTestingExt {
-    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
-    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
-    fn testing_sort_values_in_context<I, S>(
-        &self,
-        by: I,
-        options: SortOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrame>
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: Exec<'_>) -> Result<DataFrame>;
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: Exec<'_>) -> Result<DataFrame>;
+    fn testing_sort_values_in_context<I, S>(&self, by: I, options: SortOptions, ctx: Exec<'_>) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>;
-    fn testing_merge_in_context(
-        &self,
-        right: &DataFrame,
-        options: MergeOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrame>;
+    fn testing_merge_in_context(&self, right: &DataFrame, options: MergeOptions, ctx: Exec<'_>) -> Result<DataFrame>;
 }
 
 /// Testing-only access to groupby execution-context hooks.
 pub trait GroupByTestingExt {
-    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame>;
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: Exec<'_>) -> Result<DataFrame>;
 }
 
 macro_rules! impl_execution_domain_testing {
@@ -341,20 +331,15 @@ impl BorrowedColumnSliceTestingExt for Column {
 }
 
 impl DataFrameInContextTestingExt for DataFrame {
-    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    fn testing_gather_in_context(&self, indices: &crate::Series, ctx: Exec<'_>) -> Result<DataFrame> {
         self.__debug_gather_in_context(indices, ctx)
     }
 
-    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    fn testing_filter_in_context(&self, mask: &crate::Series, ctx: Exec<'_>) -> Result<DataFrame> {
         self.__debug_filter_in_context(mask, ctx)
     }
 
-    fn testing_sort_values_in_context<I, S>(
-        &self,
-        by: I,
-        options: SortOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrame>
+    fn testing_sort_values_in_context<I, S>(&self, by: I, options: SortOptions, ctx: Exec<'_>) -> Result<DataFrame>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -362,18 +347,13 @@ impl DataFrameInContextTestingExt for DataFrame {
         self.__debug_sort_values_in_context(by, options, ctx)
     }
 
-    fn testing_merge_in_context(
-        &self,
-        right: &DataFrame,
-        options: MergeOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<DataFrame> {
+    fn testing_merge_in_context(&self, right: &DataFrame, options: MergeOptions, ctx: Exec<'_>) -> Result<DataFrame> {
         self.__debug_merge_in_context(right, options, ctx)
     }
 }
 
 impl GroupByTestingExt for GroupBy<'_> {
-    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+    fn testing_agg_in_context(&self, specs: &[AggSpec], ctx: Exec<'_>) -> Result<DataFrame> {
         self.__debug_agg_in_context(specs, ctx)
     }
 }

@@ -9,8 +9,8 @@ use super::{
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_unsupported_type_error, execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed,
-    execution_overrides, finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null,
-    lower_partial_aggregate_spec, validate_avg_output_fields,
+    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null, lower_partial_aggregate_spec,
+    validate_avg_output_fields,
 };
 
 pub(super) fn execute_grouping_sets_aggregate(
@@ -284,10 +284,10 @@ fn execute_prefix_rollup_grouping_sets_groupby(
         let rollup_aggregate = aggregate_for_prefix_rollup_level(&final_aggregate, level, grouping_id_alias);
         let grouped = match token {
             Some(token) => {
-                let overrides = token.execution_overrides();
+                let overrides = token.exec();
                 execute_groupby_aggregate_with_budget_observed(
                     Some(context),
-                    &overrides,
+                    overrides,
                     source,
                     &rollup_aggregate,
                     token,
@@ -297,9 +297,9 @@ fn execute_prefix_rollup_grouping_sets_groupby(
                 )?
             },
             None => {
-                let overrides_lease = execution_overrides(context)?;
-                let overrides = overrides_lease.overrides();
-                execute_groupby_aggregate(&overrides, source, &rollup_aggregate, operation)?
+                let exec_runtime = context.runtime()?;
+                let overrides = exec_runtime.exec();
+                execute_groupby_aggregate(overrides, source, &rollup_aggregate, operation)?
             },
         };
         let output = complete_grouping_set_output(
@@ -376,10 +376,10 @@ fn execute_single_grouping_set_groupby(
         )?;
         return match token {
             Some(token) => {
-                let overrides = token.execution_overrides();
+                let overrides = token.exec();
                 execute_groupby_aggregate_with_budget_observed(
                     Some(context),
-                    &overrides,
+                    overrides,
                     working,
                     aggregate,
                     token,
@@ -389,19 +389,19 @@ fn execute_single_grouping_set_groupby(
                 )
             },
             None => {
-                let overrides_lease = execution_overrides(context)?;
-                let overrides = overrides_lease.overrides();
-                execute_groupby_aggregate(&overrides, working, aggregate, operation)
+                let exec_runtime = context.runtime()?;
+                let overrides = exec_runtime.exec();
+                execute_groupby_aggregate(overrides, working, aggregate, operation)
             },
         };
     }
 
     let grouped = match token {
         Some(token) => {
-            let overrides = token.execution_overrides();
+            let overrides = token.exec();
             execute_groupby_aggregate_with_budget_observed(
                 Some(context),
-                &overrides,
+                overrides,
                 frame,
                 &grouping_set_aggregate,
                 token,
@@ -411,9 +411,9 @@ fn execute_single_grouping_set_groupby(
             )?
         },
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
-            execute_groupby_aggregate(&overrides, frame, &grouping_set_aggregate, operation)?
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
+            execute_groupby_aggregate(overrides, frame, &grouping_set_aggregate, operation)?
         },
     };
     complete_grouping_set_output(
@@ -583,16 +583,16 @@ fn empty_grouping_set_null_series_with_type(
         .with_fact("column", column)
         .with_fact("data_type", format!("{data_type:?}"))
     })?;
+    let runtime = context.runtime()?;
     match token {
-        Some(token) => context
-            .runtime()?
-            .nulls_with_budget(dtype, 1, token)
+        Some(token) => token
+            .run("runtime::nulls", |exec| runtime.on(exec)?.nulls(dtype, 1))
             .map_err(|error| {
                 cudf_query_error(operation, "failed to construct bounded empty grand-total null column", error)
                     .with_fact("column", column)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
-        None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
+        None => runtime.nulls(dtype, 1).map_err(|error| {
             cudf_query_error(operation, "failed to construct empty grand-total null column", error)
                 .with_fact("column", column)
         }),
@@ -637,21 +637,21 @@ fn empty_grouping_set_typed_zero_series<T>(
 where
     T: ::cudf::CudfType + Copy,
 {
+    let runtime = context.runtime()?;
     match token {
-        Some(token) => context
-            .runtime()?
-            .series_from_value_with_budget(value, 1, token)
+        Some(token) => token
+            .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(value, 1))
             .map_err(|error| {
                 cudf_query_error(operation, "failed to construct bounded empty grand-total zero column", error)
                     .with_fact("column", column)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let scalar = context.runtime()?.scalar(value).map_err(|error| {
+            let scalar = runtime.scalar(value).map_err(|error| {
                 cudf_query_error(operation, "failed to construct empty grand-total zero scalar", error)
                     .with_fact("column", column)
             })?;
-            context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
+            runtime.series_from_scalar(&scalar, 1).map_err(|error| {
                 cudf_query_error(operation, "failed to construct empty grand-total zero column", error)
                     .with_fact("column", column)
             })
@@ -775,16 +775,16 @@ fn complete_grouping_set_output(
     }
 
     match token {
-        Some(token) => output
-            .with_columns_with_budget(expressions, token)
+        Some(token) => token
+            .run("dataframe::with_columns", |exec| output.on(exec).with_columns(expressions))
             .map_err(|error| {
                 cudf_query_error(operation, "failed to complete bounded grouping-set aggregate output columns", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
-            output.with_execution(&overrides).with_columns(expressions).map_err(|error| {
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
+            output.on(overrides).with_columns(expressions).map_err(|error| {
                 cudf_query_error(operation, "failed to complete grouping-set aggregate output columns", error)
             })
         },
@@ -819,17 +819,17 @@ fn with_grouping_id_column(
         grouping_id_literal_expr(grouping_id_field.data_type(), grouping_id, operation)?,
     )];
     match token {
-        Some(token) => frame
-            .with_columns_with_budget(expressions, token)
+        Some(token) => token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(expressions))
             .map_err(|error| {
                 cudf_query_error(operation, "failed to set bounded prefix-rollup grouping-id column", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
             frame
-                .with_execution(&overrides)
+                .on(overrides)
                 .with_columns(expressions)
                 .map_err(|error| cudf_query_error(operation, "failed to set prefix-rollup grouping-id column", error))
         },
@@ -975,17 +975,17 @@ fn prepare_grouping_set_frame(
     ));
 
     match token {
-        Some(token) => frame
-            .with_columns_with_budget(expressions, token)
+        Some(token) => token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(expressions))
             .map_err(|error| {
                 cudf_query_error(operation, "failed to prepare bounded grouping-set aggregate columns", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
             frame
-                .with_execution(&overrides)
+                .on(overrides)
                 .with_columns(expressions)
                 .map_err(|error| cudf_query_error(operation, "failed to prepare grouping-set aggregate columns", error))
         },
@@ -1039,11 +1039,11 @@ fn concat_grouping_set_outputs(
     let first = outputs.remove(0);
     let other_refs = outputs.iter().collect::<Vec<_>>();
     match token {
-        Some(token) => first.with_execution(&token.execution_overrides()).concat_many(&other_refs),
+        Some(token) => first.on(token.exec()).concat_many(&other_refs),
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
-            first.with_execution(&overrides).concat_many(&other_refs)
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
+            first.on(overrides).concat_many(&other_refs)
         },
     }
     .map_err(|error| cudf_query_error(operation, "failed to concatenate grouping-set aggregate outputs", error))

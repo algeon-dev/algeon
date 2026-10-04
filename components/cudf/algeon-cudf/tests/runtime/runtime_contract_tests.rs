@@ -22,7 +22,7 @@ use std::{
 };
 
 use cudf::{
-    AggSpec, DataFrame, DeviceId, GroupByAgg, Series, SortOptions,
+    AggSpec, DataFrame, DeviceId, Exec, GroupByAgg, ParquetReadOptions, Series, SortOptions,
     core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
     testing::{ColumnView, TableView},
@@ -132,7 +132,7 @@ assert_not_impl_any!(TableView<'static>: Send, Sync);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {
     let df = sample_df();
-    let result = spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
+    let result = spawn_blocking(move || df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -145,7 +145,10 @@ async fn dataframe_sort_survives_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_head_survives_spawn_blocking() {
     let df = sample_df();
-    let result = spawn_blocking(move || df.head(3)).await.expect("blocking task panicked").expect("head failed");
+    let result = spawn_blocking(move || df.on(Exec::RETAINED).head(3))
+        .await
+        .expect("blocking task panicked")
+        .expect("head failed");
 
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.num_columns(), 2);
@@ -177,7 +180,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
     // the closure (not returned). Verify no leak or crash.
     let df = sample_df();
     spawn_blocking(move || {
-        let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+        let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
         // df and sorted both drop here, freeing GPU memory.
     })
@@ -189,7 +192,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
 async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
     // Move DataFrame into spawn_blocking, return it, and drop it after await.
     let df = sample_df();
-    let result = spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
+    let result = spawn_blocking(move || df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -207,7 +210,7 @@ async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_sort_survives_spawn_blocking() {
     let series = series::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
-    let sorted = spawn_blocking(move || series.sort_values(SortOptions::new()))
+    let sorted = spawn_blocking(move || series.on(Exec::RETAINED).sort_values(SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -221,7 +224,10 @@ async fn series_arithmetic_in_spawn_blocking() {
     let a = series::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
     let b = series::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
 
-    let result = spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
+    let result = spawn_blocking(move || a.on(Exec::RETAINED).add(&b))
+        .await
+        .expect("blocking task panicked")
+        .expect("add failed");
 
     let vals: Vec<f64> = result.to_vec_strict::<f64>().unwrap();
     assert_eq!(vals, vec![11.0, 22.0, 33.0]);
@@ -230,9 +236,12 @@ async fn series_arithmetic_in_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_unique_in_spawn_blocking() {
     let series = series::<i32>("x", &[1, 2, 2, 3, 3, 3]).unwrap();
-    let unique = spawn_blocking(move || series.unique()).await.expect("blocking task panicked").expect("unique failed");
+    let unique = spawn_blocking(move || series.on(Exec::RETAINED).unique())
+        .await
+        .expect("blocking task panicked")
+        .expect("unique failed");
 
-    assert_eq!(unique.nunique().unwrap(), 3);
+    assert_eq!(unique.on(Exec::RETAINED).nunique().unwrap(), 3);
 }
 
 // ===========================================================================
@@ -255,7 +264,10 @@ async fn parquet_round_trip_in_spawn_blocking() {
     // Read from a separate spawn_blocking.
     let loaded = spawn_blocking(move || {
         let runtime = cudf::Runtime::builder().build().unwrap();
-        DataFrame::read_parquet(&runtime, &path_clone)
+        DataFrame::read_parquet(
+            ParquetReadOptions::builder().filepath(&path_clone).with_runtime(&runtime).build(),
+            Exec::RETAINED,
+        )
     })
     .await
     .expect("blocking task panicked")
@@ -335,14 +347,14 @@ async fn chained_pipeline_in_spawn_blocking() {
         let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
-        let sorted = df.sort_values(["key"], SortOptions::new())?;
+        let sorted = df.on(Exec::RETAINED).sort_values(["key"], SortOptions::new())?;
 
         // Take first 4 rows.
-        let top = sorted.head(4)?;
+        let top = sorted.on(Exec::RETAINED).head(4)?;
         assert_eq!(top.num_rows(), 4);
 
         // GroupBy sum.
-        let agg_result = top.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)])?;
+        let agg_result = top.groupby(["key"]).on(Exec::RETAINED).agg(&[AggSpec::new("value", GroupByAgg::Sum)])?;
 
         // Materialize to host.
         let key_data: Vec<i32> = agg_result.series("key").unwrap().to_vec_strict::<i32>()?;
@@ -375,7 +387,7 @@ async fn join_inside_spawn_blocking() {
         )?;
 
         let opts = cudf::MergeOptions::new().on(["id"]).how_inner();
-        let joined = left.merge(&right, opts)?;
+        let joined = left.on(Exec::RETAINED).merge(&right, opts)?;
         Ok(joined.num_rows())
     })
     .await
@@ -396,8 +408,8 @@ async fn dataframe_filter_in_spawn_blocking() {
     let result = spawn_blocking(move || -> cudf::Result<Vec<i32>> {
         // Build a boolean mask: score > 20.0
         let score_series = df.series("score")?;
-        let mask_series = score_series.gt_scalar(20.0f64)?;
-        let filtered = df.filter(&mask_series)?;
+        let mask_series = score_series.on(Exec::RETAINED).gt_scalar(20.0f64)?;
+        let filtered = df.on(Exec::RETAINED).filter(&mask_series)?;
 
         // Materialize filtered ids to host.
         let ids = filtered.series("id").unwrap().to_vec_strict::<i32>()?;
@@ -427,8 +439,10 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let df2 = Arc::clone(&df);
 
     let (sorted_asc, sorted_desc) = tokio::join!(
-        spawn_blocking(move || { df1.sort_values(["id"], SortOptions::new()) }),
-        spawn_blocking(move || { df2.sort_values(["id"], SortOptions::new().with_descending(vec![true])) }),
+        spawn_blocking(move || { df1.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()) }),
+        spawn_blocking(move || {
+            df2.on(Exec::RETAINED).sort_values(["id"], SortOptions::new().with_descending(vec![true]))
+        }),
     );
 
     let asc = sorted_asc.expect("asc task panicked").expect("asc sort failed");
@@ -466,7 +480,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
         handles.push(spawn_blocking(|| {
             for _ in 0..16 {
                 let df = sample_df();
-                let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+                let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
                 let _ids: Vec<i32> = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
             }
         }));
@@ -493,7 +507,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
     // cleanly. No crash, no corruption.
     let handle = spawn_blocking(|| {
         let df = sample_df();
-        let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+        let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
         sorted
     });

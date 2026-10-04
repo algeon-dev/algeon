@@ -3,7 +3,7 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ReduceAgg, TypeId,
+    ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ReduceAgg, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -30,7 +30,7 @@ fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
 
 fn test_sum_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
-    let total = s.sum().unwrap();
+    let total = s.on(Exec::RETAINED).sum().unwrap();
 
     assert_eq!(total.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(total.value::<i64>().unwrap(), 60);
@@ -38,7 +38,7 @@ fn test_sum_i32() {
 
 fn test_sum_f64() {
     let s = series::<f64>("x", &[1.5, 2.5, 3.0]).unwrap();
-    let total = s.sum().unwrap();
+    let total = s.on(Exec::RETAINED).sum().unwrap();
 
     assert_eq!(total.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(total.value::<f64>().unwrap(), 7.0);
@@ -46,7 +46,7 @@ fn test_sum_f64() {
 
 fn test_sum_bool8() {
     let s = series::<bool>("x", &[true, false, true, true]).unwrap();
-    let total = s.sum().unwrap();
+    let total = s.on(Exec::RETAINED).sum().unwrap();
 
     assert_eq!(total.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(total.value::<i64>().unwrap(), 3);
@@ -54,14 +54,14 @@ fn test_sum_bool8() {
 
 fn test_sum_with_nulls() {
     let s = nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
-    let total = s.sum().unwrap();
+    let total = s.on(Exec::RETAINED).sum().unwrap();
 
     assert_eq!(total.value::<i64>().unwrap(), 40);
 }
 
 fn test_sum_string_reports_series_operation_on_type_error() {
     let s = series("x", &["a", "b"]).unwrap();
-    let err = s.sum().unwrap_err();
+    let err = s.on(Exec::RETAINED).sum().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
@@ -76,7 +76,7 @@ fn test_sum_string_reports_series_operation_on_type_error() {
 
 fn test_min_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
-    let m = s.min().unwrap();
+    let m = s.on(Exec::RETAINED).min().unwrap();
 
     assert_eq!(m.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(m.value::<i32>().unwrap(), 10);
@@ -84,7 +84,7 @@ fn test_min_i32() {
 
 fn test_max_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
-    let m = s.max().unwrap();
+    let m = s.on(Exec::RETAINED).max().unwrap();
 
     assert_eq!(m.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(m.value::<i32>().unwrap(), 30);
@@ -92,14 +92,14 @@ fn test_max_i32() {
 
 fn test_min_f64() {
     let s = series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
-    let m = s.min().unwrap();
+    let m = s.on(Exec::RETAINED).min().unwrap();
 
     assert_eq!(m.value::<f64>().unwrap(), 1.0);
 }
 
 fn test_max_f64() {
     let s = series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
-    let m = s.max().unwrap();
+    let m = s.on(Exec::RETAINED).max().unwrap();
 
     assert_eq!(m.value::<f64>().unwrap(), 3.0);
 }
@@ -114,7 +114,7 @@ fn test_prepared_scalar_max_reports_shape_and_returns_scalar() {
     assert_eq!(prepared.output_shape().output_type().id(), TypeId::Int32);
     assert_eq!(prepared.output_shape().output_rows(), 1);
 
-    let output = prepared.execute().unwrap();
+    let output = prepared.execute(Exec::RETAINED).unwrap();
     assert_eq!(output.output_rows(), 1);
     assert_eq!(output.scalar().data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
@@ -129,7 +129,7 @@ fn test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar() {
     assert_eq!(prepared.output_shape().output_type().id(), TypeId::Int64);
     assert_eq!(prepared.output_shape().output_rows(), 1);
 
-    let output = prepared.execute().unwrap();
+    let output = prepared.execute(Exec::RETAINED).unwrap();
     assert_eq!(output.output_rows(), 1);
     assert_eq!(output.scalar().data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(output.scalar().value::<i64>().unwrap(), 60);
@@ -206,7 +206,7 @@ fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
 fn test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar() {
     let s = nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
-    let output = prepared.execute().unwrap();
+    let output = prepared.execute(Exec::RETAINED).unwrap();
     let scalar = output.scalar();
 
     assert_eq!(prepared.output_shape().output_rows(), 1);
@@ -249,7 +249,7 @@ fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details(
 
 fn test_mean_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
-    let m = s.mean().unwrap();
+    let m = s.on(Exec::RETAINED).mean().unwrap();
 
     assert_eq!(m.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(m.value::<f64>().unwrap(), 20.0);
@@ -257,14 +257,14 @@ fn test_mean_i32() {
 
 fn test_mean_f64() {
     let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-    let m = s.mean().unwrap();
+    let m = s.on(Exec::RETAINED).mean().unwrap();
 
     assert_eq!(m.value::<f64>().unwrap(), 2.0);
 }
 
 fn test_median_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
-    let m = s.median().unwrap();
+    let m = s.on(Exec::RETAINED).median().unwrap();
 
     assert_eq!(m.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(m.value::<f64>().unwrap(), 20.0);
@@ -277,7 +277,7 @@ fn test_median_i32() {
 fn test_std_f64() {
     let s = series::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
     let ddof: u32 = 0;
-    let std_val = s.std(ddof).unwrap();
+    let std_val = s.on(Exec::RETAINED).std(ddof).unwrap();
 
     assert_eq!(std_val.data_type().unwrap().id(), TypeId::Float64);
     let v = std_val.value::<f64>().unwrap();
@@ -287,7 +287,7 @@ fn test_std_f64() {
 fn test_var_f64() {
     let s = series::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
     let ddof: u32 = 0;
-    let var_val = s.var(ddof).unwrap();
+    let var_val = s.on(Exec::RETAINED).var(ddof).unwrap();
 
     assert_eq!(var_val.data_type().unwrap().id(), TypeId::Float64);
     let v = var_val.value::<f64>().unwrap();
@@ -297,7 +297,7 @@ fn test_var_f64() {
 fn test_std_ddof_above_i32_max_uses_series_operation_contract() {
     let s = series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
 
-    let err = s.std(u32::MAX).expect_err("expected ddof range validation error");
+    let err = s.on(Exec::RETAINED).std(u32::MAX).expect_err("expected ddof range validation error");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -314,7 +314,7 @@ fn test_std_ddof_above_i32_max_uses_series_operation_contract() {
 fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
     let s = series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
 
-    let err = s.var(u32::MAX).expect_err("expected ddof range validation error");
+    let err = s.on(Exec::RETAINED).var(u32::MAX).expect_err("expected ddof range validation error");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -334,7 +334,7 @@ fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
 
 fn test_any_true() {
     let s = series::<bool>("x", &[false, true, false]).unwrap();
-    let result = s.any().unwrap();
+    let result = s.on(Exec::RETAINED).any().unwrap();
 
     assert_eq!(result.data_type().unwrap().id(), TypeId::Bool8);
     assert!(result.value::<bool>().unwrap());
@@ -342,21 +342,21 @@ fn test_any_true() {
 
 fn test_any_false() {
     let s = series::<bool>("x", &[false, false, false]).unwrap();
-    let result = s.any().unwrap();
+    let result = s.on(Exec::RETAINED).any().unwrap();
 
     assert!(!result.value::<bool>().unwrap());
 }
 
 fn test_all_true() {
     let s = series::<bool>("x", &[true, true, true]).unwrap();
-    let result = s.all().unwrap();
+    let result = s.on(Exec::RETAINED).all().unwrap();
 
     assert!(result.value::<bool>().unwrap());
 }
 
 fn test_all_false() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();
-    let result = s.all().unwrap();
+    let result = s.on(Exec::RETAINED).all().unwrap();
 
     assert!(!result.value::<bool>().unwrap());
 }
@@ -367,7 +367,7 @@ fn test_all_false() {
 
 fn test_product_i32() {
     let s = series::<i32>("x", &[2, 3, 4]).unwrap();
-    let result = s.product().unwrap();
+    let result = s.on(Exec::RETAINED).product().unwrap();
 
     assert_eq!(result.data_type().unwrap().id(), TypeId::Int32);
     assert_eq!(result.value::<i32>().unwrap(), 24);
@@ -375,7 +375,7 @@ fn test_product_i32() {
 
 fn test_product_f64() {
     let s = series::<f64>("x", &[2.0, 3.0, 4.0]).unwrap();
-    let result = s.product().unwrap();
+    let result = s.on(Exec::RETAINED).product().unwrap();
 
     assert_eq!(result.data_type().unwrap().id(), TypeId::Float64);
     assert_eq!(result.value::<f64>().unwrap(), 24.0);
@@ -387,7 +387,7 @@ fn test_product_f64() {
 
 fn test_minmax_i32() {
     let s = series::<i32>("x", &[30, 10, 20]).unwrap();
-    let (min, max) = s.minmax().unwrap();
+    let (min, max) = s.on(Exec::RETAINED).minmax().unwrap();
 
     assert_eq!(min.value::<i32>().unwrap(), 10);
     assert_eq!(max.value::<i32>().unwrap(), 30);
@@ -395,7 +395,7 @@ fn test_minmax_i32() {
 
 fn test_minmax_f64() {
     let s = series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
-    let (min, max) = s.minmax().unwrap();
+    let (min, max) = s.on(Exec::RETAINED).minmax().unwrap();
 
     assert_eq!(min.value::<f64>().unwrap(), 1.0);
     assert_eq!(max.value::<f64>().unwrap(), 3.0);
@@ -407,32 +407,32 @@ fn test_minmax_f64() {
 
 fn test_cumsum_i32() {
     let s = series::<i32>("x", &[10, 20, 30]).unwrap();
-    let cs = s.cumsum().unwrap();
+    let cs = s.on(Exec::RETAINED).cumsum().unwrap();
     assert_eq!(cs.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 }
 
 fn test_cumsum_f64() {
     let s = series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
-    let cs = s.cumsum().unwrap();
+    let cs = s.on(Exec::RETAINED).cumsum().unwrap();
 
     assert_eq!(cs.to_vec_strict::<f64>().unwrap(), vec![1.0, 3.0, 6.0]);
 }
 
 fn test_cummin_i32() {
     let s = series::<i32>("x", &[3, 1, 2]).unwrap();
-    let cm = s.cummin().unwrap();
+    let cm = s.on(Exec::RETAINED).cummin().unwrap();
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![3, 1, 1]);
 }
 
 fn test_cummax_i32() {
     let s = series::<i32>("x", &[1, 3, 2]).unwrap();
-    let cm = s.cummax().unwrap();
+    let cm = s.on(Exec::RETAINED).cummax().unwrap();
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![1, 3, 3]);
 }
 
 fn test_cumprod_i32() {
     let s = series::<i32>("x", &[2, 3, 4]).unwrap();
-    let cp = s.cumprod().unwrap();
+    let cp = s.on(Exec::RETAINED).cumprod().unwrap();
     assert_eq!(cp.to_vec_strict::<i32>().unwrap(), vec![2, 6, 24]);
 }
 
@@ -442,14 +442,14 @@ fn test_cumprod_i32() {
 
 fn test_is_nan_f64() {
     let s = series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
-    let mask = s.is_nan().unwrap();
+    let mask = s.on(Exec::RETAINED).is_nan().unwrap();
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
 fn test_is_not_nan_f64() {
     let s = series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
-    let mask = s.is_not_nan().unwrap();
+    let mask = s.on(Exec::RETAINED).is_not_nan().unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -459,13 +459,13 @@ fn test_is_not_nan_f64() {
 
 fn test_abs_i32() {
     let s = series::<i32>("x", &[-3, -1, 0, 2]).unwrap();
-    let result = s.abs().unwrap();
+    let result = s.on(Exec::RETAINED).abs().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 1, 0, 2]);
 }
 
 fn test_abs_f64() {
     let s = series::<f64>("x", &[-3.0, -1.5, 0.0, 2.5]).unwrap();
-    let result = s.abs().unwrap();
+    let result = s.on(Exec::RETAINED).abs().unwrap();
 
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.0, 1.5, 0.0, 2.5]);
 }
@@ -476,13 +476,13 @@ fn test_abs_f64() {
 
 fn test_neg_i32() {
     let s = series::<i32>("x", &[1, -2, 3]).unwrap();
-    let result = s.neg().unwrap();
+    let result = s.on(Exec::RETAINED).neg().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
 fn test_neg_f64() {
     let s = series::<f64>("x", &[1.5, -2.5]).unwrap();
-    let result = s.neg().unwrap();
+    let result = s.on(Exec::RETAINED).neg().unwrap();
 
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![-1.5, 2.5]);
 }
@@ -493,7 +493,7 @@ fn test_neg_f64() {
 
 fn test_logical_not_bool() {
     let s = series::<bool>("x", &[true, false, true]).unwrap();
-    let result = s.logical_not().unwrap();
+    let result = s.on(Exec::RETAINED).logical_not().unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }

@@ -3,7 +3,7 @@
 //! One hash or filtered build serves many probe chunks. Each chunk probes the
 //! shared build on its own execution lane with private workspace: the build
 //! handle is read-only (`&self` probes on `Arc<HashJoinHandle>` Send+Sync,
-//! per-call `ExecutionOverrides` streams, no shared mutable scratch), while
+//! per-call `Exec` streams, no shared mutable scratch), while
 //! probe frames, indices, and gather maps stay lane-private. The join owner
 //! merges chunk outputs after every lane completes.
 //!
@@ -162,7 +162,7 @@ fn serial_hash_probe_frames(
 /// Minimal Send+Sync view of a hash build shared across probe lanes.
 ///
 /// The native `HashJoinHandle` is already `Send+Sync` behind an `Arc`, probes
-/// take `&self`, and each lane supplies its own `ExecutionOverrides` stream,
+/// take `&self`, and each lane supplies its own `Exec` stream,
 /// so sharing this immutable view needs no new `unsafe` impl. The timer is
 /// intentionally excluded: it measures the coordinator's build, not lanes.
 struct SharedHashBuild {

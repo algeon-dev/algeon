@@ -240,7 +240,7 @@ impl OwnedFloat32Matrix {
         if validated.rows() == 0 || validated.columns() == 0 {
             return Err(invalid_input(OP, "dimensions must be nonzero"));
         }
-        if validated.binding_id() != resources.binding_id() || validated.placement().device != resources.device() {
+        if validated.binding_id() != resources.binding_id() || validated.device() != resources.device() {
             return Err(error(
                 ErrorCode::RuntimeBindingMismatch,
                 FailurePhase::Preflight,
@@ -249,7 +249,7 @@ impl OwnedFloat32Matrix {
             )
             .with_detail("matrix_binding_id", validated.binding_id())
             .with_detail("resource_binding_id", resources.binding_id())
-            .with_detail("matrix_device", validated.placement().device.ordinal())
+            .with_detail("matrix_device", validated.device().ordinal())
             .with_detail("resource_device", resources.device().ordinal()));
         }
         let (rows, columns, layout) = (validated.rows(), validated.columns(), validated.layout().into());

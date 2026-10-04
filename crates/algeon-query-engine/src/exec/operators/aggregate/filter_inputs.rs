@@ -5,8 +5,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, CaseWhen, DataFrame, ExecutionBudgetToken,
     ExecutionContext, ExecutionMetrics, Expr, Field, LiteralValue, QueryError, QueryErrorCode, Result, Schema,
-    aggregate_spec_has_filters, budgeted_value, cudf_query_error, execution_overrides, global_count_star_expr,
-    lower_expr,
+    aggregate_spec_has_filters, budgeted_value, cudf_query_error, global_count_star_expr, lower_expr,
 };
 use crate::naming::unique_alias_with_suffix;
 
@@ -47,8 +46,8 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
 
     let timer = Instant::now();
     let frame = match token {
-        Some(token) => frame
-            .with_columns_with_budget(expressions, token)
+        Some(token) => token
+            .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(expressions))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.filter_inputs",
@@ -58,9 +57,9 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.aggregate.filter_inputs"))?,
         None => {
-            let overrides_lease = execution_overrides(context)?;
-            let overrides = overrides_lease.overrides();
-            frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
+            let exec_runtime = context.runtime()?;
+            let overrides = exec_runtime.exec();
+            frame.on(overrides).with_columns(expressions).map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.filter_inputs",
                     "failed to materialize native aggregate filter inputs",

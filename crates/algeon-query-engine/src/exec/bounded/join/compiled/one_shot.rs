@@ -5,7 +5,7 @@ use super::{
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledEqualityJoinPreflightIndices,
     CompiledJoinMaterializationRequest, ExecutionMetrics, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, bounded_invariant_violation,
-    compiled_join_input_columns, execution_overrides, materialize_compiled_indices_output,
+    compiled_join_input_columns, materialize_compiled_indices_output,
     materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_compiled_one_shot_residual_output,
     observe_device_memory_bytes, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
     probe_side, record_one_shot_join_chunk_metrics, record_streamed_one_shot_join_metrics,
@@ -52,8 +52,8 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     validate_one_shot_equi_join(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
         execution,
@@ -63,7 +63,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
         node.spec.build_side,
         &left_keys,
         &right_keys,
-        &overrides,
+        overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
@@ -288,8 +288,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
 ) -> Result<ResidentGpuFrame> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let (left_input, right_input) = match build_side {
         JoinSide::Left => (build, &probe),
@@ -303,7 +303,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         build_side,
         &left_keys,
         &right_keys,
-        &overrides,
+        overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
@@ -352,7 +352,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let output = match indices.materialize_output(
         &left.frame,
         &right.frame,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,

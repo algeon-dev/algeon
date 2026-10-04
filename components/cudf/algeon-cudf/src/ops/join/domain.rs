@@ -1,26 +1,9 @@
 use super::*;
 
-pub(super) fn compatible_join_domain(
-    tables: SplitJoinTables<'_, '_>,
-    operation: &'static str,
-) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::many(
-        tables.left_keys.execution_domain(),
-        [
-            tables.right_keys.execution_domain(),
-            tables.left_payload.execution_domain(),
-            tables.right_payload.execution_domain(),
-        ],
-        &ctx,
-        operation,
-    )
-}
-
 pub(super) fn compatible_join_indices_domain(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     ResolvedExecution::binary(left_keys.execution_domain(), right_keys.execution_domain(), ctx, operation)
@@ -30,7 +13,7 @@ pub(super) fn compatible_conditional_join_domain(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     let mut secondaries = Vec::new();
@@ -42,7 +25,7 @@ pub(super) fn compatible_conditional_join_domain(
 pub(super) fn compatible_mixed_join_domain(
     tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     let mut secondaries = Vec::new();
@@ -55,7 +38,7 @@ pub(super) fn compatible_mixed_join_domain(
 
 pub(super) fn compatible_filter_join_indices_domain(
     inputs: FilterJoinInputs<'_, '_>,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     let mut secondaries = Vec::new();

@@ -1,4 +1,5 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::Exec;
 
 use super::{
     AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, ExecutionMetrics, QueryError, QueryErrorCode,
@@ -64,19 +65,21 @@ fn cast_count_output_columns_impl(
         }
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
-                frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.aggregate.cast_count",
-                        "failed to cast bounded native count aggregate output column",
-                        error,
-                    )
-                    .with_fact("alias", expr.alias.as_str())
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-                })?,
+                token
+                    .run("dataframe::cast_column", |exec| frame.on(exec).cast_column(expr.alias.as_str(), target_type))
+                    .map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.aggregate.cast_count",
+                            "failed to cast bounded native count aggregate output column",
+                            error,
+                        )
+                        .with_fact("alias", expr.alias.as_str())
+                        .with_fact("data_type", format!("{:?}", field.data_type()))
+                    })?,
                 metrics,
                 "query_engine.aggregate.cast_count",
             ),
-            None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+            None => frame.on(Exec::RETAINED).cast_column(expr.alias.as_str(), target_type).map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.cast_count",
                     "failed to cast native count aggregate output column",
@@ -149,19 +152,21 @@ fn cast_reduction_output_columns_impl(
         }
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
-                frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.aggregate.cast_reduction",
-                        "failed to cast bounded native reduction output column",
-                        error,
-                    )
-                    .with_fact("alias", expr.alias.as_str())
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-                })?,
+                token
+                    .run("dataframe::cast_column", |exec| frame.on(exec).cast_column(expr.alias.as_str(), target_type))
+                    .map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.aggregate.cast_reduction",
+                            "failed to cast bounded native reduction output column",
+                            error,
+                        )
+                        .with_fact("alias", expr.alias.as_str())
+                        .with_fact("data_type", format!("{:?}", field.data_type()))
+                    })?,
                 metrics,
                 "query_engine.aggregate.cast_reduction",
             ),
-            None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+            None => frame.on(Exec::RETAINED).cast_column(expr.alias.as_str(), target_type).map_err(|error| {
                 cudf_query_error(
                     "query_engine.aggregate.cast_reduction",
                     "failed to cast native reduction output column",

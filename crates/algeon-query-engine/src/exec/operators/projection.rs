@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
+use cudf::{Exec, interop::arrow_host::arrow_type_from_cudf_dtype};
 
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
@@ -82,7 +82,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut output = budgeted_value(
-        frame.with_columns_with_budget(exprs, token).map_err(|error| {
+        token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(exprs)).map_err(|error| {
             cudf_query_error(
                 "query_engine.projection.execute",
                 "failed to execute bounded algeon native projection",
@@ -194,17 +194,16 @@ fn prepare_projection_regexp_replace(
                     // separate token rebinds provenance and prevents reinsertion
                     // into the input frame.
                     let timer = Instant::now();
-                    let prepared =
-                        series.str().prepare_replace_with_backrefs(pattern, replacement).map_err(|error| {
-                            cudf_query_error(
-                                "query_engine.projection.regexp_replace_preflight",
-                                "failed to prepare REGEXP_REPLACE reusable size state",
-                                error,
-                            )
-                            .with_fact("column", column_name)
-                            .with_fact("output_field", output.field.name().as_str())
-                            .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT)
-                        })?;
+                    let prepared = series.prepare_replace_with_backrefs(pattern, replacement).map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.projection.regexp_replace_preflight",
+                            "failed to prepare REGEXP_REPLACE reusable size state",
+                            error,
+                        )
+                        .with_fact("column", column_name)
+                        .with_fact("output_field", output.field.name().as_str())
+                        .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT)
+                    })?;
                     metrics.add_operator_time(timer.elapsed());
                     let facts = prepared.output_size_facts();
                     let component_bytes = u64::try_from(facts.required_budget_bytes()).map_err(|_| {
@@ -297,14 +296,18 @@ fn materialize_prepared_regexp_replace_projection(
                 "query_engine.projection.execute",
             );
             frame = budgeted_value(
-                frame.with_column_with_budget(output.field.name().as_str(), series, token).map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.projection.execute",
-                        "failed to attach prepared REGEXP_REPLACE output column",
-                        error,
-                    )
-                    .with_fact("output_field", output.field.name().as_str())
-                })?,
+                token
+                    .run("dataframe::with_column", |exec| {
+                        frame.on(exec).with_column(output.field.name().as_str(), series)
+                    })
+                    .map_err(|error| {
+                        cudf_query_error(
+                            "query_engine.projection.execute",
+                            "failed to attach prepared REGEXP_REPLACE output column",
+                            error,
+                        )
+                        .with_fact("output_field", output.field.name().as_str())
+                    })?,
                 metrics,
                 "query_engine.projection.execute",
             );
@@ -325,7 +328,7 @@ fn materialize_prepared_regexp_replace_projection(
 
     if !lower_exprs.is_empty() {
         frame = budgeted_value(
-            frame.with_columns_with_budget(lower_exprs, token).map_err(|error| {
+            token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(lower_exprs)).map_err(|error| {
                 cudf_query_error(
                     "query_engine.projection.execute",
                     "failed to execute bounded algeon native projection non-regexp expressions",
@@ -485,25 +488,27 @@ fn coerce_projection_output_schema(
         }
         frame = match token {
             Some(token) => budgeted_value(
-                frame.cast_column_with_budget(field_name, target_type, token).map_err(|error| {
-                    attach_budget_token_failure_facts(
-                        cudf_query_error(
-                            "query_engine.projection.schema_coerce",
-                            "failed to cast bounded native projection output column to declared schema type",
-                            error,
-                        ),
-                        token,
-                    )
-                    .with_fact_if_absent("reason", "projection_output_schema_mismatch")
-                    .with_fact("field_name", field_name)
-                    .with_fact("field_index", field_index)
-                    .with_fact("actual_type", format!("{actual_type:?}"))
-                    .with_fact("expected_type", format!("{expected_type:?}"))
-                })?,
+                token
+                    .run("dataframe::cast_column", |exec| frame.on(exec).cast_column(field_name, target_type))
+                    .map_err(|error| {
+                        attach_budget_token_failure_facts(
+                            cudf_query_error(
+                                "query_engine.projection.schema_coerce",
+                                "failed to cast bounded native projection output column to declared schema type",
+                                error,
+                            ),
+                            token,
+                        )
+                        .with_fact_if_absent("reason", "projection_output_schema_mismatch")
+                        .with_fact("field_name", field_name)
+                        .with_fact("field_index", field_index)
+                        .with_fact("actual_type", format!("{actual_type:?}"))
+                        .with_fact("expected_type", format!("{expected_type:?}"))
+                    })?,
                 metrics,
                 "query_engine.projection.schema_coerce",
             ),
-            None => frame.cast_column(field_name, target_type).map_err(|error| {
+            None => frame.on(Exec::RETAINED).cast_column(field_name, target_type).map_err(|error| {
                 cudf_query_error(
                     "query_engine.projection.schema_coerce",
                     "failed to cast native projection output column to declared schema type",

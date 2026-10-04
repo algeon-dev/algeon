@@ -12,7 +12,7 @@
 //!   prepared-export boundary
 use std::{collections::HashMap, ffi::c_void};
 
-use cudf::{AggSpec, DataFrame, GroupByAgg, Runtime, testing::prelude::*};
+use cudf::{AggSpec, DataFrame, Exec, GroupByAgg, Runtime, testing::prelude::*};
 use rapids_interop::{
     BufferBinding, ColumnLayout, CompletionAuthority, PreparedAccess, PreparedExportProfile, PreparedTableExport,
     ReadStartAuthority, SemanticColumn,
@@ -128,6 +128,7 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
 
     let out_degree = imported
         .groupby(["src"])
+        .on(Exec::RETAINED)
         .agg(&[AggSpec::new("dst", GroupByAgg::Count { include_nulls: false }).with_alias("out_degree")])
         .unwrap();
 

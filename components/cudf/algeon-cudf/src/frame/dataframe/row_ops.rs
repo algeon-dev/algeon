@@ -8,10 +8,7 @@ use crate::{
     frame::series::Series,
     internal::resolve::missing_column_error,
     ops::{self, copying, filter},
-    runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
-        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -38,16 +35,16 @@ pub(crate) fn trigger_dataframe_row_range_overflow_error_for_test() -> Result<Da
 
 impl DataFrame {
     /// Gather rows using a borrowed per-operation execution override.
-    pub(crate) fn gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn gather_in_context(&self, indices: &Series, ctx: Exec<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.view()?;
-        self.gather_by_column_view_impl(&cv, output_domain, "dataframe::with_execution::gather")
+        self.gather_by_column_view_impl(&cv, output_domain, "dataframe::gather")
     }
 
     pub(crate) fn gather_device_allocated_size_in_context(
         &self,
         indices: &Series,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
         reservation_contract: &'static str,
     ) -> Result<usize> {
@@ -57,122 +54,43 @@ impl DataFrame {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: Exec<'_>) -> Result<Self> {
         self.gather_in_context(indices, ctx)
     }
 
     /// Filter rows using a borrowed per-operation execution override.
-    pub(crate) fn filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn filter_in_context(&self, mask: &Series, ctx: Exec<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
-        self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::with_execution::filter")
+        self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::filter")
     }
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: Exec<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
     }
 
-    pub(crate) fn head_in_context(&self, n: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn head_in_context(&self, n: usize, ctx: Exec<'_>) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
-        self.gather_range_in_context(0, take, ctx, "dataframe::with_execution::head")
+        self.gather_range_in_context(0, take, ctx, "dataframe::head")
     }
 
-    pub(crate) fn tail_in_context(&self, n: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
-        let total = self.num_rows();
-        let take = n.min(total);
-        let start = total - take;
-        self.gather_range_in_context(start, take, ctx, "dataframe::with_execution::tail")
-    }
-
-    pub(crate) fn slice_in_context(&self, offset: usize, length: usize, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
-        let total = self.num_rows();
-        let start = offset.min(total);
-        let take = length.min(total - start);
-        self.gather_range_in_context(start, take, ctx, "dataframe::with_execution::slice")
-    }
-
-    /// Return the first `n` rows.
-    pub fn head(&self, n: usize) -> Result<Self> {
-        let total = self.num_rows();
-        let take = n.min(total);
-        self.gather_range(0, take)
-    }
-
-    /// Return the last `n` rows.
-    pub fn tail(&self, n: usize) -> Result<Self> {
+    pub(crate) fn tail_in_context(&self, n: usize, ctx: Exec<'_>) -> Result<Self> {
         let total = self.num_rows();
         let take = n.min(total);
         let start = total - take;
-        self.gather_range(start, take)
+        self.gather_range_in_context(start, take, ctx, "dataframe::tail")
     }
 
-    /// Return `length` rows starting at `offset` under a hard execution budget.
-    ///
-    /// `slice` materializes a physical gather copy, so the output allocation is
-    /// routed through the token's stream-bound reservation. A rejection carries
-    /// the token's member accounting (peak, current, and failed allocation
-    /// counts) instead of the bare allocator message.
-    pub fn slice_with_budget(
-        &self,
-        offset: usize,
-        length: usize,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Self>> {
-        let operation = "dataframe::slice_with_budget";
-        let ctx = token.execution_overrides();
+    pub(crate) fn slice_in_context(&self, offset: usize, length: usize, ctx: Exec<'_>) -> Result<Self> {
         let total = self.num_rows();
         let start = offset.min(total);
         let take = length.min(total - start);
-        let output = self
-            .gather_range_in_context(start, take, &ctx, operation)
-            .map_err(|error| token.annotate_error(error, operation))?;
-        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows());
-
-        Ok(BudgetedExecutionOutcome::new(output, report))
+        self.gather_range_in_context(start, take, ctx, "dataframe::slice")
     }
 
-    /// Return `length` rows starting at `offset`.
-    pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
-        let total = self.num_rows();
-        let start = offset.min(total);
-        let take = length.min(total - start);
-        self.gather_range(start, take)
-    }
-
-    /// Gather (select) rows by an index `Series`.
-    pub fn gather(&self, indices: &Series) -> Result<Self> {
-        let cv = indices.view()?;
-        let output_domain = Arc::clone(&self.domain);
-        self.gather_by_column_view_impl(&cv, output_domain, "dataframe::gather")
-    }
-
-    /// Filter rows using a precomputed `Series` boolean mask.
-    pub fn filter(&self, mask: &Series) -> Result<Self> {
-        let mask_view = self.validate_series_mask(mask)?;
-        let output_domain = Arc::clone(&self.domain);
-        self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::filter")
-    }
-
-    /// Filter rows to those where `column` values appear in a `Series`.
-    pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
+    pub(crate) fn filter_isin_in_context(&self, column: &str, values: &Series, ctx: Exec<'_>) -> Result<Self> {
         let operation = "dataframe::filter_isin";
-        let output_domain = Arc::clone(&self.domain);
-        self.filter_isin_with_domain(column, values, output_domain, operation)
-    }
-
-    pub(crate) fn filter_isin_in_context(
-        &self,
-        column: &str,
-        values: &Series,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<Self> {
-        let operation = "dataframe::with_execution::filter_isin";
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         self.filter_isin_with_domain(column, values, output_domain, operation)
     }
@@ -285,11 +203,6 @@ impl DataFrame {
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
-    fn gather_range(&self, start: usize, len: usize) -> Result<Self> {
-        let output_domain = Arc::clone(&self.domain);
-        self.gather_range_impl(start, len, output_domain, "dataframe::gather_range")
-    }
-
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_gather_range_for_test(
         &self,
@@ -305,7 +218,7 @@ impl DataFrame {
         &self,
         start: usize,
         len: usize,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
@@ -340,10 +253,6 @@ impl DataFrame {
         )?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
-    }
-
-    pub(crate) fn empty_with_same_schema(&self) -> Result<Self> {
-        self.empty_with_same_schema_in_domain(Arc::clone(&self.domain))
     }
 
     pub(crate) fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {

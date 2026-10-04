@@ -1,5 +1,5 @@
 use cudf::{
-    DataFrameJoinOptions, DataType, ExecutionOverrides, NullEquality, Series, TypeId, core::DeviceSlice,
+    DataFrameJoinOptions, DataType, NullEquality, Series, TypeId, core::DeviceSlice,
     frame::dataframe::DataFrameFilteredJoinOptions,
 };
 use cugraph::{
@@ -11,9 +11,9 @@ use cugraph::{
 
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
-    QueryError, QueryErrorCode, Result, bfs_params, col, cudf_query_error, empty_graph_result_frame,
-    execution_overrides, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
-    run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, sssp_params, table_graph_options,
+    QueryError, QueryErrorCode, Result, bfs_params, col, cudf_query_error, empty_graph_result_frame, map_cugraph_error,
+    normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph,
+    run_with_cugraph_graph, sssp_params, table_graph_options,
 };
 use crate::plan::{
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphEdgePredicateInput,
@@ -382,30 +382,25 @@ where
             "BFS path output target series is missing",
         )
     })?;
-    let overrides =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let overrides = runtime.exec();
     let repeat = runtime.sequence(0_i32, 0_i32, rows).map_err(|error| {
         cudf_query_error("query_engine.graph_algorithm.bfs_path", "failed to build BFS path scalar gather map", error)
     })?;
-    let source = vertex.slice_in(0, 1, &overrides).and_then(|source| source.gather_in(&repeat, &overrides)).map_err(
-        |error| {
+    let source =
+        vertex.on(overrides).slice(0, 1).and_then(|source| source.on(overrides).gather(&repeat)).map_err(|error| {
             cudf_query_error(
                 "query_engine.graph_algorithm.bfs_path",
                 "failed to materialize BFS path source column",
                 error,
             )
-        },
-    )?;
-    let target = destination_series
-        .slice_in(0, 1, &overrides)
-        .and_then(|target| target.gather_in(&repeat, &overrides))
-        .map_err(|error| {
-            cudf_query_error(
-                "query_engine.graph_algorithm.bfs_path",
-                "failed to materialize BFS path target column",
-                error,
-            )
         })?;
+    let target = destination_series
+        .on(overrides)
+        .slice(0, 1)
+        .and_then(|target| target.on(overrides).gather(&repeat))
+        .map_err(|error| {
+        cudf_query_error("query_engine.graph_algorithm.bfs_path", "failed to materialize BFS path target column", error)
+    })?;
     let path_index = runtime.sequence(0_i64, 1_i64, rows).map_err(|error| {
         cudf_query_error("query_engine.graph_algorithm.bfs_path", "failed to materialize BFS path index", error)
     })?;
@@ -609,11 +604,11 @@ fn align_include_edges(
 
     let indices = {
         let allowed_edges = allowed_edges;
-        let overrides_lease = execution_overrides(context)?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = context.runtime()?;
+        let overrides = exec_runtime.exec();
         let options = DataFrameFilteredJoinOptions::new().null_equality(NullEquality::Unequal);
         let join = allowed_edges
-            .with_execution(&overrides)
+            .on(overrides)
             .build_filtered_join(right_keys.iter().map(String::as_str), options)
             .map_err(|error| {
                 cudf_query_error(
@@ -624,8 +619,8 @@ fn align_include_edges(
                 .with_fact("predicate_role", "include_edges")
                 .with_fact("input", input.input)
             })?;
-        let probe = join.begin_left_semi_probe_in(edges, left_keys.iter().map(String::as_str), &overrides).map_err(
-            |error| {
+        let probe =
+            join.begin_left_semi_probe(edges, left_keys.iter().map(String::as_str), overrides).map_err(|error| {
                 cudf_query_error(
                     "query_engine.graph_algorithm.bfs_predicates",
                     "failed to probe BFS include_edges alignment",
@@ -633,9 +628,8 @@ fn align_include_edges(
                 )
                 .with_fact("predicate_role", "include_edges")
                 .with_fact("input", input.input)
-            },
-        )?;
-        probe.materialize_indices_in(&overrides).map_err(|error| {
+            })?;
+        probe.materialize_indices(overrides).map_err(|error| {
             cudf_query_error(
                 "query_engine.graph_algorithm.bfs_predicates",
                 "failed to materialize BFS include_edges alignment indices",
@@ -646,10 +640,10 @@ fn align_include_edges(
         })?
     };
     let output_columns = edges.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     *edges = edges
-        .with_execution(&overrides)
+        .on(overrides)
         .materialize_join_indices(&indices, output_columns.iter().map(String::as_str))
         .map_err(|error| {
             cudf_query_error(
@@ -705,9 +699,9 @@ fn drop_null_include_edge_rows(
 
     let input_rows = allowed_edges.num_rows();
     let predicates = right_keys.iter().map(|column| col(column.as_str()).is_not_null()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
-    let filtered = allowed_edges.with_execution(&overrides).filter_all(predicates).map_err(|error| {
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
+    let filtered = allowed_edges.on(overrides).filter_all(predicates).map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.bfs_predicates",
             "failed to drop null BFS include_edges predicate rows",
@@ -1109,9 +1103,8 @@ fn graph_vertex_domain_frame(
 ) -> Result<DataFrame> {
     let source = graph_edge_series_for_column(edges, &spec.edge_columns.source, "graph_source_domain")?;
     let destination = graph_edge_series_for_column(edges, &spec.edge_columns.destination, "graph_destination_domain")?;
-    let overrides =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    let domain = Series::concat_in(&[&source, &destination], &overrides).map_err(|error| {
+    let overrides = runtime.exec();
+    let domain = Series::concat(&[&source, &destination], overrides).map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to build BFS graph vertex domain",
@@ -1167,9 +1160,8 @@ fn valid_vertex_rows(
     })?;
     let options =
         DataFrameJoinOptions::new().left_on(["__vertex"]).right_on(["__vertex"]).null_equality(NullEquality::Unequal);
-    let overrides =
-        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    vertices.with_execution(&overrides).left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
+    let overrides = runtime.exec();
+    vertices.on(overrides).left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to test BFS endpoint graph membership",

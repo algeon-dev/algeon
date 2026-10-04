@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use super::{
-    execution_context::ExecutionOverrides,
+    execution_context::Exec,
     execution_domain::{ConsumerCompletionFence, EnteredExecution, ExecutionDomain},
 };
 use crate::core::error::Result;
@@ -28,18 +28,14 @@ pub(crate) struct ResolvedExecution {
 }
 
 impl ResolvedExecution {
-    pub(crate) fn unary(
-        primary: &Arc<ExecutionDomain>,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<Self> {
+    pub(crate) fn unary(primary: &Arc<ExecutionDomain>, ctx: Exec<'_>, operation: &'static str) -> Result<Self> {
         Self::many(primary, [], ctx, operation)
     }
 
     pub(crate) fn binary(
         primary: &Arc<ExecutionDomain>,
         secondary: &Arc<ExecutionDomain>,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         Self::many(primary, [secondary], ctx, operation)
@@ -48,7 +44,7 @@ impl ResolvedExecution {
     pub(crate) fn many<'a>(
         primary: &Arc<ExecutionDomain>,
         secondaries: impl IntoIterator<Item = &'a Arc<ExecutionDomain>>,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(primary)?;
@@ -105,7 +101,7 @@ mod tests {
             error::{ErrorCode, FactKeyName, FactValue},
             memory::DeviceMemoryResource,
         },
-        runtime::{CudaStream, DeviceId, ExecutionOverrides, Runtime},
+        runtime::{CudaStream, DeviceId, Exec, Runtime},
     };
 
     const TEST_POOL_BYTES: usize = 16 * 1024 * 1024;
@@ -141,10 +137,10 @@ mod tests {
     #[test]
     fn unary_uses_primary_domain_and_exec_options_without_overrides() {
         let rt = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
 
         let execution =
-            ResolvedExecution::unary(rt.execution_domain(), &ctx, "execution_resolver::test::unary").unwrap();
+            ResolvedExecution::unary(rt.execution_domain(), ctx, "execution_resolver::test::unary").unwrap();
 
         assert_eq!(execution.output_domain().debug_stream_value(), rt.stream().__debug_raw_handle_value());
         assert_eq!(execution.output_domain().debug_mr_value(), rt.memory_resource().__debug_raw_handle_value());
@@ -159,14 +155,14 @@ mod tests {
         let rt = runtime();
         let override_stream = CudaStream::new().unwrap();
         let override_mr = DeviceMemoryResource::pool(TEST_POOL_BYTES, None).unwrap();
-        let ctx = ExecutionOverrides::new().with_stream(&override_stream).with_memory_resource(&override_mr);
+        let ctx = Exec::RETAINED.with_stream(&override_stream).with_memory_resource(&override_mr);
         let expected_stream = override_stream.__debug_raw_handle_value();
         let expected_mr = override_mr.__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::unary(
             rt.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::unary_with_borrowed_overrides",
         )
         .unwrap();
@@ -181,14 +177,14 @@ mod tests {
         let _event_observation = lock_event_observation();
         let primary = runtime();
         let secondary = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
         let expected_stream = primary.stream().__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::binary(
             primary.execution_domain(),
             secondary.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::binary",
         )
         .unwrap();
@@ -203,14 +199,14 @@ mod tests {
         let primary = runtime();
         let secondary_a = runtime();
         let secondary_b = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
         let expected_stream = primary.stream().__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::many(
             primary.execution_domain(),
             [secondary_a.execution_domain(), secondary_b.execution_domain()],
-            &ctx,
+            ctx,
             "execution_resolver::test::many",
         )
         .unwrap();
@@ -244,7 +240,7 @@ mod tests {
         let _event_observation = lock_event_observation();
         let primary = runtime();
         let secondary = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
         let output_stream = primary.stream().__debug_raw_handle_value();
         let secondary_stream = secondary.stream().__debug_raw_handle_value();
 
@@ -252,7 +248,7 @@ mod tests {
         let execution = ResolvedExecution::binary(
             primary.execution_domain(),
             secondary.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::reverse_fence_binary",
         )
         .unwrap();
@@ -273,14 +269,14 @@ mod tests {
     fn dropping_same_provenance_resolution_inserts_no_waits() {
         let _event_observation = lock_event_observation();
         let rt = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
         let stream = rt.stream().__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::binary(
             rt.execution_domain(),
             rt.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::same_provenance_reverse_fence",
         )
         .unwrap();
@@ -294,14 +290,14 @@ mod tests {
         let rt = runtime();
         let override_stream = CudaStream::new().unwrap();
         let override_mr = DeviceMemoryResource::pool(TEST_POOL_BYTES, None).unwrap();
-        let ctx = ExecutionOverrides::new().with_stream(&override_stream).with_memory_resource(&override_mr);
+        let ctx = Exec::RETAINED.with_stream(&override_stream).with_memory_resource(&override_mr);
         let primary_stream = rt.stream().__debug_raw_handle_value();
         let output_stream = override_stream.__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::unary(
             rt.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::reverse_fence_unary_override",
         )
         .unwrap();
@@ -317,14 +313,14 @@ mod tests {
         let _event_observation = lock_event_observation();
         let primary = runtime();
         let secondary = runtime();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
         let secondary_stream = secondary.stream().__debug_raw_handle_value();
 
         reset_dependency_observation();
         let execution = ResolvedExecution::many(
             primary.execution_domain(),
             [secondary.execution_domain(), secondary.execution_domain()],
-            &ctx,
+            ctx,
             "execution_resolver::test::reverse_fence_dedupe",
         )
         .unwrap();
@@ -344,12 +340,12 @@ mod tests {
         let device1 = DeviceId::new(1).unwrap();
         let primary = Runtime::builder().with_device(device0).build().unwrap();
         let secondary = Runtime::builder().with_device(device1).build().unwrap();
-        let ctx = ExecutionOverrides::new();
+        let ctx = Exec::RETAINED;
 
         let result = ResolvedExecution::binary(
             primary.execution_domain(),
             secondary.execution_domain(),
-            &ctx,
+            ctx,
             "execution_resolver::test::cross_device",
         );
         let err = match result {

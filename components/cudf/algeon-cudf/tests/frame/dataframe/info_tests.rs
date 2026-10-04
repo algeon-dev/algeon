@@ -8,10 +8,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, Series, TypeId,
+    DataFrame, DataType, Exec, Series, TypeId,
     frame::dataframe::{DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail},
-    ops::dictionary,
-    testing::prelude::*,
+    testing::{dictionary, prelude::*},
 };
 use cudf_sys::test_support::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
 
@@ -52,7 +51,7 @@ fn backing_allocations_preserve_shared_column_identity() {
 
 fn backing_allocations_identify_fresh_sliced_output() {
     let frame = sample_info_frame();
-    let sliced = frame.slice(1, 1).unwrap();
+    let sliced = frame.on(Exec::RETAINED).slice(1, 1).unwrap();
     let source = frame.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
     let output = sliced.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
 

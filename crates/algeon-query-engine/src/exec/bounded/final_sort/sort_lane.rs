@@ -185,15 +185,8 @@ fn lane_candidate_frame(
     let Some((offset, length)) = candidate.slice else {
         return Ok(candidate.input.frame.clone());
     };
-    candidate
-        .input
-        .frame
-        .frame()
-        .clone()
-        .with_execution(&work_token.execution_overrides())
-        .slice(offset, length)
-        .map(GpuDataFrame::new)
-        .map_err(|error| {
+    candidate.input.frame.frame().clone().on(work_token.exec()).slice(offset, length).map(GpuDataFrame::new).map_err(
+        |error| {
             attach_budget_token_failure_facts(
                 cudf_query_error(
                     "query_engine.final_sort.topk_slice",
@@ -202,7 +195,8 @@ fn lane_candidate_frame(
                 ),
                 work_token,
             )
-        })
+        },
+    )
 }
 
 fn attach_lane_candidate_resource_facts(error: QueryError, params: &SortLaneParams) -> QueryError {

@@ -1,5 +1,5 @@
 use cudf::{
-    DuplicateKeepOption, Runtime, SortOptions,
+    DuplicateKeepOption, Exec, Runtime, SortOptions,
     core::Table,
     frame::dataframe::DropDuplicatesOptions,
     interop::contract::{PreparedColumnExport, PreparedTableExport},
@@ -203,7 +203,7 @@ fn normalize_python_cugraph_dataframe(
             operation,
         )?;
 
-        df.concat(&reverse).map_err(|error| {
+        df.on(Exec::RETAINED).concat(&reverse).map_err(|error| {
             map_cudf_error_with(
                 error,
                 operation,
@@ -224,10 +224,12 @@ fn normalize_python_cugraph_dataframe(
         sort_by.push(NORMALIZED_WEIGHT_COL);
     }
 
-    let sorted = base.sort_values(sort_by, SortOptions::new().with_stable(true)).map_err(|error| {
-        map_cudf_error_with(error, operation, "failed to sort edges for Python-style graph normalization", [])
-    })?;
+    let sorted =
+        base.on(Exec::RETAINED).sort_values(sort_by, SortOptions::new().with_stable(true)).map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to sort edges for Python-style graph normalization", [])
+        })?;
     let deduped = sorted
+        .on(Exec::RETAINED)
         .drop_duplicates(
             DropDuplicatesOptions::builder()
                 .subset(&[NORMALIZED_SRC_COL, NORMALIZED_DST_COL][..])

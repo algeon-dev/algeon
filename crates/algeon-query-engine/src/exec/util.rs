@@ -1,26 +1,10 @@
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use super::NodeId;
 use super::{
-    Array, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, QueryError,
-    QueryErrorCode, RecordBatch, Result, cudf_query_error,
+    Array, ExecutionMetrics, GpuDataFrame, InfoDetail, LimitSpec, QueryError, QueryErrorCode, RecordBatch, Result,
+    cudf_query_error,
 };
 pub(super) use crate::util::comma_separated_usize;
-
-pub(super) struct ExecutionOverridesLease {
-    runtime: cudf::Runtime,
-}
-
-impl ExecutionOverridesLease {
-    pub(super) fn overrides(&self) -> ExecutionOverrides<'_> {
-        ExecutionOverrides::new()
-            .with_stream(self.runtime.stream())
-            .with_memory_resource(self.runtime.memory_resource())
-    }
-}
-
-pub(super) fn execution_overrides(context: &ExecutionContext) -> Result<ExecutionOverridesLease> {
-    context.runtime().map(|runtime| ExecutionOverridesLease { runtime })
-}
 
 pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &ExecutionMetrics) -> Result<u64> {
     let info = frame.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {

@@ -2,6 +2,7 @@
 // order; cleanup complete → disposition/health commit → seal/report_ready →
 // capacity release; plus health disposition coverage.
 
+use cudf::Exec;
 use super::service::disposition::{
     CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit, decide_capacity_disposition,
 };
@@ -114,7 +115,7 @@ fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
         )
         .unwrap();
         let source = DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
-        let sliced = source.slice(1, 2).unwrap();
+        let sliced = source.on(Exec::RETAINED).slice(1, 2).unwrap();
         (GpuDataFrame::new(sliced), schema)
     });
 

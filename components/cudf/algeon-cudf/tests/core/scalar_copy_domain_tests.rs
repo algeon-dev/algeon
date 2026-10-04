@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use arrow::array::ArrayRef;
 use cudf::{
-    Runtime, Series, TimestampResolution,
+    Exec, Runtime, ScalarValue, Series, TimestampResolution,
     core::{DataType, TypeId},
     testing::prelude::*,
 };
@@ -18,11 +18,10 @@ use rapids_interop::{
 };
 
 use crate::common::{
-    decimal32_raw_scalar, decimal128_raw_scalar, dependency_wait_call_count_for_stream, duration_raw_scalar,
-    int64_array, int64_list_array, last_exec_mr_value, last_exec_stream_value, lock_event_observation,
-    nested_dataframe, nullable_series, reset_dependency_observation, reset_exec_observation, run_named_cases,
-    sample_runtime as common_sample_runtime, scalar, series as common_series, string_scalar, struct_array,
-    timestamp_raw_scalar, utf8_array, with_test_runtime,
+    dependency_wait_call_count_for_stream, int64_array, int64_list_array, last_exec_mr_value, last_exec_stream_value,
+    lock_event_observation, nested_dataframe, nullable_series, reset_dependency_observation, reset_exec_observation,
+    run_named_cases, sample_runtime as common_sample_runtime, scalar, series as common_series, struct_array,
+    utf8_array, with_test_runtime,
 };
 
 fn sample_runtime() -> Runtime {
@@ -245,15 +244,17 @@ fn nested_series(rt: &Runtime, name: &str, array: ArrayRef) -> Series {
 fn copy_into_domain_timestamp_microseconds() {
     let rt = sample_runtime();
     let s = common_series::<i64>("t", &[1_000_000]).unwrap();
-    let dur = s.astype(TypeId::DurationMicroseconds).unwrap();
-    let ts = dur.astype(TypeId::TimestampMicroseconds).unwrap();
-    let scalar = ts.min().unwrap();
+    let dur = s.on(Exec::RETAINED).astype(TypeId::DurationMicroseconds).unwrap();
+    let ts = dur.on(Exec::RETAINED).astype(TypeId::TimestampMicroseconds).unwrap();
+    let scalar = ts.on(Exec::RETAINED).min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i64>("out", &[1_000_000, 1_000_000])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampMicroseconds)
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -262,15 +263,17 @@ fn copy_into_domain_timestamp_microseconds() {
 fn copy_into_domain_timestamp_days() {
     let rt = sample_runtime();
     let s = common_series::<i32>("t", &[100]).unwrap();
-    let dur = s.astype(TypeId::DurationDays).unwrap();
-    let ts = dur.astype(TypeId::TimestampDays).unwrap();
-    let scalar = ts.min().unwrap();
+    let dur = s.on(Exec::RETAINED).astype(TypeId::DurationDays).unwrap();
+    let ts = dur.on(Exec::RETAINED).astype(TypeId::TimestampDays).unwrap();
+    let scalar = ts.on(Exec::RETAINED).min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i32>("out", &[100, 100])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -279,11 +282,12 @@ fn copy_into_domain_timestamp_days() {
 fn copy_into_domain_duration_seconds() {
     let rt = sample_runtime();
     let s = common_series::<i64>("d", &[42]).unwrap();
-    let dur = s.astype(TypeId::DurationSeconds).unwrap();
-    let scalar = dur.min().unwrap();
+    let dur = s.on(Exec::RETAINED).astype(TypeId::DurationSeconds).unwrap();
+    let scalar = dur.on(Exec::RETAINED).min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
-    let expected = common_series::<i64>("out", &[42, 42]).unwrap().astype(TypeId::DurationSeconds).unwrap();
+    let expected =
+        common_series::<i64>("out", &[42, 42]).unwrap().on(Exec::RETAINED).astype(TypeId::DurationSeconds).unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
 
@@ -291,15 +295,23 @@ fn copy_into_domain_null_timestamp() {
     let rt = sample_runtime();
     // Create a nullable timestamp column where the only element is null, so min() is null
     let s = nullable_series::<i64>("t", &[0], &[false]).unwrap();
-    let ts = s.astype(TypeId::DurationMicroseconds).unwrap().astype(TypeId::TimestampMicroseconds).unwrap();
-    let scalar = ts.min().unwrap();
+    let ts = s
+        .on(Exec::RETAINED)
+        .astype(TypeId::DurationMicroseconds)
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(TypeId::TimestampMicroseconds)
+        .unwrap();
+    let scalar = ts.on(Exec::RETAINED).min().unwrap();
 
     // series_from_scalar with a null scalar produces a column of all nulls
     let result = rt.series_from_scalar(&scalar, 3).unwrap();
     let expected = nullable_series::<i64>("out", &[0, 0, 0], &[false, false, false])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampMicroseconds)
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -307,13 +319,17 @@ fn copy_into_domain_null_timestamp() {
 
 fn copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
-    let scalar = timestamp_raw_scalar(1_700_000_000_123_456, TimestampResolution::Microseconds).unwrap();
+    let scalar =
+        scalar(ScalarValue::Timestamp { raw: 1_700_000_000_123_456, resolution: TimestampResolution::Microseconds })
+            .unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i64>("out", &[1_700_000_000_123_456, 1_700_000_000_123_456])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampMicroseconds)
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -321,13 +337,15 @@ fn copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value() {
 
 fn copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
-    let scalar = timestamp_raw_scalar(-12, TimestampResolution::Days).unwrap();
+    let scalar = scalar(ScalarValue::Timestamp { raw: -12, resolution: TimestampResolution::Days }).unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i32>("out", &[-12, -12])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -335,11 +353,14 @@ fn copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value() {
 
 fn copy_into_domain_duration_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
-    let scalar = duration_raw_scalar(-42_000, TimestampResolution::Milliseconds).unwrap();
+    let scalar = scalar(ScalarValue::Duration { raw: -42_000, resolution: TimestampResolution::Milliseconds }).unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
-    let expected =
-        common_series::<i64>("out", &[-42_000, -42_000]).unwrap().astype(TypeId::DurationMilliseconds).unwrap();
+    let expected = common_series::<i64>("out", &[-42_000, -42_000])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(TypeId::DurationMilliseconds)
+        .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
 
@@ -375,12 +396,13 @@ fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
 fn copy_into_domain_decimal64() {
     let rt = sample_runtime();
     let s = common_series::<i64>("d", &[100]).unwrap();
-    let dec = s.astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
-    let scalar = dec.min().unwrap();
+    let dec = s.on(Exec::RETAINED).astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
+    let scalar = dec.on(Exec::RETAINED).min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i64>("out", &[100, 100])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -389,12 +411,13 @@ fn copy_into_domain_decimal64() {
 fn copy_into_domain_decimal128() {
     let rt = sample_runtime();
     let s = common_series::<i64>("d", &[200]).unwrap();
-    let dec = s.astype(DataType::fixed_point(TypeId::Decimal128, -3).unwrap()).unwrap();
-    let scalar = dec.min().unwrap();
+    let dec = s.on(Exec::RETAINED).astype(DataType::fixed_point(TypeId::Decimal128, -3).unwrap()).unwrap();
+    let scalar = dec.on(Exec::RETAINED).min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = common_series::<i64>("out", &[200, 200])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal128, -3).unwrap())
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
@@ -402,11 +425,11 @@ fn copy_into_domain_decimal128() {
 
 fn copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value() {
     let rt = sample_runtime();
-    let scalar = decimal32_raw_scalar(12345, -2).unwrap();
+    let scalar = scalar(ScalarValue::Decimal32 { raw: 12345, scale: -2 }).unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = with_test_runtime(|source_rt| {
-        let seed = source_rt.decimal32_raw_scalar(12345, -2).unwrap();
+        let seed = source_rt.scalar(ScalarValue::Decimal32 { raw: 12345, scale: -2 }).unwrap();
         source_rt.series_from_scalar(&seed, 2).unwrap()
     });
     assert_series_host_export_equivalent(&expected, &result);
@@ -415,11 +438,11 @@ fn copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value() {
 fn copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value() {
     let rt = sample_runtime();
     let raw = 123456789012345678901234567890i128;
-    let scalar = decimal128_raw_scalar(raw, -8).unwrap();
+    let scalar = scalar(ScalarValue::Decimal128 { raw, scale: -8 }).unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = with_test_runtime(|source_rt| {
-        let seed = source_rt.decimal128_raw_scalar(raw, -8).unwrap();
+        let seed = source_rt.scalar(ScalarValue::Decimal128 { raw, scale: -8 }).unwrap();
         source_rt.series_from_scalar(&seed, 2).unwrap()
     });
     assert_series_host_export_equivalent(&expected, &result);
@@ -437,7 +460,7 @@ fn copy_into_domain_numeric_i32_regression() {
 
 fn copy_into_domain_string_regression() {
     let rt = sample_runtime();
-    let scalar = string_scalar("hello").unwrap();
+    let scalar = scalar("hello").unwrap();
 
     // count=2 so an offsets-buffer replication bug (e.g. [0,5,0,5] vs [0,5,10]) is caught.
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
@@ -449,8 +472,14 @@ fn copy_into_domain_string_regression() {
 fn scalar_copy_dataframe_round_trip() {
     let rt = sample_runtime();
     let s = common_series::<i64>("t", &[1_000_000]).unwrap();
-    let ts = s.astype(TypeId::DurationMicroseconds).unwrap().astype(TypeId::TimestampMicroseconds).unwrap();
-    let scalar = ts.min().unwrap();
+    let ts = s
+        .on(Exec::RETAINED)
+        .astype(TypeId::DurationMicroseconds)
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(TypeId::TimestampMicroseconds)
+        .unwrap();
+    let scalar = ts.on(Exec::RETAINED).min().unwrap();
 
     let series = rt.series_from_scalar(&scalar, 3).unwrap();
     let df = cudf::DataFrame::from_series([("ts_col", series)]).unwrap();
@@ -458,8 +487,10 @@ fn scalar_copy_dataframe_round_trip() {
 
     let expected = common_series::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationMicroseconds)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampMicroseconds)
         .unwrap();
     assert_eq!(retrieved.len(), 3);
@@ -474,7 +505,7 @@ fn copy_into_domain_list_scalar() {
     let list_series = nested_series(&rt, "nested", int64_list_array(&[vec![1, 2], vec![3]]));
 
     // libcudf min() on list columns returns the lexicographically smallest element.
-    let scalar = list_series.min().unwrap();
+    let scalar = list_series.on(Exec::RETAINED).min().unwrap();
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = nested_series(&rt, "nested", int64_list_array(&[vec![1, 2], vec![1, 2]]));
 
@@ -490,7 +521,7 @@ fn copy_into_domain_struct_scalar() {
     );
 
     // libcudf min() on struct columns compares fields in order (id first, then label).
-    let scalar = struct_series.min().unwrap();
+    let scalar = struct_series.on(Exec::RETAINED).min().unwrap();
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = nested_series(
         &rt,

@@ -4,18 +4,17 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result, usize_to_i32},
-        scalar::Scalar,
+        scalar::{Scalar, ScalarValue},
         types::{DataType, TypeId},
     },
     internal::resolve::missing_column_error,
     ops::{
         Expr,
         binary::{BinaryOperator, infer_binary_output_dtype_in},
-        expr::{self, LitValue},
-        filter,
+        expr, filter,
         unary::UnaryOperator,
     },
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
+    runtime::{Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 struct LoweredRowPredicate {
@@ -25,77 +24,12 @@ struct LoweredRowPredicate {
 }
 
 impl DataFrame {
-    /// Filter rows using a validated fused predicate expression.
-    ///
-    /// This is the preferred high-level API for multi-condition row
-    /// filtering. It avoids chained intermediate `DataFrame`
-    /// materializations by lowering a supported predicate subset to a
-    /// dedicated row-predicate execution path and applying one final table
-    /// filter.
-    ///
-    /// V1 supported predicate syntax is intentionally narrower than the full
-    /// [`Expr`] DSL:
-    ///
-    /// - column references and literals
-    /// - comparisons: `eq`, `ne`, `lt`, `le`, `gt`, `ge`
-    /// - null checks: `is_null`, `is_not_null`
-    /// - boolean composition: `!`, `&`, `|`
-    /// - alias wrappers around a supported inner predicate
-    ///
-    /// Unsupported predicate nodes are evaluated through the general
-    /// expression engine and applied as a boolean mask until the fused
-    /// row-predicate path supports those expressions directly.
-    ///
-    /// The predicate must evaluate to a row-aligned `Bool8`. Rows where the
-    /// predicate is `false` or null are dropped.
-    pub fn filter_expr(&self, predicate: Expr) -> Result<Self> {
-        self.filter_expr_with_domain(predicate, Arc::clone(&self.domain), "dataframe::filter_expr")
-    }
-
-    /// Filter rows where all predicates are true.
-    ///
-    /// This is the preferred ergonomic wrapper for common multi-condition
-    /// conjunctions. It is equivalent to combining the predicates with `&`
-    /// and passing the result to [`DataFrame::filter_expr`].
-    ///
-    /// Empty input is the logical identity and returns `self.clone()`.
-    pub fn filter_all<I>(&self, predicates: I) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
-        let mut predicates = predicates.into_iter();
-        let Some(mut combined) = predicates.next() else {
-            return Ok(self.clone());
-        };
-        for predicate in predicates {
-            combined = combined & predicate;
-        }
-        self.filter_expr_with_domain(combined, Arc::clone(&self.domain), "dataframe::filter_all")
-    }
-
-    /// Filter rows where any predicate is true.
-    ///
-    /// This is the preferred ergonomic wrapper for common multi-condition
-    /// disjunctions. It is equivalent to combining the predicates with `|`
-    /// and passing the result to [`DataFrame::filter_expr`].
-    ///
-    /// Empty input returns an empty DataFrame with the same schema.
-    pub fn filter_any<I>(&self, predicates: I) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
-        let mut predicates = predicates.into_iter();
-        let Some(mut combined) = predicates.next() else {
-            return self.empty_with_same_schema();
-        };
-        for predicate in predicates {
-            combined = combined | predicate;
-        }
-        self.filter_expr_with_domain(combined, Arc::clone(&self.domain), "dataframe::filter_any")
-    }
-
-    pub(crate) fn filter_expr_in_context(&self, predicate: Expr, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn filter_expr_in_context(&self, predicate: Expr, ctx: Exec<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(predicate, output_domain, "dataframe::with_execution::filter_expr")
+        self.filter_expr_with_domain(predicate, output_domain, "dataframe::filter_expr")
     }
 
-    pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
+    pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: Exec<'_>) -> Result<Self>
     where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
@@ -105,10 +39,10 @@ impl DataFrame {
             combined = combined & predicate;
         }
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(combined, output_domain, "dataframe::with_execution::filter_all")
+        self.filter_expr_with_domain(combined, output_domain, "dataframe::filter_all")
     }
 
-    pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
+    pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: Exec<'_>) -> Result<Self>
     where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
@@ -119,7 +53,7 @@ impl DataFrame {
             combined = combined | predicate;
         }
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.filter_expr_with_domain(combined, output_domain, "dataframe::with_execution::filter_any")
+        self.filter_expr_with_domain(combined, output_domain, "dataframe::filter_any")
     }
 
     fn filter_expr_with_domain(
@@ -261,7 +195,7 @@ fn lower_expr(
 }
 
 fn lower_literal(
-    literal: &LitValue,
+    literal: &ScalarValue,
     output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
@@ -270,13 +204,13 @@ fn lower_literal(
 }
 
 fn lower_literal_with_target(
-    literal: &LitValue,
+    literal: &ScalarValue,
     target_type: Option<DataType>,
     output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let mut scalar = literal.to_scalar_in_domain(output_domain)?;
+    let mut scalar = Scalar::from_scalar_value_in_domain(literal, output_domain)?;
     if let Some(target_type) = target_type {
         scalar = align_decimal_literal_scalar(scalar, target_type, output_domain, operation)?;
     }
@@ -318,7 +252,7 @@ fn align_decimal_literal_scalar(
         return Ok(scalar);
     };
     let raw = rescale_decimal_raw(raw, source_scale, target_type.scale(), operation)?;
-    Scalar::decimal_from_raw_in_domain(raw, target_type, output_domain)
+    Scalar::from_scalar_value_in_domain(&ScalarValue::decimal(raw, target_type)?, output_domain)
 }
 
 fn scalar_decimal_or_integral_raw(scalar: &Scalar, source_type: DataType) -> Result<Option<(i128, i32)>> {

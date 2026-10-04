@@ -48,7 +48,8 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
     let token =
         execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("manager_failure_callback"))
             .unwrap();
-    let err = runtime.series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
+    let err =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(1i32, 1024)).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert!(token.reservation_usage().unwrap().failed_allocation_count > 0);
@@ -86,7 +87,8 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
         &domain,
     )
     .unwrap();
-    let err = runtime.series_from_value_with_budget(3i32, 1024, &direct).unwrap_err();
+    let err =
+        direct.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(3i32, 1024)).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(query_domain_id.load(Ordering::SeqCst), 90_001);

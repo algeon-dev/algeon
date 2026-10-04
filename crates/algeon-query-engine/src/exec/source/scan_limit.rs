@@ -7,7 +7,7 @@ use arrow::{
 
 use super::{
     DataFrame, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError, QueryErrorCode, Result, SourceChunk,
-    cudf_query_error, execution_overrides, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
+    cudf_query_error, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
 };
 
 pub(super) fn empty_local_parquet_execution_frame(
@@ -54,10 +54,10 @@ pub(in crate::exec) fn apply_source_scan_limit_to_frame(
         return Ok((frame, remaining_rows));
     }
 
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
+    let frame = frame.on(overrides).slice(0, keep_rows).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_source.scan_limit",
             "failed to apply native source scan limit",
@@ -84,10 +84,10 @@ pub(super) fn apply_source_chunk_scan_limit(
         return Ok(frame);
     }
 
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
-    let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
+    let frame = frame.on(overrides).slice(0, keep_rows).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_chunk.scan_limit",
             "failed to apply native source chunk scan limit",

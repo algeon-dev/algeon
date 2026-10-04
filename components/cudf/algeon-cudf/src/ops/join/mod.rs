@@ -1,7 +1,7 @@
 //! GPU-accelerated join operations.
 //!
 //! **Advanced/Core.** Most users should prefer
-//! [`DataFrame::merge`](crate::DataFrame::merge) with
+//! [`DataFrame::merge`](crate::FrameOps::merge) with
 //! [`MergeOptions`].
 //!
 //! # Example
@@ -21,8 +21,10 @@
 //! }
 //! .unwrap();
 //!
-//! let result =
-//!     left.merge(&right, MergeOptions::new().on(["id"]).how_inner()).unwrap();
+//! let result = left
+//!     .on(rt.exec())
+//!     .merge(&right, MergeOptions::new().on(["id"]).how_inner())
+//!     .unwrap();
 //! assert_eq!(
 //!     result.series("id").unwrap().to_vec_strict::<i32>().unwrap(),
 //!     vec![2, 3]
@@ -32,7 +34,7 @@
 //! # Join-Index `_in` Execution Context
 //!
 //! Join-index APIs ending in `_in` share the same execution-context contract.
-//! The borrowed [`crate::ExecutionOverrides`] selects the stream and/or memory
+//! The borrowed [`crate::Exec`] selects the stream and/or memory
 //! resource for GPU index allocation when compatible with the primary left
 //! input's device (`left_keys` for equality joins, `probe_keys` for
 //! `HashJoin` probes, `left` for conditional joins, and `left_equality` for
@@ -62,7 +64,8 @@ pub(crate) use dataframe::{
 };
 mod options;
 
-pub use options::{FilteredJoinOptions, HashJoinOptions, JoinType, MergeOptions, NullEquality, NullableJoin};
+pub(crate) use options::{FilteredJoinOptions, HashJoinOptions};
+pub use options::{JoinType, MergeOptions, NullEquality, NullableJoin};
 
 use crate::{
     core::{
@@ -75,9 +78,7 @@ use crate::{
         types::TypeId,
     },
     ops::ast::AstExpression,
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 /// Device-side gather maps produced by an equality join.
@@ -88,7 +89,7 @@ use crate::{
 /// out-of-bounds handling. Payload columns are not copied until callers gather
 /// with these indices.
 #[derive(Debug)]
-pub struct JoinIndices {
+pub(crate) struct JoinIndices {
     /// Row indices for the left/probe table.
     pub left: Column,
     /// Row indices for the right/build table.
@@ -102,14 +103,14 @@ pub struct JoinIndices {
 /// left semi joins, duplicate matches on the right side do not duplicate left
 /// rows in the output index map.
 #[derive(Debug)]
-pub struct SingleSideJoinIndices {
+pub(crate) struct SingleSideJoinIndices {
     /// Row indices for the left table.
     pub indices: Column,
 }
 
 /// Split output of a low-level join operation.
 #[derive(Debug)]
-pub struct JoinSides {
+pub(crate) struct JoinSides {
     /// The left-side result table (keys + payload for matching rows).
     pub left: Table,
     /// The right-side result table (keys + payload for matching rows).
@@ -211,11 +212,11 @@ mod filter;
 mod hash;
 mod mixed;
 
-pub use conditional::*;
+pub(crate) use conditional::*;
 use domain::*;
-pub use filter::*;
-pub use hash::*;
-pub use mixed::*;
+pub(crate) use filter::*;
+pub(crate) use hash::*;
+pub(crate) use mixed::*;
 
 fn check_join_indices_status(
     status: cudf_sys::cudf_status_t,
@@ -383,7 +384,7 @@ impl Drop for MixedJoinSizeDataHandle {
 /// resolves execution provenance from its probe table and returns device
 /// columns in that resolved execution domain.
 #[derive(Clone)]
-pub struct HashJoin {
+pub(crate) struct HashJoin {
     handle: Arc<HashJoinHandle>,
     build: Arc<Table>,
     options: HashJoinOptions,
@@ -396,7 +397,7 @@ pub struct HashJoin {
 /// return `INT32` device gather maps indexing rows in the left/probe table;
 /// they do not gather payload columns.
 #[derive(Clone)]
-pub struct FilteredJoin {
+pub(crate) struct FilteredJoin {
     handle: Arc<FilteredJoinHandle>,
     build: Arc<Table>,
     options: FilteredJoinOptions,
@@ -408,7 +409,7 @@ pub struct FilteredJoin {
 /// single filtered-join hash-table probe. It exposes the exact selected row
 /// count before the gather map is allocated, then materializes the gather map
 /// from retained state without probing the hash table again.
-pub struct FilteredJoinProbeState {
+pub(crate) struct FilteredJoinProbeState {
     handle: FilteredJoinProbeHandle,
     join: FilteredJoin,
     output_domain: Arc<ExecutionDomain>,

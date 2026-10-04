@@ -8,7 +8,7 @@ use crate::{
         ConditionalFullJoinSizeData, FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin,
         HashJoinOptions, MixedJoinSizeData, MixedSingleSideJoinSizeData, NullableJoin,
     },
-    runtime::{ExecutionPlacement, execution_context::ExecutionOverrides},
+    runtime::{DeviceId, ExecutionPlacement, execution_context::Exec},
 };
 
 // libcudf join APIs return INT32 row indices (`cudf::size_type`).
@@ -39,8 +39,8 @@ fn join_gather_map_reservation_size_bytes(
 ///
 /// This option shape intentionally excludes join type and suffixes. It is for
 /// operations whose result schema is fixed by the helper name, such as
-/// [`DataFrame::left_semi_join`](super::DataFrame::left_semi_join) and
-/// [`DataFrame::left_anti_join`](super::DataFrame::left_anti_join).
+/// [`DataFrame::left_semi_join`](super::FrameOps::left_semi_join) and
+/// [`DataFrame::left_anti_join`](super::FrameOps::left_anti_join).
 #[derive(Debug, Clone)]
 pub struct DataFrameJoinOptions {
     on: Option<Vec<String>>,
@@ -118,7 +118,7 @@ impl DataFrameJoinOptions {
     }
 }
 
-/// Named column projection for [`DataFrame::cross_join_projected`](super::DataFrame::cross_join_projected).
+/// Named column projection for [`DataFrame::cross_join_projected`](super::FrameOps::cross_join_projected).
 ///
 /// The result schema is `left_columns` followed by `right_columns`. Output
 /// names must be unique across both sides.
@@ -531,7 +531,7 @@ impl DataFrameFilteredJoinOptions {
 /// The wrapped series is an `INT32` gather map over the left DataFrame rows.
 /// Producing this value allocates only the index column. Payload data is copied
 /// only when the indices are passed to
-/// [`DataFrame::materialize_join_indices`](super::DataFrame::materialize_join_indices).
+/// [`DataFrame::materialize_join_indices`](super::FrameOps::materialize_join_indices).
 ///
 /// Cloning this wrapper is cheap: it clones the wrapped [`Series`] handle and
 /// shares the same device-side index buffer.
@@ -585,6 +585,11 @@ impl DataFrameJoinIndices {
         self.indices.placement()
     }
 
+    /// The CUDA device of the gather map.
+    pub fn device(&self) -> DeviceId {
+        self.indices.device()
+    }
+
     /// Returns bytes retained by this device-side gather map.
     pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.indices
@@ -611,7 +616,7 @@ impl DataFrameJoinIndices {
 /// The left and right gather maps are both `INT32` device columns. They index
 /// rows in the left and right input DataFrames respectively. For outer joins,
 /// unmatched rows contain libcudf's no-match sentinel; pass each side to
-/// [`DataFrame::materialize_join_indices`](super::DataFrame::materialize_join_indices)
+/// [`DataFrame::materialize_join_indices`](super::FrameOps::materialize_join_indices)
 /// so the gather path nullifies unmatched payload rows without copying unused
 /// columns.
 ///
@@ -679,6 +684,11 @@ impl DataFrameJoinPairIndices {
     /// DataFrame that the indices may later gather from.
     pub fn placement(&self) -> ExecutionPlacement {
         self.left.placement()
+    }
+
+    /// The CUDA device of the gather maps.
+    pub fn device(&self) -> DeviceId {
+        self.left.device()
     }
 
     /// Returns bytes retained by both device-side gather maps.
@@ -791,8 +801,8 @@ pub struct DataFrameHashJoinMaterialized {
 
 /// Reusable DataFrame-level hash-join build artifact.
 ///
-/// This type owns the build-side [`DataFrame`] and a low-level reusable
-/// [`HashJoin`] built from the named build key columns. Probe methods produce
+/// This type owns the build-side [`DataFrame`] and a reusable libcudf hash
+/// join built from the named build key columns. Probe methods produce
 /// device-side gather maps only; payload columns are copied only when the
 /// materialization helpers are called.
 #[derive(Debug, Clone)]
@@ -806,8 +816,8 @@ pub struct DataFrameHashJoin {
 /// Reusable DataFrame-level filtered-join build artifact for equality left
 /// semi/anti probes.
 ///
-/// This type owns the right-side build [`DataFrame`] and a low-level reusable
-/// [`FilteredJoin`] built from the named build key columns. Probe methods
+/// This type owns the right-side build [`DataFrame`] and a reusable libcudf
+/// filtered join built from the named build key columns. Probe methods
 /// produce a single device-side gather map over the probe DataFrame; payload
 /// columns are copied only when the materialization helper is called.
 #[derive(Debug, Clone)]
@@ -965,16 +975,7 @@ impl DataFrameFilteredJoinProbeState {
     }
 
     /// Materialize selected probe indices from retained probe state.
-    pub fn materialize_indices(self) -> Result<DataFrameJoinIndices> {
-        let raw = self
-            .state
-            .materialize_indices()
-            .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::materialize_indices"))?;
-        Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
-    }
-
-    /// Materialize selected probe indices using a borrowed execution override.
-    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinIndices> {
+    pub fn materialize_indices(self, ctx: Exec<'_>) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
@@ -1003,22 +1004,13 @@ impl DataFrameConditionalFullJoinSizeData<'_> {
         })
     }
 
-    /// Materialize the two conditional full join gather maps from retained size data.
-    pub fn materialize_indices(self) -> Result<DataFrameJoinPairIndices> {
-        let raw = self
-            .state
-            .materialize_indices()
-            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::materialize_indices"))?;
-        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
-    }
-
     /// Materialize the two conditional full join gather maps using a borrowed
     /// execution override.
-    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices(self, ctx: Exec<'_>) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
-            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::materialize_indices_in"))?;
+            .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::materialize_indices"))?;
         Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
     }
 }
@@ -1044,20 +1036,11 @@ impl DataFrameMixedJoinSizeData<'_> {
     }
 
     /// Materialize the two mixed join gather maps from retained size data.
-    pub fn materialize_indices(self) -> Result<DataFrameJoinPairIndices> {
-        let raw = self
-            .state
-            .materialize_indices()
-            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::materialize_indices"))?;
-        Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
-    }
-
-    /// Materialize the two mixed join gather maps using a borrowed execution override.
-    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices(self, ctx: Exec<'_>) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
-            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::materialize_indices_in"))?;
+            .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::materialize_indices"))?;
         Ok(DataFrameJoinPairIndices::new(Series::from_column(raw.left)?, Series::from_column(raw.right)?))
     }
 }
@@ -1082,22 +1065,13 @@ impl DataFrameMixedSingleSideJoinSizeData<'_> {
         })
     }
 
-    /// Materialize the mixed left semi/anti gather map from retained size data.
-    pub fn materialize_indices(self) -> Result<DataFrameJoinIndices> {
-        let raw = self
-            .state
-            .materialize_indices()
-            .map_err(|error| error.reanchor("dataframe::mixed_single_side_join_size_data::materialize_indices"))?;
-        Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
-    }
-
     /// Materialize the mixed left semi/anti gather map using a borrowed
     /// execution override.
-    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinIndices> {
+    pub fn materialize_indices(self, ctx: Exec<'_>) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
-            .map_err(|error| error.reanchor("dataframe::mixed_single_side_join_size_data::materialize_indices_in"))?;
+            .map_err(|error| error.reanchor("dataframe::mixed_single_side_join_size_data::materialize_indices"))?;
         Ok(DataFrameJoinIndices::new(Series::from_column(raw.indices)?))
     }
 }

@@ -27,7 +27,7 @@ pub use column_ops::WithColumnExpr;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use concat_ops::trigger_concat_by_name_missing_planned_dtype_for_test;
 pub use concat_ops::{ConcatByNameOptions, SchemaAlignment};
-pub use context::DataFrameExecutionScope;
+pub use context::FrameOps;
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use fillna_ops::trigger_dataframe_dropna_subset_count_limit_error_for_test;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
@@ -46,7 +46,7 @@ pub use info::{
 };
 pub use io::{
     MultiParquetReadOptions, ParquetReadOptions, ParquetSourceChunkReadOutput, ParquetSourceReadPreflight,
-    ParquetWriteOptions,
+    ParquetWriteOptions, SourceRead, SourceReadInput,
 };
 pub use join::{
     DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,

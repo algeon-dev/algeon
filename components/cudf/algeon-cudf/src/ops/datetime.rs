@@ -12,9 +12,7 @@ use crate::{
         error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
         types::TypeId,
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// Datetime components supported by cudf.
@@ -117,13 +115,6 @@ fn require_timestamp_offset_input(input: &ColumnView<'_>, operation: &'static st
     }
 }
 
-/// Floor timestamp values to the requested frequency.
-pub fn floor_datetimes(input: &ColumnView<'_>, frequency: DatetimeRoundingFrequency) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "datetime::floor")?;
-    floor_datetimes_impl(input, frequency, execution.output_domain(), execution.exec_options(), "datetime::floor")
-}
-
 pub(crate) fn floor_datetimes_impl(
     input: &ColumnView<'_>,
     frequency: DatetimeRoundingFrequency,
@@ -145,23 +136,6 @@ pub(crate) fn floor_datetimes_impl(
         ],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Extract a datetime component as a new `INT16` column.
-///
-/// The input must be timestamp typed. This allocates a new device column and
-/// does not materialize values to host memory; later host export or value
-/// extraction may synchronize.
-pub fn extract_component(input: &ColumnView<'_>, component: DatetimeComponent) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "datetime::extract_component")?;
-    extract_component_impl(
-        input,
-        component,
-        execution.output_domain(),
-        execution.exec_options(),
-        "datetime::extract_component",
-    )
 }
 
 pub(crate) fn extract_component_impl(
@@ -188,23 +162,6 @@ pub(crate) fn extract_component_impl(
         ],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
-}
-
-/// Add calendrical months to a timestamp column using libcudf month-end
-/// semantics.
-///
-/// The input must be timestamp typed. The result has the same timestamp
-/// resolution as the input.
-pub fn add_calendrical_months(input: &ColumnView<'_>, months: i32) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "datetime::add_calendrical_months")?;
-    add_calendrical_months_impl(
-        input,
-        months,
-        execution.output_domain(),
-        execution.exec_options(),
-        "datetime::add_calendrical_months",
-    )
 }
 
 pub(crate) fn add_calendrical_months_impl(

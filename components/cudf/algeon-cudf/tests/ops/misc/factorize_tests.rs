@@ -1,6 +1,6 @@
 //! Tests for Column::factorize
 use cudf::{
-    ErrorCode, ErrorKind, Series, TypeId,
+    ErrorCode, ErrorKind, Exec, Series, TypeId,
     core::{
         Column,
         error::{FactKeyName, FactValue},
@@ -21,7 +21,7 @@ use crate::common::{
 
 fn factorize_column(column: Column) -> (Series, Series) {
     let series = Series::from_column(column).unwrap();
-    let factorized = series.factorize().unwrap();
+    let factorized = series.on(Exec::RETAINED).factorize().unwrap();
     (factorized.row_codes().as_series().clone(), factorized.codebook().keys().clone())
 }
 
@@ -235,7 +235,7 @@ fn test_dataframe_factorize_by_name() {
     let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
     let df = dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
-    let factorized = df.factorize("values").unwrap();
+    let factorized = df.on(Exec::RETAINED).factorize("values").unwrap();
     let codes_view = factorized.row_codes().testing_view().unwrap();
     let keys_view = factorized.codebook().keys().testing_view().unwrap();
 
@@ -247,13 +247,13 @@ fn test_dataframe_factorize_missing_column() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
-    let result = df.factorize("nonexistent");
+    let result = df.on(Exec::RETAINED).factorize("nonexistent");
     assert!(result.is_err());
 }
 
 fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let lookup_source = series("lookup_source", &["b", "b", "a", "c"]).unwrap();
-    let factorized = lookup_source.factorize().unwrap();
+    let factorized = lookup_source.on(Exec::RETAINED).factorize().unwrap();
     let row_codes = factorized.row_codes();
     let uniques = factorized.codebook().keys();
 
@@ -261,18 +261,18 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     // codes down to uniques.len() and reuse them as if they were a stable key
     // to code mapping.
     let first_positions = series("first_positions", &[0i32, 1, 2]).unwrap();
-    let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
+    let wrong_lookup_values = row_codes.on(Exec::RETAINED).gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
     assert_ne!(wrong_lookup_values.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
 }
 
 fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
-    let factorized = lookup_source.factorize().unwrap();
+    let factorized = lookup_source.on(Exec::RETAINED).factorize().unwrap();
     let codebook = factorized.codebook();
     let query = series("query", &["a", "b", "c"]).unwrap();
-    let encoded = codebook.encode(&query).unwrap();
-    let decoded = codebook.decode(&encoded).unwrap();
+    let encoded = codebook.encode(&query, Exec::RETAINED).unwrap();
+    let decoded = codebook.decode(&encoded, Exec::RETAINED).unwrap();
 
     assert_eq!(
         decoded.testing_view().unwrap().to_strings_lossy().unwrap(),
@@ -288,7 +288,7 @@ fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end(
     let input = Series::from_column(input).unwrap();
 
     reset_exec_observation();
-    let factorized = input.factorize().unwrap();
+    let factorized = input.on(Exec::RETAINED).factorize().unwrap();
     let codes = factorized.row_codes().as_series().clone();
     let uniques = factorized.codebook().keys().clone();
 

@@ -10,10 +10,6 @@ use super::DeviceId;
 pub struct ExecutionPlacement {
     /// CUDA device associated with the retained value.
     pub device: DeviceId,
-    /// Logical workflow/runtime lineage retained by the value.
-    pub workflow_id: u64,
-    /// Concrete device + stream + memory-resource bundle retained by the value.
-    pub bundle_id: u64,
     /// Diagnostic CUDA stream handle value.
     pub stream_debug: usize,
     /// Diagnostic memory-resource handle value.

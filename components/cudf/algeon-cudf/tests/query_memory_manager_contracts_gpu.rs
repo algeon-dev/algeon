@@ -11,7 +11,7 @@ use std::{
 use cudf::{
     CudfErrorFailureSource, DataFrame, DataType, DeviceId, DeviceMemoryFailureAllocationDomain,
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
-    DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     InstallSpec, QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
     core::DeviceBuffer,
     ops::expr::col,
@@ -615,8 +615,12 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
     )
     .unwrap();
 
-    let left_outcome = left.series_from_value_with_budget(13i32, 1_000_000, &left_token).unwrap();
-    let right_outcome = right.series_from_value_with_budget(29i32, 4_000_000, &right_token).unwrap();
+    let left_outcome = left_token
+        .run("runtime::series_from_value", |exec| left.on(exec)?.series_from_value(13i32, 1_000_000))
+        .unwrap();
+    let right_outcome = right_token
+        .run("runtime::series_from_value", |exec| right.on(exec)?.series_from_value(29i32, 4_000_000))
+        .unwrap();
 
     assert_eq!(left_token.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(right_token.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
@@ -657,7 +661,8 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
         &domain,
     )
     .unwrap();
-    let output = runtime.series_from_value_with_budget(17i32, 4096, &producer).unwrap();
+    let output =
+        producer.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(17i32, 4096)).unwrap();
     drop(producer);
 
     let frozen = domain.freeze().unwrap();
@@ -671,7 +676,8 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
         &domain,
     )
     .unwrap();
-    let error = runtime.series_from_value_with_budget(29i32, 1, &consumer).unwrap_err();
+    let error =
+        consumer.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(29i32, 1)).unwrap_err();
     // Allocating into a frozen domain is a routing/lifetime invariant
     // violation, not caller input: the producer was supposed to stop
     // allocating before its output was published.
@@ -764,7 +770,8 @@ fn budgeted_output_inherits_retained_runtime_lifetime_after_token_drop() {
         &domain,
     )
     .unwrap();
-    let outcome = runtime.series_from_value_with_budget(17i32, 4096, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(17i32, 4096)).unwrap();
 
     drop(domain);
     drop(token);
@@ -797,22 +804,24 @@ fn execution_budget_token_retains_only_its_source_runtime() {
 }
 
 #[test]
-fn execution_budget_token_retention_has_no_runtime_affinity_cycle() {
+fn execution_budget_token_retention_has_no_runtime_cycle() {
     let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let affinity_anchor = runtime.affinity_anchor();
-    let lease_anchor = runtime.lease_anchor();
+    let released = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::builder()
+        .with_device_memory_manager()
+        .build()
+        .unwrap()
+        .with_retained_lifetime(Arc::new(BudgetRuntimeDropProbe(Arc::clone(&released))))
+        .unwrap();
     let token =
         execution_budget_token(&runtime, ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_cycle_check"))
             .unwrap();
 
     drop(runtime);
-    assert!(affinity_anchor.is_alive());
-    assert!(lease_anchor.is_current());
+    assert_eq!(released.load(Ordering::SeqCst), 0, "the token retains the runtime's execution domain");
 
     drop(token);
-    assert!(!lease_anchor.is_current());
-    assert!(!affinity_anchor.is_alive());
+    assert_eq!(released.load(Ordering::SeqCst), 1, "dropping the token must release the execution domain");
 }
 
 #[test]
@@ -871,7 +880,8 @@ fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
     )
     .unwrap();
 
-    let outcome = runtime.series_from_value_with_budget(13i32, 1_000_000, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(13i32, 1_000_000)).unwrap();
     let output_bytes = outcome.value().device_allocated_size_bytes().unwrap() as u64;
     assert!(token.reservation_usage().unwrap().current_bytes >= output_bytes);
     assert!(domain.usage().unwrap().current_bytes >= output_bytes);
@@ -906,7 +916,8 @@ fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
             &domain,
         )
         .unwrap();
-        let outcome = runtime.series_from_value_with_budget(7i32, 1024, &token).unwrap();
+        let outcome =
+            token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 1024)).unwrap();
         assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     }
 
@@ -916,7 +927,8 @@ fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
         &domain,
     )
     .unwrap();
-    let outcome = runtime.series_from_value_with_budget(9i32, 1024, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(9i32, 1024)).unwrap();
 
     assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
 }
@@ -1030,8 +1042,9 @@ fn shared_pool_keeps_query_domain_limits_and_outputs_independent() {
     assert_eq!(right_output.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 
     let alternating_started = Instant::now();
-    let left_sorted = left.series(&[5i32, 1, 4, 2, 3]).unwrap().sort_values(SortOptions::default()).unwrap();
-    let right_sorted = right_output.sort_values(SortOptions::default()).unwrap();
+    let left_sorted =
+        left.series(&[5i32, 1, 4, 2, 3]).unwrap().on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
+    let right_sorted = right_output.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
     left.synchronize().unwrap();
     right.synchronize().unwrap();
     let alternating_temp_latency = alternating_started.elapsed();
@@ -1078,11 +1091,12 @@ fn query_domain_member_limit_is_independent_from_domain_grant() {
     )
     .unwrap();
 
-    let err = left.series_from_value_with_budget(1i32, 1024, &small).unwrap_err();
+    let err = small.run("runtime::series_from_value", |exec| left.on(exec)?.series_from_value(1i32, 1024)).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert!(small.reservation_usage().unwrap().failed_allocation_count > 0);
 
-    let outcome = right.series_from_value_with_budget(2i32, 1024, &large).unwrap();
+    let outcome =
+        large.run("runtime::series_from_value", |exec| right.on(exec)?.series_from_value(2i32, 1024)).unwrap();
     assert_eq!(outcome.value().len(), 1024);
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
 }
@@ -1104,7 +1118,8 @@ fn query_domain_budget_output_uses_direct_member_resource_without_stream_route()
     )
     .unwrap();
 
-    let outcome = runtime.series_from_value_with_budget(7i32, 4096, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 4096)).unwrap();
     let usage = token.reservation_usage().unwrap();
     assert!(usage.direct_total_allocations > 0);
     assert_eq!(usage.routed_total_allocations, 0);
@@ -1493,7 +1508,8 @@ fn query_domain_direct_output_keeps_domain_registry_until_output_drop() {
         &domain,
     )
     .unwrap();
-    let outcome = runtime.series_from_value_with_budget(11i32, 4096, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(11i32, 4096)).unwrap();
     assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     drop(token);
@@ -1521,7 +1537,10 @@ fn fused_filter_literals_use_active_query_domain_member_after_input_member_detac
         &domain,
     )
     .unwrap();
-    let input = runtime.series_from_value_with_budget(7i32, 4096, &input_token).unwrap().into_value();
+    let input = input_token
+        .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 4096))
+        .unwrap()
+        .into_value();
     let frame = DataFrame::from_series([("value", input)]).unwrap();
     drop(input_token);
 
@@ -1531,8 +1550,7 @@ fn fused_filter_literals_use_active_query_domain_member_after_input_member_detac
         &domain,
     )
     .unwrap();
-    let filtered =
-        frame.with_execution(&filter_token.execution_overrides()).filter_expr(col("value").ge(7i32)).unwrap();
+    let filtered = frame.on(filter_token.exec()).filter_expr(col("value").ge(7i32)).unwrap();
 
     assert_eq!(filtered.num_rows(), 4096);
     assert!(filter_token.reservation_usage().unwrap().direct_total_allocations > 0);
@@ -1554,11 +1572,14 @@ fn detached_query_domain_member_allocation_is_permanent_invalid_input() {
         &domain,
     )
     .unwrap();
-    let input = runtime.series_from_value_with_budget(7i32, 4096, &token).unwrap().into_value();
+    let input = token
+        .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 4096))
+        .unwrap()
+        .into_value();
     let frame = DataFrame::from_series([("value", input)]).unwrap();
     drop(token);
 
-    let error = frame.filter_expr(col("value").ge(7i32)).unwrap_err();
+    let error = frame.on(Exec::RETAINED).filter_expr(col("value").ge(7i32)).unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
@@ -1582,10 +1603,15 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
         &domain,
     )
     .unwrap();
-    let input = runtime.series_from_value_with_budget(7i32, 4096, &input_token).unwrap().into_value();
+    let input = input_token
+        .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 4096))
+        .unwrap()
+        .into_value();
     let integer_frame = DataFrame::from_series([("value", input)]).unwrap();
-    let decimal_frame = integer_frame
-        .cast_column_with_budget("value", DataType::fixed_point(TypeId::Decimal128, -2).unwrap(), &input_token)
+    let decimal_frame = input_token
+        .run("dataframe::cast_column", |exec| {
+            integer_frame.on(exec).cast_column("value", DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
+        })
         .unwrap()
         .into_value();
     drop(integer_frame);
@@ -1597,8 +1623,7 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
         &domain,
     )
     .unwrap();
-    let filtered =
-        decimal_frame.with_execution(&filter_token.execution_overrides()).filter_expr(col("value").ge(7i32)).unwrap();
+    let filtered = decimal_frame.on(filter_token.exec()).filter_expr(col("value").ge(7i32)).unwrap();
 
     assert_eq!(filtered.num_rows(), 4096);
     assert!(filter_token.reservation_usage().unwrap().direct_total_allocations > 0);
@@ -1618,7 +1643,8 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
         let token =
             execution_budget_token(&left, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_query"))
                 .unwrap();
-        let outcome = left.series_from_value_with_budget(11i32, 1024, &token).unwrap();
+        let outcome =
+            token.run("runtime::series_from_value", |exec| left.on(exec)?.series_from_value(11i32, 1024)).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 11);
         (
@@ -1633,7 +1659,8 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
         let token =
             execution_budget_token(&right, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_query"))
                 .unwrap();
-        let outcome = right.series_from_value_with_budget(29i32, 2048, &token).unwrap();
+        let outcome =
+            token.run("runtime::series_from_value", |exec| right.on(exec)?.series_from_value(29i32, 2048)).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 29);
         (
@@ -1675,7 +1702,8 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
             ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_current_mr"),
         )
         .unwrap();
-        let outcome = left.series_from_value_with_budget(3i32, 1024, &token).unwrap();
+        let outcome =
+            token.run("runtime::series_from_value", |exec| left.on(exec)?.series_from_value(3i32, 1024)).unwrap();
         assert_eq!(
             outcome.value().as_column().testing_execution_domain_mr_value(),
             token.memory_resource().testing_raw_handle_value()
@@ -1692,7 +1720,8 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
             ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_current_mr"),
         )
         .unwrap();
-        let outcome = right.series_from_value_with_budget(5i32, 2048, &token).unwrap();
+        let outcome =
+            token.run("runtime::series_from_value", |exec| right.on(exec)?.series_from_value(5i32, 2048)).unwrap();
         assert_eq!(
             outcome.value().as_column().testing_execution_domain_mr_value(),
             token.memory_resource().testing_raw_handle_value()
@@ -1715,7 +1744,7 @@ fn reservation_usage_releases_retained_output_by_allocation_identity() {
         execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("retained_output"))
             .unwrap();
 
-    let outcome = rt.series_from_value_with_budget(7i32, 4096, &token).unwrap();
+    let outcome = token.run("runtime::series_from_value", |exec| rt.on(exec)?.series_from_value(7i32, 4096)).unwrap();
     let output_bytes = outcome.value().device_allocated_size_bytes().unwrap();
     let while_retained = token.reservation_usage().unwrap();
     assert!(while_retained.current_bytes as usize >= output_bytes);
@@ -1739,11 +1768,13 @@ fn reservation_limit_failure_is_stream_local() {
         execution_budget_token(&large_rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("large_query"))
             .unwrap();
 
-    let err = small_rt.series_from_value_with_budget(1i32, 1024, &small).unwrap_err();
+    let err =
+        small.run("runtime::series_from_value", |exec| small_rt.on(exec)?.series_from_value(1i32, 1024)).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert!(small.reservation_usage().unwrap().failed_allocation_count > 0);
 
-    let outcome = large_rt.series_from_value_with_budget(2i32, 1024, &large).unwrap();
+    let outcome =
+        large.run("runtime::series_from_value", |exec| large_rt.on(exec)?.series_from_value(2i32, 1024)).unwrap();
     assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 2);
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
 }
@@ -1870,7 +1901,7 @@ fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource()
     let manager_worker = std::thread::spawn(move || {
         for _ in 0..40 {
             let series = manager_rt.series(&[3i32, 1, 2, 5, 4]).unwrap();
-            let sorted = series.sort_values(SortOptions::default()).unwrap();
+            let sorted = series.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
             assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
         }
     });
@@ -1878,7 +1909,7 @@ fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource()
         let rt = Runtime::builder().with_pool_memory_resource(64 * 1024 * 1024, None).build().unwrap();
         for _ in 0..40 {
             let series = rt.series(&[30i32, 10, 20]).unwrap();
-            let sorted = series.sort_values(SortOptions::default()).unwrap();
+            let sorted = series.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
             assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
         }
     });
@@ -1910,7 +1941,7 @@ fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
     let left_worker = std::thread::spawn(move || {
         let data: Vec<i32> = (0..ROWS as i32).rev().collect();
         let series = left.series(&data).unwrap();
-        let sorted = series.sort_values(SortOptions::default()).unwrap();
+        let sorted = series.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
         assert_eq!(sorted.len(), ROWS);
         let usage = left_lease.usage().unwrap();
         assert_eq!(usage.reservation_id, 9101);
@@ -1955,7 +1986,7 @@ fn explicit_output_memory_resource_routing_survives_lock_removal() {
     assert_ne!(owned_mr, device_mr);
 
     let series = owned.series(&[5i32, 1, 4]).unwrap();
-    let sorted = series.sort_values(SortOptions::default()).unwrap();
+    let sorted = series.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
     assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 4, 5]);
     assert_eq!(
         sorted.as_column().testing_execution_domain_mr_value(),
@@ -2016,8 +2047,10 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
         ExecutionBudgetRequest::new(128 * 1024 * 1024).with_boundary("second_shared_stage"),
         lease.clone(),
     );
-    let first_outcome = runtime.series_from_value_with_budget(3i32, 1_000_000, &first).unwrap();
-    let second_outcome = runtime.series_from_value_with_budget(5i32, 1_000_000, &second).unwrap();
+    let first_outcome =
+        first.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(3i32, 1_000_000)).unwrap();
+    let second_outcome =
+        second.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(5i32, 1_000_000)).unwrap();
     assert_eq!(first.member_limit_bytes().unwrap(), 64 * 1024 * 1024);
     assert_eq!(second.member_limit_bytes().unwrap(), 64 * 1024 * 1024);
     assert_eq!(first_outcome.report().request().budget_bytes(), 1024 * 1024);
@@ -2025,7 +2058,9 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
     assert_eq!(first_outcome.report().member_limit_bytes(), Some(64 * 1024 * 1024));
     assert_eq!(second_outcome.report().member_limit_bytes(), Some(64 * 1024 * 1024));
 
-    let error = runtime.series_from_value_with_budget(7i32, 20_000_000, &first).unwrap_err();
+    let error = first
+        .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(7i32, 20_000_000))
+        .unwrap_err();
     assert_eq!(error.budget_exhaustion().unwrap().usage().unwrap().allocation_limit_bytes, 64 * 1024 * 1024);
 
     drop(first);

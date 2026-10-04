@@ -17,9 +17,7 @@ use crate::{
     hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
     internal::resolve::missing_column_error,
     ops,
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,49 +160,17 @@ impl DataFrame {
         DataFrame::from_series(columns).map_err(|e| e.reanchor(operation))
     }
 
-    /// Concatenate two DataFrames row-wise.
-    ///
-    /// Both DataFrames must have the same column names in the same order
-    /// and matching column types.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the schemas do not match (different names, count,
-    /// order, or types).
-    pub fn concat(&self, other: &DataFrame) -> Result<Self> {
-        self.concat_many_impl(&[other], None, "dataframe::concat")
-    }
-
-    /// Concatenate multiple DataFrames row-wise.
-    ///
-    /// All DataFrames must have the same column names in the same order
-    /// and matching column types. An empty `others` slice returns a clone
-    /// of `self`.
-    ///
-    /// This is more efficient than chaining multiple [`concat`](Self::concat)
-    /// calls because it passes all table views to a single FFI call.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any DataFrame's schema does not match `self`
-    /// (different names, count, order, or types).
-    pub fn concat_many(&self, others: &[&DataFrame]) -> Result<Self> {
-        self.concat_many_impl(others, None, "dataframe::concat_many")
-    }
-
-    pub fn concat_by_name(&self, other: &DataFrame, options: ConcatByNameOptions) -> Result<Self> {
-        self.concat_many_by_name(&[other], options)
-    }
-
-    pub fn concat_many_by_name(&self, others: &[&DataFrame], options: ConcatByNameOptions) -> Result<Self> {
+    pub(crate) fn concat_many_by_name_in_context(
+        &self,
+        others: &[&DataFrame],
+        options: ConcatByNameOptions,
+        ctx: Exec<'_>,
+    ) -> Result<Self> {
         let operation = "dataframe::concat_many_by_name";
-        if others.is_empty() {
-            return Ok(self.clone());
-        }
-
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let output_names = concat_by_name_output_order(self, others);
-        if output_names.is_empty() {
-            return self.concat_many_impl(others, None, operation);
+        if others.is_empty() || output_names.is_empty() {
+            return self.concat_many_impl(others, output_domain, operation);
         }
 
         let dtypes = concat_by_name_schema(self, others, &output_names, options.alignment, operation)?;
@@ -215,32 +181,32 @@ impl DataFrame {
             .collect::<Result<Vec<_>>>()?;
         let aligned_other_refs: Vec<&DataFrame> = aligned_others.iter().collect();
 
-        aligned_self.concat_many_impl(&aligned_other_refs, None, operation)
+        aligned_self.concat_many_impl(&aligned_other_refs, output_domain, operation)
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
-    pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
-        self.concat_many_in_context(&[other], ctx)
+    pub(crate) fn concat_in_context(&self, other: &DataFrame, ctx: Exec<'_>) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.concat_many_impl(&[other], output_domain, "dataframe::concat")
     }
 
     /// Concatenate multiple DataFrames row-wise using a borrowed per-operation execution override.
-    pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+    pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: Exec<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        let operation = "dataframe::with_execution::concat_many";
-        self.concat_many_impl(others, Some(output_domain), operation)
+        let operation = "dataframe::concat_many";
+        self.concat_many_impl(others, output_domain, operation)
     }
 
     fn concat_many_impl(
         &self,
         others: &[&DataFrame],
-        forced_output_domain: Option<Arc<ExecutionDomain>>,
+        output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
         if others.is_empty() {
-            return Ok(self.clone());
+            return self.in_domain(&output_domain, operation);
         }
 
-        let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
             std::iter::once(&self.domain).chain(others.iter().map(|other| &other.domain)),

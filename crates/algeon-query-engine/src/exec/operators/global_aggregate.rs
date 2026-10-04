@@ -5,11 +5,11 @@ use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
-    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame,
-    LiteralValue, QueryError, QueryErrorCode, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique,
-    aggregate_spec_has_avg, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
-    execution_overrides, global_count_star_expr, global_valid_count_state_alias, lower_column_expr, lower_expr,
-    validate_avg_output_fields, validate_global_aggregate_capability,
+    Exec, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame, LiteralValue,
+    QueryError, QueryErrorCode, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
+    budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, global_count_star_expr,
+    global_valid_count_state_alias, lower_column_expr, lower_expr, validate_avg_output_fields,
+    validate_global_aggregate_capability,
 };
 
 mod avg;
@@ -61,8 +61,8 @@ fn execute_global_aggregate_impl(
 ) -> Result<GpuDataFrame> {
     validate_global_aggregate_capability(spec, output_schema)?;
     let frame = input.into_frame();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let mut columns = Vec::with_capacity(spec.aggr_exprs.len());
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
@@ -77,7 +77,7 @@ fn execute_global_aggregate_impl(
                     reduce_global_aggregate_column_impl(
                         context,
                         &frame,
-                        &overrides,
+                        overrides,
                         expr,
                         AggregateFunction::Sum,
                         &sum_state_type,
@@ -111,7 +111,7 @@ fn execute_global_aggregate_impl(
                     reduce_global_aggregate_column_impl(
                         context,
                         &frame,
-                        &overrides,
+                        overrides,
                         expr,
                         expr.function,
                         output_schema.field(index).data_type(),
@@ -160,7 +160,7 @@ fn execute_global_aggregate_impl(
 fn reduce_global_aggregate_column_impl(
     context: &ExecutionContext,
     frame: &DataFrame,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     expr: &AggregateExpr,
     function: AggregateFunction,
     output_type: &ArrowDataType,
@@ -219,20 +219,24 @@ fn reduce_global_aggregate_column_impl(
         } else {
             let casted = match token {
                 Some(token) => budgeted_value(
-                    frame.cast_column_with_budget(input_column.as_str(), target_type, token).map_err(|error| {
-                        cudf_query_error(
-                            "query_engine.global_aggregate.cast_input",
-                            "failed to cast bounded native global aggregate input column before reduction",
-                            error,
-                        )
-                        .with_fact("column", input_column.as_str())
-                        .with_fact("alias", expr.alias.as_str())
-                        .with_fact("data_type", format!("{output_type:?}"))
-                    })?,
+                    token
+                        .run("dataframe::cast_column", |exec| {
+                            frame.on(exec).cast_column(input_column.as_str(), target_type)
+                        })
+                        .map_err(|error| {
+                            cudf_query_error(
+                                "query_engine.global_aggregate.cast_input",
+                                "failed to cast bounded native global aggregate input column before reduction",
+                                error,
+                            )
+                            .with_fact("column", input_column.as_str())
+                            .with_fact("alias", expr.alias.as_str())
+                            .with_fact("data_type", format!("{output_type:?}"))
+                        })?,
                     metrics,
                     "query_engine.global_aggregate.cast_input",
                 ),
-                None => frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
+                None => frame.on(Exec::RETAINED).cast_column(input_column.as_str(), target_type).map_err(|error| {
                     cudf_query_error(
                         "query_engine.global_aggregate.cast_input",
                         "failed to cast native global aggregate input column before reduction",
@@ -260,10 +264,10 @@ fn reduce_global_aggregate_column_impl(
         Some(token) => execute_scalar_reduction_with_budget(&series, function, token, input_column.as_str(), metrics)?,
         None => execute_scalar_reduction(&series, overrides, function, input_column.as_str())?,
     };
+    let runtime = context.runtime()?;
     match token {
-        Some(token) => context
-            .runtime()?
-            .series_from_scalar_with_budget(&scalar, 1, token)
+        Some(token) => token
+            .run("runtime::series_from_scalar", |exec| runtime.on(exec)?.series_from_scalar(&scalar, 1))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.global_aggregate.output",
@@ -273,7 +277,7 @@ fn reduce_global_aggregate_column_impl(
                 .with_fact("alias", expr.alias.as_str())
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.global_aggregate.output")),
-        None => context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
+        None => runtime.series_from_scalar(&scalar, 1).map_err(|error| {
             cudf_query_error(
                 "query_engine.global_aggregate.output",
                 "failed to construct native global aggregate output column",
@@ -286,19 +290,19 @@ fn reduce_global_aggregate_column_impl(
 
 fn execute_scalar_reduction(
     series: &cudf::Series,
-    overrides: &ExecutionOverrides<'_>,
+    overrides: Exec<'_>,
     function: AggregateFunction,
     input_column: &str,
 ) -> Result<CudfScalar> {
     match function {
-        AggregateFunction::Sum => series.sum_in(overrides),
-        AggregateFunction::Min => series.min_in(overrides),
-        AggregateFunction::Max => series.max_in(overrides),
-        AggregateFunction::Median => series.median_in(overrides),
-        AggregateFunction::StddevSamp => series.std_in(1, overrides),
-        AggregateFunction::StddevPop => series.std_in(0, overrides),
-        AggregateFunction::VarSamp => series.var_in(1, overrides),
-        AggregateFunction::VarPop => series.var_in(0, overrides),
+        AggregateFunction::Sum => series.on(overrides).sum(),
+        AggregateFunction::Min => series.on(overrides).min(),
+        AggregateFunction::Max => series.on(overrides).max(),
+        AggregateFunction::Median => series.on(overrides).median(),
+        AggregateFunction::StddevSamp => series.on(overrides).std(1),
+        AggregateFunction::StddevPop => series.on(overrides).std(0),
+        AggregateFunction::VarSamp => series.on(overrides).var(1),
+        AggregateFunction::VarPop => series.on(overrides).var(0),
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
         AggregateFunction::Count | AggregateFunction::NUnique => {
             unreachable!("global count-like aggregates are not scalar reductions")
@@ -392,10 +396,10 @@ fn global_null_output_series_impl(
         .with_fact("alias", alias)
         .with_fact("data_type", format!("{output_type:?}"))
     })?;
+    let runtime = context.runtime()?;
     match token {
-        Some((token, metrics)) => context
-            .runtime()?
-            .nulls_with_budget(dtype, 1, token)
+        Some((token, metrics)) => token
+            .run("runtime::nulls", |exec| runtime.on(exec)?.nulls(dtype, 1))
             .map_err(|error| {
                 cudf_query_error(
                     "query_engine.global_aggregate.null_output",
@@ -406,7 +410,7 @@ fn global_null_output_series_impl(
                 .with_fact("data_type", format!("{output_type:?}"))
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.global_aggregate.null_output")),
-        None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
+        None => runtime.nulls(dtype, 1).map_err(|error| {
             cudf_query_error(
                 "query_engine.global_aggregate.null_output",
                 "failed to construct native global aggregate null output column",

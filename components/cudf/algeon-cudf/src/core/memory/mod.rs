@@ -7,7 +7,7 @@
 //! - [`crate::Runtime`] carries one default memory-resource handle as part of
 //!   its retained-provenance bundle. By default this is the process-local
 //!   [`DeviceMemoryManager`] resource for the runtime's CUDA device.
-//! - [`crate::ExecutionOverrides`] can borrow `&DeviceMemoryResource` to
+//! - [`crate::Exec`] can borrow `&DeviceMemoryResource` to
 //!   override allocator selection for one supported operation without mutating
 //!   the runtime's default.
 //!
@@ -36,8 +36,8 @@
 //!
 //! ```no_run
 //! use cudf::{
-//!     DeviceId, ExecutionOverrides, QueryMemoryDomainOptions, Runtime,
-//!     SortOptions, core::memory::DeviceMemoryResource,
+//!     DeviceId, Exec, QueryMemoryDomainOptions, Runtime, SortOptions,
+//!     core::memory::DeviceMemoryResource,
 //! };
 //!
 //! let device = DeviceId::new(0).unwrap();
@@ -81,8 +81,8 @@
 //! // Or borrow it for one supported operation without changing the runtime's
 //! // default allocator.
 //! let series = runtime.series(&[3i32, 1, 2]).unwrap();
-//! let ctx = ExecutionOverrides::new().with_memory_resource(&shared_pool);
-//! let sorted = series.sort_values_in(SortOptions::new(), &ctx).unwrap();
+//! let ctx = Exec::RETAINED.with_memory_resource(&shared_pool);
+//! let sorted = series.on(ctx).sort_values(SortOptions::new()).unwrap();
 //!
 //! assert_eq!(runtime.memory_resource().device(), device);
 //! assert_eq!(runtime_with_explicit_mr.memory_resource().device(), device);

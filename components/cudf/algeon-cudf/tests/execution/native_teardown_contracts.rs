@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cudf::{
-    DataFrame, ErrorCode, Runtime,
+    DataFrame, ErrorCode, Exec, ParquetReadOptions, Runtime,
     core::Table,
     io::parquet::{ParquetTableWriteOptions, write_parquet},
     runtime::{DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthStatus},
@@ -52,8 +52,11 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
     let compute_error =
         runtime.column_from_slice(&[8_i32, 9]).expect_err("unhealthy device must reject later compute before FFI");
     assert_eq!(compute_error.code(), ErrorCode::FatalCuda);
-    let parquet_error = DataFrame::read_parquet(&runtime, &parquet_path)
-        .expect_err("unhealthy device must reject later Parquet decode before FFI");
+    let parquet_error = DataFrame::read_parquet(
+        ParquetReadOptions::builder().filepath(&parquet_path).with_runtime(&runtime).build(),
+        Exec::RETAINED,
+    )
+    .expect_err("unhealthy device must reject later Parquet decode before FFI");
     assert_eq!(parquet_error.code(), ErrorCode::FatalCuda);
     let memory_resource_error = runtime
         .memory_resource()

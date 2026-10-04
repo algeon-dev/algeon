@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
 
-use super::{ExecutionMetrics, cudf_query_error, execution_overrides};
+use super::{ExecutionMetrics, cudf_query_error};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},
@@ -153,11 +153,11 @@ pub(in crate::exec) fn sort_by_datafusion_order_if_present(
     if order_columns.is_empty() {
         return Ok(frame);
     }
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let output = frame
-        .with_execution(&overrides)
+        .on(overrides)
         .sort_values(order_columns.iter().map(String::as_str), CudfSortOptions::new().with_stable(true))
         .map_err(|error| {
             cudf_query_error(

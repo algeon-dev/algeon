@@ -2,7 +2,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, TypeId};
+use cudf::{ErrorCode, ErrorKind, Exec, Runtime, Series, TypeId};
 
 use crate::common::{error_context_value, nullable_series, run_named_cases, series};
 
@@ -14,7 +14,7 @@ fn test_concat_two_i32_series() {
     let a = series::<i32>("a", &[1, 2]).unwrap();
     let b = series::<i32>("b", &[3, 4, 5]).unwrap();
 
-    let result = Series::concat(&[&a, &b]).unwrap();
+    let result = Series::concat(&[&a, &b], Exec::RETAINED).unwrap();
     assert_eq!(result.len(), 5);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
@@ -22,11 +22,11 @@ fn test_concat_two_i32_series() {
 
 fn test_concat_in_uses_borrowed_execution_overrides() {
     let runtime = Runtime::new().unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let ctx = runtime.exec();
     let a = series::<i32>("a", &[1, 2]).unwrap();
     let b = series::<i32>("b", &[3, 4, 5]).unwrap();
 
-    let result = Series::concat_in(&[&a, &b], &ctx).unwrap();
+    let result = Series::concat(&[&a, &b], ctx).unwrap();
 
     assert_eq!(result.len(), 5);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
@@ -38,7 +38,7 @@ fn test_concat_three_f64_series() {
     let b = series::<f64>("b", &[2.0, 3.0]).unwrap();
     let c = series::<f64>("c", &[4.0]).unwrap();
 
-    let result = Series::concat(&[&a, &b, &c]).unwrap();
+    let result = Series::concat(&[&a, &b, &c], Exec::RETAINED).unwrap();
 
     assert_eq!(result.len(), 4);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
@@ -48,7 +48,7 @@ fn test_concat_strings() {
     let a = series("a", &["hello"]).unwrap();
     let b = series("b", &["world"]).unwrap();
 
-    let result = Series::concat(&[&a, &b]).unwrap();
+    let result = Series::concat(&[&a, &b], Exec::RETAINED).unwrap();
 
     assert_eq!(result.len(), 2);
     assert_eq!(result.to_strings_strict().unwrap(), vec!["hello", "world"]);
@@ -61,7 +61,7 @@ fn test_concat_strings() {
 fn test_concat_single_series() {
     let a = series::<i32>("a", &[1, 2, 3]).unwrap();
 
-    let result = Series::concat(&[&a]).unwrap();
+    let result = Series::concat(&[&a], Exec::RETAINED).unwrap();
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -72,7 +72,7 @@ fn test_concat_with_empty_series() {
     let b = series::<i32>("b", &[]).unwrap();
     let c = series::<i32>("c", &[3]).unwrap();
 
-    let result = Series::concat(&[&a, &b, &c]).unwrap();
+    let result = Series::concat(&[&a, &b, &c], Exec::RETAINED).unwrap();
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -82,7 +82,7 @@ fn test_concat_preserves_nulls() {
     let a = nullable_series::<i32>("a", &[1, 0], &[true, false]).unwrap();
     let b = series::<i32>("b", &[3]).unwrap();
 
-    let result = Series::concat(&[&a, &b]).unwrap();
+    let result = Series::concat(&[&a, &b], Exec::RETAINED).unwrap();
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.null_count(), 1);
@@ -93,7 +93,7 @@ fn test_concat_preserves_nulls() {
 // ===========================================================================
 
 fn test_concat_empty_slice_returns_error() {
-    let err = Series::concat(&[]).expect_err("concat of empty slice should fail");
+    let err = Series::concat(&[], Exec::RETAINED).expect_err("concat of empty slice should fail");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -106,7 +106,7 @@ fn test_concat_type_mismatch_returns_error() {
     let a = series::<i32>("a", &[1, 2]).unwrap();
     let b = series("b", &["hello"]).unwrap();
 
-    let err = Series::concat(&[&a, &b]).expect_err("concat of mismatched types should fail");
+    let err = Series::concat(&[&a, &b], Exec::RETAINED).expect_err("concat of mismatched types should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);

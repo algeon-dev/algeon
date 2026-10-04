@@ -3,7 +3,7 @@
 //! These tests run by default on hosts with 2+ visible GPUs and skip cleanly
 //! on single-GPU hosts. Set `CUDF_SKIP_MULTI_GPU=1` to disable them
 //! explicitly.
-use cudf::{core::Table, testing::prelude::*};
+use cudf::testing::prelude::*;
 
 use crate::common::{
     column_from_device_buffer_nullable, dataframe_from_columns, error_context_value, query_domain_member, series,
@@ -12,8 +12,9 @@ use crate::common::{
 mod common;
 
 use cudf::{
-    DataFrame, DenseMatrixLayout, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, InstallSpec, MergeOptions,
-    Runtime, Series, SortOptions, TypeId,
+    DataFrame, DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameMixedJoinOptions,
+    DataFramePredicateJoinOptions, DenseMatrixLayout, DeviceId, ErrorCode, ErrorKind, Exec, InstallSpec, JoinType,
+    MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::{
         error::{FactKeyName, FactValue},
         memory::DeviceMemoryResource,
@@ -22,7 +23,6 @@ use cudf::{
     ops::{
         ast::AstExpression,
         expr::{col, lit},
-        join, strings,
     },
     runtime::{CudaStream, DeviceEntryGuard, DeviceHealthStatus, device_health_snapshot},
 };
@@ -279,6 +279,17 @@ fn dataframe2(name1: &str, series1: Series, name2: &str, series2: Series) -> Dat
     DataFrame::from_series([(name1, series1), (name2, series2)]).unwrap()
 }
 
+fn conditional_join_options() -> DataFramePredicateJoinOptions {
+    DataFramePredicateJoinOptions::new().left_columns(["left_val"]).right_columns(["right_val"])
+}
+
+fn mixed_join_options() -> DataFrameMixedJoinOptions {
+    DataFrameMixedJoinOptions::new()
+        .on(["id"])
+        .left_predicate_columns(["left_val"])
+        .right_predicate_columns(["right_val"])
+}
+
 fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
     let (device0, device1) = first_two_test_devices();
     let data_rt = Runtime::builder().with_device(device0).build().unwrap();
@@ -366,7 +377,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
     let s0 = rt0.series(&[3, 1, 4]).unwrap();
     let df0 = dataframe1("id", s0);
     common::reset_exec_observation();
-    let sorted0 = df0.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted0 = df0.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device0.ordinal() as i32,
@@ -380,7 +391,7 @@ fn runtime_operations_on_different_devices_produce_correct_results() {
     let s1 = rt1.series(&[8, 2, 5]).unwrap();
     let df1 = dataframe1("id", s1);
     common::reset_exec_observation();
-    let sorted1 = df1.sort_values(["id"], SortOptions::new()).unwrap();
+    let sorted1 = df1.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,
@@ -709,7 +720,7 @@ fn runtime_device_flows_through_sort() {
     let df = dataframe1("id", ids);
 
     common::reset_exec_observation();
-    let _sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
+    let _sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::new()).unwrap();
 
     let observed = common::last_exec_device();
     assert_eq!(
@@ -737,7 +748,7 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let df = dataframe2("id", ids, "score", scores);
 
     common::reset_exec_observation();
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter(&mask).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,
@@ -748,9 +759,9 @@ fn runtime_device_flows_through_manual_mask_filter_paths() {
     let filtered_ids: Vec<i32> = filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(filtered_ids, vec![3, 4]);
 
-    let ctx = ExecutionOverrides::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
+    let ctx = rt1.exec();
     common::reset_exec_observation();
-    let filtered_with_ctx = df.with_execution(&ctx).filter(&mask).unwrap();
+    let filtered_with_ctx = df.on(ctx).filter(&mask).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device1.ordinal() as i32,
@@ -784,7 +795,7 @@ fn runtime_gt_scalar_mask_filter_regression() {
     let df = dataframe2("id", ids, "score", scores);
 
     common::reset_exec_observation();
-    let mask = df.series("score").unwrap().gt_scalar(20.0f64).unwrap();
+    let mask = df.series("score").unwrap().on(Exec::RETAINED).gt_scalar(20.0f64).unwrap();
     let observed = common::last_exec_device();
     assert_eq!(
         observed,
@@ -793,11 +804,11 @@ fn runtime_gt_scalar_mask_filter_regression() {
         device1.ordinal()
     );
 
-    let plain = df.filter(&mask);
+    let plain = df.on(Exec::RETAINED).filter(&mask);
     assert!(plain.is_ok(), "filter() with gt_scalar-derived mask should succeed: {plain:?}");
 
-    let ctx = ExecutionOverrides::new().with_stream(rt1.stream()).with_memory_resource(rt1.memory_resource());
-    let with_ctx = df.with_execution(&ctx).filter(&mask);
+    let ctx = rt1.exec();
+    let with_ctx = df.on(ctx).filter(&mask);
     assert!(with_ctx.is_ok(), "with_execution().filter() with gt_scalar-derived mask should succeed: {with_ctx:?}");
 }
 
@@ -1140,9 +1151,9 @@ fn borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
-    let ctx = ExecutionOverrides::new().with_stream(right_rt.stream());
+    let ctx = Exec::RETAINED.with_stream(right_rt.stream());
 
-    let err = df.with_execution(&ctx).sort_values(["id"], SortOptions::new()).unwrap_err();
+    let err = df.on(ctx).sort_values(["id"], SortOptions::new()).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "stream", left_device, right_device);
 }
@@ -1157,9 +1168,7 @@ fn query_execution_context_rejects_cross_device_input_runtime() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
-    let query = right_rt.query_execution();
-
-    let err = df.with_execution(query.overrides()).sort_values(["id"], SortOptions::new()).unwrap_err();
+    let err = df.on(right_rt.exec()).sort_values(["id"], SortOptions::new()).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "stream", left_device, right_device);
 }
@@ -1174,9 +1183,9 @@ fn with_columns_borrowed_stream_override_rejects_cross_device_context_with_canon
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
-    let ctx = ExecutionOverrides::new().with_stream(right_rt.stream());
+    let ctx = Exec::RETAINED.with_stream(right_rt.stream());
 
-    let err = df.with_execution(&ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
+    let err = df.on(ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "stream", left_device, right_device);
 }
@@ -1191,9 +1200,9 @@ fn borrowed_memory_resource_override_rejects_cross_device_context_with_canonical
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
-    let ctx = ExecutionOverrides::new().with_memory_resource(right_rt.memory_resource());
+    let ctx = Exec::RETAINED.with_memory_resource(right_rt.memory_resource());
 
-    let err = df.with_execution(&ctx).sort_values(["id"], SortOptions::new()).unwrap_err();
+    let err = df.on(ctx).sort_values(["id"], SortOptions::new()).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "memory_resource", left_device, right_device);
 }
@@ -1208,9 +1217,9 @@ fn with_columns_borrowed_memory_resource_override_rejects_cross_device_context_w
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
-    let ctx = ExecutionOverrides::new().with_memory_resource(right_rt.memory_resource());
+    let ctx = Exec::RETAINED.with_memory_resource(right_rt.memory_resource());
 
-    let err = df.with_execution(&ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
+    let err = df.on(ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "memory_resource", left_device, right_device);
 }
@@ -1233,15 +1242,15 @@ fn merge_without_relocation_rejects_cross_device_runtime_inputs() {
     );
 
     assert_cross_device_result_any_operation(
-        left.merge(&right, MergeOptions::new().how_inner().on(["id"])),
-        &["dataframe::merge", "dataframe::with_execution::merge"],
+        left.on(Exec::RETAINED).merge(&right, MergeOptions::new().how_inner().on(["id"])),
+        &["dataframe::merge"],
         "cross-device merge should fail until inputs are explicitly relocated",
     );
 
-    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+    let ctx = left_rt.exec();
     assert_cross_device_result_any_operation(
-        left.with_execution(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])),
-        &["dataframe::merge", "dataframe::with_execution::merge"],
+        left.on(ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])),
+        &["dataframe::merge"],
         "borrowed context override must not repair cross-device merge",
     );
 }
@@ -1258,7 +1267,7 @@ fn gather_without_relocation_rejects_cross_device_runtime_inputs() {
     let indices = indices_rt.series(&[2i32, 0]).unwrap();
 
     assert_cross_device_result(
-        df.gather(&indices),
+        df.on(Exec::RETAINED).gather(&indices),
         "dataframe::gather",
         "cross-device gather should fail until inputs are explicitly relocated",
     );
@@ -1276,7 +1285,7 @@ fn series_fillna_with_series_without_relocation_rejects_cross_device_runtime_inp
     let fill = fill_rt.series(&[99i32, 99, 99]).unwrap();
 
     assert_cross_device_result(
-        input.fillna_with_series(&fill),
+        input.on(Exec::RETAINED).fillna_with_series(&fill),
         "series::fillna_with_series",
         "cross-device fillna_with_series should fail until inputs are explicitly relocated",
     );
@@ -1291,44 +1300,13 @@ fn dataframe_fillna_with_scalar_without_relocation_rejects_cross_device_runtime_
     let (df_rt, scalar_rt) = first_two_test_runtimes();
 
     let df = dataframe1("value", df_rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap());
-    let scalar = scalar_rt.series(&[99i32]).unwrap().sum().unwrap();
+    let scalar = scalar_rt.series(&[99i32]).unwrap().on(Exec::RETAINED).sum().unwrap();
 
     assert_cross_device_result(
-        df.fillna_with_scalar("value", &scalar),
+        df.on(Exec::RETAINED).fillna_with_scalar("value", &scalar),
         "dataframe::fillna_with_scalar",
         "cross-device fillna_with_scalar should fail until inputs are explicitly relocated",
     );
-}
-
-#[test]
-fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (left_rt, right_rt) = first_two_test_runtimes();
-
-    let left_keys =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let left_payload =
-        Table::from_columns(vec![left_rt.series(&[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_keys =
-        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_payload =
-        Table::from_columns(vec![right_rt.series(&[200i32, 300, 400]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-
-    let err = match join::inner_join(
-        &left_keys.testing_view().unwrap(),
-        &right_keys.testing_view().unwrap(),
-        &left_payload.testing_view().unwrap(),
-        &right_payload.testing_view().unwrap(),
-        join::NullEquality::Equal,
-    ) {
-        Ok(_) => panic!("cross-device low-level join should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::inner_join");
 }
 
 #[test]
@@ -1339,20 +1317,14 @@ fn join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left_keys =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_keys =
-        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left = dataframe1("id", left_rt.series(&[1i32, 2, 3]).unwrap());
+    let right = dataframe1("id", right_rt.series(&[2i32, 3, 4]).unwrap());
 
-    let err = match join::inner_join_indices(
-        &left_keys.testing_view().unwrap(),
-        &right_keys.testing_view().unwrap(),
-        join::NullEquality::Equal,
-    ) {
-        Ok(_) => panic!("cross-device join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::inner_join_indices");
+    assert_cross_device_result(
+        left.on(Exec::RETAINED).inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])),
+        "join::inner_join_indices_in",
+        "cross-device join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1363,22 +1335,16 @@ fn conditional_join_indices_without_relocation_reject_cross_device_runtime_input
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right =
-        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left = dataframe1("left_val", left_rt.series(&[1i32, 2, 3]).unwrap());
+    let right = dataframe1("right_val", right_rt.series(&[2i32, 3, 4]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
 
-    let err = match join::conditional_inner_join_indices(
-        &left.testing_view().unwrap(),
-        &right.testing_view().unwrap(),
-        &predicate,
-    ) {
-        Ok(_) => panic!("cross-device conditional join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::conditional_inner_join_indices");
+    assert_cross_device_result(
+        left.on(Exec::RETAINED).conditional_inner_join_indices(&right, &predicate, conditional_join_options()),
+        "join::conditional_inner_join_indices_in",
+        "cross-device conditional join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1389,24 +1355,17 @@ fn conditional_join_indices_in_without_relocation_reject_cross_device_runtime_in
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right =
-        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left = dataframe1("left_val", left_rt.series(&[1i32, 2, 3]).unwrap());
+    let right = dataframe1("right_val", right_rt.series(&[2i32, 3, 4]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+    let ctx = left_rt.exec();
 
-    let err = match join::conditional_inner_join_indices_in(
-        &left.testing_view().unwrap(),
-        &right.testing_view().unwrap(),
-        &predicate,
-        &ctx,
-    ) {
-        Ok(_) => panic!("cross-device conditional join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::conditional_inner_join_indices_in");
+    assert_cross_device_result(
+        left.on(ctx).conditional_inner_join_indices(&right, &predicate, conditional_join_options()),
+        "join::conditional_inner_join_indices_in",
+        "cross-device conditional join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1417,29 +1376,18 @@ fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left_equality =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let left_conditional =
-        Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_equality =
-        Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_conditional =
-        Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left =
+        dataframe2("id", left_rt.series(&[1i32, 2, 3]).unwrap(), "left_val", left_rt.series(&[5i32, 6, 7]).unwrap());
+    let right =
+        dataframe2("id", right_rt.series(&[1i32, 2, 3]).unwrap(), "right_val", right_rt.series(&[6i32, 7, 8]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
 
-    let err = match join::mixed_inner_join_indices(
-        &left_equality.testing_view().unwrap(),
-        &right_equality.testing_view().unwrap(),
-        &left_conditional.testing_view().unwrap(),
-        &right_conditional.testing_view().unwrap(),
-        &predicate,
-        join::NullEquality::Equal,
-    ) {
-        Ok(_) => panic!("cross-device mixed join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::mixed_inner_join_indices");
+    assert_cross_device_result(
+        left.on(Exec::RETAINED).mixed_inner_join_indices(&right, &predicate, mixed_join_options()),
+        "join::mixed_inner_join_indices_in",
+        "cross-device mixed join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1450,31 +1398,19 @@ fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs()
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left_equality =
-        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let left_conditional =
-        Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_equality =
-        Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right_conditional =
-        Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left =
+        dataframe2("id", left_rt.series(&[1i32, 2, 3]).unwrap(), "left_val", left_rt.series(&[5i32, 6, 7]).unwrap());
+    let right =
+        dataframe2("id", right_rt.series(&[1i32, 2, 3]).unwrap(), "right_val", right_rt.series(&[6i32, 7, 8]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+    let ctx = left_rt.exec();
 
-    let err = match join::mixed_inner_join_indices_in(
-        &left_equality.testing_view().unwrap(),
-        &right_equality.testing_view().unwrap(),
-        &left_conditional.testing_view().unwrap(),
-        &right_conditional.testing_view().unwrap(),
-        &predicate,
-        join::NullEquality::Equal,
-        &ctx,
-    ) {
-        Ok(_) => panic!("cross-device mixed join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::mixed_inner_join_indices_in");
+    assert_cross_device_result(
+        left.on(ctx).mixed_inner_join_indices(&right, &predicate, mixed_join_options()),
+        "join::mixed_inner_join_indices_in",
+        "cross-device mixed join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1485,27 +1421,25 @@ fn filter_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left =
-        Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right =
-        Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
-    let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let left = dataframe1("left_val", left_rt.series(&[1i32, 3, 5]).unwrap());
+    let right = dataframe1("right_val", right_rt.series(&[2i32, 4, 6]).unwrap());
+    let left_indices = DataFrameJoinIndices::from_series(left_rt.series(&[0i32, 1, 2]).unwrap());
+    let right_indices = DataFrameJoinIndices::from_series(right_rt.series(&[0i32, 1, 2]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
 
-    let err = match join::filter_join_indices(
-        &left.testing_view().unwrap(),
-        &right.testing_view().unwrap(),
-        &left_indices.testing_view().unwrap(),
-        &right_indices.testing_view().unwrap(),
-        &predicate,
-        join::JoinType::Inner,
-    ) {
-        Ok(_) => panic!("cross-device filter join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::filter_join_indices");
+    assert_cross_device_result(
+        left.on(Exec::RETAINED).filter_join_indices(
+            &right,
+            &left_indices,
+            &right_indices,
+            &predicate,
+            conditional_join_options(),
+            JoinType::Inner,
+        ),
+        "join::filter_join_indices_in",
+        "cross-device filter join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1516,29 +1450,26 @@ fn filter_join_indices_in_without_relocation_reject_cross_device_runtime_inputs(
 
     let (left_rt, right_rt) = first_two_test_runtimes();
 
-    let left =
-        Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let right =
-        Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
-    let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let left = dataframe1("left_val", left_rt.series(&[1i32, 3, 5]).unwrap());
+    let right = dataframe1("right_val", right_rt.series(&[2i32, 4, 6]).unwrap());
+    let left_indices = DataFrameJoinIndices::from_series(left_rt.series(&[0i32, 1, 2]).unwrap());
+    let right_indices = DataFrameJoinIndices::from_series(right_rt.series(&[0i32, 1, 2]).unwrap());
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+    let ctx = left_rt.exec();
 
-    let err = match join::filter_join_indices_in(
-        &left.testing_view().unwrap(),
-        &right.testing_view().unwrap(),
-        &left_indices.testing_view().unwrap(),
-        &right_indices.testing_view().unwrap(),
-        &predicate,
-        join::JoinType::Inner,
-        &ctx,
-    ) {
-        Ok(_) => panic!("cross-device filter join indices should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "join::filter_join_indices_in");
+    assert_cross_device_result(
+        left.on(ctx).filter_join_indices(
+            &right,
+            &left_indices,
+            &right_indices,
+            &predicate,
+            conditional_join_options(),
+            JoinType::Inner,
+        ),
+        "join::filter_join_indices_in",
+        "cross-device filter join indices should fail until inputs are explicitly relocated",
+    );
 }
 
 #[test]
@@ -1549,35 +1480,18 @@ fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
 
     let (build_rt, probe_rt) = first_two_test_runtimes();
 
-    let build_keys =
-        Table::from_columns(vec![build_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let probe_keys =
-        Table::from_columns(vec![probe_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
-    let hash_join = join::HashJoin::new(build_keys, join::HashJoinOptions::new()).unwrap();
+    let build = DataFrame::from_series([("id", build_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let probe = DataFrame::from_series([("id", probe_rt.series(&[2i32, 3, 4]).unwrap())]).unwrap();
+    let hash_join = build.on(Exec::RETAINED).build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
 
-    let err = match hash_join.inner_join_indices(&probe_keys.testing_view().unwrap()) {
+    let err = match hash_join.inner_probe(&probe, ["id"], Exec::RETAINED) {
         Ok(_) => panic!("cross-device hash-join probe should fail until inputs are explicitly relocated"),
         Err(err) => err,
     };
-    assert_cross_device_relocation_error(err, "hash_join::inner_join_indices");
-}
-
-#[test]
-fn strings_contains_without_relocation_rejects_cross_device_runtime_inputs() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let (input_rt, scalar_rt) = first_two_test_runtimes();
-
-    let input = input_rt.series(&["alpha", "beta", "alphabet"]).unwrap();
-    let scalar = scalar_rt.series(&["alpha"]).unwrap().min().unwrap();
-
-    let err = match strings::str_contains(&input.testing_view().unwrap(), &scalar) {
-        Ok(_) => panic!("cross-device strings::contains should fail until inputs are explicitly relocated"),
-        Err(err) => err,
-    };
-    assert_cross_device_relocation_error(err, "strings::contains");
+    assert_cross_device_relocation_error_any_operation(
+        err,
+        &["dataframe::hash_join::inner_probe", "hash_join::inner_join_indices_in"],
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1600,7 +1514,10 @@ fn runtime_expr_literal_with_columns_regression() {
     let df = dataframe2("x", x, "y", y);
 
     common::reset_exec_observation();
-    let result = match df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]) {
+    let result = match df
+        .on(Exec::RETAINED)
+        .with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")])
+    {
         Ok(result) => result,
         Err(err) => panic!("with_columns() with Expr::lit(...) should succeed on a runtime-pinned dataframe: {err:?}"),
     };
@@ -1631,7 +1548,7 @@ fn runtime_head_tail_slice_regression() {
     let df = dataframe2("id", ids, "score", scores);
 
     common::reset_exec_observation();
-    let head = match df.head(2) {
+    let head = match df.on(Exec::RETAINED).head(2) {
         Ok(result) => result,
         Err(err) => {
             panic!(
@@ -1642,7 +1559,7 @@ fn runtime_head_tail_slice_regression() {
     assert_eq!(head.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
 
     common::reset_exec_observation();
-    let tail = match df.tail(2) {
+    let tail = match df.on(Exec::RETAINED).tail(2) {
         Ok(result) => result,
         Err(err) => {
             panic!(
@@ -1653,7 +1570,7 @@ fn runtime_head_tail_slice_regression() {
     assert_eq!(tail.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
 
     common::reset_exec_observation();
-    let slice = match df.slice(1, 2) {
+    let slice = match df.on(Exec::RETAINED).slice(1, 2) {
         Ok(result) => result,
         Err(err) => {
             panic!(
@@ -1784,8 +1701,8 @@ fn concurrent_per_device_pipelines_share_no_state() {
             for _ in 0..20 {
                 let data: Vec<i32> = (0..4096).rev().collect();
                 let series = rt.series(&data).unwrap();
-                let sorted = series.sort_values(SortOptions::default()).unwrap();
-                assert_eq!(sorted.sum_value::<i64>().unwrap(), (0..4096i64).sum::<i64>());
+                let sorted = series.on(Exec::RETAINED).sort_values(SortOptions::default()).unwrap();
+                assert_eq!(sorted.on(Exec::RETAINED).sum_value::<i64>().unwrap(), (0..4096i64).sum::<i64>());
             }
             rt.memory_resource().testing_raw_handle_value()
         })

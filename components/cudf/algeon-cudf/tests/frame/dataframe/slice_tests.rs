@@ -1,7 +1,7 @@
 //! Tests for DataFrame row slicing helpers.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetRequest,
+    DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetRequest,
     testing::dataframe::{
         trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
         trigger_dataframe_row_range_start_limit_error_for_test,
@@ -26,7 +26,7 @@ fn sample_df() -> DataFrame {
 
 fn test_head_basic() {
     let df = sample_df();
-    let h = df.head(2).unwrap();
+    let h = df.on(Exec::RETAINED).head(2).unwrap();
 
     assert_eq!(h.num_rows(), 2);
     assert_eq!(h.num_columns(), 2);
@@ -36,7 +36,7 @@ fn test_head_basic() {
 
 fn test_head_zero_rows() {
     let df = sample_df();
-    let h = df.head(0).unwrap();
+    let h = df.on(Exec::RETAINED).head(0).unwrap();
 
     assert_eq!(h.num_rows(), 0);
     assert_eq!(h.num_columns(), 2);
@@ -45,7 +45,7 @@ fn test_head_zero_rows() {
 
 fn test_head_clamps_to_num_rows() {
     let df = sample_df();
-    let h = df.head(100).unwrap();
+    let h = df.on(Exec::RETAINED).head(100).unwrap();
 
     assert_eq!(h.num_rows(), 5);
     assert_eq!(h.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
@@ -53,7 +53,7 @@ fn test_head_clamps_to_num_rows() {
 
 fn test_head_preserves_schema() {
     let df = sample_df();
-    let h = df.head(3).unwrap();
+    let h = df.on(Exec::RETAINED).head(3).unwrap();
     assert_eq!(h.column_names(), vec!["id", "val"]);
     assert_eq!(h.column_index("id"), Some(0));
     assert_eq!(h.column_index("val"), Some(1));
@@ -65,7 +65,7 @@ fn test_head_preserves_schema() {
 
 fn test_tail_basic() {
     let df = sample_df();
-    let t = df.tail(2).unwrap();
+    let t = df.on(Exec::RETAINED).tail(2).unwrap();
 
     assert_eq!(t.num_rows(), 2);
     assert_eq!(t.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![40, 50]);
@@ -74,7 +74,7 @@ fn test_tail_basic() {
 
 fn test_tail_clamps_to_num_rows() {
     let df = sample_df();
-    let t = df.tail(100).unwrap();
+    let t = df.on(Exec::RETAINED).tail(100).unwrap();
 
     assert_eq!(t.num_rows(), 5);
     assert_eq!(t.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
@@ -82,7 +82,7 @@ fn test_tail_clamps_to_num_rows() {
 
 fn test_tail_zero_rows() {
     let df = sample_df();
-    let t = df.tail(0).unwrap();
+    let t = df.on(Exec::RETAINED).tail(0).unwrap();
 
     assert_eq!(t.num_rows(), 0);
     assert_eq!(t.column_names(), vec!["id", "val"]);
@@ -90,7 +90,7 @@ fn test_tail_zero_rows() {
 
 fn test_tail_preserves_schema() {
     let df = sample_df();
-    let t = df.tail(3).unwrap();
+    let t = df.on(Exec::RETAINED).tail(3).unwrap();
     assert_eq!(t.column_names(), vec!["id", "val"]);
 }
 
@@ -100,7 +100,7 @@ fn test_tail_preserves_schema() {
 
 fn test_slice_basic() {
     let df = sample_df();
-    let s = df.slice(1, 2).unwrap();
+    let s = df.on(Exec::RETAINED).slice(1, 2).unwrap();
 
     assert_eq!(s.num_rows(), 2);
     assert_eq!(s.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
@@ -110,7 +110,7 @@ fn test_slice_basic() {
 fn test_slice_clamps_length() {
     let df = sample_df();
     // offset=3, length=100 → should clamp to rows 3..5
-    let s = df.slice(3, 100).unwrap();
+    let s = df.on(Exec::RETAINED).slice(3, 100).unwrap();
 
     assert_eq!(s.num_rows(), 2);
     assert_eq!(s.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![40, 50]);
@@ -118,7 +118,7 @@ fn test_slice_clamps_length() {
 
 fn test_slice_zero_length() {
     let df = sample_df();
-    let s = df.slice(2, 0).unwrap();
+    let s = df.on(Exec::RETAINED).slice(2, 0).unwrap();
 
     assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
@@ -126,7 +126,7 @@ fn test_slice_zero_length() {
 
 fn test_slice_preserves_schema() {
     let df = sample_df();
-    let s = df.slice(0, 3).unwrap();
+    let s = df.on(Exec::RETAINED).slice(0, 3).unwrap();
     assert_eq!(s.column_names(), vec!["id", "val"]);
     assert_eq!(s.column_index("id"), Some(0));
     assert_eq!(s.column_index("val"), Some(1));
@@ -135,7 +135,7 @@ fn test_slice_preserves_schema() {
 fn test_slice_offset_at_end() {
     let df = sample_df();
     // offset == num_rows → empty result
-    let s = df.slice(5, 10).unwrap();
+    let s = df.on(Exec::RETAINED).slice(5, 10).unwrap();
     assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
@@ -143,7 +143,7 @@ fn test_slice_offset_at_end() {
 fn test_slice_offset_beyond_end() {
     let df = sample_df();
     // offset > num_rows → empty result
-    let s = df.slice(999, 10).unwrap();
+    let s = df.on(Exec::RETAINED).slice(999, 10).unwrap();
     assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
@@ -154,7 +154,9 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
         execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("partition_slice")).unwrap()
     });
 
-    let err = df.slice_with_budget(0, 5, &token).expect_err("one-byte budget should not cover the gathered slice copy");
+    let err = token
+        .run("dataframe::slice", |exec| df.on(exec).slice(0, 5))
+        .expect_err("one-byte budget should not cover the gathered slice copy");
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "partition_slice");

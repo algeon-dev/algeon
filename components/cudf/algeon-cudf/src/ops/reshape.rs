@@ -10,9 +10,7 @@ use crate::{
             FACT_RIGHT_TYPE_ID, Result,
         },
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::execution_domain::ExecutionDomain,
 };
 
 const INTERLEAVE_OPERATION: &str = "reshape::interleave_columns";
@@ -85,27 +83,6 @@ fn validate_interleave_inputs(columns: &[&ColumnView<'_>]) -> Result<()> {
     }
     checked_interleave_output_size(expected_rows, columns.len())?;
     Ok(())
-}
-
-fn compatible_execution(columns: &[&ColumnView<'_>]) -> Result<ResolvedExecution> {
-    let first = columns.first().ok_or_else(interleave_requires_input_error)?;
-    ResolvedExecution::many(
-        first.execution_domain(),
-        columns[1..].iter().map(|column| column.execution_domain()),
-        &ExecutionOverrides::new(),
-        INTERLEAVE_OPERATION,
-    )
-}
-
-/// Interleave equal-length columns into a single row-major column.
-///
-/// For input columns `[a, b]`, output values are
-/// `[a[0], b[0], a[1], b[1], ...]`. All columns must have the same data type
-/// and row count.
-pub fn interleave_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
-    validate_interleave_inputs(columns)?;
-    let execution = compatible_execution(columns)?;
-    interleave_columns_with_exec(columns, execution.output_domain(), execution.exec_options())
 }
 
 pub(crate) fn interleave_columns_with_exec(

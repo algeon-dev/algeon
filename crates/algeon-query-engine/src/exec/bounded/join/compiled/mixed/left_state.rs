@@ -4,8 +4,8 @@ use crate::{
     exec::bounded::join::compiled::{
         BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
         BoundedExecutionAttempt, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId, ResidentFrameStreamPayload,
-        ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options, execution_overrides,
-        join_index_error, join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+        ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options, join_index_error,
+        join_side_output_upper_bound_bytes, lower_join_residual_predicate,
         materialize_left_only_join_output_projection, observe_device_memory_bytes,
         prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
         residual_input_columns,
@@ -25,12 +25,12 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
         let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
         let probe_columns = compiled_join_input_columns(node, build.strategy, JoinSide::Right)?;
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
         let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
         let timer = Instant::now();
-        let mut state = cudf::DataFrameMixedLeftJoinState::new_in(&build.input.frame, predicate, options, &overrides)
+        let mut state = cudf::DataFrameMixedLeftJoinState::new(&build.input.frame, predicate, options, overrides)
             .map_err(|error| join_index_error(error, node))?;
         let mut operator_time = timer.elapsed();
         let mut state_bytes =
@@ -43,7 +43,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
             let probe =
                 prepare_bounded_join_side_input_from_resident_frame(execution, input, &probe_columns, JoinSide::Right)?;
             let timer = Instant::now();
-            state.consume_in(&probe.frame, &overrides).map_err(|error| join_index_error(error, node))?;
+            state.consume(&probe.frame).map_err(|error| join_index_error(error, node))?;
             operator_time += timer.elapsed();
             state_bytes = state_bytes
                 .max(state.device_allocated_size_bytes().map_err(|error| join_index_error(error, node))? as u64);
@@ -54,7 +54,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         let timer = Instant::now();
         // Unmatched left rows become anti output only after every right batch has completed.
         let finalized = state
-            .seal_in(matches!(node.spec.join_type, JoinType::LeftAnti { .. }), &overrides)
+            .seal(matches!(node.spec.join_type, JoinType::LeftAnti { .. }))
             .map_err(|error| join_index_error(error, node))?;
         operator_time += timer.elapsed();
         state_bytes = state_bytes
@@ -83,8 +83,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
 ) -> Result<ResidentGpuFrame> {
     let BoundedCompiledMixedLeftJoinProbeState { left, finalized, probe_rows, probe_bytes, state_bytes, operator_time } =
         probe;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let output_rows = finalized.output_size() as u64;
     let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
     let output_reservation_bytes = join_side_output_upper_bound_bytes(
@@ -96,14 +96,14 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         JoinSide::Left,
     )?;
     let timer = Instant::now();
-    let indices = finalized.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
+    let indices = finalized.materialize_indices().map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map_err(|error| join_index_error(error, node))? as u64;
     // Reclaim the match mask and hash state before allocating the gathered output.
     drop(finalized);
     let output = materialize_left_only_join_output_projection(
         &left.frame,
         &indices,
-        &overrides,
+        overrides,
         &node.spec.output_projection,
         node.spec.join_type.clone(),
     )?;

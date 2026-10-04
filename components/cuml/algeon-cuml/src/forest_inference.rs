@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use cudf::{
-    DataType, DenseMatrixLayout, Runtime, Series, TypeId,
+    DataType, DenseMatrixLayout, Exec, Runtime, Series, TypeId,
     runtime::{DeviceEntryGuard, ExecutionBindingId},
 };
 
@@ -441,11 +441,15 @@ impl ForestPrediction {
         })?;
         let slots = self.runtime.sequence(0_i32, stride, self.rows).map_err(|e| from_cudf(ASSEMBLE, e))?;
         let indices = Series::from_column(flat)
-            .and_then(|flat| flat.gather(&slots))
-            .and_then(|values| values.astype(DataType::new(TypeId::Float64)))
+            .and_then(|flat| flat.on(Exec::RETAINED).gather(&slots))
+            .and_then(|values| values.on(Exec::RETAINED).astype(DataType::new(TypeId::Float64)))
             .map_err(|e| from_cudf(ASSEMBLE, e))?;
-        let nan = indices.is_nan().and_then(|mask| mask.any_value()).map_err(|e| from_cudf(ASSEMBLE, e))?;
-        let (min, max) = indices.minmax_values::<f64>().map_err(|e| from_cudf(ASSEMBLE, e))?;
+        let nan = indices
+            .on(Exec::RETAINED)
+            .is_nan()
+            .and_then(|mask| mask.on(Exec::RETAINED).any_value())
+            .map_err(|e| from_cudf(ASSEMBLE, e))?;
+        let (min, max) = indices.on(Exec::RETAINED).minmax_values::<f64>().map_err(|e| from_cudf(ASSEMBLE, e))?;
         if nan || min.is_none_or(|v| v < 0.0) || max.is_none_or(|v| v >= classes as f64) {
             return Err(error(
                 ErrorCode::OutputOutOfRange,
@@ -457,14 +461,15 @@ impl ForestPrediction {
             .with_detail("observed_min", format!("{min:?}"))
             .with_detail("observed_max", format!("{max:?}")));
         }
-        indices.astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(ASSEMBLE, e))
+        indices.on(Exec::RETAINED).astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(ASSEMBLE, e))
     }
 }
 
 fn narrow_finite(values: &Series) -> Result<Series> {
-    let narrowed = values.astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(ASSEMBLE, e))?;
+    let narrowed =
+        values.on(Exec::RETAINED).astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(ASSEMBLE, e))?;
     // Finite doubles beyond the Float32 range narrow to infinity.
-    let (min, max) = narrowed.minmax_values::<f32>().map_err(|e| from_cudf(ASSEMBLE, e))?;
+    let (min, max) = narrowed.on(Exec::RETAINED).minmax_values::<f32>().map_err(|e| from_cudf(ASSEMBLE, e))?;
     if min.is_none_or(|v| !v.is_finite()) || max.is_none_or(|v| !v.is_finite()) {
         return Err(error(
             ErrorCode::OutputNotFinite,

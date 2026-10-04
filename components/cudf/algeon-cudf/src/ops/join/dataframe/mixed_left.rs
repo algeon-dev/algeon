@@ -8,7 +8,8 @@ use crate::core::{error, native_teardown::drop_device_owned_handle};
 /// Construction retains the left frame and owns the residual predicate. Each
 /// right batch adds matches without emitting rows. Sealing declares right EOF;
 /// it consumes this state and makes the exact semi/anti output count available.
-/// Every call must use the construction device, stream and memory resource.
+/// Calls after construction run on the construction device, stream and
+/// memory resource.
 pub struct DataFrameMixedLeftJoinState {
     handle: NonNull<cudf_sys::cudf_mixed_left_join_state_handle_state>,
     domain: Arc<ExecutionDomain>,
@@ -50,14 +51,15 @@ pub struct DataFrameMixedLeftJoinFinalized {
 }
 
 impl DataFrameMixedLeftJoinState {
-    /// Build the logical-left equality index without copying frame payloads.
-    pub fn new_in(
+    /// Build the logical-left equality index without copying frame payloads,
+    /// running where `exec` selects; later calls on the state stay there.
+    pub fn new(
         left: &DataFrame,
         predicate: AstExpression,
         options: DataFrameMixedJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        exec: Exec<'_>,
     ) -> Result<Self> {
-        let operation = "dataframe::mixed_left_join_state::new_in";
+        let operation = "dataframe::mixed_left_join_state::new";
         let (left_keys, _, _) =
             resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
         if options.left_predicate_column_names().is_empty() || options.right_predicate_column_names().is_empty() {
@@ -74,7 +76,7 @@ impl DataFrameMixedLeftJoinState {
         let conditional = build_borrowed_table_view_from_columns(left.columns_map(), &conditional)?;
         let mut domains = vec![conditional.execution_domain()];
         predicate.literal_domains(&mut domains);
-        let execution = ResolvedExecution::many(keys.execution_domain(), domains, ctx, operation)?;
+        let execution = ResolvedExecution::many(keys.execution_domain(), domains, exec, operation)?;
         let mut handle = ptr::null_mut();
         error::check_status_in(
             unsafe {
@@ -99,8 +101,8 @@ impl DataFrameMixedLeftJoinState {
     }
 
     /// Accumulate matches from one right batch. An empty batch is not EOF.
-    pub fn consume_in(&mut self, right: &DataFrame, ctx: &ExecutionOverrides<'_>) -> Result<()> {
-        let operation = "dataframe::mixed_left_join_state::consume_in";
+    pub fn consume(&mut self, right: &DataFrame) -> Result<()> {
+        let operation = "dataframe::mixed_left_join_state::consume";
         let tables = mixed_join_tables(&self.left, right, &self.options, operation)?;
         let mut domains = vec![
             tables.left_equality.execution_domain(),
@@ -111,7 +113,7 @@ impl DataFrameMixedLeftJoinState {
         self.predicate.literal_domains(&mut domains);
         // ResolvedExecution orders input producers and fences their release after
         // the consuming kernel, including right frames on a different stream.
-        let execution = ResolvedExecution::many(&self.domain, domains, ctx, operation)?;
+        let execution = ResolvedExecution::many(&self.domain, domains, Exec::RETAINED, operation)?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_mixed_left_join_state_consume_ex(
@@ -136,9 +138,9 @@ impl DataFrameMixedLeftJoinState {
     }
 
     /// Declare right EOF and choose anti (`true`) or semi (`false`) output.
-    pub fn seal_in(self, anti: bool, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameMixedLeftJoinFinalized> {
-        let operation = "dataframe::mixed_left_join_state::seal_in";
-        let execution = ResolvedExecution::unary(&self.domain, ctx, operation)?;
+    pub fn seal(self, anti: bool) -> Result<DataFrameMixedLeftJoinFinalized> {
+        let operation = "dataframe::mixed_left_join_state::seal";
+        let execution = ResolvedExecution::unary(&self.domain, Exec::RETAINED, operation)?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_mixed_left_join_state_seal_ex(
@@ -185,9 +187,9 @@ impl DataFrameMixedLeftJoinFinalized {
     }
 
     /// Materialize the selected logical-left indices without re-probing right input.
-    pub fn materialize_indices_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinIndices> {
-        let operation = "dataframe::mixed_left_join_finalized::materialize_indices_in";
-        let execution = ResolvedExecution::unary(&self.state.domain, ctx, operation)?;
+    pub fn materialize_indices(&self) -> Result<DataFrameJoinIndices> {
+        let operation = "dataframe::mixed_left_join_finalized::materialize_indices";
+        let execution = ResolvedExecution::unary(&self.state.domain, Exec::RETAINED, operation)?;
         let mut out = ptr::null_mut();
         error::check_status_in(
             unsafe {

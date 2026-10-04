@@ -1,8 +1,8 @@
 //! Tests for `DataFrame::groupby(...).shift(...)`.
 
-use cudf::{ErrorCode, ShiftSpec};
+use cudf::{ErrorCode, Exec, ScalarValue, ShiftSpec, TypeId};
 
-use crate::common::{column_from_slice, dataframe_from_columns, null_scalar, run_named_cases, scalar};
+use crate::common::{column_from_slice, dataframe_from_columns, run_named_cases, scalar};
 
 /// Restore input row order on the resulting DataFrame by sorting on the key
 /// and value columns. libcudf does not promise inter-group output ordering,
@@ -20,10 +20,11 @@ fn groupby_shift_forward_with_null_fill() {
     let df =
         dataframe_from_columns(vec!["key".into(), "row_id".into(), "value".into()], vec![keys, row_id, vals]).unwrap();
 
-    let fill = null_scalar::<i32>().unwrap();
-    let row_fill = null_scalar::<i32>().unwrap();
+    let fill = scalar(ScalarValue::Null(TypeId::Int32.into())).unwrap();
+    let row_fill = scalar(ScalarValue::Null(TypeId::Int32.into())).unwrap();
     let result = df
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .shift(&[
             ShiftSpec::new("row_id", 1, row_fill).with_alias("row_id_lag"),
             ShiftSpec::new("value", 1, fill).with_alias("value_lag"),
@@ -69,6 +70,7 @@ fn groupby_shift_lead_with_value_fill() {
     let row_fill = scalar(-1i32).unwrap();
     let result = df
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .shift(&[ShiftSpec::new("row_id", -1, row_fill), ShiftSpec::new("value", -1, fill).with_alias("next_value")])
         .unwrap();
 
@@ -112,12 +114,14 @@ fn groupby_shift_sorted_keys_hint_matches_unsorted() {
     let value_fill_a = scalar(-1i32).unwrap();
     let unsorted = df_a
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .shift(&[ShiftSpec::new("row_id", 1, row_fill_a), ShiftSpec::new("value", 1, value_fill_a)])
         .unwrap();
     let row_fill_b = scalar(-1i32).unwrap();
     let value_fill_b = scalar(-1i32).unwrap();
     let sorted_hint = df_b
         .groupby(["key"])
+        .on(Exec::RETAINED)
         .shift_sorted(&[ShiftSpec::new("row_id", 1, row_fill_b), ShiftSpec::new("value", 1, value_fill_b)])
         .unwrap();
 
@@ -148,7 +152,7 @@ fn groupby_shift_dtype_mismatch_rejects() {
     let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let wrong_fill = scalar(1.5f64).unwrap();
-    let err = df.groupby(["key"]).shift(&[ShiftSpec::new("value", 1, wrong_fill)]).unwrap_err();
+    let err = df.groupby(["key"]).on(Exec::RETAINED).shift(&[ShiftSpec::new("value", 1, wrong_fill)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     let dump = format!("{err:?}");
     assert!(dump.contains("shift_fill_value"), "missing resource fact: {dump}");
@@ -160,7 +164,7 @@ fn groupby_shift_empty_specs_rejects() {
     let vals = column_from_slice(&[10i32, 20]).unwrap();
     let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let err = df.groupby(["key"]).shift(&[]).unwrap_err();
+    let err = df.groupby(["key"]).on(Exec::RETAINED).shift(&[]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     let dump = format!("{err:?}");
     assert!(dump.contains("empty_shift_specs"), "missing reason: {dump}");
@@ -171,8 +175,8 @@ fn groupby_shift_missing_column_rejects() {
     let vals = column_from_slice(&[10i32, 20]).unwrap();
     let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let fill = null_scalar::<i32>().unwrap();
-    let err = df.groupby(["key"]).shift(&[ShiftSpec::new("missing", 1, fill)]).unwrap_err();
+    let fill = scalar(ScalarValue::Null(TypeId::Int32.into())).unwrap();
+    let err = df.groupby(["key"]).on(Exec::RETAINED).shift(&[ShiftSpec::new("missing", 1, fill)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::MissingColumn);
 }
 

@@ -2,21 +2,25 @@ use std::sync::Arc;
 
 use typed_builder::TypedBuilder;
 
-use super::owned::DataFrame;
+use super::{context::FrameOps, owned::DataFrame};
 use crate::{
-    core::{error::Result, scalar::Scalar, schema, types::CudfType},
+    core::{
+        column::{Column, ColumnView},
+        error::Result,
+        scalar::Scalar,
+        schema,
+        types::CudfType,
+    },
     frame::series::Series,
     internal::resolve::{missing_column_error, resolve_column_names},
     ops::{
         replace,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     },
-    runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
-    },
+    runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
-/// How [`DataFrame::dropna`] decides which rows to drop when `thresh` is unset.
+/// How [`FrameOps::dropna`](crate::FrameOps::dropna) decides which rows to drop when `thresh` is unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropNaHow {
     /// Drop rows when any inspected column is null.
@@ -26,7 +30,7 @@ pub enum DropNaHow {
     All,
 }
 
-/// Options for [`DataFrame::dropna`].
+/// Options for [`FrameOps::dropna`](crate::FrameOps::dropna).
 ///
 /// Controls which rows are dropped based on null values. Mirrors the
 /// `dropna()` API from cuDF Python.
@@ -62,7 +66,7 @@ impl DropNaOptions {
     }
 }
 
-/// Options for [`DataFrame::drop_duplicates`].
+/// Options for [`FrameOps::drop_duplicates`](crate::FrameOps::drop_duplicates).
 ///
 /// Controls deduplication behavior. Mirrors `drop_duplicates()` from cuDF
 /// Python.
@@ -103,36 +107,7 @@ impl DataFrame {
         if subset.is_empty() { self.column_names() } else { subset.iter().map(String::as_str).collect() }
     }
 
-    /// Remove duplicate rows based on a subset of columns (internal).
-    ///
-    /// The order of rows in the output is **not** guaranteed. The full
-    /// schema (all columns) is preserved.
-    ///
-    /// This is the low-level implementation behind [`drop_duplicates`](Self::drop_duplicates).
-    /// External callers should use `drop_duplicates` with [`DropDuplicatesOptions`] instead.
-    pub(crate) fn distinct(&self, subset: &[&str], keep: DuplicateKeepOption) -> Result<Self> {
-        let output_domain = Arc::clone(&self.domain);
-        self.distinct_impl(subset, keep, output_domain, "dataframe::distinct")
-    }
-
-    /// Drop rows where the specified columns contain nulls.
-    ///
-    /// A row is kept only if at least `keep_threshold` of the `subset`
-    /// columns are non-null. For the common "drop any null" behavior, set
-    /// `keep_threshold` equal to `subset.len()`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any name in `subset` is not in the schema.
-    pub(crate) fn drop_nulls(&self, subset: &[&str], keep_threshold: i32) -> Result<Self> {
-        let output_domain = Arc::clone(&self.domain);
-        self.drop_nulls_impl(subset, keep_threshold, output_domain, "dataframe::drop_nulls")
-    }
-
-    /// Drop rows containing null values.
-    ///
-    /// Equivalent to cuDF Python's `DataFrame.dropna()`.
-    pub fn dropna(&self, opts: DropNaOptions) -> Result<Self> {
+    pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: Exec<'_>) -> Result<Self> {
         let subset_names = self.resolve_subset_names(&opts.subset);
 
         let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
@@ -152,120 +127,48 @@ impl DataFrame {
             }
         };
 
-        self.drop_nulls(&subset_names, threshold).map_err(|e| e.reanchor("dataframe::dropna"))
-    }
-
-    pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
-        let subset_names = self.resolve_subset_names(&opts.subset);
-
-        let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
-            schema::column_name_count_limit_error(
-                "dataframe::with_execution::dropna",
-                "subset length exceeds i32::MAX",
-                subset_names.len(),
-            )
-        })?;
-
-        let threshold = if let Some(t) = opts.thresh {
-            t
-        } else {
-            match opts.how {
-                DropNaHow::All => 1,
-                DropNaHow::Any => subset_len,
-            }
-        };
-
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.drop_nulls_impl(&subset_names, threshold, output_domain, "dataframe::with_execution::dropna")
+        self.drop_nulls_impl(&subset_names, threshold, output_domain, "dataframe::drop_nulls")
+            .map_err(|e| e.reanchor("dataframe::dropna"))
     }
 
-    /// Remove duplicate rows.
-    ///
-    /// Equivalent to cuDF Python's `DataFrame.drop_duplicates()`.
-    pub fn drop_duplicates(&self, opts: DropDuplicatesOptions) -> Result<Self> {
-        let subset_names = self.resolve_subset_names(&opts.subset);
-
-        self.distinct(&subset_names, opts.keep).map_err(|e| e.reanchor("dataframe::drop_duplicates"))
-    }
-
-    /// Remove consecutive duplicate rows.
-    ///
-    /// Rows that compare equal on the selected columns must already be
-    /// adjacent. Use [`drop_duplicates`](Self::drop_duplicates) otherwise.
-    pub fn drop_consecutive_duplicates(&self, opts: DropDuplicatesOptions) -> Result<Self> {
-        let subset_names = self.resolve_subset_names(&opts.subset);
-
-        let output_domain = Arc::clone(&self.domain);
-        self.unique_impl(&subset_names, opts.keep, output_domain, "dataframe::drop_consecutive_duplicates")
-    }
-
-    pub(crate) fn drop_duplicates_in_context(
-        &self,
-        opts: DropDuplicatesOptions,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<Self> {
+    pub(crate) fn drop_duplicates_in_context(&self, opts: DropDuplicatesOptions, ctx: Exec<'_>) -> Result<Self> {
         let subset_names = self.resolve_subset_names(&opts.subset);
 
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.distinct_impl(&subset_names, opts.keep, output_domain, "dataframe::with_execution::drop_duplicates")
+        self.distinct_impl(&subset_names, opts.keep, output_domain, "dataframe::distinct")
+            .map_err(|e| e.reanchor("dataframe::drop_duplicates"))
     }
 
     pub(crate) fn drop_consecutive_duplicates_in_context(
         &self,
         opts: DropDuplicatesOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<Self> {
         let subset_names = self.resolve_subset_names(&opts.subset);
 
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.unique_impl(
-            &subset_names,
-            opts.keep,
-            output_domain,
-            "dataframe::with_execution::drop_consecutive_duplicates",
-        )
+        self.unique_impl(&subset_names, opts.keep, output_domain, "dataframe::drop_consecutive_duplicates")
     }
 
-    /// Replace null values in a single column with a plain Rust value.
-    ///
-    /// Equivalent to cuDF Python's `DataFrame.fillna({column: value})`.
-    pub fn fillna<T: CudfType>(&self, column: &str, value: T) -> Result<Self> {
-        let scalar = Scalar::from_value_in_domain(value, self.execution_domain())?;
-        self.fillna_with_scalar(column, &scalar)
-    }
-
-    /// Replace null values in a single column with a pre-constructed [`Scalar`].
-    pub fn fillna_with_scalar(&self, column: &str, value: &Scalar) -> Result<Self> {
-        self.replace_nulls(column, value).map_err(|e| e.reanchor("dataframe::fillna_with_scalar"))
-    }
-
-    /// Replace null values in a single column using corresponding elements
-    /// from a [`Series`].
-    pub fn fillna_with_series(&self, column: &str, fill_series: &Series) -> Result<Self> {
-        let operation = "dataframe::fillna_with_series";
+    fn fillna_column_in_context(
+        &self,
+        column: &str,
+        fill_input: &Arc<ExecutionDomain>,
+        ctx: Exec<'_>,
+        operation: &'static str,
+        fill: impl FnOnce(&ColumnView<'_>, &ResolvedExecution) -> Result<Column>,
+    ) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
-
-        let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
-        let fill_cv = fill_series.view()?;
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
-            [cv.execution_domain(), fill_cv.execution_domain()],
+            [cv.execution_domain(), fill_input],
             operation,
         )?;
-        let new_col = replace::replace_nulls_column_with_exec_options(
-            &cv,
-            &fill_cv,
-            execution.output_domain(),
-            execution.exec_options(),
-            operation,
-        )?;
-
-        let mut new_columns = self.columns.clone();
-        new_columns.insert(column.to_string(), Arc::new(new_col));
-
-        let domain = Arc::clone(&self.domain);
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
+        let filled = Series::from_column(fill(&cv, &execution)?)?;
+        self.with_column_in_domain(column, filled, output_domain, operation)
     }
 }
 
@@ -333,5 +236,46 @@ impl DataFrame {
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+}
+
+impl FrameOps<'_> {
+    /// Replace null values in a single column with a plain Rust value.
+    ///
+    /// Equivalent to cuDF Python's `DataFrame.fillna({column: value})`.
+    pub fn fillna<T: CudfType>(&self, column: &str, value: T) -> Result<DataFrame> {
+        let output_domain = self.ctx.resolve_output_domain(&self.df.domain)?;
+        let scalar = Scalar::from_value_in_domain(value, &output_domain)?;
+        self.fillna_with_scalar(column, &scalar).map_err(|error| error.reanchor("dataframe::fillna"))
+    }
+
+    /// Replace null values in a single column with a pre-constructed [`Scalar`].
+    pub fn fillna_with_scalar(&self, column: &str, value: &Scalar) -> Result<DataFrame> {
+        let operation = "dataframe::fillna_with_scalar";
+        self.df.fillna_column_in_context(column, value.execution_domain(), self.ctx, operation, |cv, execution| {
+            replace::replace_nulls_with_exec_options(
+                cv,
+                value,
+                execution.output_domain(),
+                execution.exec_options(),
+                operation,
+            )
+        })
+    }
+
+    /// Replace null values in a single column using corresponding elements
+    /// from a [`Series`].
+    pub fn fillna_with_series(&self, column: &str, fill_series: &Series) -> Result<DataFrame> {
+        let operation = "dataframe::fillna_with_series";
+        let fill_cv = fill_series.view()?;
+        self.df.fillna_column_in_context(column, fill_cv.execution_domain(), self.ctx, operation, |cv, execution| {
+            replace::replace_nulls_column_with_exec_options(
+                cv,
+                &fill_cv,
+                execution.output_domain(),
+                execution.exec_options(),
+                operation,
+            )
+        })
     }
 }

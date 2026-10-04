@@ -1472,6 +1472,7 @@ pub use query_runtime::runtime::cache_observation_fingerprint
 pub mod query_runtime::runtime::resident
 pub struct query_runtime::runtime::resident::GpuDataFrame
 impl query_runtime::runtime::resident::GpuDataFrame
+pub fn query_runtime::runtime::resident::GpuDataFrame::device(&self) -> cudf::runtime::device::DeviceId
 pub fn query_runtime::runtime::resident::GpuDataFrame::device_allocated_size_bytes(&self) -> query_planning::error::Result<u64>
 pub fn query_runtime::runtime::resident::GpuDataFrame::frame(&self) -> &cudf::frame::dataframe::owned::DataFrame
 pub fn query_runtime::runtime::resident::GpuDataFrame::graph_residency(&self) -> core::option::Option<&query_planning::plan::graph_algorithm::residency::GraphResidencyDescriptor>

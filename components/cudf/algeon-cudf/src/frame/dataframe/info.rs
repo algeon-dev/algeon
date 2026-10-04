@@ -8,6 +8,7 @@ use crate::{
         types::DataType,
     },
     hash::{FastHashMap, fast_hash_map_with_capacity},
+    runtime::{CompleteReport, ExecutionBudgetReport},
 };
 
 bitflags::bitflags! {
@@ -417,6 +418,13 @@ fn checked_dataframe_memory_total(
         .with_detail("accumulated_bytes", accumulated.to_string())
         .with_detail("column_bytes", column_bytes.to_string())
     })
+}
+
+impl CompleteReport for DataFrame {
+    fn complete_report(&self, report: ExecutionBudgetReport) -> Result<ExecutionBudgetReport> {
+        let bytes = self.device_allocated_size_bytes()?;
+        Ok(report.with_retained_bytes(bytes).with_output_bytes(bytes).with_output_rows(self.num_rows()))
+    }
 }
 
 #[cfg(test)]

@@ -133,7 +133,7 @@ pub(super) fn measure_join_build_key_unique(
         "query_engine.bounded.join.build_key_uniqueness_probe.budget_token",
         "failed to create join build-key uniqueness probe budget token",
     )?;
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
     let timer = Instant::now();
     let keys = match build_frame.frame().select(key_refs.clone()) {
         Ok(keys) => keys,
@@ -146,7 +146,7 @@ pub(super) fn measure_join_build_key_unique(
             ));
         },
     };
-    let unique_keys = match keys.with_execution(&overrides).drop_duplicates(
+    let unique_keys = match keys.on(overrides).drop_duplicates(
         DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
     ) {
         Ok(unique_keys) => unique_keys,

@@ -305,7 +305,7 @@ pub(crate) fn read_parquet_table_with_evidence(
     let (skip_rows, num_rows, num_rows_context) = prepare_single_range(options)?;
 
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.enter_execution()?;
+    let exec_options = output_domain.enter_execution()?.with_parquet_pass_read_limit(options.pass_read_limit);
 
     let (_cstring_columns, mut col_ptrs_vec) = column_filter_args(options.columns.as_ref(), OPERATION)?;
     let (col_ptrs, num_cols) = if col_ptrs_vec.is_empty() {
@@ -591,7 +591,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
         if row_groups.is_empty() { (ptr::null(), 0) } else { (row_groups.as_ptr(), row_groups.len() as i32) };
 
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.enter_execution()?;
+    let exec_options = output_domain.enter_execution()?.with_parquet_pass_read_limit(options.pass_read_limit);
     let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
     let remote = prepare_multi_remote(options)?;
 

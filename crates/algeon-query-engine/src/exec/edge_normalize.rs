@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::{
     CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, ExecutionMetrics,
-    GpuDataFrame, NodeId, Result, cudf_query_error, execution_overrides,
+    GpuDataFrame, NodeId, Result, cudf_query_error,
 };
 use crate::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
 
@@ -29,13 +29,13 @@ pub(super) fn execute_edge_normalize(
         metrics,
     )?;
     let timer = Instant::now();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
     let mut frame = project_edge_columns(frame, &node.spec, node_id)?;
 
     if node.spec.add_reverse {
         let reverse = reverse_edges(&frame, &node.spec, node_id)?;
-        frame = frame.with_execution(&overrides).concat_many(&[&reverse]).map_err(|error| {
+        frame = frame.on(overrides).concat_many(&[&reverse]).map_err(|error| {
             cudf_query_error(
                 "query_engine.edge_normalize.reverse_concat",
                 "failed to append reverse edges for native edge normalization",
@@ -52,10 +52,8 @@ pub(super) fn execute_edge_normalize(
         {
             sort_by.push(weight);
         }
-        frame = frame
-            .with_execution(&overrides)
-            .sort_values(sort_by, CudfSortOptions::new().with_stable(true))
-            .map_err(|error| {
+        frame =
+            frame.on(overrides).sort_values(sort_by, CudfSortOptions::new().with_stable(true)).map_err(|error| {
                 cudf_query_error(
                     "query_engine.edge_normalize.sort",
                     "failed to sort edges for native edge normalization",
@@ -64,7 +62,7 @@ pub(super) fn execute_edge_normalize(
                 .with_fact("node_id", node_id)
             })?;
         frame = frame
-            .with_execution(&overrides)
+            .on(overrides)
             .drop_duplicates(
                 DropDuplicatesOptions::builder()
                     .subset(&[node.spec.edge_columns.source.as_str(), node.spec.edge_columns.destination.as_str()][..])

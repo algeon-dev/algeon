@@ -7,10 +7,9 @@ use super::{
     Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result,
     SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
     annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
-    cudf_query_error, execute_filter_with_budget, execute_projection_with_budget, execution_overrides,
-    is_retryable_chunk_error, join_leaf_prefetch_admitted, observe_device_memory_bytes,
-    plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
-    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
+    cudf_query_error, execute_filter_with_budget, execute_projection_with_budget, is_retryable_chunk_error,
+    join_leaf_prefetch_admitted, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
+    plan_source_chunk_batches, record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
     validate_local_parquet_source,
 };
 use crate::{

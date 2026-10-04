@@ -4,7 +4,7 @@ use super::*;
 ///
 /// The result is a row-aligned column; not a scalar branch selector.
 /// `IfElse` does not inherit an output name, so `.alias()` is required
-/// when used inside [`DataFrame::with_columns`].
+/// when used inside [`FrameOps::with_columns`](crate::FrameOps::with_columns).
 ///
 /// # Example
 ///

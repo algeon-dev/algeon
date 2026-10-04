@@ -12,8 +12,8 @@ pub struct ExprAggNamespace(pub(super) Expr);
 impl ExprAggNamespace {
     /// Sum all rows, then materialize the result as a full-length column.
     ///
-    /// Use [`Series::sum`](crate::frame::series::Series::sum) or
-    /// [`Series::sum_value`](crate::frame::series::Series::sum_value) when you
+    /// Use [`SeriesOps::sum`](crate::frame::series::SeriesOps::sum) or
+    /// [`SeriesOps::sum_value`](crate::frame::series::SeriesOps::sum_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn sum(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Sum }
@@ -21,8 +21,8 @@ impl ExprAggNamespace {
 
     /// Mean of all rows, materialized as a full-length `Float64` column.
     ///
-    /// Use [`Series::mean`](crate::frame::series::Series::mean) or
-    /// [`Series::mean_value`](crate::frame::series::Series::mean_value) when
+    /// Use [`SeriesOps::mean`](crate::frame::series::SeriesOps::mean) or
+    /// [`SeriesOps::mean_value`](crate::frame::series::SeriesOps::mean_value) when
     /// you want a scalar result instead of a broadcast expression operand.
     pub fn mean(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Mean }
@@ -30,8 +30,8 @@ impl ExprAggNamespace {
 
     /// Minimum of all rows, materialized as a full-length column.
     ///
-    /// Use [`Series::min`](crate::frame::series::Series::min) or
-    /// [`Series::min_value`](crate::frame::series::Series::min_value) when you
+    /// Use [`SeriesOps::min`](crate::frame::series::SeriesOps::min) or
+    /// [`SeriesOps::min_value`](crate::frame::series::SeriesOps::min_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn min(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Min }
@@ -39,8 +39,8 @@ impl ExprAggNamespace {
 
     /// Maximum of all rows, materialized as a full-length column.
     ///
-    /// Use [`Series::max`](crate::frame::series::Series::max) or
-    /// [`Series::max_value`](crate::frame::series::Series::max_value) when you
+    /// Use [`SeriesOps::max`](crate::frame::series::SeriesOps::max) or
+    /// [`SeriesOps::max_value`](crate::frame::series::SeriesOps::max_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn max(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Max }
@@ -48,8 +48,8 @@ impl ExprAggNamespace {
 
     /// Standard deviation of all rows, materialized as a full-length column.
     ///
-    /// Use [`Series::std`](crate::frame::series::Series::std) or
-    /// [`Series::std_value`](crate::frame::series::Series::std_value) when you
+    /// Use [`SeriesOps::std`](crate::frame::series::SeriesOps::std) or
+    /// [`SeriesOps::std_value`](crate::frame::series::SeriesOps::std_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn std(self, ddof: u32) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Std { ddof } }
@@ -57,8 +57,8 @@ impl ExprAggNamespace {
 
     /// Variance of all rows, materialized as a full-length column.
     ///
-    /// Use [`Series::var`](crate::frame::series::Series::var) or
-    /// [`Series::var_value`](crate::frame::series::Series::var_value) when you
+    /// Use [`SeriesOps::var`](crate::frame::series::SeriesOps::var) or
+    /// [`SeriesOps::var_value`](crate::frame::series::SeriesOps::var_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn var(self, ddof: u32) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Variance { ddof } }
@@ -66,8 +66,8 @@ impl ExprAggNamespace {
 
     /// Median of all rows, materialized as a full-length `Float64` column.
     ///
-    /// Use [`Series::median`](crate::frame::series::Series::median) or
-    /// [`Series::median_value`](crate::frame::series::Series::median_value)
+    /// Use [`SeriesOps::median`](crate::frame::series::SeriesOps::median) or
+    /// [`SeriesOps::median_value`](crate::frame::series::SeriesOps::median_value)
     /// when you want a scalar result instead of a broadcast expression
     /// operand.
     pub fn median(self) -> Expr {
@@ -76,8 +76,8 @@ impl ExprAggNamespace {
 
     /// Logical ANY over all rows, materialized as a full-length BOOL8 column.
     ///
-    /// Use [`Series::any`](crate::frame::series::Series::any) or
-    /// [`Series::any_value`](crate::frame::series::Series::any_value) when you
+    /// Use [`SeriesOps::any`](crate::frame::series::SeriesOps::any) or
+    /// [`SeriesOps::any_value`](crate::frame::series::SeriesOps::any_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn any(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Any }
@@ -85,8 +85,8 @@ impl ExprAggNamespace {
 
     /// Logical ALL over all rows, materialized as a full-length BOOL8 column.
     ///
-    /// Use [`Series::all`](crate::frame::series::Series::all) or
-    /// [`Series::all_value`](crate::frame::series::Series::all_value) when you
+    /// Use [`SeriesOps::all`](crate::frame::series::SeriesOps::all) or
+    /// [`SeriesOps::all_value`](crate::frame::series::SeriesOps::all_value) when you
     /// want a scalar result instead of a broadcast expression operand.
     pub fn all(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::All }
@@ -94,8 +94,8 @@ impl ExprAggNamespace {
 
     /// Product of all rows, materialized as a full-length column.
     ///
-    /// Use [`Series::product`](crate::frame::series::Series::product) or
-    /// [`Series::product_value`](crate::frame::series::Series::product_value)
+    /// Use [`SeriesOps::product`](crate::frame::series::SeriesOps::product) or
+    /// [`SeriesOps::product_value`](crate::frame::series::SeriesOps::product_value)
     /// when you want a scalar result instead of a broadcast expression
     /// operand.
     pub fn product(self) -> Expr {

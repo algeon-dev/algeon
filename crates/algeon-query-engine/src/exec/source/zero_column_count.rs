@@ -116,13 +116,16 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
         })?;
 
     let timer = Instant::now();
-    let outcome = context.runtime()?.series_from_value_with_budget(count, 1, &token).map_err(|error| {
-        cudf_query_error(
-            "query_engine.local_parquet_chunk.zero_column_count",
-            "failed to construct bounded native zero-column count input",
-            error,
-        )
-    })?;
+    let runtime = context.runtime()?;
+    let outcome = token
+        .run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(count, 1))
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.local_parquet_chunk.zero_column_count",
+                "failed to construct bounded native zero-column count input",
+                error,
+            )
+        })?;
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk.zero_column_count", outcome.report());
     let series = outcome.into_value();
     let frame = DataFrame::from_series([(ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {

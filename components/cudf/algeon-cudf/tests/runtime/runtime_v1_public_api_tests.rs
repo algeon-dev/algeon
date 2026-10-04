@@ -4,8 +4,8 @@
 //! execution overrides, copy-into-runtime placement, and mixed-domain
 //! semantics. It intentionally avoids one near-identical test per public API.
 use cudf::{
-    AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
+    AggSpec, DataFrame, DataType, DeviceId, ErrorCode, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    GroupByAgg, MergeOptions, Runtime, ScalarValue, Series, SortOptions, TypeId,
     core::{Scalar, memory::DeviceMemoryResource},
     frame::dataframe::{ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
@@ -61,10 +61,10 @@ fn sorted_i32_i64_rows(df: &DataFrame, left: &str, right: &str) -> Vec<(i32, i64
 
 fn runtime_and_execution_context_are_public_and_send_sync() {
     assert_send_sync::<Runtime>();
-    assert_send_sync::<ExecutionOverrides<'static>>();
+    assert_send_sync::<Exec<'static>>();
 
     let rt = Runtime::builder().build().unwrap();
-    let _ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
+    let _ctx = rt.exec();
 }
 
 fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
@@ -110,21 +110,21 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     assert_eq!(scalar.value::<i32>().unwrap(), 7);
 
     reset_exec_observation();
-    let string_scalar = rt.string_scalar("alice").unwrap();
+    let string_scalar = rt.scalar("alice").unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_scalar_residency(&string_scalar, expected_id, expected_stream);
     assert_eq!(string_scalar.string_value().unwrap(), "alice");
 
     reset_exec_observation();
-    let null_scalar = rt.null_scalar::<i32>().unwrap();
+    let null_scalar = rt.scalar(ScalarValue::Null(TypeId::Int32.into())).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_scalar_residency(&null_scalar, expected_id, expected_stream);
     assert!(!null_scalar.is_valid().unwrap());
 
     reset_exec_observation();
-    let null_string_scalar = rt.null_string_scalar().unwrap();
+    let null_string_scalar = rt.scalar(ScalarValue::Null(TypeId::String.into())).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_scalar_residency(&null_string_scalar, expected_id, expected_stream);
@@ -229,17 +229,17 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     let ctx_stream = ctx_rt.stream().testing_raw_handle_value();
     let ctx_mr = ctx_rt.memory_resource().testing_raw_handle_value();
-    let ctx = ExecutionOverrides::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
+    let ctx = ctx_rt.exec();
 
     reset_exec_observation();
-    let sorted = df.with_execution(&ctx).sort_values(["id"], SortOptions::default()).unwrap();
+    let sorted = df.on(ctx).sort_values(["id"], SortOptions::default()).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&sorted, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 2, 3]);
 
     reset_exec_observation();
-    let gathered = df.with_execution(&ctx).gather(&gather_map).unwrap();
+    let gathered = df.on(ctx).gather(&gather_map).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&gathered, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -247,7 +247,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     reset_dependency_observation();
     reset_exec_observation();
-    let merged = df.with_execution(&ctx).merge(&rhs, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let merged = df.on(ctx).merge(&rhs, MergeOptions::new().how_inner().on(["id"])).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(dependency_wait_call_count_for_stream(ctx_stream), 2);
@@ -256,7 +256,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     reset_dependency_observation();
     reset_exec_observation();
-    let grouped = df.groupby(["id"]).with_execution(&ctx).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
+    let grouped = df.groupby(["id"]).on(ctx).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(dependency_wait_call_count_for_stream(ctx_stream), 1);
@@ -265,14 +265,14 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     reset_dependency_observation();
     reset_exec_observation();
-    let prepared_facts = df.groupby(["id"]).with_execution(&ctx).prepare_groups().unwrap();
+    let prepared_facts = df.groupby(["id"]).on(ctx).prepare_groups().unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(dependency_wait_call_count_for_stream(ctx_stream), 1);
     assert_eq!(prepared_facts.num_groups, 3);
 
     reset_exec_observation();
-    let filtered = df.with_execution(&ctx).filter_expr(col("id").ge(2i32) & col("val").lt(35i32)).unwrap();
+    let filtered = df.on(ctx).filter_expr(col("id").ge(2i32) & col("val").lt(35i32)).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&filtered, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -282,7 +282,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     reset_exec_observation();
     let keep_before = dataframe_device_ptr(&df, "val");
     let with_columns = df
-        .with_execution(&ctx)
+        .on(ctx)
         .with_columns([
             ("score", col("id") + col("val")),
             ("id_total", col("id").agg().sum()),
@@ -303,14 +303,14 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_eq!(with_columns.series("id_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![8, 8, 8, 8]);
 
     reset_exec_observation();
-    let with_position = df.with_execution(&ctx).with_position_column("row_id").unwrap();
+    let with_position = df.on(ctx).with_position_column("row_id").unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&with_position, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(with_position.series("row_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 3]);
     assert_eq!(with_position.series("val").unwrap().as_column().testing_execution_domain_stream_value(), ctx_stream);
 
-    let default_with_columns = df.with_columns([("score", col("id") + col("val"))]).unwrap();
+    let default_with_columns = df.on(Exec::RETAINED).with_columns([("score", col("id") + col("val"))]).unwrap();
     assert_eq!(
         dataframe_device_ptr(&default_with_columns, "val"),
         keep_before,
@@ -323,8 +323,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
         ("keep", data_rt.series(&[1i32, 2, 3]).unwrap()),
     ])
     .unwrap();
-    let str_with_columns =
-        str_df.with_execution(&ctx).with_columns([("has_a", col("name").str().contains("a"))]).unwrap();
+    let str_with_columns = str_df.on(ctx).with_columns([("has_a", col("name").str().contains("a"))]).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&str_with_columns, str_df.testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -343,17 +342,17 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
 
     let ctx_stream = ctx_rt.stream().testing_raw_handle_value();
     let ctx_mr = ctx_rt.memory_resource().testing_raw_handle_value();
-    let ctx = ExecutionOverrides::new().with_stream(ctx_rt.stream()).with_memory_resource(ctx_rt.memory_resource());
+    let ctx = ctx_rt.exec();
 
     reset_exec_observation();
-    let sorted = numeric.sort_values_in(SortOptions::default(), &ctx).unwrap();
+    let sorted = numeric.on(ctx).sort_values(SortOptions::default()).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_series_residency(&sorted, numeric.as_column().testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(sorted.to_optional_vec::<i32>().unwrap(), vec![Some(10), Some(30), None, None]);
 
     reset_exec_observation();
-    let filled = numeric.fillna_with_series_in(&fill, &ctx).unwrap();
+    let filled = numeric.on(ctx).fillna_with_series(&fill).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_series_residency(&filled, numeric.as_column().testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -361,7 +360,7 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
 
     reset_dependency_observation();
     reset_exec_observation();
-    let added = numeric.add_in(&rhs, &ctx).unwrap();
+    let added = numeric.on(ctx).add(&rhs).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(dependency_wait_call_count_for_stream(ctx_stream), 2);
@@ -369,20 +368,20 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
     assert_eq!(added.to_optional_vec::<i32>().unwrap(), vec![Some(31), None, Some(13), None]);
 
     reset_exec_observation();
-    let reduced = numeric.sum_in(&ctx).unwrap();
+    let reduced = numeric.on(ctx).sum().unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(reduced.testing_execution_domain_id(), numeric.as_column().testing_execution_domain_id());
 
     reset_exec_observation();
     reset_sync_observation();
-    assert_eq!(numeric.sum_value_in::<i64>(&ctx).unwrap(), 40);
+    assert_eq!(numeric.on(ctx).sum_value::<i64>().unwrap(), 40);
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_eq!(last_sync_stream_value(), ctx_stream);
 
     reset_exec_observation();
-    let contains = strings.str().contains_in("A", &ctx).unwrap();
+    let contains = strings.on(ctx).str().contains("A").unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_series_residency(&contains, strings.as_column().testing_execution_domain_id(), ctx_stream, ctx_mr);
@@ -393,13 +392,13 @@ fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
     let series = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = DataFrame::from_series([("id", series.clone())]).unwrap();
     let override_stream = CudaStream::new().unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(&override_stream);
+    let ctx = Exec::RETAINED.with_stream(&override_stream);
 
-    let sorted_series = series.sort_values_in(SortOptions::default(), &ctx).unwrap();
+    let sorted_series = series.on(ctx).sort_values(SortOptions::default()).unwrap();
     assert_eq!(sorted_series.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(sorted_series.as_column().testing_execution_domain_kind(), "explicit");
 
-    let sorted_df = df.with_execution(&ctx).sort_values(["id"], SortOptions::default()).unwrap();
+    let sorted_df = df.on(ctx).sort_values(["id"], SortOptions::default()).unwrap();
     assert_eq!(sorted_df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(sorted_df.testing_execution_domain_kind(), "explicit");
 }
@@ -412,7 +411,7 @@ fn explicit_runtime_operations_use_explicit_domain_only() {
     ])
     .unwrap();
 
-    let sorted = df.sort_values(["id"], SortOptions::default()).unwrap();
+    let sorted = df.on(Exec::RETAINED).sort_values(["id"], SortOptions::default()).unwrap();
     assert_eq!(sorted.testing_execution_domain_kind(), "explicit");
     assert_eq!(sorted.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -435,8 +434,9 @@ fn runtime_seeded_readers_use_runtime_stream() {
     let expected_stream = rt.stream().testing_raw_handle_value();
 
     reset_exec_observation();
-    let parquet_df = DataFrame::read_parquet_with_options(
+    let parquet_df = DataFrame::read_parquet(
         ParquetReadOptions::builder().filepath(&parquet_path).with_runtime(&rt).build(),
+        Exec::RETAINED,
     )
     .unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
@@ -531,11 +531,10 @@ fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantic
 
     let override_stream = CudaStream::new().unwrap();
     let ctx_stream = override_stream.testing_raw_handle_value();
-    let ctx = ExecutionOverrides::new().with_stream(&override_stream);
+    let ctx = Exec::RETAINED.with_stream(&override_stream);
 
     reset_exec_observation();
-    let merged_in_context =
-        left.with_execution(&ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let merged_in_context = left.on(ctx).merge(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
     assert_eq!(merged_in_context.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(merged_in_context.testing_execution_domain_stream_value(), ctx_stream);
@@ -543,7 +542,7 @@ fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantic
     let left = left.copy_into_runtime(&target_rt).unwrap();
     let right = right.copy_into_runtime(&target_rt).unwrap();
     reset_exec_observation();
-    let merged_after_copy = left.merge(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
+    let merged_after_copy = left.on(Exec::RETAINED).merge(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
     assert_eq!(last_exec_stream_value(), target_rt.stream().testing_raw_handle_value());
     assert_frame_residency(
         &merged_after_copy,
@@ -645,7 +644,8 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = runtime.series_from_scalar_with_budget(&scalar, 4, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_scalar", |exec| runtime.on(exec)?.series_from_scalar(&scalar, 4)).unwrap();
     let observed_mrs = observed_exec_mr_values();
     let series = outcome.value();
     let report = outcome.report();
@@ -682,7 +682,8 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = runtime.series_from_value_with_budget(42i32, 4, &token).unwrap();
+    let outcome =
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(42i32, 4)).unwrap();
     let observed_mrs = observed_exec_mr_values();
     let series = outcome.value();
     let report = outcome.report();
@@ -714,7 +715,7 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = runtime.nulls_with_budget(TypeId::Int32, 4, &token).unwrap();
+    let outcome = token.run("runtime::nulls", |exec| runtime.on(exec)?.nulls(TypeId::Int32, 4)).unwrap();
     let series = outcome.value();
     let report = outcome.report();
     let output_bytes = series.device_allocated_size_bytes().unwrap();
@@ -744,7 +745,7 @@ fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = runtime.nulls_with_budget(dtype, 4, &token).unwrap();
+    let outcome = token.run("runtime::nulls", |exec| runtime.on(exec)?.nulls(dtype, 4)).unwrap();
     let series = outcome.value();
     let view = series.as_column().testing_view().unwrap();
 
@@ -767,7 +768,8 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = runtime.column_from_scalar_with_budget(&scalar, 4, &token).unwrap();
+    let outcome =
+        token.run("runtime::column_from_scalar", |exec| runtime.on(exec)?.column_from_scalar(&scalar, 4)).unwrap();
     let (column, report) = outcome.into_parts();
 
     assert_eq!(column.to_vec::<i32>().unwrap(), vec![42, 42, 42, 42]);
@@ -791,14 +793,14 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
         execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("scalar_series")).unwrap();
 
     let err = expect_cudf_err(
-        runtime.series_from_scalar_with_budget(&scalar, 1024, &token),
+        token.run("runtime::series_from_scalar", |exec| runtime.on(exec)?.series_from_scalar(&scalar, 1024)),
         "one-byte budget should not cover scalar-to-series allocation",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "runtime::series_from_scalar_with_budget");
+    assert_eq!(err.operation(), "runtime::series_from_scalar");
     let budget = err.budget_exhaustion().expect("budgeted scalar series exposes its budget scope");
-    assert_eq!(budget.operation(), "runtime::series_from_scalar_with_budget");
+    assert_eq!(budget.operation(), "runtime::series_from_scalar");
     assert_eq!(budget.boundary(), "scalar_series");
     let usage = budget.usage().expect("the member was sampled");
     assert_eq!(usage.allocation_limit_bytes, 1);
@@ -816,13 +818,13 @@ fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
     let token = execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("value_series")).unwrap();
 
     let err = expect_cudf_err(
-        runtime.series_from_value_with_budget(42i32, 1024, &token),
+        token.run("runtime::series_from_value", |exec| runtime.on(exec)?.series_from_value(42i32, 1024)),
         "one-byte budget should not cover scalar value-to-series allocation",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "runtime::series_from_value_with_budget");
-    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::series_from_value_with_budget");
+    assert_eq!(err.operation(), "runtime::series_from_value");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::series_from_value");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "value_series");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
@@ -835,13 +837,13 @@ fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
     let token = execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("null_series")).unwrap();
 
     let err = expect_cudf_err(
-        runtime.nulls_with_budget(DataType::from(TypeId::Int32), 1024, &token),
+        token.run("runtime::nulls", |exec| runtime.on(exec)?.nulls(DataType::from(TypeId::Int32), 1024)),
         "one-byte budget should not cover null-series allocation",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "runtime::nulls_with_budget");
-    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::nulls_with_budget");
+    assert_eq!(err.operation(), "runtime::nulls");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::nulls");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "null_series");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
@@ -856,13 +858,13 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
         execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("scalar_column")).unwrap();
 
     let err = expect_cudf_err(
-        runtime.column_from_scalar_with_budget(&scalar, 1024, &token),
+        token.run("runtime::column_from_scalar", |exec| runtime.on(exec)?.column_from_scalar(&scalar, 1024)),
         "one-byte budget should not cover scalar-to-column allocation",
     );
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.operation(), "runtime::column_from_scalar_with_budget");
-    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::column_from_scalar_with_budget");
+    assert_eq!(err.operation(), "runtime::column_from_scalar");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::column_from_scalar");
     assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "scalar_column");
     assert_eq!(
         err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,

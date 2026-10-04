@@ -5,8 +5,8 @@ use super::{
     QueryError, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk, chunk_retry_facts,
     cudf_query_error,
     execution::{reported_source_chunk_read_row_groups, source_chunk_batch_static_read_row_groups},
-    execution_overrides, is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches,
-    read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error, split_retryable_chunk,
+    is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches, read_local_parquet_chunk,
+    read_local_parquet_chunk_batch, record_chunk_retry_error, split_retryable_chunk,
 };
 use crate::{
     chunk::SourceChunkBatch,
@@ -44,10 +44,10 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
         let chunk_count = frames.len();
         let first_frame = frames.remove(0);
         let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-        let overrides_lease = execution_overrides(execution.context())?;
-        let overrides = overrides_lease.overrides();
+        let exec_runtime = execution.context().runtime()?;
+        let overrides = exec_runtime.exec();
         let timer = Instant::now();
-        let output = first_frame.with_execution(&overrides).concat_many(&rest_frame_refs).map_err(|error| {
+        let output = first_frame.on(overrides).concat_many(&rest_frame_refs).map_err(|error| {
             cudf_query_error(operation, message, error)
                 .with_fact("node_id", node_id)
                 .with_fact("chunk_count", chunk_count)

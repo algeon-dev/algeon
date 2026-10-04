@@ -259,7 +259,7 @@ fn mixed_join_indices_with_context(
     predicate: &AstExpression,
     null_equality: NullEquality,
     join_type: JoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
@@ -279,7 +279,7 @@ fn mixed_join_begin_size_data_with_context<'a>(
     predicate: &'a AstExpression,
     null_equality: NullEquality,
     join_type: SizedMixedJoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<MixedJoinSizeData<'a>> {
     let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
@@ -299,7 +299,7 @@ fn mixed_single_side_join_begin_size_data_with_context<'a>(
     predicate: &'a AstExpression,
     null_equality: NullEquality,
     join_type: SizedMixedSingleSideJoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<MixedSingleSideJoinSizeData<'a>> {
     let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
@@ -319,7 +319,7 @@ fn mixed_single_side_join_indices_with_context(
     predicate: &AstExpression,
     null_equality: NullEquality,
     semi_join: bool,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
@@ -334,48 +334,18 @@ fn mixed_single_side_join_indices_with_context(
     )
 }
 
-/// Mixed inner join indices for equality keys plus an AST predicate.
-///
-/// Equality tables are joined with `null_equality`; the AST predicate is
-/// evaluated against the conditional tables. The returned `INT32` device
-/// columns are gather maps only: this operation allocates GPU index columns
-/// but does not gather or copy payload columns. The output keeps provenance
-/// from `left_equality`; same-device equality, conditional, and predicate
-/// literal inputs are ordered against the resolved output stream, and
-/// cross-device inputs are rejected before calling libcudf. This call enqueues
-/// work on the resolved stream and does not materialize host-visible data
-/// before returning.
-pub fn mixed_inner_join_indices(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
-    predicate: &AstExpression,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    mixed_join_indices_with_context(
-        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
-        predicate,
-        null_equality,
-        JoinType::Inner,
-        &ctx,
-        "join::mixed_inner_join_indices",
-    )
-}
-
 /// Mixed inner join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`mixed_inner_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn mixed_inner_join_indices_in(
+pub(crate) fn mixed_inner_join_indices_in(
     left_equality: &TableView<'_>,
     right_equality: &TableView<'_>,
     left_conditional: &TableView<'_>,
     right_conditional: &TableView<'_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::mixed_inner_join_indices_in";
     mixed_join_indices_with_context(
@@ -395,7 +365,7 @@ pub(crate) fn mixed_inner_join_begin_size_data_in<'a>(
     right_conditional: &TableView<'_>,
     predicate: &'a AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<MixedJoinSizeData<'a>> {
     let operation = "join::mixed_inner_join_begin_size_data_in";
     mixed_join_begin_size_data_with_context(
@@ -408,46 +378,18 @@ pub(crate) fn mixed_inner_join_begin_size_data_in<'a>(
     )
 }
 
-/// Mixed left join indices preserving all left equality/conditional rows.
-///
-/// Returned right-side misses contain libcudf's no-match sentinel for
-/// nullifying gather. This operation allocates GPU `INT32` gather maps but does
-/// not gather or copy payload columns. The output keeps provenance from
-/// `left_equality`; same-device equality, conditional, and predicate literal
-/// inputs are ordered against the resolved output stream, and cross-device
-/// inputs are rejected before calling libcudf. This call enqueues work on the
-/// resolved stream and does not materialize host-visible data before returning.
-pub fn mixed_left_join_indices(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
-    predicate: &AstExpression,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    mixed_join_indices_with_context(
-        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
-        predicate,
-        null_equality,
-        JoinType::Left,
-        &ctx,
-        "join::mixed_left_join_indices",
-    )
-}
-
 /// Mixed left join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`mixed_left_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn mixed_left_join_indices_in(
+pub(crate) fn mixed_left_join_indices_in(
     left_equality: &TableView<'_>,
     right_equality: &TableView<'_>,
     left_conditional: &TableView<'_>,
     right_conditional: &TableView<'_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::mixed_left_join_indices_in";
     mixed_join_indices_with_context(
@@ -467,7 +409,7 @@ pub(crate) fn mixed_left_join_begin_size_data_in<'a>(
     right_conditional: &TableView<'_>,
     predicate: &'a AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<MixedJoinSizeData<'a>> {
     let operation = "join::mixed_left_join_begin_size_data_in";
     mixed_join_begin_size_data_with_context(
@@ -487,7 +429,7 @@ pub(crate) fn mixed_full_join_begin_size_data_in<'a>(
     right_conditional: &TableView<'_>,
     predicate: &'a AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<MixedJoinSizeData<'a>> {
     let operation = "join::mixed_full_join_begin_size_data_in";
     mixed_join_begin_size_data_with_context(
@@ -500,46 +442,18 @@ pub(crate) fn mixed_full_join_begin_size_data_in<'a>(
     )
 }
 
-/// Mixed full join indices preserving unmatched rows from both sides.
-///
-/// Misses on either side contain libcudf's no-match sentinel for nullifying
-/// gather. This operation allocates GPU `INT32` gather maps but does not gather
-/// or copy payload columns. The output keeps provenance from `left_equality`;
-/// same-device equality, conditional, and predicate literal inputs are ordered
-/// against the resolved output stream, and cross-device inputs are rejected
-/// before calling libcudf. This call enqueues work on the resolved stream and
-/// does not materialize host-visible data before returning.
-pub fn mixed_full_join_indices(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
-    predicate: &AstExpression,
-    null_equality: NullEquality,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    mixed_join_indices_with_context(
-        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
-        predicate,
-        null_equality,
-        JoinType::Full,
-        &ctx,
-        "join::mixed_full_join_indices",
-    )
-}
-
 /// Mixed full join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`mixed_full_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn mixed_full_join_indices_in(
+pub(crate) fn mixed_full_join_indices_in(
     left_equality: &TableView<'_>,
     right_equality: &TableView<'_>,
     left_conditional: &TableView<'_>,
     right_conditional: &TableView<'_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::mixed_full_join_indices_in";
     mixed_join_indices_with_context(
@@ -552,47 +466,18 @@ pub fn mixed_full_join_indices_in(
     )
 }
 
-/// Mixed left semi join indices for rows from the left equality/conditional
-/// tables with at least one equality-and-predicate match.
-///
-/// Returns a single `INT32` device gather map. This operation allocates that
-/// GPU index column but does not gather or copy payload columns. The output
-/// keeps provenance from `left_equality`; same-device equality, conditional,
-/// and predicate literal inputs are ordered against the resolved output stream,
-/// and cross-device inputs are rejected before calling libcudf. This call
-/// enqueues work on the resolved stream and does not materialize host-visible
-/// data before returning.
-pub fn mixed_left_semi_join_indices(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
-    predicate: &AstExpression,
-    null_equality: NullEquality,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    mixed_single_side_join_indices_with_context(
-        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
-        predicate,
-        null_equality,
-        true,
-        &ctx,
-        "join::mixed_left_semi_join_indices",
-    )
-}
-
 /// Mixed left semi join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`mixed_left_semi_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn mixed_left_semi_join_indices_in(
+pub(crate) fn mixed_left_semi_join_indices_in(
     left_equality: &TableView<'_>,
     right_equality: &TableView<'_>,
     left_conditional: &TableView<'_>,
     right_conditional: &TableView<'_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::mixed_left_semi_join_indices_in";
     mixed_single_side_join_indices_with_context(
@@ -612,7 +497,7 @@ pub(crate) fn mixed_left_semi_join_begin_size_data_in<'a>(
     right_conditional: &TableView<'_>,
     predicate: &'a AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<MixedSingleSideJoinSizeData<'a>> {
     let operation = "join::mixed_left_semi_join_begin_size_data_in";
     mixed_single_side_join_begin_size_data_with_context(
@@ -625,47 +510,18 @@ pub(crate) fn mixed_left_semi_join_begin_size_data_in<'a>(
     )
 }
 
-/// Mixed left anti join indices for rows from the left equality/conditional
-/// tables with no equality-and-predicate match.
-///
-/// Returns a single `INT32` device gather map. This operation allocates that
-/// GPU index column but does not gather or copy payload columns. The output
-/// keeps provenance from `left_equality`; same-device equality, conditional,
-/// and predicate literal inputs are ordered against the resolved output stream,
-/// and cross-device inputs are rejected before calling libcudf. This call
-/// enqueues work on the resolved stream and does not materialize host-visible
-/// data before returning.
-pub fn mixed_left_anti_join_indices(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
-    predicate: &AstExpression,
-    null_equality: NullEquality,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    mixed_single_side_join_indices_with_context(
-        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
-        predicate,
-        null_equality,
-        false,
-        &ctx,
-        "join::mixed_left_anti_join_indices",
-    )
-}
-
 /// Mixed left anti join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`mixed_left_anti_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn mixed_left_anti_join_indices_in(
+pub(crate) fn mixed_left_anti_join_indices_in(
     left_equality: &TableView<'_>,
     right_equality: &TableView<'_>,
     left_conditional: &TableView<'_>,
     right_conditional: &TableView<'_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::mixed_left_anti_join_indices_in";
     mixed_single_side_join_indices_with_context(
@@ -685,7 +541,7 @@ pub(crate) fn mixed_left_anti_join_begin_size_data_in<'a>(
     right_conditional: &TableView<'_>,
     predicate: &'a AstExpression,
     null_equality: NullEquality,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<MixedSingleSideJoinSizeData<'a>> {
     let operation = "join::mixed_left_anti_join_begin_size_data_in";
     mixed_single_side_join_begin_size_data_with_context(
@@ -735,15 +591,9 @@ impl MixedJoinSizeData<'_> {
         )
     }
 
-    /// Materialize mixed join gather-map pairs from retained size data.
-    pub(crate) fn materialize_indices(self) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.materialize_indices_in(&ctx)
-    }
-
     /// Materialize mixed join gather-map pairs from retained size data using a
     /// borrowed execution override.
-    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<JoinIndices> {
+    pub(crate) fn materialize_indices_in(self, ctx: Exec<'_>) -> Result<JoinIndices> {
         let operation = "mixed_join_size_data::materialize_indices_in";
         let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
         let mut out_left = ptr::null_mut();
@@ -797,15 +647,9 @@ impl MixedSingleSideJoinSizeData<'_> {
         )
     }
 
-    /// Materialize mixed left semi/anti join gather map from retained size data.
-    pub(crate) fn materialize_indices(self) -> Result<SingleSideJoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.materialize_indices_in(&ctx)
-    }
-
     /// Materialize mixed left semi/anti join gather map from retained size data
     /// using a borrowed execution override.
-    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<SingleSideJoinIndices> {
+    pub(crate) fn materialize_indices_in(self, ctx: Exec<'_>) -> Result<SingleSideJoinIndices> {
         let operation = "mixed_single_side_join_size_data::materialize_indices_in";
         let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
         let mut out = ptr::null_mut();

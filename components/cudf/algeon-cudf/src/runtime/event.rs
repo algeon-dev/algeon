@@ -42,7 +42,11 @@ unsafe impl Sync for CudaEventHandle {}
 impl CudaEvent {
     /// Create a new CUDA event on the calling thread's current device.
     pub fn new() -> Result<Self> {
-        let device = DeviceId::current()?;
+        Self::new_on(DeviceId::current()?)
+    }
+
+    /// Create a new CUDA event on `device`.
+    pub fn new_on(device: DeviceId) -> Result<Self> {
         let _entry = DeviceEntryGuard::enter(device, "event::new")?;
         let mut handle = ptr::null_mut();
         check_device_status_in(unsafe { cudf_sys::cudf_event_create(&mut handle) }, device, "event::new")?;

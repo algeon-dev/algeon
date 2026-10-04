@@ -17,7 +17,7 @@ use std::{
     },
 };
 
-use super::{CudaStream, DeviceId, Runtime, device_guard::DeviceGuard};
+use super::{CudaStream, DeviceId, Runtime};
 use crate::core::{
     error::{Error, ErrorCode, Result},
     memory::{AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryResource, DeviceMemoryResourceUsage},
@@ -218,10 +218,7 @@ impl CacheAllocationDomain {
     /// runtime and graph outputs have been torn down, so insertion churn cannot
     /// grow the domain's retirement-stream registry or fence unrelated scopes.
     pub fn allocation_scope(&self) -> Result<CacheAllocationScope> {
-        let scope_stream = {
-            let _guard = DeviceGuard::new(self.device())?;
-            CudaStream::new()?
-        };
+        let scope_stream = CudaStream::new_on(self.device())?;
         let memory_resource = self
             .inner
             .memory_resource

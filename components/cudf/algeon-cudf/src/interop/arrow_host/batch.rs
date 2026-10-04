@@ -491,7 +491,7 @@ struct StagingSlab<'a> {
 
 impl<'a> StagingSlab<'a> {
     fn new(lease: PinnedSlabLease, stream: &'a CudaStream, quarantine_destination: &'a Cell<bool>) -> Result<Self> {
-        Ok(Self { lease, event: CudaEvent::new()?, stream, quarantine_destination, pending: false })
+        Ok(Self { lease, event: CudaEvent::new_on(stream.device())?, stream, quarantine_destination, pending: false })
     }
 
     fn flush(&mut self, device_buffer: &mut DeviceBuffer, fill: usize, dst_offset: &mut usize) -> Result<()> {

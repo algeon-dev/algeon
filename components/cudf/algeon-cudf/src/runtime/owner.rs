@@ -5,10 +5,9 @@ use std::{any::Any, sync::Arc};
 use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use super::{
-    ExecutionOverrides,
-    affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor, RuntimeLeaseOwner},
+    Exec,
     binding_extension::{BindingExtensionInitError, BindingExtensionLease},
-    budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetToken},
+    binding_id::ExecutionBindingId,
     device::DeviceId,
     device_guard::DeviceGuard,
     event::CudaEvent,
@@ -19,11 +18,11 @@ use super::{
 use crate::{
     core::{
         column::{Column, DeviceBuffer},
-        error::{self, DeviceIdFact, Error, ErrorCode, ErrorKind, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
+        error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
         memory::{DeviceMemoryManager, DeviceMemoryResource},
-        scalar::Scalar,
+        scalar::{Scalar, ScalarValue},
         table::Table,
-        types::{CudfType, DataType, TimestampResolution, TypeId},
+        types::{CudfType, DataType, TypeId},
     },
     frame::{
         dataframe::DataFrame,
@@ -42,42 +41,6 @@ pub enum StreamDependencyOutcome {
 fn map_stream_dependency_error(kind: InteropErrorKind, operation: &'static str, error: Error) -> InteropError {
     let message = error.to_string();
     InteropError::new(kind, message).with_context("operation", operation).set_source(error)
-}
-
-fn annotate_runtime_budget_execution_error(
-    error: Error,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-) -> Error {
-    match error.kind() {
-        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
-        _ => error.reanchor_if_needed(operation),
-    }
-}
-
-fn budgeted_runtime_for_operation(
-    runtime: &Runtime,
-    token: &ExecutionBudgetToken,
-    operation: &'static str,
-) -> Result<Runtime> {
-    runtime
-        .with_execution_overrides(token.stream(), token.memory_resource(), operation)
-        .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))
-}
-
-fn budgeted_series_report(
-    series: &Series,
-    token: &ExecutionBudgetToken,
-    rows: usize,
-    operation: &'static str,
-) -> Result<ExecutionBudgetReport> {
-    let output_bytes = series.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
-    let report = token
-        .reservation_enforced_report()
-        .with_retained_bytes(output_bytes)
-        .with_output_bytes(output_bytes)
-        .with_output_rows(rows);
-    Ok(report)
 }
 
 /// Owns one device-pinned retained-provenance bundle for a `cudf` pipeline.
@@ -99,7 +62,7 @@ fn budgeted_series_report(
 /// instead of constructing a separate memory resource. Create an explicit
 /// [`DeviceMemoryResource`] first only when you need an advanced allocator
 /// handle to reuse across runtimes or borrow through
-/// [`crate::ExecutionOverrides`] for one operation.
+/// [`crate::Exec`] for one operation.
 ///
 /// **Multi-GPU execution guarantee:** when an operation is invoked through
 /// this runtime, the runtime's device is re-entered at the FFI boundary before
@@ -109,13 +72,7 @@ fn budgeted_series_report(
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
-    lease_owner: Arc<RuntimeLeaseOwner>,
 }
-
-// SAFETY: Runtime owns an immutable retained-provenance handle bundle. The
-// underlying stream and memory-resource handles are thread-safe wrappers.
-unsafe impl Send for Runtime {}
-unsafe impl Sync for Runtime {}
 
 impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -148,7 +105,8 @@ impl Runtime {
         RuntimeBuilder::default()
     }
 
-    /// Build a new explicit runtime with default device, stream, and memory resource selection.
+    /// Build a new runtime on [`DeviceId::DEFAULT`] with a new stream and the
+    /// device memory manager's resource.
     ///
     /// This is shorthand for `Runtime::builder().build()`.
     pub fn new() -> Result<Self> {
@@ -165,14 +123,8 @@ impl Runtime {
         self.domain.placement()
     }
 
-    /// Stable identity shared by this base runtime, derived runtimes, borrowed
-    /// overrides, companion runtimes, and GPU outputs.
-    pub fn affinity_id(&self) -> RuntimeAffinityId {
-        self.domain.affinity_id()
-    }
-
     /// Stable identity for this runtime's exact stream and memory-resource
-    /// binding. This is stricter than [`Self::affinity_id`].
+    /// binding.
     pub fn binding_id(&self) -> ExecutionBindingId {
         self.domain.binding_id()
     }
@@ -199,29 +151,6 @@ impl Runtime {
         T: Any + Send + Sync,
     {
         self.domain.binding_extensions().get_or_try_init(Arc::clone(&self.domain), operation, factory)
-    }
-
-    /// Return a non-owning affinity witness suitable for cache metadata.
-    pub fn affinity_anchor(&self) -> RuntimeAffinityAnchor {
-        self.domain.affinity_anchor()
-    }
-
-    /// Return a non-owning witness for this counted runtime-owner lineage.
-    pub fn lease_anchor(&self) -> RuntimeLeaseAnchor {
-        RuntimeLeaseAnchor::new(self.affinity_anchor(), &self.lease_owner)
-    }
-
-    /// Whether two current counted runtime leases belong to the same stable
-    /// runtime affinity.
-    pub fn shares_affinity(left: &Self, right: &Self) -> bool {
-        ExecutionDomain::same_affinity(&left.domain, &right.domain)
-    }
-
-    /// Whether this current counted runtime lease matches a cached lease
-    /// witness. The `Arc<Self>` receiver prevents GPU-output affinity alone
-    /// from satisfying a cache lookup.
-    pub fn matches_lease_anchor(self: &Arc<Self>, anchor: &RuntimeLeaseAnchor) -> bool {
-        anchor.matches(self.domain.affinity_owner(), &self.lease_owner)
     }
 
     /// Synchronize the runtime's default stream.
@@ -252,6 +181,19 @@ impl Runtime {
         self.domain.memory_resource()
     }
 
+    /// Run on this runtime's stream and allocate outputs from its memory resource.
+    pub fn exec(&self) -> Exec<'_> {
+        Exec::new(self.stream(), self.memory_resource())
+    }
+
+    /// This runtime with the stream and memory resource `exec` selects as its
+    /// defaults, so values it creates run there. [`Exec::RETAINED`] keeps this
+    /// runtime's own.
+    pub fn on(&self, exec: Exec<'_>) -> Result<Self> {
+        let domain = exec.resolve_output_domain(&self.domain)?;
+        Ok(Self { domain })
+    }
+
     /// Resolve the device-level reservation-aware memory manager for this runtime.
     pub fn device_memory_manager(&self) -> Result<DeviceMemoryManager> {
         DeviceMemoryManager::for_device(self.device())
@@ -261,72 +203,25 @@ impl Runtime {
     /// `lifetime` alive. Every scalar, series, table, frame, and runtime
     /// override produced from the returned runtime inherits the same token.
     pub fn with_retained_lifetime(&self, lifetime: Arc<dyn Send + Sync>) -> Result<Self> {
-        Ok(Self {
-            domain: ExecutionDomain::with_retained_lifetime(&self.domain, lifetime)?,
-            lease_owner: Arc::clone(&self.lease_owner),
-        })
+        Ok(Self { domain: ExecutionDomain::with_retained_lifetime(&self.domain, lifetime)? })
     }
 
     /// Inherit the retained lifetime attached to `source`, if any, while
     /// preserving this runtime's own device, stream, and memory resource.
     pub fn inherit_retained_lifetime_from(&self, source: &Runtime) -> Result<Self> {
-        Ok(Self {
-            domain: ExecutionDomain::inherit_retained_lifetime(&self.domain, &source.domain)?,
-            lease_owner: Arc::clone(&self.lease_owner),
-        })
-    }
-
-    /// Adopt the stable affinity of a same-device base runtime while keeping
-    /// this runtime's own stream, memory resource, and counted owner lease.
-    ///
-    /// This is intended for companion runtimes whose execution handles differ
-    /// from the base runtime but whose outputs belong to the same reusable
-    /// runtime family.
-    pub fn inherit_affinity_from(&self, source: &Runtime) -> Result<Self> {
-        Ok(Self {
-            domain: ExecutionDomain::inherit_affinity(&self.domain, &source.domain)?,
-            lease_owner: Arc::clone(&self.lease_owner),
-        })
+        Ok(Self { domain: ExecutionDomain::inherit_retained_lifetime(&self.domain, &source.domain)? })
     }
 
     /// Derive a runtime with a same-device memory resource.
     ///
-    /// The derived runtime retains this runtime's device, stream, workflow,
-    /// affinity, lifetime owners, and runtime lease. Its execution binding and
-    /// retained handle bundle change when the allocator changes. Objects created
+    /// The derived runtime retains this runtime's device, stream and lifetime
+    /// owners. Its execution binding changes when the allocator changes. Objects created
     /// through it retain that allocator and the inherited lifetime owners.
     /// A resource on another CUDA device is rejected. `operation` supplies
     /// the diagnostic operation label if derivation fails.
     pub fn with_memory_resource_override(&self, mr: &DeviceMemoryResource, operation: &'static str) -> Result<Self> {
         let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
-        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
-    }
-
-    /// [`Self::with_memory_resource_override`] that also bounds Parquet read
-    /// and decompression scratch to `parquet_pass_read_limit` bytes.
-    ///
-    /// The resource override caps what an operation may allocate, turning an
-    /// oversized read into a failure; the pass limit instead makes the read
-    /// decode in passes that fit.
-    pub(crate) fn with_memory_resource_override_and_parquet_pass_read_limit(
-        &self,
-        mr: &DeviceMemoryResource,
-        parquet_pass_read_limit: u64,
-        operation: &'static str,
-    ) -> Result<Self> {
-        let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
-        let domain = ExecutionDomain::with_parquet_pass_read_limit(&domain, parquet_pass_read_limit);
-        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
-    }
-
-    pub(crate) fn with_execution_overrides(
-        &self,
-        stream: &CudaStream,
-        mr: &DeviceMemoryResource,
-        operation: &'static str,
-    ) -> Result<Self> {
-        let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, Some(stream), Some(mr), operation)?;
-        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
+        Ok(Self { domain })
     }
 
     /// Borrow this runtime's explicit execution binding for cross-crate interop.
@@ -357,17 +252,14 @@ impl Runtime {
             .with_context("right_device", consumer_device.to_string()));
         }
 
-        let consumer_stream_raw = self
-            .stream()
-            .interop_raw_handle()
-            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        let consumer_stream_raw = self.stream().interop_raw_handle();
         if producer.cuda_stream().as_raw() == consumer_stream_raw {
             return Ok(StreamDependencyOutcome::NoOp);
         }
 
         let _guard = DeviceGuard::new(self.device())
             .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-        let barrier = CudaEvent::new()
+        let barrier = CudaEvent::new_on(self.device())
             .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
         let barrier_raw = barrier
             .interop_raw_handle()
@@ -415,160 +307,14 @@ impl Runtime {
         Column::nulls_with_runtime(self, dtype.into(), len)
     }
 
-    /// Create a fixed-width scalar inside this runtime.
-    pub fn scalar<T: CudfType>(&self, value: T) -> Result<Scalar> {
-        Scalar::from_value_in_domain(value, self.execution_domain())
-    }
-
-    /// Create a UTF-8 scalar inside this runtime.
-    pub fn string_scalar(&self, value: &str) -> Result<Scalar> {
-        Scalar::from_str_in_domain(value, self.execution_domain())
-    }
-
-    /// Create a null fixed-width scalar inside this runtime.
-    pub fn null_scalar<T: CudfType>(&self) -> Result<Scalar> {
-        Scalar::null_numeric_in_domain::<T>(self.execution_domain())
-    }
-
-    /// Create a null UTF-8 scalar inside this runtime.
-    pub fn null_string_scalar(&self) -> Result<Scalar> {
-        Scalar::null_string_in_domain(self.execution_domain())
-    }
-
-    /// Create a null scalar for an arbitrary supported [`DataType`].
+    /// Create a device scalar inside this runtime.
     ///
-    /// This is the dtype-erased counterpart to [`Self::null_scalar`] /
-    /// [`Self::null_string_scalar`] and dispatches on the [`TypeId`].
-    /// Use it when the target data type is only known at runtime; for
-    /// example when building a fill scalar from a column or schema. Fails
-    /// with [`ErrorCode::UnsupportedDtype`](crate::core::error::ErrorCode)
-    /// for types whose null encoding is not yet exposed by cudf.
-    ///
-    /// [`DataType`]: crate::DataType
-    pub fn null_scalar_with_data_type(&self, dtype: impl Into<DataType>) -> Result<Scalar> {
-        Scalar::null_in_domain(dtype.into(), self.execution_domain())
-    }
-
-    /// Create a Decimal32 scalar from its raw fixed-point representation.
-    ///
-    /// `raw` is the stored integer representation and `scale` is the cudf
-    /// fixed-point scale. This creates a device-resident scalar in this
-    /// runtime's execution domain, using this runtime's stream and memory
-    /// resource. It does not parse or format decimal text, and does not
-    /// intentionally synchronize the host before returning.
-    pub fn decimal32_raw_scalar(&self, raw: i32, scale: i32) -> Result<Scalar> {
-        Scalar::decimal_from_raw_in_domain(
-            i128::from(raw),
-            DataType::fixed_point(TypeId::Decimal32, scale)?,
-            self.execution_domain(),
-        )
-    }
-
-    /// Create a Decimal64 scalar from its raw fixed-point representation.
-    ///
-    /// `raw` is the stored integer representation and `scale` is the cudf
-    /// fixed-point scale. This creates a device-resident scalar in this
-    /// runtime's execution domain, using this runtime's stream and memory
-    /// resource. It does not parse or format decimal text, and does not
-    /// intentionally synchronize the host before returning.
-    pub fn decimal64_raw_scalar(&self, raw: i64, scale: i32) -> Result<Scalar> {
-        Scalar::decimal_from_raw_in_domain(
-            i128::from(raw),
-            DataType::fixed_point(TypeId::Decimal64, scale)?,
-            self.execution_domain(),
-        )
-    }
-
-    /// Create a Decimal128 scalar from its raw fixed-point representation.
-    ///
-    /// `raw` is the stored integer representation and `scale` is the cudf
-    /// fixed-point scale. This creates a device-resident scalar in this
-    /// runtime's execution domain, using this runtime's stream and memory
-    /// resource. It does not parse or format decimal text, and does not
-    /// intentionally synchronize the host before returning.
-    pub fn decimal128_raw_scalar(&self, raw: i128, scale: i32) -> Result<Scalar> {
-        Scalar::decimal_from_raw_in_domain(
-            raw,
-            DataType::fixed_point(TypeId::Decimal128, scale)?,
-            self.execution_domain(),
-        )
-    }
-
-    /// Create a decimal scalar from its raw fixed-point representation.
-    ///
-    /// `dtype` must be Decimal32, Decimal64, or Decimal128. For Decimal32 and
-    /// Decimal64, `raw` must fit the corresponding physical representation.
-    /// This creates a device-resident scalar in this runtime's execution
-    /// domain, using this runtime's stream and memory resource. It does not
-    /// parse or format decimal text, and does not intentionally synchronize
-    /// the host before returning.
-    pub fn decimal_raw_scalar(&self, raw: i128, dtype: impl Into<DataType>) -> Result<Scalar> {
-        Scalar::decimal_from_raw_in_domain(raw, dtype.into(), self.execution_domain())
-    }
-
-    /// Create a timestamp scalar from a raw count in the requested resolution.
-    ///
-    /// `raw` is the stored epoch-unit representation for `resolution`. This
-    /// creates a device-resident scalar in this runtime's execution domain,
-    /// using this runtime's stream and memory resource. It does not parse
-    /// strings, apply timezone behavior, or intentionally synchronize the host
-    /// before returning.
-    pub fn timestamp_raw_scalar(&self, raw: i64, resolution: TimestampResolution) -> Result<Scalar> {
-        Scalar::timestamp_from_raw_in_domain(raw, resolution.type_id(), self.execution_domain())
-    }
-
-    /// Create a duration scalar from a raw count in the requested resolution.
-    ///
-    /// `raw` is the stored unit-count representation for `resolution`. This
-    /// creates a device-resident scalar in this runtime's execution domain,
-    /// using this runtime's stream and memory resource. It does not parse
-    /// strings, apply formatting behavior, or intentionally synchronize the
-    /// host before returning.
-    pub fn duration_raw_scalar(&self, raw: i64, resolution: TimestampResolution) -> Result<Scalar> {
-        Scalar::duration_from_raw_in_domain(raw, resolution.duration_type_id(), self.execution_domain())
-    }
-
-    /// Create a null Decimal32 device scalar with the requested scale.
-    pub fn null_decimal32_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal32, scale)?)
-    }
-
-    /// Create a null Decimal64 device scalar with the requested scale.
-    pub fn null_decimal64_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal64, scale)?)
-    }
-
-    /// Create a null Decimal128 device scalar with the requested scale.
-    pub fn null_decimal128_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal128, scale)?)
-    }
-
-    /// Create a null decimal device scalar.
-    ///
-    /// `dtype` must be Decimal32, Decimal64, or Decimal128. The scalar is
-    /// created in this runtime's execution domain, using this runtime's stream
-    /// and memory resource, without intentionally synchronizing the host
-    /// before returning.
-    pub fn null_decimal_raw_scalar(&self, dtype: impl Into<DataType>) -> Result<Scalar> {
-        Scalar::null_decimal_in_domain(dtype.into(), self.execution_domain())
-    }
-
-    /// Create a null timestamp device scalar in the requested resolution.
-    ///
-    /// The scalar is created in this runtime's execution domain, using this
-    /// runtime's stream and memory resource, without intentionally
-    /// synchronizing the host before returning.
-    pub fn null_timestamp_raw_scalar(&self, resolution: TimestampResolution) -> Result<Scalar> {
-        Scalar::null_timestamp_in_domain(resolution.type_id(), self.execution_domain())
-    }
-
-    /// Create a null duration device scalar in the requested resolution.
-    ///
-    /// The scalar is created in this runtime's execution domain, using this
-    /// runtime's stream and memory resource, without intentionally
-    /// synchronizing the host before returning.
-    pub fn null_duration_raw_scalar(&self, resolution: TimestampResolution) -> Result<Scalar> {
-        Scalar::null_duration_in_domain(resolution.duration_type_id(), self.execution_domain())
+    /// The scalar is allocated on this runtime's stream and memory resource.
+    /// Creation does not parse text, apply timezone behavior, or intentionally
+    /// synchronize the host before returning. A decimal or day-resolution
+    /// temporal value outside its storage range fails with a typed error.
+    pub fn scalar(&self, value: impl Into<ScalarValue>) -> Result<Scalar> {
+        Scalar::from_scalar_value_in_domain(&value.into(), self.execution_domain())
     }
 
     /// Create an empty low-level `Column` inside this runtime.
@@ -588,34 +334,6 @@ impl Runtime {
     /// resource and retains this runtime's execution provenance.
     pub fn column_from_scalar(&self, scalar: &Scalar, size: usize) -> Result<Column> {
         Column::from_scalar_with_runtime(self, scalar, size)
-    }
-
-    /// Create a low-level `Column` by repeating a scalar under a hard execution-budget token.
-    ///
-    /// This has the same scalar placement semantics as
-    /// [`column_from_scalar`](Self::column_from_scalar), but the scalar
-    /// relocation, if needed, and the output column allocation are routed
-    /// through the token's stream-bound reservation. The returned report
-    /// records the observed output column footprint and row count.
-    pub fn column_from_scalar_with_budget(
-        &self,
-        scalar: &Scalar,
-        size: usize,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Column>> {
-        let operation = "runtime::column_from_scalar_with_budget";
-        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
-        let output = budgeted_runtime
-            .column_from_scalar(scalar, size)
-            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
-        let report = token
-            .reservation_enforced_report()
-            .with_retained_bytes(output_bytes)
-            .with_output_bytes(output_bytes)
-            .with_output_rows(size);
-
-        Ok(BudgetedExecutionOutcome::new(output, report))
     }
 
     /// Create an empty low-level `Table` inside this runtime.
@@ -694,14 +412,6 @@ impl Runtime {
         Series::from_column(T::create_column_in_runtime(self, data)?)
     }
 
-    /// Create an unnamed `Series` from a host slice using borrowed execution overrides.
-    pub fn series_in<T: HostColumnData>(&self, data: &[T], ctx: &ExecutionOverrides<'_>) -> Result<Series> {
-        let operation = "runtime::series_in";
-        let domain = ctx.resolve_output_domain(&self.domain).map_err(|error| error.reanchor(operation))?;
-        let runtime = Self { domain, lease_owner: Arc::clone(&self.lease_owner) };
-        runtime.series(data).map_err(|error| error.reanchor(operation))
-    }
-
     /// Create an unnamed nullable `Series` from a host slice plus validity
     /// mask inside this runtime.
     pub fn nullable_series<T: HostColumnData>(&self, data: &[T], validity: &[bool]) -> Result<Series> {
@@ -727,27 +437,6 @@ impl Runtime {
         Series::from_column(self.null_column(dtype, len)?)
     }
 
-    /// Create an unnamed all-null `Series` under a hard execution-budget token.
-    ///
-    /// The all-null column construction and output allocation are routed
-    /// through the token's stream-bound reservation. The returned report
-    /// records the resulting `Series` footprint and row count.
-    pub fn nulls_with_budget(
-        &self,
-        dtype: impl Into<DataType>,
-        len: usize,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Series>> {
-        let operation = "runtime::nulls_with_budget";
-        let dtype = dtype.into();
-        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
-        let series = budgeted_runtime
-            .nulls(dtype, len)
-            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let report = budgeted_series_report(&series, token, len, operation)?;
-        Ok(BudgetedExecutionOutcome::new(series, report))
-    }
-
     /// Create an unnamed empty `Series` inside this runtime.
     pub fn empty_series(&self, dtype: impl Into<DataType>) -> Result<Series> {
         Series::from_column(self.empty_column(dtype)?)
@@ -770,53 +459,10 @@ impl Runtime {
         Series::from_column(self.column_from_scalar(scalar, size)?)
     }
 
-    /// Create an unnamed `Series` by repeating a scalar under a hard execution-budget token.
-    ///
-    /// This is the budgeted counterpart to
-    /// [`series_from_scalar`](Self::series_from_scalar). The underlying
-    /// scalar-to-column construction is executed through the token's
-    /// stream-bound reservation, and the returned report records the observed
-    /// output footprint and row count.
-    pub fn series_from_scalar_with_budget(
-        &self,
-        scalar: &Scalar,
-        size: usize,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Series>> {
-        let operation = "runtime::series_from_scalar_with_budget";
-        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
-        let column = budgeted_runtime
-            .column_from_scalar(scalar, size)
-            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let series = Series::from_column(column).map_err(|error| error.reanchor(operation))?;
-        let report = budgeted_series_report(&series, token, size, operation)?;
-        Ok(BudgetedExecutionOutcome::new(series, report))
-    }
-
-    /// Create an unnamed fixed-width `Series` by repeating a Rust value under
-    /// a hard execution-budget token.
-    ///
-    /// Both the temporary device scalar and the output column are created in a
-    /// reservation-routed execution domain. The report records the retained/output
-    /// footprint of the resulting `Series`; it also marks the current scalar
-    /// construction/broadcast preflight gap because libcudf does not expose an
-    /// exact temporary workspace bound for this fused path.
-    pub fn series_from_value_with_budget<T: CudfType>(
-        &self,
-        value: T,
-        len: usize,
-        token: &ExecutionBudgetToken,
-    ) -> Result<BudgetedExecutionOutcome<Series>> {
-        let operation = "runtime::series_from_value_with_budget";
-        let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
-        let scalar = budgeted_runtime
-            .scalar(value)
-            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let series = budgeted_runtime
-            .series_from_scalar(&scalar, len)
-            .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let report = budgeted_series_report(&series, token, len, operation)?;
-        Ok(BudgetedExecutionOutcome::new(series, report))
+    /// Create an unnamed fixed-width `Series` by repeating `value` inside this
+    /// runtime.
+    pub fn series_from_value<T: CudfType>(&self, value: T, len: usize) -> Result<Series> {
+        self.series_from_scalar(&self.scalar(value)?, len)
     }
 
     /// Create an unnamed fixed-width arithmetic sequence `Series` inside this runtime.
@@ -866,8 +512,9 @@ impl RuntimeBuilder {
 
     /// Pin the runtime to a specific CUDA device.
     ///
-    /// If not called, the runtime uses the calling thread's current device
-    /// at build time (typically device 0).
+    /// If not called, the runtime uses the device of the supplied stream or
+    /// memory resource, or [`DeviceId::DEFAULT`] when neither is supplied. The
+    /// calling thread's current CUDA device is never consulted.
     pub fn with_device(mut self, device: DeviceId) -> Self {
         self.device = Some(device);
         self
@@ -890,10 +537,10 @@ impl RuntimeBuilder {
     /// this resource. Use this when output buffers must live on a specific
     /// allocator (for example, interop buffers handed to an external system).
     ///
-    /// For memory budgeting, do not reach for an owned resource: attach a
-    /// [`StreamReservationLease`](crate::StreamReservationLease) to the
-    /// runtime's stream instead (see [`Runtime::stream_reservation`]); it
-    /// accounts outputs *and* temporaries for the pipeline.
+    /// For memory budgeting, do not reach for an owned resource: attach the
+    /// runtime's stream to a [`QueryMemoryDomain`](crate::QueryMemoryDomain)
+    /// through [`QueryMemoryDomain::reserve_stream`](crate::QueryMemoryDomain::reserve_stream);
+    /// the domain caps outputs *and* temporaries for the pipeline.
     ///
     /// If [`with_device`](Self::with_device) is also set, `mr` must have been
     /// created on that same device. Otherwise, `build()` rejects the
@@ -914,8 +561,9 @@ impl RuntimeBuilder {
     /// only output allocations; libcudf temporaries route through the
     /// device's memory domain and are accounted per stream. An owned pool is
     /// therefore not a budgeting tool; use the default device-level memory
-    /// manager plus stream-bound reservations
-    /// ([`Runtime::stream_reservation`]) to bound a pipeline's memory.
+    /// manager plus a stream member of a
+    /// [`QueryMemoryDomain`](crate::QueryMemoryDomain) to bound a pipeline's
+    /// memory.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
@@ -956,15 +604,11 @@ impl RuntimeBuilder {
     pub fn build(self) -> Result<Runtime> {
         let device = self.resolve_device()?;
         let RuntimeBuilder { stream, mr_selection, .. } = self;
-
-        // Temporarily switch to the target device so that any auto-created
-        // stream or memory resource lands on the correct GPU.
-        let _guard = DeviceGuard::new(device)?;
         let device_manager = DeviceMemoryManager::for_device(device)?;
 
         let stream = match stream {
             Some(stream) => stream,
-            None => CudaStream::new()?,
+            None => CudaStream::new_on(device)?,
         };
         let mr = match mr_selection {
             MemoryResourceSelection::Owned(mr) => mr,
@@ -974,7 +618,7 @@ impl RuntimeBuilder {
             MemoryResourceSelection::DeviceMemoryManager => device_manager.resource().clone(),
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr)?;
-        Ok(Runtime { domain, lease_owner: RuntimeLeaseOwner::new() })
+        Ok(Runtime { domain })
     }
 
     /// Resolve the target device, validating handle provenance.
@@ -1019,7 +663,7 @@ impl RuntimeBuilder {
                 (Some(stream), _) => Ok(stream.device()),
                 (None, MemoryResourceSelection::Owned(mr)) => Ok(mr.device()),
                 (None, MemoryResourceSelection::Pool { .. } | MemoryResourceSelection::DeviceMemoryManager) => {
-                    DeviceId::current()
+                    Ok(DeviceId::DEFAULT)
                 },
             }
         }

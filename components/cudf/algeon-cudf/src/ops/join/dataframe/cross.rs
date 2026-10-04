@@ -1,16 +1,6 @@
 use super::*;
 
 impl DataFrame {
-    /// Cross join two DataFrames and materialize only the requested output columns.
-    ///
-    /// Source columns are selected before calling libcudf. Output names are
-    /// taken from [`DataFrameCrossJoinOptions`], allowing same-named source
-    /// columns from each side to be projected with distinct result names.
-    pub fn cross_join_projected(&self, right: &DataFrame, options: DataFrameCrossJoinOptions) -> Result<Self> {
-        let ctx = ExecutionOverrides::new();
-        self.cross_join_projected_in_context(right, options, &ctx)
-    }
-
     /// Create a validated projected cross-join plan for bounded execution.
     ///
     /// The returned plan checks output names, source columns, and cartesian
@@ -28,7 +18,7 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         options: DataFrameCrossJoinOptions,
-        ctx: &ExecutionOverrides<'_>,
+        ctx: Exec<'_>,
     ) -> Result<Self> {
         let operation = "dataframe::cross_join_projected";
         let plan = self.projected_cross_join_plan_impl(right, options, operation)?;
@@ -99,33 +89,16 @@ impl DataFrameProjectedCrossJoinPlan {
     ///
     /// This performs a lower-level dry-run materialization under the default
     /// retained execution placement and releases the temporary result.
-    pub fn reservation_size_bytes(&self) -> Result<usize> {
-        let ctx = ExecutionOverrides::new();
-        self.reservation_size_bytes_in_context(&ctx, "dataframe::projected_cross_join_plan::reservation_size_bytes")
-    }
-
-    /// Return exact bytes retained by the projected output table using a
-    /// borrowed execution override.
-    pub fn reservation_size_bytes_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
-        self.reservation_size_bytes_in_context(ctx, "dataframe::projected_cross_join_plan::reservation_size_bytes_in")
+    pub fn reservation_size_bytes(&self, ctx: Exec<'_>) -> Result<usize> {
+        self.reservation_size_bytes_in_context(ctx, "dataframe::projected_cross_join_plan::reservation_size_bytes")
     }
 
     /// Materialize the projected cross join.
-    pub fn materialize(&self) -> Result<DataFrame> {
-        let ctx = ExecutionOverrides::new();
-        self.materialize_in_context(&ctx, "dataframe::projected_cross_join_plan::materialize")
+    pub fn materialize(&self, ctx: Exec<'_>) -> Result<DataFrame> {
+        self.materialize_in_context(ctx, "dataframe::projected_cross_join_plan::materialize")
     }
 
-    /// Materialize the projected cross join using a borrowed execution override.
-    pub fn materialize_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
-        self.materialize_in_context(ctx, "dataframe::projected_cross_join_plan::materialize_in")
-    }
-
-    fn reservation_size_bytes_in_context(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<usize> {
+    fn reservation_size_bytes_in_context(&self, ctx: Exec<'_>, operation: &'static str) -> Result<usize> {
         let execution = self.resolve_selected_execution(ctx, operation)?;
         let left_table = if self.left_indices.is_empty() {
             None
@@ -150,11 +123,7 @@ impl DataFrameProjectedCrossJoinPlan {
         .map_err(|error| error.reanchor(operation))
     }
 
-    pub(crate) fn materialize_in_context(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<DataFrame> {
+    pub(crate) fn materialize_in_context(&self, ctx: Exec<'_>, operation: &'static str) -> Result<DataFrame> {
         let execution = self.resolve_selected_execution(ctx, operation)?;
         let left_table = if self.left_indices.is_empty() {
             None
@@ -180,11 +149,7 @@ impl DataFrameProjectedCrossJoinPlan {
         DataFrame::from_table(table, self.output_names.clone()).map_err(|error| error.reanchor(operation))
     }
 
-    fn resolve_selected_execution(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<ResolvedExecution> {
+    fn resolve_selected_execution(&self, ctx: Exec<'_>, operation: &'static str) -> Result<ResolvedExecution> {
         match (self.left_indices.is_empty(), self.right_indices.is_empty()) {
             (false, false) => {
                 ResolvedExecution::binary(self.left.execution_domain(), self.right.execution_domain(), ctx, operation)

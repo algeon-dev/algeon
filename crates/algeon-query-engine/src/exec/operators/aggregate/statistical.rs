@@ -14,7 +14,7 @@ use super::{
     aggregate_spec_has_floating_statistical_aggregate, aggregate_strategy_capability_decision, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_query_error, execute_groupby_aggregate,
-    execute_groupby_aggregate_with_budget_observed, execution_overrides, finalize_avg_output_columns,
+    execute_groupby_aggregate_with_budget_observed, finalize_avg_output_columns,
     finalize_avg_output_columns_with_budget, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr,
     lower_expr, record_grouped_aggregate_strategy_decision,
     record_single_grouped_aggregate_strategy_decision_with_metrics,
@@ -100,14 +100,14 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     );
     let selection_elapsed = selection_timer.elapsed();
     let total_timer = Instant::now();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = context.runtime()?;
+    let overrides = exec_runtime.exec();
 
     let prepare_timer = Instant::now();
     let frame = if plan.pre_group_exprs.is_empty() {
         frame
     } else {
-        frame.with_execution(&overrides).with_columns(plan.pre_group_exprs).map_err(|error| {
+        frame.on(overrides).with_columns(plan.pre_group_exprs).map_err(|error| {
             cudf_query_error(
                 "query_engine.aggregate.statistical_moments.prepare",
                 "failed to prepare native statistical aggregate moment columns",
@@ -119,7 +119,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
 
     let groupby_timer = Instant::now();
     let mut output = execute_groupby_aggregate(
-        &overrides,
+        overrides,
         frame,
         &plan.aggregate,
         "query_engine.aggregate.statistical_moments.groupby",
@@ -128,7 +128,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
 
     let finalize_timer = Instant::now();
     if !plan.final_exprs.is_empty() {
-        output = output.with_execution(&overrides).with_columns(plan.final_exprs).map_err(|error| {
+        output = output.on(overrides).with_columns(plan.final_exprs).map_err(|error| {
             cudf_query_error(
                 "query_engine.aggregate.statistical_moments.finalize",
                 "failed to finalize native statistical aggregate output columns",
@@ -198,20 +198,22 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     );
     let selection_elapsed = selection_timer.elapsed();
     let total_timer = Instant::now();
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
 
     let prepare_timer = Instant::now();
     let frame = if plan.pre_group_exprs.is_empty() {
         frame
     } else {
         budgeted_value(
-            frame.with_columns_with_budget(plan.pre_group_exprs, token).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.aggregate.statistical_moments.prepare",
-                    "failed to prepare bounded native statistical aggregate moment columns",
-                    error,
-                )
-            })?,
+            token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(plan.pre_group_exprs)).map_err(
+                |error| {
+                    cudf_query_error(
+                        "query_engine.aggregate.statistical_moments.prepare",
+                        "failed to prepare bounded native statistical aggregate moment columns",
+                        error,
+                    )
+                },
+            )?,
             metrics,
             "query_engine.aggregate.statistical_moments.prepare",
         )
@@ -221,7 +223,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     let groupby_timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &plan.aggregate,
         token,
@@ -234,13 +236,15 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     let finalize_timer = Instant::now();
     if !plan.final_exprs.is_empty() {
         output = budgeted_value(
-            output.with_columns_with_budget(plan.final_exprs, token).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.aggregate.statistical_moments.finalize",
-                    "failed to finalize bounded native statistical aggregate output columns",
-                    error,
-                )
-            })?,
+            token.run("dataframe::with_columns", |exec| output.on(exec).with_columns(plan.final_exprs)).map_err(
+                |error| {
+                    cudf_query_error(
+                        "query_engine.aggregate.statistical_moments.finalize",
+                        "failed to finalize bounded native statistical aggregate output columns",
+                        error,
+                    )
+                },
+            )?,
             metrics,
             "query_engine.aggregate.statistical_moments.finalize",
         );
@@ -304,20 +308,22 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     decision.facts.insert("selected_strategy", "floating_statistical_gpu_native_tolerant_partial_moments".to_string());
     let selection_elapsed = selection_timer.elapsed();
     let total_timer = Instant::now();
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
 
     let prepare_timer = Instant::now();
     let frame = if plan.pre_group_exprs.is_empty() {
         frame
     } else {
         budgeted_value(
-            frame.with_columns_with_budget(plan.pre_group_exprs, token).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.aggregate.statistical_moments.partial_prepare",
-                    "failed to prepare bounded native statistical partial aggregate moment columns",
-                    error,
-                )
-            })?,
+            token.run("dataframe::with_columns", |exec| frame.on(exec).with_columns(plan.pre_group_exprs)).map_err(
+                |error| {
+                    cudf_query_error(
+                        "query_engine.aggregate.statistical_moments.partial_prepare",
+                        "failed to prepare bounded native statistical partial aggregate moment columns",
+                        error,
+                    )
+                },
+            )?,
             metrics,
             "query_engine.aggregate.statistical_moments.partial_prepare",
         )
@@ -327,7 +333,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     let groupby_timer = Instant::now();
     let output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &plan.aggregate,
         token,
@@ -391,12 +397,12 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     decision.facts.insert("selected_strategy", "floating_statistical_gpu_native_tolerant_final_moments".to_string());
     let selection_elapsed = selection_timer.elapsed();
     let total_timer = Instant::now();
-    let overrides = token.execution_overrides();
+    let overrides = token.exec();
 
     let groupby_timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget_observed(
         Some(context),
-        &overrides,
+        overrides,
         frame,
         &plan.aggregate,
         token,
@@ -409,13 +415,15 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     let finalize_timer = Instant::now();
     if !plan.final_exprs.is_empty() {
         output = budgeted_value(
-            output.with_columns_with_budget(plan.final_exprs, token).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.aggregate.statistical_moments.final_merge_finalize",
-                    "failed to finalize bounded native statistical final aggregate output columns",
-                    error,
-                )
-            })?,
+            token.run("dataframe::with_columns", |exec| output.on(exec).with_columns(plan.final_exprs)).map_err(
+                |error| {
+                    cudf_query_error(
+                        "query_engine.aggregate.statistical_moments.final_merge_finalize",
+                        "failed to finalize bounded native statistical final aggregate output columns",
+                        error,
+                    )
+                },
+            )?,
             metrics,
             "query_engine.aggregate.statistical_moments.final_merge_finalize",
         );

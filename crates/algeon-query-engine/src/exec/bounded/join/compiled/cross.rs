@@ -3,9 +3,8 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result,
-    bounded_invariant_violation, cudf_query_error, dataframe_cross_join_options, execution_overrides,
-    materialize_compiled_indices_output, observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output,
-    side_metric,
+    bounded_invariant_violation, cudf_query_error, dataframe_cross_join_options, materialize_compiled_indices_output,
+    observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
 };
 use crate::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
@@ -35,8 +34,8 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     execution_strategy: &'static str,
 ) -> Result<ResidentGpuFrame> {
     let options = dataframe_cross_join_options(&node.spec.output_projection);
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
+    let exec_runtime = execution.context().runtime()?;
+    let overrides = exec_runtime.exec();
     let timer = Instant::now();
     let plan = left.frame.projected_cross_join_plan(&right.frame, options).map_err(|error| {
         cudf_query_error(
@@ -48,7 +47,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     })?;
     let expected_output_rows = plan.output_rows() as u64;
     let output_reservation_bytes =
-        plan.reservation_size_bytes_in(&overrides).map(|bytes| bytes as u64).map_err(|error| {
+        plan.reservation_size_bytes(overrides).map(|bytes| bytes as u64).map_err(|error| {
             cudf_query_error(
                 "query_engine.bounded.join.projected_cross_output_reservation",
                 "failed to size compiled bounded projected cross join output",
@@ -56,7 +55,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             )
             .with_fact("join_type", &node.spec.join_type)
         })?;
-    let output = plan.materialize_in(&overrides).map_err(|error| {
+    let output = plan.materialize(overrides).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.join.projected_cross_materialize",
             "failed to materialize compiled bounded projected cross join output",

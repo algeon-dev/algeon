@@ -3,7 +3,6 @@
 use cudf::{
     DataType, ErrorCode, TypeId,
     core::{DeviceSlice as CudfDeviceSlice, column::DeviceSlice as CudfColumnDeviceSlice},
-    ops::dictionary::{encode, indices},
     testing::{
         column::{
             column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
@@ -614,28 +613,6 @@ fn test_device_slice_empty_column() {
     assert!(slice.is_empty());
 }
 
-fn test_device_slice_from_dictionary_indices() {
-    // Dictionary-encode and get the indices as a DeviceSlice; the exact
-    // workflow that gpu-app needs.
-    let data = vec![10i32, 20, 10, 30, 20, 10];
-    let col = column_from_slice(&data).unwrap();
-    let view = col.testing_view().unwrap();
-
-    let dict = encode(&view, TypeId::Int32).unwrap();
-    let dict_view = dict.testing_view().unwrap();
-    let indices_view = indices(&dict_view).unwrap();
-
-    let slice = indices_view.device_slice::<i32>().unwrap();
-    assert_eq!(slice.len(), 6);
-    assert_eq!(slice.type_id(), TypeId::Int32);
-    assert!(!slice.as_ptr().is_null());
-
-    // Split into two halves (simulating src/dst edge split).
-    let (src, dst) = slice.split_at(3);
-    assert_eq!(src.len(), 3);
-    assert_eq!(dst.len(), 3);
-}
-
 // --- from_device_ptr tests ---
 
 fn test_from_device_ptr_i32_roundtrip() {
@@ -978,7 +955,6 @@ fn column_tests_cases() {
         ("test_device_slice_split_at_zero", test_device_slice_split_at_zero),
         ("test_device_slice_split_at_end", test_device_slice_split_at_end),
         ("test_device_slice_empty_column", test_device_slice_empty_column),
-        ("test_device_slice_from_dictionary_indices", test_device_slice_from_dictionary_indices),
         ("test_from_device_ptr_i32_roundtrip", test_from_device_ptr_i32_roundtrip),
         ("test_from_device_ptr_f64_roundtrip", test_from_device_ptr_f64_roundtrip),
         ("test_from_device_ptr_i64_roundtrip", test_from_device_ptr_i64_roundtrip),

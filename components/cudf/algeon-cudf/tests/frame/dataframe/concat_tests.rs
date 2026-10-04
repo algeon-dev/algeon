@@ -1,6 +1,6 @@
 //! Tests for DataFrame concat, copy, rename, select.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, TypeId,
     frame::dataframe::{ConcatByNameOptions, SchemaAlignment},
     testing::{dataframe::trigger_concat_by_name_missing_planned_dtype_for_test, prelude::*},
 };
@@ -25,7 +25,7 @@ fn test_concat_matching_schemas() {
     )
     .unwrap();
 
-    let result = df1.concat(&df2).unwrap();
+    let result = df1.on(Exec::RETAINED).concat(&df2).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 4);
@@ -51,7 +51,7 @@ fn test_concat_mismatched_column_names_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).expect_err("expected schema mismatch error");
+    let err = df1.on(Exec::RETAINED).concat(&df2).expect_err("expected schema mismatch error");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat");
@@ -68,7 +68,7 @@ fn test_concat_mismatched_column_count_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).expect_err("expected schema mismatch error");
+    let err = df1.on(Exec::RETAINED).concat(&df2).expect_err("expected schema mismatch error");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat");
@@ -90,7 +90,7 @@ fn test_concat_mismatched_column_types_returns_error() {
     )
     .unwrap();
 
-    let err = df1.concat(&df2).expect_err("expected type mismatch error");
+    let err = df1.on(Exec::RETAINED).concat(&df2).expect_err("expected type mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dataframe::concat");
@@ -113,9 +113,12 @@ fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder(
     )
     .unwrap();
 
-    assert!(df1.concat(&df2).is_err());
+    assert!(df1.on(Exec::RETAINED).concat(&df2).is_err());
 
-    let result = df1.concat_by_name(&df2, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap();
+    let result = df1
+        .on(Exec::RETAINED)
+        .concat_by_name(&df2, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact))
+        .unwrap();
 
     assert_eq!(result.column_names(), vec!["a", "b"]);
     assert_eq!(result.series("a").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
@@ -131,7 +134,7 @@ fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
     )
     .unwrap();
 
-    let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
+    let result = left.on(Exec::RETAINED).concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "score"]);
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
@@ -148,7 +151,8 @@ fn test_concat_many_by_name_handles_multi_input_union() {
     let right =
         dataframe_from_columns(vec!["score".to_string()], vec![column_from_slice(&[99.0f64]).unwrap()]).unwrap();
 
-    let result = left.concat_many_by_name(&[&middle, &right], ConcatByNameOptions::default()).unwrap();
+    let result =
+        left.on(Exec::RETAINED).concat_many_by_name(&[&middle, &right], ConcatByNameOptions::default()).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "city", "score"]);
     assert_eq!(result.series("id").unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(1), None, None]);
@@ -171,7 +175,10 @@ fn test_concat_by_name_honors_left_column_order() {
     )
     .unwrap();
 
-    let result = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill)).unwrap();
+    let result = left
+        .on(Exec::RETAINED)
+        .concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill))
+        .unwrap();
 
     assert_eq!(result.column_names(), vec!["b", "a", "c"]);
 }
@@ -194,6 +201,7 @@ fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
     .unwrap();
 
     let result = left
+        .on(Exec::RETAINED)
         .concat_many_by_name(&[&middle, &right], ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill))
         .unwrap();
 
@@ -219,7 +227,7 @@ fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
     let left = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
     let right = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()]).unwrap();
 
-    let err = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap_err();
+    let err = left.on(Exec::RETAINED).concat_by_name(&right, ConcatByNameOptions::default()).unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -236,7 +244,10 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
     .unwrap();
     let right = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[2i32]).unwrap()]).unwrap();
 
-    let err = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap_err();
+    let err = left
+        .on(Exec::RETAINED)
+        .concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact))
+        .unwrap_err();
 
     assert_missing_column_error(&err, "score");
     assert_eq!(err.operation(), "dataframe::concat_many_by_name");
@@ -246,15 +257,16 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
 fn test_concat_by_name_decimal_null_fill_preserves_scale() {
     let decimal = series("amount", &[12345i64, 67890])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let left = DataFrame::from_series([("id", series("id", &[1i32, 2]).unwrap())]).unwrap();
     let right = DataFrame::from_series([("id", series("id", &[3i32, 4]).unwrap()), ("amount", decimal)]).unwrap();
 
-    let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
+    let result = left.on(Exec::RETAINED).concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
     let amount = result.series("amount").unwrap();
-    let raw = amount.astype(TypeId::Int64).unwrap();
+    let raw = amount.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
 
     assert_eq!(amount.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(raw.to_optional_vec::<i64>().unwrap(), vec![None, None, Some(12345), Some(67890)]);
@@ -270,7 +282,7 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     reset_dependency_observation();
     reset_exec_observation();
-    let result = left.concat(&right).unwrap();
+    let result = left.on(Exec::RETAINED).concat(&right).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), left.testing_execution_domain_id());
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
@@ -303,7 +315,7 @@ fn test_concat_many_three_dataframes() {
     )
     .unwrap();
 
-    let result = df1.concat_many(&[&df2, &df3]).unwrap();
+    let result = df1.on(Exec::RETAINED).concat_many(&[&df2, &df3]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows(), 6);
@@ -319,7 +331,7 @@ fn test_concat_many_three_dataframes() {
 fn test_concat_many_empty_slice_returns_self() {
     let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
-    let result = df.concat_many(&[]).unwrap();
+    let result = df.on(Exec::RETAINED).concat_many(&[]).unwrap();
 
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 3);
@@ -332,7 +344,7 @@ fn test_concat_many_single_other() {
 
     let df2 = dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[3i32, 4]).unwrap()]).unwrap();
 
-    let result = df1.concat_many(&[&df2]).unwrap();
+    let result = df1.on(Exec::RETAINED).concat_many(&[&df2]).unwrap();
 
     assert_eq!(result.num_rows(), 4);
     let vals: Vec<i32> = result.series("x").unwrap().to_vec_strict::<i32>().unwrap();
@@ -346,7 +358,7 @@ fn test_concat_many_mismatched_schema_returns_error() {
 
     let df3 = dataframe_from_columns(vec!["b".to_string()], vec![column_from_slice(&[5i32, 6]).unwrap()]).unwrap();
 
-    let err = df1.concat_many(&[&df2, &df3]).expect_err("expected schema mismatch");
+    let err = df1.on(Exec::RETAINED).concat_many(&[&df2, &df3]).expect_err("expected schema mismatch");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "dataframe::concat_many");
@@ -359,7 +371,7 @@ fn test_concat_many_mismatched_types_returns_error() {
 
     let df2 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()]).unwrap();
 
-    let err = df1.concat_many(&[&df2]).expect_err("expected type mismatch");
+    let err = df1.on(Exec::RETAINED).concat_many(&[&df2]).expect_err("expected type mismatch");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "dataframe::concat_many");
@@ -378,7 +390,7 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     let df3 = DataFrame::from_series([("a", rt3.series(&[5i32, 6]).unwrap())]).unwrap();
     let expected_domain_id = df1.testing_execution_domain_id();
 
-    let result = df1.concat_many(&[&df2, &df3]).unwrap();
+    let result = df1.on(Exec::RETAINED).concat_many(&[&df2, &df3]).unwrap();
 
     assert_eq!(result.testing_execution_domain_id(), expected_domain_id);
     let vals: Vec<i32> = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();

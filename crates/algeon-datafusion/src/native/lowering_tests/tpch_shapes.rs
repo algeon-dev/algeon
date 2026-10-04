@@ -53,14 +53,16 @@ async fn tpch_native_optimizer_rule_rows_match_golden() {
 }
 
 /// Replaces the run-specific parts of a rule row: the temporary dataset
-/// directory, file modification times, and hashes of file locations.
+/// directory, file modification times, and hashes and byte lengths of file
+/// locations. A location's length follows its hash and varies with the
+/// temporary directory name, which embeds the process id.
 fn normalized_rule_row(row: &str, dataset: &str) -> String {
     let mut row = row.replace(dataset, "<dataset>");
     row = replace_after(&row, "mtime=", usize::MAX, |c| c.is_ascii_digit() || matches!(c, '-' | 'T' | ':' | '.' | '+'));
     for prefix in ["fnv64:", "fnv64-", "fnv1a64:"] {
         row = replace_after(&row, prefix, 16, |c| c.is_ascii_hexdigit());
     }
-    row
+    replace_after(&row, "<run>:len:", usize::MAX, |c| c.is_ascii_digit())
 }
 
 /// Replaces up to `limit` characters `keep` accepts after each `prefix` with

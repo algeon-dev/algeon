@@ -77,10 +77,7 @@ use crate::{
 /// This does not transfer ownership. The returned handle is valid only for the
 /// lifetime of `stream`.
 pub fn cuda_stream_handle(stream: &CudaStream) -> Result<rapids_interop::CudaStreamHandle<'_>, InteropError> {
-    let raw = stream.interop_raw_handle().map_err(|error| {
-        map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_stream_handle", error)
-    })?;
-    rapids_interop::CudaStreamHandle::from_raw_on_device(raw, stream.device().ordinal_raw())
+    rapids_interop::CudaStreamHandle::from_raw_on_device(stream.interop_raw_handle(), stream.device().ordinal_raw())
         .map_err(|error| error.with_context("operation", "interop::cuda_stream_handle"))
 }
 

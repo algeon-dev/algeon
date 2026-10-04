@@ -15,15 +15,12 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetRequest, ExecutionOverrides, Runtime, Series,
+    DataFrame, DataType, ErrorCode, ErrorKind, Exec, ExecutionBudgetRequest, Runtime, ScalarValue, Series,
     StringSliceOptions, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::{
         binary::BinaryOperator,
-        expr::{
-            Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
-            lit_timestamp_raw, when,
-        },
+        expr::{Expr, col, lit, lit_null, when},
     },
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
@@ -234,9 +231,9 @@ fn lit_null_broadcasts_typed_nulls() {
     assert_eq!(result.null_count(), 3);
 }
 
-fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
+fn lit_decimal32_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
-    let result = eval(lit_decimal32_raw(12_345, -2).alias("amount"), &df);
+    let result = eval(lit(ScalarValue::Decimal32 { raw: 12_345, scale: -2 }).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
@@ -244,9 +241,9 @@ fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
     assert_eq!(host_export_i32_values(&result), vec![12_345, 12_345, 12_345]);
 }
 
-fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
+fn lit_decimal64_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
-    let result = eval(lit_decimal64_raw(-98_765_432, -4).alias("amount"), &df);
+    let result = eval(lit(ScalarValue::Decimal64 { raw: -98_765_432, scale: -4 }).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
@@ -254,10 +251,10 @@ fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
     assert_eq!(host_export_i64_values(&result), vec![-98_765_432, -98_765_432, -98_765_432]);
 }
 
-fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
+fn lit_decimal128_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
     let raw = 123_456_789_012_345_678_901i128;
-    let result = eval(lit_decimal128_raw(raw, -6).alias("amount"), &df);
+    let result = eval(lit(ScalarValue::Decimal128 { raw, scale: -6 }).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6).unwrap());
@@ -266,19 +263,26 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
 }
 
 fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
-    let discount =
-        series("discount", &[5i64, 25]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
+    let discount = series("discount", &[5i64, 25])
+        .unwrap()
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
     let df = df_with_series("discount", discount);
 
-    let result = eval((lit_decimal128_raw(1, 0) - col("discount")).alias("net"), &df);
+    let result = eval((lit(ScalarValue::Decimal128 { raw: 1, scale: 0 }) - col("discount")).alias("net"), &df);
 
     assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(host_export_i128_values(&result), vec![-400, -2400]);
 }
 
-fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
+fn lit_timestamp_broadcasts_dtype_and_raw_values() {
     let df = xy_df();
-    let result = eval(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).alias("ts"), &df);
+    let result = eval(
+        lit(ScalarValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds })
+            .alias("ts"),
+        &df,
+    );
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
@@ -286,9 +290,12 @@ fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
     assert_eq!(host_export_i64_values(&result), vec![1_700_000_123_456; 3]);
 }
 
-fn lit_duration_raw_broadcasts_dtype_and_raw_values() {
+fn lit_duration_broadcasts_dtype_and_raw_values() {
     let df = xy_df();
-    let result = eval(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds).alias("duration"), &df);
+    let result = eval(
+        lit(ScalarValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds }).alias("duration"),
+        &df,
+    );
 
     assert_eq!(result.len(), 3);
     assert_eq!(result.dtype().unwrap(), DataType::new(TypeId::DurationNanoseconds));
@@ -300,24 +307,24 @@ fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
     let source_rt = Runtime::builder().build().unwrap();
     let override_rt = Runtime::builder().build().unwrap();
     let df = DataFrame::from_series([("x", source_rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
-    let execution =
-        ExecutionOverrides::new().with_stream(override_rt.stream()).with_memory_resource(override_rt.memory_resource());
+    let execution = override_rt.exec();
     let input_placement = df.placement();
     let override_placement = override_rt.placement();
 
-    let decimal = lit_decimal64_raw(12_345, -2).eval_in(&df, &execution).unwrap();
+    let decimal = lit(ScalarValue::Decimal64 { raw: 12_345, scale: -2 }).eval_in(&df, execution).unwrap();
     let timestamp =
-        lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).eval_in(&df, &execution).unwrap();
-    let duration = lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds).eval_in(&df, &execution).unwrap();
+        lit(ScalarValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds })
+            .eval_in(&df, execution)
+            .unwrap();
+    let duration = lit(ScalarValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds })
+        .eval_in(&df, execution)
+        .unwrap();
 
     for result in [&decimal, &timestamp, &duration] {
         let placement = result.placement();
         assert_eq!(placement.device, input_placement.device);
-        assert_eq!(placement.workflow_id, input_placement.workflow_id);
-        assert_ne!(placement.bundle_id, input_placement.bundle_id);
         assert_eq!(placement.stream_debug, override_placement.stream_debug);
         assert_eq!(placement.memory_resource_debug, override_placement.memory_resource_debug);
-        assert_ne!(placement.workflow_id, override_placement.workflow_id);
     }
 
     assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
@@ -424,11 +431,13 @@ fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fract
     )
     .unwrap();
 
-    let outcome = df
-        .with_columns_with_budget(
-            [("ratio", col("numerator").binary_op_with_type(col("denominator"), BinaryOperator::Div, output_type))],
-            &token,
-        )
+    let outcome = token
+        .run("dataframe::with_columns", |exec| {
+            df.on(exec).with_columns([(
+                "ratio",
+                col("numerator").binary_op_with_type(col("denominator"), BinaryOperator::Div, output_type),
+            )])
+        })
         .unwrap();
     let result = outcome.value();
 
@@ -576,14 +585,20 @@ fn ge_and_le() {
 fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let df = df_with_series("shipdate", shipdate);
 
-    let result =
-        eval(col("shipdate").lt(lit_timestamp_raw(18_263, TimestampResolution::Days)).alias("before_cutoff"), &df);
+    let result = eval(
+        col("shipdate")
+            .lt(lit(ScalarValue::Timestamp { raw: 18_263, resolution: TimestampResolution::Days }))
+            .alias("before_cutoff"),
+        &df,
+    );
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
@@ -592,13 +607,19 @@ fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
 fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let df = df_with_series("shipdate", shipdate);
 
-    let result = eval((col("shipdate") + lit_duration_raw(5, TimestampResolution::Days)).alias("later_shipdate"), &df);
+    let result = eval(
+        (col("shipdate") + lit(ScalarValue::Duration { raw: 5, resolution: TimestampResolution::Days }))
+            .alias("later_shipdate"),
+        &df,
+    );
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::TimestampDays);
     assert_eq!(host_export_i32_values(&result), vec![18_267, 18_268, 18_269]);
@@ -607,8 +628,10 @@ fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
 fn timestamp_days_datetime_offset_adds_calendrical_months() {
     let shipdate = series("shipdate", &[18_262i32, 18_293, 18_322])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let df = df_with_series("shipdate", shipdate);
@@ -622,8 +645,10 @@ fn timestamp_days_datetime_offset_adds_calendrical_months() {
 fn timestamp_days_datetime_offset_rejects_non_exact_duration_resolution() {
     let shipdate = series("shipdate", &[18_262i32])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let df = df_with_series("shipdate", shipdate);
@@ -651,8 +676,10 @@ fn datetime_offset_zero_interval_still_rejects_non_timestamp_input() {
 fn timestamp_expr_datetime_namespace_extracts_components() {
     let dates = series("ts", &[0i32, 31, 365])
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::DurationDays)
         .unwrap()
+        .on(Exec::RETAINED)
         .astype(TypeId::TimestampDays)
         .unwrap();
     let df = df_with_series("ts", dates);
@@ -706,13 +733,13 @@ fn cast_f64_to_i64_rejects_nan_and_unrepresentable_values() {
 fn dataframe_cast_column_f64_to_i64_uses_checked_semantics() {
     let df = nullable_f64_df("x", &[1.9, -1.9, 0.0], &[true, true, false]);
 
-    let result = df.cast_column("x", TypeId::Int64).unwrap();
+    let result = df.on(Exec::RETAINED).cast_column("x", TypeId::Int64).unwrap();
 
     assert_eq!(result.series("x").unwrap().dtype().unwrap().id(), TypeId::Int64);
     assert_eq!(result.series("x").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(-1), None]);
 
     let invalid = f64_df("x", &[f64::NAN, f64::INFINITY, 1.0e40]);
-    let err = invalid.cast_column("x", TypeId::Int64).unwrap_err();
+    let err = invalid.on(Exec::RETAINED).cast_column("x", TypeId::Int64).unwrap_err();
     assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
 }
 
@@ -728,7 +755,7 @@ fn cast_decimal128_to_f64_uses_decimal_scale() {
 fn filter_expr_falls_back_to_boolean_mask_for_cast_predicates() {
     let df = xy_df();
 
-    let filtered = df.filter_expr(col("x").cast(TypeId::Float64).gt(15.0f64)).unwrap();
+    let filtered = df.on(Exec::RETAINED).filter_expr(col("x").cast(TypeId::Float64).gt(15.0f64)).unwrap();
 
     assert_eq!(filtered.series("x").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
     assert_eq!(filtered.series("y").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
@@ -745,7 +772,7 @@ fn not_operator() {
 
 fn with_columns_adds_new_column() {
     let df = xy_df();
-    let df2 = df.with_columns([(col("x") + col("y")).alias("sum")]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([(col("x") + col("y")).alias("sum")]).unwrap();
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.column_names(), vec!["x", "y", "sum"]);
     let sum = df2.series("sum").unwrap();
@@ -754,7 +781,7 @@ fn with_columns_adds_new_column() {
 
 fn with_columns_replaces_existing() {
     let df = xy_df();
-    let df2 = df.with_columns([(col("x") * lit(2i32)).alias("x")]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([(col("x") * lit(2i32)).alias("x")]).unwrap();
     assert_eq!(df2.num_columns(), 2);
     let x = df2.series("x").unwrap();
     assert_eq!(x.to_vec_strict::<i32>().unwrap(), vec![20, 40, 60]);
@@ -762,7 +789,10 @@ fn with_columns_replaces_existing() {
 
 fn with_columns_multiple_exprs() {
     let df = xy_df();
-    let df2 = df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]).unwrap();
+    let df2 = df
+        .on(Exec::RETAINED)
+        .with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")])
+        .unwrap();
     assert_eq!(df2.num_columns(), 4);
     assert_eq!(df2.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
     assert_eq!(df2.series("y10").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
@@ -770,20 +800,21 @@ fn with_columns_multiple_exprs() {
 
 fn with_columns_named_pair_allows_binary_expr_without_alias() {
     let df = xy_df();
-    let df2 = df.with_columns([("x1", col("x") + 1i32)]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([("x1", col("x") + 1i32)]).unwrap();
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
 }
 
 fn with_columns_named_pair_allows_if_else_without_alias() {
     let df = i32_df("x", &[1, 2, 3]);
-    let df2 = df.with_columns([("big", when(col("x").gt(1i32)).then(100i32).otherwise(0i32))]).unwrap();
+    let df2 =
+        df.on(Exec::RETAINED).with_columns([("big", when(col("x").gt(1i32)).then(100i32).otherwise(0i32))]).unwrap();
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
 }
 
 fn with_columns_named_pair_overrides_inner_alias() {
     let df = xy_df();
-    let df2 = df.with_columns([("x1", (col("x") + 1i32).alias("ignored"))]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([("x1", (col("x") + 1i32).alias("ignored"))]).unwrap();
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.column_names(), vec!["x", "y", "x1"]);
     assert_eq!(df2.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
@@ -791,7 +822,7 @@ fn with_columns_named_pair_overrides_inner_alias() {
 
 fn with_columns_named_pair_overrides_inherited_output_name() {
     let df = xy_df();
-    let df2 = df.with_columns([("x_copy", col("x").cast(TypeId::Float64))]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([("x_copy", col("x").cast(TypeId::Float64))]).unwrap();
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.column_names(), vec!["x", "y", "x_copy"]);
     assert_eq!(df2.series("x_copy").unwrap().dtype().unwrap().id(), TypeId::Float64);
@@ -800,7 +831,7 @@ fn with_columns_named_pair_overrides_inherited_output_name() {
 fn with_columns_no_alias_errors() {
     let df = xy_df();
     // (col + lit) has no alias and is not a bare col(); should error.
-    let err = df.with_columns([col("x") + lit(1i32)]).unwrap_err();
+    let err = df.on(Exec::RETAINED).with_columns([col("x") + lit(1i32)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
@@ -815,7 +846,8 @@ fn with_columns_no_alias_errors() {
 fn with_columns_sees_original_state() {
     let df = xy_df(); // x = [10,20,30], y = [1,2,3]
     // Both expressions see the original x, even though the first replaces x.
-    let df2 = df.with_columns([lit(0i32).alias("x"), (col("x") + lit(1i32)).alias("x_plus_one")]).unwrap();
+    let df2 =
+        df.on(Exec::RETAINED).with_columns([lit(0i32).alias("x"), (col("x") + lit(1i32)).alias("x_plus_one")]).unwrap();
     let x = df2.series("x").unwrap();
     assert_eq!(x.to_vec_strict::<i32>().unwrap(), vec![0, 0, 0]);
     let xp = df2.series("x_plus_one").unwrap();
@@ -825,7 +857,7 @@ fn with_columns_sees_original_state() {
 fn with_columns_bare_col_uses_column_name() {
     let df = xy_df();
     // Bare col("x") has output_name = Some("x"), so it should work without .alias().
-    let df2 = df.with_columns([col("x")]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("x")]).unwrap();
     assert_eq!(df2.num_columns(), 2);
 }
 
@@ -855,14 +887,14 @@ fn output_name_propagates_through_log() {
 
 fn with_columns_cast_no_alias_needed() {
     let df = xy_df();
-    let df2 = df.with_columns([col("x").cast(TypeId::Float64)]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("x").cast(TypeId::Float64)]).unwrap();
     assert_eq!(df2.num_columns(), 2);
     assert_eq!(df2.series("x").unwrap().dtype().unwrap().id(), TypeId::Float64);
 }
 
 fn with_columns_is_null_no_alias_needed() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
-    let df2 = df.with_columns([col("v").is_null()]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("v").is_null()]).unwrap();
     assert_eq!(df2.series("v").unwrap().dtype().unwrap().id(), TypeId::Bool8);
 }
 
@@ -1022,14 +1054,14 @@ fn cumsum_preserves_output_name() {
 
 fn with_columns_fillna_no_alias_needed() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
-    let df2 = df.with_columns([col("v").fillna(99i32)]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("v").fillna(99i32)]).unwrap();
     assert_eq!(df2.series("v").unwrap().null_count(), 0);
     assert_eq!(df2.series("v").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 }
 
 fn with_columns_cumsum_no_alias_needed() {
     let df = i32_df("x", &[1, 2, 3]);
-    let df2 = df.with_columns([col("x").cumsum()]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("x").cumsum()]).unwrap();
     assert_eq!(df2.series("x").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 6]);
 }
 
@@ -1115,7 +1147,7 @@ fn pct_pattern() {
 
 fn with_columns_rejects_unaliased_reduce() {
     let df = i32_df("x", &[10, 20, 30]);
-    let err = df.with_columns([col("x").agg().sum()]).unwrap_err();
+    let err = df.on(Exec::RETAINED).with_columns([col("x").agg().sum()]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
@@ -1129,7 +1161,7 @@ fn with_columns_rejects_unaliased_reduce() {
 
 fn with_columns_reduce_requires_alias_or_explicit_name() {
     let df = i32_df("x", &[10, 20, 30]);
-    let df2 = df.with_columns([("x_total", col("x").agg().sum())]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([("x_total", col("x").agg().sum())]).unwrap();
     assert_eq!(df2.series("x_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![60, 60, 60]);
 }
 
@@ -1210,7 +1242,7 @@ fn str_preserves_output_name() {
 
 fn with_columns_str_lower_no_alias() {
     let df = str_df("s", &["Hello", "WORLD"]);
-    let df2 = df.with_columns([col("s").str().lower()]).unwrap();
+    let df2 = df.on(Exec::RETAINED).with_columns([col("s").str().lower()]).unwrap();
     assert_eq!(df2.series("s").unwrap().dtype().unwrap().id(), TypeId::String);
 }
 
@@ -1268,7 +1300,10 @@ fn if_else_output_name_is_none() {
 
 fn if_else_requires_alias_in_with_columns() {
     let df = i32_df("x", &[1, 2, 3]);
-    let err = df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32))]).unwrap_err();
+    let err = df
+        .on(Exec::RETAINED)
+        .with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32))])
+        .unwrap_err();
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
@@ -1282,14 +1317,17 @@ fn if_else_requires_alias_in_with_columns() {
 
 fn if_else_with_alias_in_with_columns() {
     let df = i32_df("x", &[1, 2, 3]);
-    let df2 =
-        df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("big")]).unwrap();
+    let df2 = df
+        .on(Exec::RETAINED)
+        .with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)).alias("big")])
+        .unwrap();
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
 }
 
 fn when_then_otherwise_composite() {
     let df = i32_df("age", &[25, 12, 18]);
     let df2 = df
+        .on(Exec::RETAINED)
         .with_columns([when(col("age").ge(lit(18i32))).then(lit("adult")).otherwise(lit("minor")).alias("category")])
         .unwrap();
     assert_eq!(df2.series("category").unwrap().dtype().unwrap().id(), TypeId::String);
@@ -1310,24 +1348,15 @@ fn expr_tests_cases() {
         ("lit_f64_broadcasts", lit_f64_broadcasts),
         ("lit_string_broadcasts", lit_string_broadcasts),
         ("lit_null_broadcasts_typed_nulls", lit_null_broadcasts_typed_nulls),
-        (
-            "lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values",
-            lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values,
-        ),
-        (
-            "lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values",
-            lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values,
-        ),
-        (
-            "lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values",
-            lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values,
-        ),
+        ("lit_decimal32_broadcasts_dtype_scale_and_raw_values", lit_decimal32_broadcasts_dtype_scale_and_raw_values),
+        ("lit_decimal64_broadcasts_dtype_scale_and_raw_values", lit_decimal64_broadcasts_dtype_scale_and_raw_values),
+        ("lit_decimal128_broadcasts_dtype_scale_and_raw_values", lit_decimal128_broadcasts_dtype_scale_and_raw_values),
         (
             "binary_expr_aligns_mixed_decimal_storage_before_arithmetic",
             binary_expr_aligns_mixed_decimal_storage_before_arithmetic,
         ),
-        ("lit_timestamp_raw_broadcasts_dtype_and_raw_values", lit_timestamp_raw_broadcasts_dtype_and_raw_values),
-        ("lit_duration_raw_broadcasts_dtype_and_raw_values", lit_duration_raw_broadcasts_dtype_and_raw_values),
+        ("lit_timestamp_broadcasts_dtype_and_raw_values", lit_timestamp_broadcasts_dtype_and_raw_values),
+        ("lit_duration_broadcasts_dtype_and_raw_values", lit_duration_broadcasts_dtype_and_raw_values),
         (
             "raw_literals_eval_in_use_resolved_override_domain_for_allocations",
             raw_literals_eval_in_use_resolved_override_domain_for_allocations,

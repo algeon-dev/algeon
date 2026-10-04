@@ -313,7 +313,7 @@ fn conditional_join_indices_with_context(
     right: &TableView<'_>,
     predicate: &AstExpression,
     join_type: JoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -334,7 +334,7 @@ fn conditional_join_indices_with_output_size_with_context(
     predicate: &AstExpression,
     join_type: SizedConditionalPairJoinType,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -355,7 +355,7 @@ fn conditional_single_side_join_indices_with_context(
     right: &TableView<'_>,
     predicate: &AstExpression,
     semi_join: bool,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -377,7 +377,7 @@ fn conditional_single_side_join_indices_with_output_size_with_context(
     predicate: &AstExpression,
     semi_join: bool,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -398,7 +398,7 @@ fn conditional_join_size_with_context(
     right: &TableView<'_>,
     predicate: &AstExpression,
     join_type: SizedConditionalPairJoinType,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<usize> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -409,7 +409,7 @@ fn conditional_full_join_begin_size_data_with_context<'a>(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &'a AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<ConditionalFullJoinSizeData<'a>> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
@@ -428,111 +428,47 @@ fn conditional_single_side_join_size_with_context(
     right: &TableView<'_>,
     predicate: &AstExpression,
     semi_join: bool,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
     operation: &'static str,
 ) -> Result<usize> {
     let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
     conditional_single_side_join_size_impl(left, right, predicate, semi_join, execution.exec_options(), operation)
 }
 
-/// Conditional inner join indices for row pairs where `predicate` is true.
-///
-/// `predicate` is evaluated against rows from `left` and `right` using
-/// [`AstExpression`] column references. The
-/// returned `INT32` device columns are gather maps only: this operation
-/// allocates GPU index columns but does not gather or copy payload columns. The
-/// output keeps provenance from `left`; same-device inputs are ordered against
-/// the resolved output stream, and cross-device inputs are rejected before
-/// calling libcudf. This call enqueues work on the resolved stream and does not
-/// materialize host-visible data before returning. A predicate result of null
-/// is treated as non-matching by libcudf.
-pub fn conditional_inner_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_indices_with_context(
-        left,
-        right,
-        predicate,
-        JoinType::Inner,
-        &ctx,
-        "join::conditional_inner_join_indices",
-    )
-}
-
 /// Conditional inner join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`conditional_inner_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn conditional_inner_join_indices_in(
+pub(crate) fn conditional_inner_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_inner_join_indices_in";
     conditional_join_indices_with_context(left, right, predicate, JoinType::Inner, ctx, operation)
 }
 
-/// Return the exact output row count for a conditional inner join.
-pub fn conditional_inner_join_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<usize> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_size_with_context(
-        left,
-        right,
-        predicate,
-        SizedConditionalPairJoinType::Inner,
-        &ctx,
-        "join::conditional_inner_join_size",
-    )
-}
-
 /// Return the exact output row count for a conditional inner join using a
 /// borrowed execution override.
-pub fn conditional_inner_join_size_in(
+pub(crate) fn conditional_inner_join_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<usize> {
     let operation = "join::conditional_inner_join_size_in";
     conditional_join_size_with_context(left, right, predicate, SizedConditionalPairJoinType::Inner, ctx, operation)
 }
 
-/// Conditional inner join indices using an exact caller-supplied output row
-/// count.
-pub fn conditional_inner_join_indices_with_output_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-    output_size: usize,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_indices_with_output_size_with_context(
-        left,
-        right,
-        predicate,
-        SizedConditionalPairJoinType::Inner,
-        output_size,
-        &ctx,
-        "join::conditional_inner_join_indices_with_output_size",
-    )
-}
-
 /// Conditional inner join indices using a borrowed execution override and an
 /// exact caller-supplied output row count.
-pub fn conditional_inner_join_indices_with_output_size_in(
+pub(crate) fn conditional_inner_join_indices_with_output_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_inner_join_indices_with_output_size_in";
     conditional_join_indices_with_output_size_with_context(
@@ -546,102 +482,40 @@ pub fn conditional_inner_join_indices_with_output_size_in(
     )
 }
 
-/// Conditional left join indices preserving all left rows.
-///
-/// Returned right-side misses contain libcudf's no-match sentinel for
-/// nullifying gather. This operation allocates GPU `INT32` gather maps but does
-/// not gather or copy payload columns. The output keeps provenance from `left`;
-/// same-device inputs are ordered against the resolved output stream, and
-/// cross-device inputs are rejected before calling libcudf. This call enqueues
-/// work on the resolved stream and does not materialize host-visible data
-/// before returning.
-pub fn conditional_left_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_indices_with_context(
-        left,
-        right,
-        predicate,
-        JoinType::Left,
-        &ctx,
-        "join::conditional_left_join_indices",
-    )
-}
-
 /// Conditional left join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`conditional_left_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn conditional_left_join_indices_in(
+pub(crate) fn conditional_left_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_left_join_indices_in";
     conditional_join_indices_with_context(left, right, predicate, JoinType::Left, ctx, operation)
 }
 
-/// Return the exact output row count for a conditional left join.
-pub fn conditional_left_join_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<usize> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_size_with_context(
-        left,
-        right,
-        predicate,
-        SizedConditionalPairJoinType::Left,
-        &ctx,
-        "join::conditional_left_join_size",
-    )
-}
-
 /// Return the exact output row count for a conditional left join using a
 /// borrowed execution override.
-pub fn conditional_left_join_size_in(
+pub(crate) fn conditional_left_join_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<usize> {
     let operation = "join::conditional_left_join_size_in";
     conditional_join_size_with_context(left, right, predicate, SizedConditionalPairJoinType::Left, ctx, operation)
 }
 
-/// Conditional left join indices using an exact caller-supplied output row
-/// count.
-pub fn conditional_left_join_indices_with_output_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-    output_size: usize,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_indices_with_output_size_with_context(
-        left,
-        right,
-        predicate,
-        SizedConditionalPairJoinType::Left,
-        output_size,
-        &ctx,
-        "join::conditional_left_join_indices_with_output_size",
-    )
-}
-
 /// Conditional left join indices using a borrowed execution override and an
 /// exact caller-supplied output row count.
-pub fn conditional_left_join_indices_with_output_size_in(
+pub(crate) fn conditional_left_join_indices_with_output_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_left_join_indices_with_output_size_in";
     conditional_join_indices_with_output_size_with_context(
@@ -655,40 +529,15 @@ pub fn conditional_left_join_indices_with_output_size_in(
     )
 }
 
-/// Conditional full join indices preserving unmatched rows from both sides.
-///
-/// Misses on either side contain libcudf's no-match sentinel for nullifying
-/// gather. This operation allocates GPU `INT32` gather maps but does not gather
-/// or copy payload columns. The output keeps provenance from `left`;
-/// same-device inputs are ordered against the resolved output stream, and
-/// cross-device inputs are rejected before calling libcudf. This call enqueues
-/// work on the resolved stream and does not materialize host-visible data
-/// before returning.
-pub fn conditional_full_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<JoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_join_indices_with_context(
-        left,
-        right,
-        predicate,
-        JoinType::Full,
-        &ctx,
-        "join::conditional_full_join_indices",
-    )
-}
-
 /// Conditional full join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`conditional_full_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn conditional_full_join_indices_in(
+pub(crate) fn conditional_full_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_full_join_indices_in";
     conditional_join_indices_with_context(left, right, predicate, JoinType::Full, ctx, operation)
@@ -700,108 +549,46 @@ pub(crate) fn conditional_full_join_begin_size_data_in<'a>(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &'a AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<ConditionalFullJoinSizeData<'a>> {
     let operation = "join::conditional_full_join_begin_size_data_in";
     conditional_full_join_begin_size_data_with_context(left, right, predicate, ctx, operation)
-}
-
-/// Conditional left semi join indices for rows from `left` with at least one
-/// matching `right` row.
-///
-/// Returns a single `INT32` device gather map. This operation allocates that
-/// GPU index column but does not gather or copy payload columns. The output
-/// keeps provenance from `left`; same-device inputs are ordered against the
-/// resolved output stream, and cross-device inputs are rejected before calling
-/// libcudf. This call enqueues work on the resolved stream and does not
-/// materialize host-visible data before returning.
-pub fn conditional_left_semi_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_indices_with_context(
-        left,
-        right,
-        predicate,
-        true,
-        &ctx,
-        "join::conditional_left_semi_join_indices",
-    )
 }
 
 /// Conditional left semi join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`conditional_left_semi_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn conditional_left_semi_join_indices_in(
+pub(crate) fn conditional_left_semi_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_semi_join_indices_in";
     conditional_single_side_join_indices_with_context(left, right, predicate, true, ctx, operation)
 }
 
-/// Return the exact output row count for a conditional left semi join.
-pub fn conditional_left_semi_join_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<usize> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_size_with_context(
-        left,
-        right,
-        predicate,
-        true,
-        &ctx,
-        "join::conditional_left_semi_join_size",
-    )
-}
-
 /// Return the exact output row count for a conditional left semi join using a
 /// borrowed execution override.
-pub fn conditional_left_semi_join_size_in(
+pub(crate) fn conditional_left_semi_join_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<usize> {
     let operation = "join::conditional_left_semi_join_size_in";
     conditional_single_side_join_size_with_context(left, right, predicate, true, ctx, operation)
 }
 
-/// Conditional left semi join indices using an exact caller-supplied output row
-/// count.
-pub fn conditional_left_semi_join_indices_with_output_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-    output_size: usize,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_indices_with_output_size_with_context(
-        left,
-        right,
-        predicate,
-        true,
-        output_size,
-        &ctx,
-        "join::conditional_left_semi_join_indices_with_output_size",
-    )
-}
-
 /// Conditional left semi join indices using a borrowed execution override and
 /// an exact caller-supplied output row count.
-pub fn conditional_left_semi_join_indices_with_output_size_in(
+pub(crate) fn conditional_left_semi_join_indices_with_output_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_semi_join_indices_with_output_size_in";
     conditional_single_side_join_indices_with_output_size_with_context(
@@ -815,102 +602,40 @@ pub fn conditional_left_semi_join_indices_with_output_size_in(
     )
 }
 
-/// Conditional left anti join indices for rows from `left` with no matching
-/// `right` row.
-///
-/// Returns a single `INT32` device gather map. This operation allocates that
-/// GPU index column but does not gather or copy payload columns. The output
-/// keeps provenance from `left`; same-device inputs are ordered against the
-/// resolved output stream, and cross-device inputs are rejected before calling
-/// libcudf. This call enqueues work on the resolved stream and does not
-/// materialize host-visible data before returning.
-pub fn conditional_left_anti_join_indices(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_indices_with_context(
-        left,
-        right,
-        predicate,
-        false,
-        &ctx,
-        "join::conditional_left_anti_join_indices",
-    )
-}
-
 /// Conditional left anti join indices using a borrowed execution override.
 ///
 /// Same result semantics as [`conditional_left_anti_join_indices`]. See the
 /// [join module](crate::ops::join)'s shared `_in` execution-context contract.
-pub fn conditional_left_anti_join_indices_in(
+pub(crate) fn conditional_left_anti_join_indices_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_anti_join_indices_in";
     conditional_single_side_join_indices_with_context(left, right, predicate, false, ctx, operation)
 }
 
-/// Return the exact output row count for a conditional left anti join.
-pub fn conditional_left_anti_join_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-) -> Result<usize> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_size_with_context(
-        left,
-        right,
-        predicate,
-        false,
-        &ctx,
-        "join::conditional_left_anti_join_size",
-    )
-}
-
 /// Return the exact output row count for a conditional left anti join using a
 /// borrowed execution override.
-pub fn conditional_left_anti_join_size_in(
+pub(crate) fn conditional_left_anti_join_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<usize> {
     let operation = "join::conditional_left_anti_join_size_in";
     conditional_single_side_join_size_with_context(left, right, predicate, false, ctx, operation)
 }
 
-/// Conditional left anti join indices using an exact caller-supplied output row
-/// count.
-pub fn conditional_left_anti_join_indices_with_output_size(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    predicate: &AstExpression,
-    output_size: usize,
-) -> Result<SingleSideJoinIndices> {
-    let ctx = ExecutionOverrides::new();
-    conditional_single_side_join_indices_with_output_size_with_context(
-        left,
-        right,
-        predicate,
-        false,
-        output_size,
-        &ctx,
-        "join::conditional_left_anti_join_indices_with_output_size",
-    )
-}
-
 /// Conditional left anti join indices using a borrowed execution override and
 /// an exact caller-supplied output row count.
-pub fn conditional_left_anti_join_indices_with_output_size_in(
+pub(crate) fn conditional_left_anti_join_indices_with_output_size_in(
     left: &TableView<'_>,
     right: &TableView<'_>,
     predicate: &AstExpression,
     output_size: usize,
-    ctx: &ExecutionOverrides<'_>,
+    ctx: Exec<'_>,
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_anti_join_indices_with_output_size_in";
     conditional_single_side_join_indices_with_output_size_with_context(
@@ -958,15 +683,9 @@ impl ConditionalFullJoinSizeData<'_> {
         Ok(out)
     }
 
-    /// Materialize conditional full join gather-map pairs from retained size data.
-    pub(crate) fn materialize_indices(self) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
-        self.materialize_indices_in(&ctx)
-    }
-
     /// Materialize conditional full join gather-map pairs from retained size
     /// data using a borrowed execution override.
-    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<JoinIndices> {
+    pub(crate) fn materialize_indices_in(self, ctx: Exec<'_>) -> Result<JoinIndices> {
         let operation = "conditional_full_join_size_data::materialize_indices_in";
         let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
         let mut out_left = ptr::null_mut();

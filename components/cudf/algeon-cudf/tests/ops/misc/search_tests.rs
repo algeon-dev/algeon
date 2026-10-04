@@ -1,116 +1,31 @@
-//! Tests for CU-2: contains (isin) and ColumnView::isin.
-use cudf::{ErrorCode, ErrorKind, ops::search, testing::prelude::*};
+//! Tests for CU-2: Series and ColumnView membership (isin).
+use cudf::{ErrorCode, ErrorKind, Exec, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, dependency_wait_call_count_for_stream,
     error_context_value, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
     lock_event_observation, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    run_named_cases,
+    run_named_cases, series,
 };
 
-fn test_contains_basic_i32() {
-    let haystack = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
-    let needles = column_from_slice(&[20i32, 40, 60, 80]).unwrap();
+// ---------------------------------------------------------------------------
+// Series::isin
+// ---------------------------------------------------------------------------
 
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
+fn test_series_isin_with_duplicate_values() {
+    let s = series::<i32>("x", &[1, 3, 4]).unwrap();
+    let values = series::<i32>("vals", &[1, 1, 2, 2, 3]).unwrap();
 
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false, false]);
+    let mask = s.on(Exec::RETAINED).isin(&values).unwrap();
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false]);
 }
 
-fn test_contains_all_match() {
-    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = column_from_slice(&[3i32, 1, 2]).unwrap();
+fn test_series_isin_float64() {
+    let s = series::<f64>("x", &[2.0, 4.0]).unwrap();
+    let values = series::<f64>("vals", &[1.0, 2.0, 3.0]).unwrap();
 
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, true]);
-}
-
-fn test_contains_no_match() {
-    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = column_from_slice(&[4i32, 5, 6]).unwrap();
-
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, false]);
-}
-
-fn test_contains_empty_needles() {
-    let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let needles = column_from_slice(&[] as &[i32]).unwrap();
-
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.len().unwrap(), 0);
-}
-
-fn test_contains_empty_haystack() {
-    let haystack = column_from_slice(&[] as &[i32]).unwrap();
-    let needles = column_from_slice(&[1i32, 2]).unwrap();
-
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false]);
-}
-
-fn test_contains_with_duplicates_in_haystack() {
-    let haystack = column_from_slice(&[1i32, 1, 2, 2, 3]).unwrap();
-    let needles = column_from_slice(&[1i32, 3, 4]).unwrap();
-
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
-}
-
-fn test_contains_float64() {
-    let haystack = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
-    let needles = column_from_slice(&[2.0f64, 4.0]).unwrap();
-
-    let hv = haystack.testing_view().unwrap();
-    let nv = needles.testing_view().unwrap();
-
-    let result = search::contains(&hv, &nv).unwrap();
-    let rv = result.testing_view().unwrap();
-    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false]);
-}
-
-fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
-    let _event_observation = lock_event_observation();
-    let haystack = explicit_i32_column(&[10, 20, 30, 40], 910);
-    let needles = explicit_i32_column(&[20, 50, 10], 911);
-    let expected_stream = haystack.testing_execution_domain_stream_value();
-    let expected_mr = haystack.testing_execution_domain_mr_value();
-    reset_dependency_observation();
-    reset_exec_observation();
-    let result = search::contains(&haystack.testing_view().unwrap(), &needles.testing_view().unwrap()).unwrap();
-
-    assert_eq!(result.testing_execution_domain_id(), haystack.testing_execution_domain_id());
-    assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
-    assert_eq!(last_exec_stream_value(), expected_stream);
-    assert_eq!(last_exec_mr_value(), expected_mr);
-    assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 1);
-
-    reset_sync_observation();
-    assert_eq!(result.testing_view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
-    assert_eq!(last_sync_stream_value(), expected_stream);
+    let mask = s.on(Exec::RETAINED).isin(&values).unwrap();
+    assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false]);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,17 +170,8 @@ fn test_isin_type_mismatch_error_has_operation_context() {
 #[test]
 fn search_tests_cases() {
     run_named_cases(&[
-        ("test_contains_basic_i32", test_contains_basic_i32),
-        ("test_contains_all_match", test_contains_all_match),
-        ("test_contains_no_match", test_contains_no_match),
-        ("test_contains_empty_needles", test_contains_empty_needles),
-        ("test_contains_empty_haystack", test_contains_empty_haystack),
-        ("test_contains_with_duplicates_in_haystack", test_contains_with_duplicates_in_haystack),
-        ("test_contains_float64", test_contains_float64),
-        (
-            "test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance",
-            test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance,
-        ),
+        ("test_series_isin_with_duplicate_values", test_series_isin_with_duplicate_values),
+        ("test_series_isin_float64", test_series_isin_float64),
         ("test_isin_i32_some_matches", test_isin_i32_some_matches),
         ("test_isin_succeeds_with_mixed_domains", test_isin_succeeds_with_mixed_domains),
         ("test_isin_string_column", test_isin_string_column),

@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Schema, SchemaRef as ArrowSchemaRef};
-use cudf::DataFrame;
+use cudf::{DataFrame, Exec};
 
 use super::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor, cudf_query_error,
@@ -840,10 +840,12 @@ fn dynamic_filter_i64_range_from_series(
     let range = match data_type {
         ArrowDataType::Int32 | ArrowDataType::Date32 => {
             let min = series
+                .on(Exec::RETAINED)
                 .min_value::<i32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?
                 .map(i64::from);
             let max = series
+                .on(Exec::RETAINED)
                 .max_value::<i32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?
                 .map(i64::from);
@@ -851,19 +853,23 @@ fn dynamic_filter_i64_range_from_series(
         },
         ArrowDataType::Int64 => {
             let min = series
+                .on(Exec::RETAINED)
                 .min_value::<i64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?;
             let max = series
+                .on(Exec::RETAINED)
                 .max_value::<i64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?;
             Some((min, max))
         },
         ArrowDataType::UInt32 => {
             let min = series
+                .on(Exec::RETAINED)
                 .min_value::<u32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?
                 .map(i64::from);
             let max = series
+                .on(Exec::RETAINED)
                 .max_value::<u32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?
                 .map(i64::from);
@@ -871,9 +877,11 @@ fn dynamic_filter_i64_range_from_series(
         },
         ArrowDataType::UInt64 => {
             let min = series
+                .on(Exec::RETAINED)
                 .min_value::<u64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?;
             let max = series
+                .on(Exec::RETAINED)
                 .max_value::<u64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?;
             match (min, max) {
