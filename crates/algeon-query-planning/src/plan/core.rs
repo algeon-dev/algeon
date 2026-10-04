@@ -120,10 +120,17 @@ impl QueryPlan {
     }
 
     /// Returns this plan with a replacement dynamic-filter route list.
-    #[doc(hidden)]
-    pub fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
+    pub(crate) fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
         self.annotations.dynamic_filter_routes = routes;
         self
+    }
+
+    /// Returns this plan with a replacement dynamic-filter route list, for
+    /// tests that state routes without running route discovery.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn with_dynamic_filter_routes_for_test(self, routes: Vec<DynamicFilterRoute>) -> Self {
+        self.with_dynamic_filter_routes(routes)
     }
 
     /// The only way an optimizer rule produces a new plan from this one.

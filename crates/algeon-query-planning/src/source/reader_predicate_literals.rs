@@ -1,7 +1,6 @@
 use crate::expr::{Expr, LiteralValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
 pub enum ReaderPredicateDecimalScaleError {
     ScaleFactorOverflow { exponent: u32 },
     IntegerRawOverflow { target_scale: i32 },
@@ -11,13 +10,11 @@ pub enum ReaderPredicateDecimalScaleError {
     DecimalInexact { source_scale: i32, target_scale: i32 },
 }
 
-#[doc(hidden)]
 pub fn reader_predicate_integer_literal_as<T>(value: &LiteralValue) -> Option<T>
 where T: TryFrom<i128> {
     reader_predicate_integer_literal_raw(value).and_then(|value| T::try_from(value).ok())
 }
 
-#[doc(hidden)]
 pub fn reader_predicate_unsigned_literal_as<T>(value: &LiteralValue) -> Option<T>
 where T: TryFrom<u128> {
     reader_predicate_unsigned_literal_raw(value).and_then(|value| T::try_from(value).ok())
@@ -51,7 +48,6 @@ pub(crate) fn reader_predicate_integer_literal_raw(value: &LiteralValue) -> Opti
     }
 }
 
-#[doc(hidden)]
 pub fn reader_predicate_integer_literal_as_decimal_raw(
     value: &LiteralValue,
     target_scale: i32,
@@ -78,7 +74,6 @@ pub(crate) fn reader_predicate_decimal_raw_for_integer_value(
     }
 }
 
-#[doc(hidden)]
 pub fn reader_predicate_rescale_decimal_raw(
     raw: i128,
     source_scale: i32,
@@ -108,7 +103,6 @@ fn reader_predicate_checked_pow10(exponent: u32) -> Result<i128, ReaderPredicate
     Ok(value)
 }
 
-#[doc(hidden)]
 pub fn reader_predicate_expr_references_decimal_column(
     expr: &Expr,
     mut column_is_decimal: impl FnMut(&str) -> bool,

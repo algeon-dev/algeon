@@ -116,11 +116,18 @@ impl GraphMeasuredPeakRow {
 
     /// Records one terminal graph-boundary state. A later observation cannot
     /// overwrite the first exact boundary.
-    #[doc(hidden)]
-    pub fn record_execution_state(&mut self, execution_state: GraphClaimExecutionState) {
+    pub(crate) fn record_execution_state(&mut self, execution_state: GraphClaimExecutionState) {
         if self.execution_state == GraphClaimExecutionState::Pending {
             self.execution_state = execution_state;
         }
+    }
+
+    /// Records one terminal graph-boundary state, for tests that build rows
+    /// without an execution.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn record_execution_state_for_test(&mut self, execution_state: GraphClaimExecutionState) {
+        self.record_execution_state(execution_state);
     }
 
     /// Records the one direct peak observation for this graph attempt.

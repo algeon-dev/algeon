@@ -1,6 +1,7 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 use cudf::{
     AggSpec as CudfAggSpec, Expr as CudfExpr, GroupByAgg,
+    interop::arrow_host::cudf_dtype_from_arrow_type,
     ops::{
         binary::BinaryOperator, col, datetime::DatetimeRoundingFrequency, expr::concat, lit, lit_null,
         strings::StringSliceOptions, when,
@@ -18,9 +19,7 @@ use query_planning::{
 };
 
 use crate::{
-    datatypes::{
-        UnrepresentableLiteral, cudf_dtype_from_arrow_type, cudf_scalar_value, timestamp_unit_to_cudf_resolution,
-    },
+    datatypes::{UnrepresentableLiteral, cudf_scalar_value, timestamp_unit_to_cudf_resolution},
     native_error::cudf_unsupported_type_error,
 };
 

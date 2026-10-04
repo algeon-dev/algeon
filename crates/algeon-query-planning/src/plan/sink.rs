@@ -65,7 +65,7 @@ impl ResultSink {
 
     /// The host schema the caller receives, whether execution or the frontend
     /// materializes it.
-    pub fn caller_visible_host_schema(&self) -> Option<&SchemaRef> {
+    pub(crate) fn caller_visible_host_schema(&self) -> Option<&SchemaRef> {
         match self {
             Self::GpuResident { .. } => None,
             Self::HostArrow { schema, .. } | Self::DeferredHostArrow { schema, .. } => Some(schema),

@@ -300,7 +300,7 @@ mkdir -p "${facade_dir}"
 facade_snapshot="${facade_dir}/algeon-datafusion.txt"
 facade_ledger="${facade_dir}/algeon-datafusion-owner-types.tsv"
 facade_output="${facade_dir}/output"
-facade_header=$'public_symbol\towner_type\tconsumer\tdecision\tfacade_path\treason\tphase'
+facade_header=$'public_symbol\towner_type\tconsumer\tdecision\tfacade_path\treason'
 facade_owner_type='query_runtime::observability::schedule_projection::AttemptId'
 printf '%s\n' \
   'pub use algeon_datafusion::attempt::AttemptId' \
@@ -308,7 +308,7 @@ printf '%s\n' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
 assert_contains "${facade_output}" "PASS: 1 live owner types have unique approved facade reachability"
@@ -319,7 +319,7 @@ printf '%s\n' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tstable terminal outcome' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
 assert_contains "${facade_output}" "PASS: 1 live owner types have unique approved facade reachability"
@@ -330,7 +330,7 @@ printf '%s\n' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tHIDE\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_runtime::observability::attempt_report::RuntimeTerminalOutcome\tattempt observability\tHIDE\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tinternal terminal outcome' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: a pure facade re-export with HIDE disposition passed the facade policy" >&2
@@ -353,8 +353,8 @@ echo "PASS: an unclassified live owner type fails closed"
 
 printf '%s\n' \
   "${facade_header}" \
-  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
-  $'algeon_datafusion::native::plan\tquery_planning::plan::core::QueryPlan\tnative IR\tHIDE\talgeon_datafusion::report::PlanningReport\traw IR stays planning-owned\t5' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_runtime::observability::schedule_projection::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity' \
+  $'algeon_datafusion::native::plan\tquery_planning::plan::core::QueryPlan\tnative IR\tHIDE\talgeon_datafusion::report::PlanningReport\traw IR stays planning-owned' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: a live HIDE owner type passed the facade policy" >&2
@@ -439,7 +439,7 @@ echo "PASS: stale approved top-level namespace fails closed"
 hidden_drift_dir="${tmp_dir}/snapshots/hidden_drift"
 write_clean_snapshots "${hidden_drift_dir}"
 sed -i '0,/^query_runtime::/{//d}' "${hidden_drift_dir}/algeon-query-runtime-hidden.tsv"
-printf 'query_planning::plan::core::gone\tcross-crate\towner\tconsumer\tcondition\n' \
+printf 'query_planning::plan::core::gone\tcross-crate\towner\tprod: fixture-consumer\tnarrow once unused\n' \
   >>"${hidden_drift_dir}/algeon-query-planning-hidden.tsv"
 run_check hidden_drift "${hidden_drift_dir}" "${CHECK_SCRIPT}" check --all-features
 assert_status hidden_drift 1
@@ -459,7 +459,7 @@ write_hidden_ledger() {
   local row
   printf 'symbol\tfeature\towner\tconsumer\tremoval_condition\n' >"${file}"
   for row in "$@"; do
-    printf '%s\t%s\towner\tconsumer\tcondition\n' "${row%%|*}" "${row##*|}" >>"${file}"
+    printf '%s\t%s\towner\ttests: fixture-consumer\tremoved once no test names it\n' "${row%%|*}" "${row##*|}" >>"${file}"
   done
 }
 
@@ -488,7 +488,7 @@ mkdir -p "${hidden_dir}/clean/src"
 cat >"${hidden_dir}/clean/src/lib.rs" <<'RS'
 pub mod engine;
 #[cfg(feature = "test-hooks")]
-mod seam;
+pub mod seam;
 #[cfg(test)]
 mod tests;
 #[cfg(any(test, feature = "server"))]
@@ -704,5 +704,102 @@ run_hidden hidden_orphan "${hidden_dir}/orphan/src" "${hidden_dir}/orphan.tsv"
 assert_status hidden_orphan 1
 assert_contains "${tmp_dir}/hidden_orphan.output" "no \`mod\` declaration reaches it"
 echo "PASS: a hidden item in a file outside the module tree fails closed"
+
+# A hidden item inside a private module has no path a consumer can name, even
+# when a visible re-export publishes it.
+mkdir -p "${hidden_dir}/unnameable/src"
+cat >"${hidden_dir}/unnameable/src/lib.rs" <<'RS'
+mod inner {
+    #[doc(hidden)]
+    pub struct Buried;
+}
+
+pub use inner::Buried;
+RS
+write_hidden_ledger "${hidden_dir}/unnameable.tsv" 'fixture::inner::Buried|cross-crate'
+run_hidden hidden_unnameable "${hidden_dir}/unnameable/src" "${hidden_dir}/unnameable.tsv"
+assert_status hidden_unnameable 1
+assert_contains "${tmp_dir}/hidden_unnameable.output" "fixture::inner::Buried is hidden on a path no consumer can name"
+echo "PASS: a hidden attribute on an unnameable path fails closed"
+
+# An item hidden in a public module and again at a re-export has two rows for
+# one definition.
+mkdir -p "${hidden_dir}/two_paths/src"
+cat >"${hidden_dir}/two_paths/src/lib.rs" <<'RS'
+pub mod engine {
+    #[doc(hidden)]
+    pub struct Shared;
+}
+
+#[doc(hidden)]
+pub use engine::Shared;
+RS
+write_hidden_ledger "${hidden_dir}/two_paths.tsv" 'fixture::Shared|cross-crate' 'fixture::engine::Shared|cross-crate'
+run_hidden hidden_two_paths "${hidden_dir}/two_paths/src" "${hidden_dir}/two_paths.tsv"
+assert_status hidden_two_paths 1
+assert_contains "${tmp_dir}/hidden_two_paths.output" \
+  "fixture::Shared and fixture::engine::Shared are hidden public paths to one definition; keep one"
+echo "PASS: two hidden public paths to one definition fail closed"
+
+# The consumer column follows `prod: …; tools: …; tests: …; exposed-by: …`, a
+# test-hooks item has no production consumer, and a removal condition states
+# its own condition instead of citing an untracked plan.
+write_clean_ledger_variant "${hidden_dir}/bad_consumer.tsv" ""
+sed -i 's/^fixture::Alpha\tcross-crate\towner\ttests: fixture-consumer/fixture::Alpha\tcross-crate\towner\ttests: b, a/' \
+  "${hidden_dir}/bad_consumer.tsv"
+run_hidden hidden_bad_consumer "${hidden_dir}/clean/src" "${hidden_dir}/bad_consumer.tsv"
+assert_status hidden_bad_consumer 1
+assert_contains "${tmp_dir}/hidden_bad_consumer.output" "tests names must be non-empty, sorted, and unique"
+echo "PASS: an unsorted consumer list fails closed"
+
+write_clean_ledger_variant "${hidden_dir}/prod_hook.tsv" ""
+sed -i 's/^fixture::seam::hook\ttest-hooks\towner\ttests: fixture-consumer/fixture::seam::hook\ttest-hooks\towner\tprod: fixture-consumer/' \
+  "${hidden_dir}/prod_hook.tsv"
+run_hidden hidden_prod_hook "${hidden_dir}/clean/src" "${hidden_dir}/prod_hook.tsv"
+assert_status hidden_prod_hook 1
+assert_contains "${tmp_dir}/hidden_prod_hook.output" "test-hooks item cannot have prod consumers"
+echo "PASS: a production consumer of a test-hooks item fails closed"
+
+write_clean_ledger_variant "${hidden_dir}/plan_condition.tsv" ""
+sed -i 's/^\(fixture::Alpha\t.*\t\)removed once no test names it$/\1error-model plan P4 removes it/' \
+  "${hidden_dir}/plan_condition.tsv"
+run_hidden hidden_plan_condition "${hidden_dir}/clean/src" "${hidden_dir}/plan_condition.tsv"
+assert_status hidden_plan_condition 1
+assert_contains "${tmp_dir}/hidden_plan_condition.output" "removal_condition cites a plan document"
+echo "PASS: a removal condition citing a plan fails closed"
+
+write_clean_ledger_variant "${hidden_dir}/exposer.tsv" ""
+sed -i 's/^\(fixture::Alpha\tcross-crate\towner\t\)tests: fixture-consumer/\1exposed-by: fixture::engine::Alpha::new/; s/^\(fixture::Delta\tcross-crate\towner\t\)tests: fixture-consumer/\1exposed-by: fixture::gone/' \
+  "${hidden_dir}/exposer.tsv"
+run_hidden hidden_exposer "${hidden_dir}/clean/src" "${hidden_dir}/exposer.tsv"
+assert_status hidden_exposer 1
+assert_contains "${tmp_dir}/hidden_exposer.output" "fixture::Delta is exposed-by fixture::gone, which names nothing in the crate"
+assert_not_contains "${tmp_dir}/hidden_exposer.output" "fixture::Alpha is exposed-by"
+echo "PASS: an exposed-by symbol must name an item in the crate"
+
+# A public item that compiles only with test-hooks needs its own row; members
+# of a hidden test-hooks type are covered by the type's row.
+mkdir -p "${hidden_dir}/seam_rows/src"
+cat >"${hidden_dir}/seam_rows/src/lib.rs" <<'RS'
+#[cfg(feature = "test-hooks")]
+pub fn unlisted_hook() {}
+
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub struct Probe;
+
+#[cfg(feature = "test-hooks")]
+impl Probe {
+    pub fn new() -> Self {
+        Probe
+    }
+}
+RS
+write_hidden_ledger "${hidden_dir}/seam_rows.tsv" 'fixture::Probe|test-hooks'
+run_hidden hidden_seam_rows "${hidden_dir}/seam_rows/src" "${hidden_dir}/seam_rows.tsv"
+assert_status hidden_seam_rows 1
+assert_contains "${tmp_dir}/hidden_seam_rows.output" "fixture::unlisted_hook compiles only with test-hooks but has no #[doc(hidden)] row"
+assert_not_contains "${tmp_dir}/hidden_seam_rows.output" "fixture::Probe::new"
+echo "PASS: a test-hooks item without a row fails, and a hidden type covers its members"
 
 echo "OK: public API surface snapshot check fault-injection tests passed."

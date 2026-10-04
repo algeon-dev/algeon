@@ -875,7 +875,6 @@ pub query_runtime::observability::AttemptComposedScheduleProjection::producer_oc
 pub query_runtime::observability::AttemptComposedScheduleProjection::schema: alloc::string::String
 impl query_runtime::observability::AttemptComposedScheduleProjection
 pub fn query_runtime::observability::AttemptComposedScheduleProjection::fingerprint_matches_contents(&self) -> bool
-pub fn query_runtime::observability::AttemptComposedScheduleProjection::for_test(usize, u64, u64) -> Self
 pub struct query_runtime::observability::AttemptFailureSummary
 impl query_runtime::observability::AttemptFailureSummary
 pub const fn query_runtime::observability::AttemptFailureSummary::backend_closing() -> Self
@@ -980,6 +979,8 @@ pub query_runtime::observability::LakehouseCacheFillEventSnapshot::error_status:
 pub query_runtime::observability::LakehouseCacheFillEventSnapshot::file_index: core::option::Option<usize>
 pub query_runtime::observability::LakehouseCacheFillEventSnapshot::outcome: &'static str
 pub query_runtime::observability::LakehouseCacheFillEventSnapshot::stable_id_hash: alloc::string::String
+impl core::convert::From<&query_runtime::observability::cache_fill_event::LakehouseCacheFillEvent> for query_runtime::observability::LakehouseCacheFillEventSnapshot
+pub fn query_runtime::observability::LakehouseCacheFillEventSnapshot::from(&query_runtime::observability::cache_fill_event::LakehouseCacheFillEvent) -> Self
 pub struct query_runtime::observability::LiveRuntimeObservationSnapshot
 impl query_runtime::observability::LiveRuntimeObservationSnapshot
 pub fn query_runtime::observability::LiveRuntimeObservationSnapshot::attempt_report(&self) -> core::option::Option<&query_runtime::observability::QueryAttemptReport>
@@ -1179,7 +1180,6 @@ pub struct query_runtime::observability::RuntimeObservationHandle
 impl query_runtime::observability::RuntimeObservationHandle
 pub const fn query_runtime::observability::RuntimeObservationHandle::config(&self) -> query_runtime::observability::RuntimeObservationConfig
 pub const fn query_runtime::observability::RuntimeObservationHandle::disabled() -> Self
-pub fn query_runtime::observability::RuntimeObservationHandle::is_same_session(&self, &Self) -> bool
 pub fn query_runtime::observability::RuntimeObservationHandle::live_snapshot(&self) -> core::option::Option<query_runtime::observability::LiveRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationHandle::metrics_checkpoint(&self, &query_runtime::observability::PlanExecutionId) -> core::option::Option<query_runtime::observability::metrics_summary::QueryMetricsCheckpoint>
 pub fn query_runtime::observability::RuntimeObservationHandle::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
@@ -1207,7 +1207,6 @@ pub fn query_runtime::observability::RuntimeObservationOwner::handle(&self) -> q
 pub fn query_runtime::observability::RuntimeObservationOwner::live_snapshot(&self) -> core::option::Option<query_runtime::observability::LiveRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationOwner::new(impl core::convert::Into<query_planning::correlation::QueryId>, core::option::Option<query_planning::correlation::TraceId>, query_runtime::observability::RuntimeObservationConfig) -> Self
 pub fn query_runtime::observability::RuntimeObservationOwner::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
-pub fn query_runtime::observability::RuntimeObservationOwner::record_terminal_outcome(&self, query_runtime::observability::RuntimeTerminalOutcome)
 pub fn query_runtime::observability::RuntimeObservationOwner::register_seal_observer<F>(&self, F) where F: core::ops::function::Fn(query_runtime::observability::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn query_runtime::observability::RuntimeObservationOwner::seal(&self, query_runtime::observability::RuntimeTerminalOutcome) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationOwner::sealed_snapshot(&self) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
@@ -1491,11 +1490,26 @@ pub fn query_runtime::observability::stage_context_from_execution(&impl query_ru
 pub fn query_runtime::observability::task_attempt_id(impl core::convert::Into<query_runtime::observability::RuntimeTaskId>, u32) -> query_runtime::observability::task_identity::TaskAttemptId
 pub fn query_runtime::observability::write_runtime_observation_jsonl<W: core::io::write::Write>(&query_runtime::observability::SealedRuntimeObservationSnapshot, &mut W) -> core::result::Result<(), query_runtime::observability::RuntimeObservationExportError>
 pub mod query_runtime::runtime
-pub use query_runtime::runtime::CacheGraphActivity
-pub use query_runtime::runtime::CacheSourceActivity
-pub use query_runtime::runtime::CacheSourceEventSnapshot
-pub use query_runtime::runtime::DeviceCacheReport
-pub use query_runtime::runtime::cache_observation_fingerprint
+pub mod query_runtime::runtime::cache
+pub struct query_runtime::runtime::cache::CacheGraphActivity
+pub query_runtime::runtime::cache::CacheGraphActivity::available_entries: usize
+pub query_runtime::runtime::cache::CacheGraphActivity::checked_out_entries: usize
+pub query_runtime::runtime::cache::CacheGraphActivity::insertions: u64
+pub query_runtime::runtime::cache::CacheGraphActivity::lookup_hits: u64
+pub query_runtime::runtime::cache::CacheGraphActivity::preparation_pins: usize
+pub struct query_runtime::runtime::cache::CacheSourceActivity
+pub struct query_runtime::runtime::cache::CacheSourceEventSnapshot
+pub struct query_runtime::runtime::cache::DeviceCacheReport
+pub query_runtime::runtime::cache::DeviceCacheReport::allocation_domain_id: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::cache_cap_bytes: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::device_ordinal: usize
+pub query_runtime::runtime::cache::DeviceCacheReport::graph: query_runtime::runtime::cache::CacheGraphActivity
+pub query_runtime::runtime::cache::DeviceCacheReport::ledger_evictable_resident_bytes: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::ledger_pinned_in_use_bytes: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::ledger_sequence: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::physical_current_bytes: u64
+pub query_runtime::runtime::cache::DeviceCacheReport::physical_peak_bytes: u64
+pub fn query_runtime::runtime::cache::cache_observation_fingerprint(&str) -> alloc::string::String
 pub mod query_runtime::runtime::resident
 pub struct query_runtime::runtime::resident::GpuDataFrame
 impl query_runtime::runtime::resident::GpuDataFrame
@@ -1663,8 +1677,8 @@ pub query_runtime::runtime::BackendDeviceMetricsSnapshot::device_ordinal: usize
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::ledger_sequence: u64
 pub struct query_runtime::runtime::BackendDiagnostics
 pub query_runtime::runtime::BackendDiagnostics::admission: query_runtime::runtime::QueryServiceAdmissionSnapshot
-pub query_runtime::runtime::BackendDiagnostics::cache_source_events: alloc::vec::Vec<crate::runtime::cache::CacheSourceEventSnapshot>
-pub query_runtime::runtime::BackendDiagnostics::caches: alloc::vec::Vec<crate::runtime::cache::DeviceCacheReport>
+pub query_runtime::runtime::BackendDiagnostics::cache_source_events: alloc::vec::Vec<query_runtime::runtime::cache::CacheSourceEventSnapshot>
+pub query_runtime::runtime::BackendDiagnostics::caches: alloc::vec::Vec<query_runtime::runtime::cache::DeviceCacheReport>
 pub query_runtime::runtime::BackendDiagnostics::execution_pools: alloc::vec::Vec<query_runtime::runtime::GpuExecutionPoolSnapshot>
 pub query_runtime::runtime::BackendDiagnostics::execution_queries: query_runtime::runtime::GpuExecutionQuerySnapshot
 pub query_runtime::runtime::BackendDiagnostics::ledgers: alloc::vec::Vec<query_runtime::runtime::DeviceLedgerReport>
@@ -1697,6 +1711,24 @@ pub fn query_runtime::runtime::CacheFillBytePermit::bytes(&self) -> u64
 pub fn query_runtime::runtime::CacheFillBytePermit::try_grow(&mut self, u64) -> query_planning::error::Result<bool>
 impl core::ops::drop::Drop for query_runtime::runtime::CacheFillBytePermit
 pub fn query_runtime::runtime::CacheFillBytePermit::drop(&mut self)
+pub struct query_runtime::runtime::CacheGraphActivity
+pub query_runtime::runtime::CacheGraphActivity::available_entries: usize
+pub query_runtime::runtime::CacheGraphActivity::checked_out_entries: usize
+pub query_runtime::runtime::CacheGraphActivity::insertions: u64
+pub query_runtime::runtime::CacheGraphActivity::lookup_hits: u64
+pub query_runtime::runtime::CacheGraphActivity::preparation_pins: usize
+pub struct query_runtime::runtime::CacheSourceActivity
+pub struct query_runtime::runtime::CacheSourceEventSnapshot
+pub struct query_runtime::runtime::DeviceCacheReport
+pub query_runtime::runtime::DeviceCacheReport::allocation_domain_id: u64
+pub query_runtime::runtime::DeviceCacheReport::cache_cap_bytes: u64
+pub query_runtime::runtime::DeviceCacheReport::device_ordinal: usize
+pub query_runtime::runtime::DeviceCacheReport::graph: query_runtime::runtime::cache::CacheGraphActivity
+pub query_runtime::runtime::DeviceCacheReport::ledger_evictable_resident_bytes: u64
+pub query_runtime::runtime::DeviceCacheReport::ledger_pinned_in_use_bytes: u64
+pub query_runtime::runtime::DeviceCacheReport::ledger_sequence: u64
+pub query_runtime::runtime::DeviceCacheReport::physical_current_bytes: u64
+pub query_runtime::runtime::DeviceCacheReport::physical_peak_bytes: u64
 pub struct query_runtime::runtime::DeviceCapabilities
 impl query_runtime::runtime::DeviceCapabilities
 pub fn query_runtime::runtime::DeviceCapabilities::only(impl core::iter::traits::collect::IntoIterator<Item = query_runtime::runtime::DeviceCapability>) -> Self
@@ -1823,13 +1855,11 @@ pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_ti
 pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> query_runtime::runtime::cache_fill::CacheFillByteBudget
 pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> query_runtime::runtime::context::stream_pool::QueryServiceStreamPool
 impl query_runtime::runtime::ExecutionContext
-pub fn query_runtime::runtime::ExecutionContext::standalone(query_runtime::runtime::StandaloneConfig) -> query_planning::error::Result<Self>
+pub fn query_runtime::runtime::ExecutionContext::standalone(query_runtime::runtime::context::standalone::StandaloneConfig) -> query_planning::error::Result<Self>
 impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> query_planning::error::Result<core::option::Option<query_runtime::observability::AttemptComposedScheduleProjection>>
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::with_admitted_gpu_inputs(&self, &query_planning::plan::core::QueryPlan, &query_runtime::runtime::resident::GpuResidentInputMap) -> query_planning::error::Result<Self>
-impl query_runtime::runtime::ExecutionContext
-pub fn query_runtime::runtime::ExecutionContext::with_stream_lease(&self, &query_runtime::runtime::service_stream::StreamLease) -> query_planning::error::Result<Self>
 pub struct query_runtime::runtime::GpuBackendCloseSnapshot
 pub query_runtime::runtime::GpuBackendCloseSnapshot::active_gpu_permits: usize
 pub query_runtime::runtime::GpuBackendCloseSnapshot::active_observation_permits: usize
@@ -1960,7 +1990,7 @@ pub struct query_runtime::runtime::GpuExecutorLease
 impl query_runtime::runtime::GpuExecutorLease
 pub async fn query_runtime::runtime::GpuExecutorLease::run<F, T>(&self, query_runtime::runtime::GpuExecutionJobKind, F) -> query_planning::error::Result<T> where F: core::future::future::Future<Output = T> + core::marker::Send + 'static, T: core::marker::Send + 'static
 pub fn query_runtime::runtime::GpuExecutorLease::run_observed_scoped<B, F, T>(&self, query_runtime::runtime::GpuExecutionJobKind, query_runtime::observability::RuntimeObservationHandle, B) -> impl core::future::future::Future<Output = query_planning::error::Result<T>> + core::marker::Send + 'static + use<B, F, T> where B: core::ops::function::FnOnce(query_runtime::observability::RuntimeStreamLeaseScope) -> F + core::marker::Send + 'static, F: core::future::future::Future<Output = T> + core::marker::Send + 'static, T: core::marker::Send + 'static
-pub fn query_runtime::runtime::GpuExecutorLease::submit_blocking<F, T>(&self, query_runtime::runtime::GpuExecutionJobKind, query_runtime::observability::RuntimeObservationHandle, F) -> query_planning::error::Result<PoolBlockingWork<T>> where F: core::ops::function::FnOnce() -> T + core::marker::Send + 'static, T: core::marker::Send + 'static
+pub fn query_runtime::runtime::GpuExecutorLease::submit_blocking<F, T>(&self, query_runtime::runtime::GpuExecutionJobKind, query_runtime::observability::RuntimeObservationHandle, F) -> query_planning::error::Result<query_runtime::runtime::gpu_execution_pool::lease::PoolBlockingWork<T>> where F: core::ops::function::FnOnce() -> T + core::marker::Send + 'static, T: core::marker::Send + 'static
 impl core::fmt::Debug for query_runtime::runtime::GpuExecutorLease
 pub fn query_runtime::runtime::GpuExecutorLease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::runtime::GpuMemoryFraction(_)
@@ -1996,7 +2026,6 @@ pub fn query_runtime::runtime::QueryAdmissionRequest::with_execution_cancellatio
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_query_cap_bytes(self, u64) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_query_plan_capability_evidence(self, query_planning::admission::evidence::AttemptCapabilityEvidence) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_queue_deadline(self, std::time::Instant) -> Self
-pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_activity_result(self, query_planning::error::Result<query_runtime::runtime::QueryActivityLease>) -> Self
 pub struct query_runtime::runtime::QueryExecutionConfig
 pub query_runtime::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub query_runtime::runtime::QueryExecutionConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
@@ -2041,23 +2070,6 @@ pub query_runtime::runtime::QueueBounds::max_wait: core::time::Duration
 pub query_runtime::runtime::QueueBounds::max_waiters: usize
 impl core::default::Default for query_runtime::runtime::QueueBounds
 pub fn query_runtime::runtime::QueueBounds::default() -> Self
-pub struct query_runtime::runtime::RuntimeObservationBuildError
-impl query_runtime::runtime::RuntimeObservationBuildError
-pub fn query_runtime::runtime::RuntimeObservationBuildError::into_parts(self) -> (query_planning::error::QueryError, query_runtime::observability::RuntimeObservationSession)
-pub fn query_runtime::runtime::RuntimeObservationBuildError::observation(&self) -> &query_runtime::observability::RuntimeObservationSession
-pub fn query_runtime::runtime::RuntimeObservationBuildError::query_error(&self) -> &query_planning::error::QueryError
-impl core::error::Error for query_runtime::runtime::RuntimeObservationBuildError
-pub fn query_runtime::runtime::RuntimeObservationBuildError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-impl core::fmt::Display for query_runtime::runtime::RuntimeObservationBuildError
-pub fn query_runtime::runtime::RuntimeObservationBuildError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::ops::drop::Drop for query_runtime::runtime::RuntimeObservationBuildError
-pub fn query_runtime::runtime::RuntimeObservationBuildError::drop(&mut self)
-pub struct query_runtime::runtime::RuntimeObservedExecutionContext
-impl query_runtime::runtime::RuntimeObservedExecutionContext
-pub fn query_runtime::runtime::RuntimeObservedExecutionContext::context(&self) -> &query_runtime::runtime::ExecutionContext
-pub fn query_runtime::runtime::RuntimeObservedExecutionContext::into_parts(self) -> (query_runtime::runtime::ExecutionContext, query_runtime::observability::RuntimeObservationOwner)
-pub fn query_runtime::runtime::RuntimeObservedExecutionContext::observation(&self) -> &query_runtime::observability::RuntimeObservationOwner
-pub fn query_runtime::runtime::RuntimeObservedExecutionContext::standalone(query_runtime::runtime::StandaloneConfig, query_runtime::observability::RuntimeObservationSession) -> core::result::Result<Self, query_runtime::runtime::RuntimeObservationBuildError>
 pub struct query_runtime::runtime::S3SourceStorageProfile
 pub query_runtime::runtime::S3SourceStorageProfile::credential: query_runtime::runtime::S3SourceStorageCredential
 pub query_runtime::runtime::S3SourceStorageProfile::endpoint: core::option::Option<alloc::string::String>
@@ -2073,6 +2085,11 @@ pub fn query_runtime::runtime::S3SourceStorageProfile::with_static_credentials(s
 pub fn query_runtime::runtime::S3SourceStorageProfile::with_unsigned_requests(self) -> Self
 impl core::fmt::Debug for query_runtime::runtime::S3SourceStorageProfile
 pub fn query_runtime::runtime::S3SourceStorageProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_runtime::runtime::ServiceStreamPool
+impl query_runtime::runtime::ServiceStreamPool
+pub fn query_runtime::runtime::ServiceStreamPool::acquire(&self) -> query_planning::error::Result<query_runtime::runtime::service_stream::StreamLease>
+pub fn query_runtime::runtime::ServiceStreamPool::device(&self) -> cudf::runtime::device::DeviceId
+pub fn query_runtime::runtime::ServiceStreamPool::new(cudf::runtime::device::DeviceId, usize) -> query_planning::error::Result<Self>
 pub struct query_runtime::runtime::SourceSchedulerPolicy
 impl query_runtime::runtime::SourceSchedulerPolicy
 pub const fn query_runtime::runtime::SourceSchedulerPolicy::enables_prefetch(self) -> bool
@@ -2091,27 +2108,10 @@ pub fn query_runtime::runtime::SourceStorageProfile::s3(impl core::convert::Into
 pub fn query_runtime::runtime::SourceStorageProfile::s3_profile(&self) -> &query_runtime::runtime::S3SourceStorageProfile
 impl core::fmt::Debug for query_runtime::runtime::SourceStorageProfile
 pub fn query_runtime::runtime::SourceStorageProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct query_runtime::runtime::StandaloneConfig
-pub query_runtime::runtime::StandaloneConfig::cancellation: query_runtime::runtime::ExecutionCancellation
-pub query_runtime::runtime::StandaloneConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
-pub query_runtime::runtime::StandaloneConfig::memory_control_policy: query_planning::execution_contracts::MemoryControlPolicy
-pub query_runtime::runtime::StandaloneConfig::memory_policy: query_runtime::runtime::MemoryResourcePolicy
-pub query_runtime::runtime::StandaloneConfig::query_id: core::option::Option<query_planning::correlation::QueryId>
-pub query_runtime::runtime::StandaloneConfig::runtime: core::option::Option<alloc::sync::Arc<cudf::runtime::owner::Runtime>>
-pub query_runtime::runtime::StandaloneConfig::service_stream_pool: core::option::Option<service_stream::ServiceStreamPool>
-pub query_runtime::runtime::StandaloneConfig::service_stream_pool_size: core::option::Option<usize>
-pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
-pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_options: query_planning::chunk::policy::SourceChunkPlanningOptions
-pub query_runtime::runtime::StandaloneConfig::source_scheduler_policy: query_runtime::runtime::SourceSchedulerPolicy
-pub query_runtime::runtime::StandaloneConfig::source_storage_profiles: alloc::vec::Vec<query_runtime::runtime::SourceStorageProfile>
-pub query_runtime::runtime::StandaloneConfig::trace_id: core::option::Option<query_planning::correlation::TraceId>
-impl query_runtime::runtime::StandaloneConfig
-pub const query_runtime::runtime::StandaloneConfig::DEFAULT_DEVICE_BUDGET_BYTES: u64
-impl core::default::Default for query_runtime::runtime::StandaloneConfig
-pub fn query_runtime::runtime::StandaloneConfig::default() -> Self
 pub struct query_runtime::runtime::ValidatedGpuBackendConfig
 impl query_runtime::runtime::ValidatedGpuBackendConfig
 pub fn query_runtime::runtime::ValidatedGpuBackendConfig::devices(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &query_runtime::runtime::GpuBackendDeviceConfig> + '_
 pub const query_runtime::runtime::BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize
 pub const query_runtime::runtime::BACKEND_METRIC_DEVICE_CAPACITY: usize
+pub fn query_runtime::runtime::cache_observation_fingerprint(&str) -> alloc::string::String
 pub fn query_runtime::runtime::probe_device_capacity(usize, query_runtime::runtime::GpuMemoryOwnership, u64) -> query_planning::error::Result<query_runtime::runtime::GpuDeviceCapacityProbe>

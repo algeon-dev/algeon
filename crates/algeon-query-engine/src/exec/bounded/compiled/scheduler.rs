@@ -50,7 +50,6 @@ const OPERATION: &str = "query_engine.exec.bounded.compiled.scheduler";
 /// does not stop the remaining cleanup. The primary error is returned, or the
 /// panic resumes unwinding, and observed runs record every cleanup error as a
 /// secondary cleanup failure.
-#[doc(hidden)]
 pub trait CompiledTaskExecutor {
     /// Payload stored for each resident resource.
     type Resource;
@@ -138,7 +137,6 @@ impl CompiledFlightBoard {
 }
 
 /// Deterministic single-threaded scheduler for a validated compiled pipeline.
-#[doc(hidden)]
 pub struct CompiledPipelineScheduler<'a> {
     pipeline: &'a CompiledPipeline,
     dependencies: BTreeMap<PipelineTaskId, BTreeSet<PipelineTaskId>>,
@@ -146,7 +144,7 @@ pub struct CompiledPipelineScheduler<'a> {
 }
 
 impl<'a> CompiledPipelineScheduler<'a> {
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(test)]
     pub fn new(pipeline: &'a CompiledPipeline) -> Result<Self> {
         Self::new_with_prioritized_join_builds(pipeline, BTreeSet::new())
     }

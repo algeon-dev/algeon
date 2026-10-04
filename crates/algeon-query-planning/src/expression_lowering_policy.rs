@@ -4,6 +4,7 @@
 /// cudf than the original IR operator. Keep them internal until lower-level
 /// cudf diagnostics can report authoritative expression strategy choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct ExpressionLoweringPolicy {
     row_predicate_in_list_expansion_limit: usize,
 }

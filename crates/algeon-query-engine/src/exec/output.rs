@@ -28,6 +28,8 @@ pub enum QueryOutput {
 
 impl QueryOutput {
     /// Borrow the host Arrow batch when the result was materialized to host.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
     pub fn as_host_arrow(&self) -> Option<&RecordBatch> {
         match self {
             Self::HostArrow(batch) => Some(batch),
@@ -36,6 +38,8 @@ impl QueryOutput {
     }
 
     /// Borrow the GPU handle when the result stayed device-resident.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
     pub fn as_gpu_resident(&self) -> Option<&GpuResultHandle> {
         match self {
             Self::GpuResident(frame) => Some(frame),
@@ -48,6 +52,8 @@ impl QueryOutput {
 ///
 /// Metrics ownership stays with the result so adapters can record them after
 /// deciding whether to pass through a GPU handle or materialize host output.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
 pub struct QueryExecutionResult {
     output: QueryOutput,
     metrics: QueryMetrics,
@@ -159,6 +165,7 @@ impl QueryExecutionOutcome {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 impl QueryExecutionResult {
     /// Create an execution result with its collected metrics.
     pub fn new(output: QueryOutput, metrics: QueryMetrics) -> Self {

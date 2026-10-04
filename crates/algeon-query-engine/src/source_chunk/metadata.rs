@@ -35,6 +35,7 @@ impl SourceMetadataCache {
     /// Local-cache misses are not cached while the cache file is absent or
     /// unreadable, because fill-before-read may make the footer available to a
     /// later planning pass that reuses this cache.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn cached_footer_count(&self) -> usize {
         self.footers.len()
     }

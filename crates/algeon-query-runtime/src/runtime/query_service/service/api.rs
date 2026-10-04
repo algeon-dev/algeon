@@ -44,7 +44,7 @@ impl DeviceQuarantineInjection {
         self.newly_quarantined
     }
 }
-use query_planning::admission::AttemptRequirement;
+use query_planning::admission::AttemptCapabilityEvidence;
 
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::attempt::AttemptOwner;
@@ -378,9 +378,9 @@ pub struct QueryAdmissionRequest {
     /// raw floors, working-set hints, placement choices, and capability sets are not a public
     /// admission input.  When absent, admission uses empty evidence only when
     /// every installed profile accepts every modeled capability.
-    pub(in crate::runtime::query_service) attempt_requirement: Option<AttemptRequirement>,
+    pub(in crate::runtime::query_service) attempt_requirement: Option<AttemptCapabilityEvidence>,
     /// Public evidence retained for diagnostic inspection until submission.
-    planned_capability_evidence: Option<AttemptRequirement>,
+    planned_capability_evidence: Option<AttemptCapabilityEvidence>,
     /// Caller-provided bound for queueing this attempt. The service combines it
     /// with its configured queue bound, choosing the earlier instant.
     pub(crate) queue_deadline: Option<Instant>,
@@ -488,7 +488,7 @@ impl QueryAdmissionRequest {
     /// scope, but it cannot carry a model byte target into grant selection.
     /// The installed device profile therefore remains the sole authority for
     /// the immutable grant.
-    pub fn with_query_plan_capability_evidence(mut self, evidence: AttemptRequirement) -> Self {
+    pub fn with_query_plan_capability_evidence(mut self, evidence: AttemptCapabilityEvidence) -> Self {
         self.planned_capability_evidence = Some(evidence);
         self
     }
@@ -498,12 +498,12 @@ impl QueryAdmissionRequest {
     /// Kept as crate-private API surface: the public-API boundary UI tests
     /// pin that callers outside the crate cannot attach their own requirement.
     #[cfg(test)]
-    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptCapabilityEvidence) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }
 
-    pub(in crate::runtime::query_service) fn resolved_attempt_requirement(&self) -> Option<AttemptRequirement> {
+    pub(in crate::runtime::query_service) fn resolved_attempt_requirement(&self) -> Option<AttemptCapabilityEvidence> {
         self.planned_capability_evidence.clone().or_else(|| self.attempt_requirement.clone())
     }
 
@@ -511,7 +511,9 @@ impl QueryAdmissionRequest {
     /// execution-time coverage check.  Internal requirements still size and
     /// place an admission, but must not impersonate a evidence for an arbitrary
     /// later-built plan.
-    pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(&self) -> Option<AttemptRequirement> {
+    pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(
+        &self,
+    ) -> Option<AttemptCapabilityEvidence> {
         self.planned_capability_evidence.clone()
     }
 
@@ -538,7 +540,8 @@ impl QueryAdmissionRequest {
     ///
     /// Coordinated callers must pass acquisition failure through this field so
     /// admission rejects structurally instead of silently omitting the lease.
-    pub fn with_runtime_observation_activity_result(mut self, activity: Result<QueryActivityLease>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_runtime_observation_activity_result(mut self, activity: Result<QueryActivityLease>) -> Self {
         self.runtime_observation_activity = Some(activity);
         self
     }
@@ -582,12 +585,12 @@ mod tests {
         runtime::BackendLifecycle,
     };
 
-    fn explicit_sink_capability_evidence() -> AttemptRequirement {
+    fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
         let plan = builder.finish_with_host_sink(source).unwrap();
-        AttemptRequirement::for_query_plan(&plan)
+        AttemptCapabilityEvidence::for_query_plan(&plan)
     }
 
     #[test]

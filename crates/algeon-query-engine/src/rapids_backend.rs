@@ -7,7 +7,7 @@
 
 use arrow::datatypes::DataType as ArrowDataType;
 use cudf::{
-    interop::arrow_host::arrow_type_from_cudf_dtype,
+    interop::arrow_host::{arrow_type_from_cudf_dtype, cudf_dtype_from_arrow_type, is_supported_arrow_type},
     ops::binary::{BinaryOperator, infer_binary_output_dtype},
 };
 use query_planning::{
@@ -20,7 +20,6 @@ use query_planning::{
 use query_runtime::native_error::cudf_query_error;
 
 use crate::{
-    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
     native_error::cudf_unsupported_type_error,
     prepared::{
         lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_final_aggregate_spec,

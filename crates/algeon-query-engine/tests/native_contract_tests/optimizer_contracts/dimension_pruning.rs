@@ -1076,7 +1076,7 @@ fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
         aggregate,
         Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))).unwrap();
     let route = test_dynamic_filter_route(source_node_id);
-    let plan = builder.finish_with_host_sink(filter).unwrap().with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(filter).unwrap().with_dynamic_filter_routes_for_test(vec![route.clone()]);
 
     let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context(PlanningPolicy::default())).unwrap();
 
@@ -1116,7 +1116,7 @@ fn dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_prun
         Arc::clone(&schema),
     ).unwrap();
     let route = test_dynamic_filter_route(fact);
-    let plan = builder.finish_with_host_sink(join).unwrap().with_dynamic_filter_routes(vec![route.clone()]);
+    let plan = builder.finish_with_host_sink(join).unwrap().with_dynamic_filter_routes_for_test(vec![route.clone()]);
 
     let options = NativeOptimizerOptions {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),

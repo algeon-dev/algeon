@@ -24,7 +24,7 @@ use super::DeviceQuarantineInjection;
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
     BackendDiagnostics, DeviceCapabilities, DeviceFacts, DeviceResourceProfile, DeviceTelemetrySnapshot,
-    QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService, QueueBounds,
+    QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
@@ -35,6 +35,7 @@ use super::{
     gpu::{AlgeonGpuInventory, GpuInventory, LiveBackendLease, claim_live_backend, normalize_device_ordinals},
     gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
     observation_completion::ObservationCompletionExecutor,
+    query_service::QueryService,
 };
 use crate::{
     attempt::{

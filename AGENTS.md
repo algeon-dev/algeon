@@ -205,8 +205,9 @@ uses the same commands: `cargo nt -E 'package(bench)'`.
   `scripts/check_all.sh` in `flock`; non-test GPU commands (benchmarks, servers,
   tools) still take the lock themselves.
 - `.config/nextest.toml` is the only test-lane source: CPU tests are opt-in by a
-  `_cpu` target suffix or a listed binary, `_gpu_exclusive` targets run alone,
-  and every other test runs in the `gpu` group.
+  `_cpu` target suffix or a listed binary, `_gpu_exclusive` targets and tests
+  under a `gpu_exclusive` module run alone, and every other test runs in the
+  `gpu` group.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
   explicitly through `cargo run -p tools --all-features`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build

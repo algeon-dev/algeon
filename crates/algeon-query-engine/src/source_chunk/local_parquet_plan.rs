@@ -20,6 +20,7 @@ use super::{SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, met
 use crate::rapids_backend::rapids_backend;
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn plan_local_parquet_source_chunks(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -58,6 +59,7 @@ pub(crate) fn plan_local_parquet_source_chunks_with_execution_context(
 ///
 /// The cache is keyed by source path, stable id, and known file size so repeated
 /// planning of the same fixture can avoid re-reading footers.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     source_node_id: NodeId,
     source: &LocalParquetSource,

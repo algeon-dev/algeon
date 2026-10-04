@@ -124,7 +124,6 @@ impl std::fmt::Debug for GpuExecutorLease {
 /// The waiter holds no pool permits: capacity is charged to the running
 /// worker only, so a coordinator blocked in [`PoolBlockingWork::join`]
 /// can never starve the worker it waits for.
-#[doc(hidden)]
 pub struct PoolBlockingWork<T> {
     pub(super) receiver: mpsc::Receiver<BlockingWorkOutcome<T>>,
     pub(super) job: Arc<JobObservation>,

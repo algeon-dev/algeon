@@ -112,7 +112,7 @@ impl ExecutionContext {
     /// cancellation flag, but executes GPU work on the leased runtime. The
     /// caller must keep `stream_lease` alive until all work submitted through
     /// the returned context has completed.
-    pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
+    pub(crate) fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
         self.check_service_epoch("query_engine.runtime.context.with_stream_lease")?;
         validate_service_stream_pool_device(stream_lease.pool(), self.device())?;
         let runtime = Arc::new(stream_lease.runtime()?);

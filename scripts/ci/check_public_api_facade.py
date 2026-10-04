@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-HEADER = ["public_symbol", "owner_type", "consumer", "decision", "facade_path", "reason", "phase"]
+HEADER = ["public_symbol", "owner_type", "consumer", "decision", "facade_path", "reason"]
 DECISIONS = {"RE-EXPORT", "ADAPT", "HIDE", "INTERNAL CONSUMER"}
 # Types owned by the planning, runtime, and engine crates, as cargo public-api
 # prints them: by defining path, never through a re-exporting crate.

@@ -16,17 +16,14 @@ mod resource;
 mod scheduler;
 mod state;
 
-#[cfg(feature = "test-hooks")]
-pub use executor::CompiledGpuTaskExecutor;
-#[cfg(not(feature = "test-hooks"))]
+#[cfg(test)]
+mod execution_tests;
+
 use executor::CompiledGpuTaskExecutor;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use lanes::{LaneDispatchSupport, run_resident_lane_borrow};
-#[cfg(not(feature = "test-hooks"))]
-use lanes::{LaneDispatchSupport, run_resident_lane_borrow};
-use lanes::{is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline};
+use lanes::{
+    LaneDispatchSupport, is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline, run_resident_lane_borrow,
+};
 use query_planning::{
     error::Result,
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
@@ -44,16 +41,8 @@ use query_runtime::{
     },
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
-#[cfg(feature = "test-hooks")]
-pub use resource::CompiledGpuResource;
-#[cfg(not(feature = "test-hooks"))]
 pub(in crate::exec::bounded) use resource::CompiledGpuResource;
-#[cfg(not(feature = "test-hooks"))]
 use scheduler::CompiledPipelineScheduler;
-#[cfg(feature = "test-hooks")]
-pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor};
-#[cfg(feature = "test-hooks")]
-pub use state::CompiledPipelineState;
 
 use crate::exec::{ExecutionMetrics, output::QueryOutput};
 

@@ -342,9 +342,8 @@ fn inner_join_filter_over_projected_inner_join_builder(
     let sales_returns = builder.add_join(
         sales,
         returns,
-        JoinSpec {
-            advisory_output_statistics: crossed_advisory,
-            ..JoinSpec::new(
+        {
+            let mut spec = JoinSpec::new(
             JoinType::Inner,
             vec![
                 JoinKey::new(ColumnRef::input(0, "s_item", "s_item"), ColumnRef::input(1, "r_item", "r_item")),
@@ -360,7 +359,9 @@ fn inner_join_filter_over_projected_inner_join_builder(
             JoinOutputColumn::right(ColumnRef::input(1, "r_ticket", "r_ticket"), "r_ticket"),
             JoinOutputColumn::right(ColumnRef::input(1, "reason_key", "reason_key"), "reason_key"),
             JoinOutputColumn::right(ColumnRef::input(1, "returned", "returned"), "returned"),
-        ])
+        ]);
+            spec.advisory_output_statistics = crossed_advisory;
+            spec
         },
         sales_returns_schema,
     ).unwrap();
@@ -379,9 +380,8 @@ fn inner_join_filter_over_projected_inner_join_builder(
     let filtered = builder.add_join(
         projected,
         reason,
-        JoinSpec {
-            advisory_output_statistics: parent_advisory,
-            ..JoinSpec::new(
+        {
+            let mut spec = JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
                 ColumnRef::input(0, "reason_key", "reason_key"),
@@ -391,7 +391,9 @@ fn inner_join_filter_over_projected_inner_join_builder(
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
             JoinOutputColumn::left(ColumnRef::input(0, "net_amount", "net_amount"), "net_amount"),
-        ])
+        ]);
+            spec.advisory_output_statistics = parent_advisory;
+            spec
         },
         schema(&["customer", "net_amount"]),
     ).unwrap();

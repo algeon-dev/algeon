@@ -105,6 +105,7 @@ impl ExpressionRejection {
 use std::sync::Arc;
 
 use arrow::datatypes::{FieldRef as ArrowFieldRef, SchemaRef as ArrowSchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, expressions::Column},
     physical_plan::ExecutionPlan,
@@ -115,7 +116,6 @@ use normalize::{
     make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
 };
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::{
     datatypes::diagnostic_arrow_type,
     error::QueryError,

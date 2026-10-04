@@ -109,7 +109,7 @@ impl AdmissionTestController {
 
     fn finish_submission_with<F>(&self, submission: AdmissionTestSubmission, resolve: F) -> Result<AdmissionTestWaiter>
     where
-        F: FnMut(usize) -> Result<AttemptRequirement>,
+        F: FnMut(usize) -> Result<AttemptCapabilityEvidence>,
     {
         let AdmissionTestSubmission { submission, test_attempt } = submission;
         let waiter = self.controller.finish_submission_with(submission, resolve)?;
@@ -206,7 +206,7 @@ impl AdmissionTestController {
 struct AdmissionTestHandle {
     controller: Arc<AdmissionController>,
     device_ordinal: usize,
-    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
     plan_identities: AdmittedPlanIdentities,
     memory_grant: MemoryGrant,
     _lifecycle_ticket: AdmissionTicket,
@@ -243,15 +243,15 @@ impl AdmissionTestHandle {
         }
     }
 
-    fn admitted_device_requirement(&self, ordinal: usize) -> Option<&AttemptRequirement> {
+    fn admitted_device_requirement(&self, ordinal: usize) -> Option<&AttemptCapabilityEvidence> {
         self.admitted_device_requirements.get(&ordinal)
     }
 
-    fn admitted_capability_evidence(&self) -> Option<Arc<AttemptRequirement>> {
+    fn admitted_capability_evidence(&self) -> Option<Arc<AttemptCapabilityEvidence>> {
         self.plan_identities.current()
     }
 
-    fn join_fragment(&self, fragment: &AttemptRequirement) -> Result<()> {
+    fn join_fragment(&self, fragment: &AttemptCapabilityEvidence) -> Result<()> {
         self.controller.join_admitted_fragment(self.device_ordinal, &self.plan_identities, fragment)
     }
 
@@ -327,15 +327,15 @@ impl AdmissionTestWaiter {
 ///
 /// Grant sizing is entirely ledger/device-profile driven; evidence carries no
 /// bytes at all, so this fixture exists only to give tests a concrete
-/// `AttemptRequirement` value to attach and to distinguish device entries.
-fn requirement() -> AttemptRequirement {
-    AttemptRequirement::empty()
+/// `AttemptCapabilityEvidence` value to attach and to distinguish device entries.
+fn requirement() -> AttemptCapabilityEvidence {
+    AttemptCapabilityEvidence::empty()
 }
 
 /// Test evidence distinct from [`requirement`] by its required capability set,
 /// for tests asserting that per-device entries are not collapsed together.
-fn distinct_capability_requirement() -> AttemptRequirement {
-    AttemptRequirement::from_parts(
+fn distinct_capability_requirement() -> AttemptCapabilityEvidence {
+    AttemptCapabilityEvidence::from_parts(
         vec![ExecutionCapability::new("test_distinct_operator")],
         Vec::new(),
     )

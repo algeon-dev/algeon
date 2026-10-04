@@ -131,7 +131,7 @@ fn validate_reserved_aggregate_aliases(
     Ok(())
 }
 
-pub fn validate_aggregate_capability(
+pub(super) fn validate_aggregate_capability(
     node: &AggregateNode,
     output_schema: &ArrowSchemaRef,
     ctx: AnalysisContext<'_>,
@@ -196,42 +196,6 @@ fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
         }
     }
     validation
-}
-
-pub fn validate_final_aggregate_capability(
-    node: &AggregateNode,
-    output_schema: &ArrowSchemaRef,
-    ctx: AnalysisContext<'_>,
-) -> Result<()> {
-    if node.spec.group_exprs.is_empty() {
-        validate_global_valid_count_state_alias_collisions(
-            &node.spec,
-            "query_engine.global_aggregate.validate_valid_count_state_alias",
-        )?;
-        return validate_global_aggregate_capability(&node.spec, output_schema);
-    }
-    if aggregate_spec_has_floating_statistical_aggregate(&node.spec) {
-        if aggregate_spec_has_distinct(&node.spec) {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedOperator,
-                "query_engine.final_merge.validate_statistical_exact",
-                "DataFusion-exact statistical aggregate path does not support distinct aggregate expressions",
-            ));
-        }
-        return validate_aggregate_capability(node, output_schema, ctx);
-    }
-    let output_names = ctx.backend().aggregate_output_names(&node.spec, AggregateBinding::FinalMerge)?;
-    if aggregate_spec_has_avg(&node.spec) {
-        validate_avg_state_alias_collisions(&node.spec, "query_engine.final_merge.validate_avg_state_alias")?;
-        validate_avg_output_fields(&node.spec, output_schema)?;
-        return Ok(());
-    }
-    validate_aggregate_output_names(
-        &output_names,
-        output_schema,
-        "query_engine.final_merge.validate",
-        "final aggregate output names must match output schema fields",
-    )
 }
 
 pub fn validate_global_aggregate_capability(spec: &AggregateSpec, output_schema: &ArrowSchemaRef) -> Result<()> {

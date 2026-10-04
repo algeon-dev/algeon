@@ -199,7 +199,6 @@ impl fmt::Debug for S3SourceStorageCredential {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[doc(hidden)]
 pub struct S3ObjectStoreKey {
     #[doc(hidden)]
     pub bucket: String,
@@ -209,13 +208,11 @@ pub struct S3ObjectStoreKey {
     pub storage_profile_id: Option<String>,
 }
 
-#[doc(hidden)]
 pub struct ObjectStoreFetchResult {
     #[doc(hidden)]
     pub bytes: Result<Bytes>,
 }
 
-#[doc(hidden)]
 pub struct ObjectStoreCustomFetchResult<T> {
     #[doc(hidden)]
     pub value: Result<T>,

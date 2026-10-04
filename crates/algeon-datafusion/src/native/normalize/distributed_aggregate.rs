@@ -1,4 +1,5 @@
 use arrow::datatypes::{DataType, FieldRef, SchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     physical_expr::expressions::Column,
     physical_plan::{
@@ -6,7 +7,6 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode},
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::expr::AggregateFunction as NativeAggregateFunction;
 
 use super::{NativePlanRejection, peel_repartition};

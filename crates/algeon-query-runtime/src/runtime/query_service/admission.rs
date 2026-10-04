@@ -8,7 +8,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::AttemptCapabilityEvidence,
     error::{QueryError, QueryErrorCode, Result},
 };
 use tokio::time;
@@ -420,7 +420,7 @@ pub(super) struct AdmissionRequest {
     /// always-resolved placement requirement below: no proof means execution
     /// coverage validation remains unavailable, rather than asserting an
     /// empty proof.
-    pub(super) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    pub(super) submitted_plan_capability_evidence: Option<AttemptCapabilityEvidence>,
     /// Device-specific entries retained from submission
     /// through the execution context that consumes the selected grant.
     pub(super) device_entries: DeviceAdmissionEntries,
@@ -446,10 +446,10 @@ pub(super) struct AdmissionRequest {
 /// One immutable capability/executability requirement resolved for one
 /// installed device, keyed by device ordinal. Placement must never derive a
 /// second requirement after submission.
-pub(super) type DeviceAdmissionEntries = BTreeMap<usize, AttemptRequirement>;
+pub(super) type DeviceAdmissionEntries = BTreeMap<usize, AttemptCapabilityEvidence>;
 
 impl AdmissionRequest {
-    pub(super) fn requirement_for_device(&self, device_ordinal: usize) -> Result<&AttemptRequirement> {
+    pub(super) fn requirement_for_device(&self, device_ordinal: usize) -> Result<&AttemptCapabilityEvidence> {
         self.device_entries.get(&device_ordinal).ok_or_else(|| missing_device_admission_entry_error(device_ordinal))
     }
 
@@ -819,8 +819,8 @@ impl Drop for QueryCompletion {
 /// paths from publishing different request metadata.
 pub(in crate::runtime::query_service) struct PlacedAdmission {
     pub(in crate::runtime::query_service) placed_query: PlacedQuery,
-    pub(in crate::runtime::query_service) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
-    pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    pub(in crate::runtime::query_service) admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
+    pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptCapabilityEvidence>,
     pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
     pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
     pub(in crate::runtime::query_service) attempt_id: AttemptId,

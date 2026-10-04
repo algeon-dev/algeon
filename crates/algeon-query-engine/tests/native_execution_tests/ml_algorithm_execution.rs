@@ -21,7 +21,7 @@ mod enabled {
             QueryExecutionRequest, admit_query_plan, output::QueryOutput, set_forest_after_import_hook_for_tests,
             set_forest_batch_element_limit_for_tests,
         },
-        native_error::{cuml_query_error, query_error_code_for_cuml_error},
+        native_error::cuml_query_error,
     };
     use query_planning::{
         error::{QueryError, QueryErrorCode},
@@ -337,7 +337,6 @@ mod enabled {
         let source = OwnedFloat32Matrix::new(&resources, 0, 2, MatrixLayout::ColumnMajor)
             .err()
             .expect("empty matrix is invalid");
-        assert_eq!(query_error_code_for_cuml_error(&source), QueryErrorCode::CudfInvalidInput);
         let error = cuml_query_error("query_engine.test.from_cuml", "invalid matrix", source);
         assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
         assert_eq!(error.fact_value("cuml_code"), Some("ForeignInvalidArgument"));
@@ -362,7 +361,6 @@ mod enabled {
             .err()
             .expect("unsupported dtype");
         assert_eq!(source.detail_value("reason"), Some("unsupported_label_type"));
-        assert_eq!(query_error_code_for_cuml_error(&source), QueryErrorCode::CudfUnsupported);
         let error = cuml_query_error("query_engine.test.unsupported_labels", "invalid label dtype", source);
         assert_eq!(error.code(), QueryErrorCode::CudfUnsupported);
         assert_eq!(error.fact_value("reason"), Some("unsupported_label_type"));

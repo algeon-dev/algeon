@@ -25,6 +25,8 @@ use super::{executor::CompiledGpuTaskExecutor, scheduler::CompiledPipelineSchedu
 use crate::exec::ExecutionMetrics;
 
 mod chunks;
+#[cfg(test)]
+mod gpu_exclusive;
 pub(in crate::exec::bounded) use chunks::AggregateLaneDispatch;
 
 const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";
@@ -65,7 +67,6 @@ pub(in crate::exec::bounded) fn is_resident_sort_lane_pipeline(pipeline: &Compil
 /// Arcs share the run's immutable execution view; each lane job moves Arc
 /// clones into its `'static` pool closure, so no borrow outlives the
 /// dispatching frame.
-#[doc(hidden)]
 pub struct LaneDispatchSupport {
     pub(crate) route: Arc<AttemptStreamProviderRoute>,
     pub requested_lanes: usize,
@@ -75,7 +76,7 @@ pub struct LaneDispatchSupport {
     pub(crate) pipeline: Arc<CompiledPipeline>,
     pub(crate) gpu_inputs: Arc<GpuResidentInputMap>,
     pub(crate) metrics: Arc<ExecutionMetrics>,
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     aggregate_chunk_completion_gate: Option<AggregateChunkCompletionGate>,
 }
 
@@ -100,14 +101,14 @@ impl LaneDispatchSupport {
             pipeline: Arc::new(pipeline),
             gpu_inputs: Arc::new(gpu_inputs),
             metrics: Arc::new(metrics),
-            #[cfg(feature = "test-hooks")]
+            #[cfg(test)]
             aggregate_chunk_completion_gate: None,
         }
     }
 
     /// Observes a completed but uncommitted aggregate chunk, with its stable
     /// ordinal, lane index, and claimed fork. Width 1 invokes this inline.
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     pub fn with_aggregate_chunk_completion_gate(mut self, gate: AggregateChunkCompletionGate) -> Self {
         self.aggregate_chunk_completion_gate = Some(gate);
         self
@@ -115,7 +116,7 @@ impl LaneDispatchSupport {
 
     /// Overrides the dispatch width. Tests pin a width to exercise the inline
     /// and pool-worker arms against the same fork pool.
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     pub fn with_requested_lanes(mut self, requested_lanes: usize) -> Self {
         self.requested_lanes = requested_lanes;
         self
@@ -123,7 +124,7 @@ impl LaneDispatchSupport {
 }
 
 /// Aggregate chunk ordinal, lane index, and lane-local fork identity.
-#[cfg(feature = "test-hooks")]
+#[cfg(test)]
 pub(crate) type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) + Send + Sync>;
 
 /// One execution lane's attempt work lease, held for the whole dispatched run.
@@ -175,7 +176,6 @@ impl LaneWorkLease {
 /// Keep lane leases through the resident sink handoff so any lane-backed
 /// columns can be copied to the root runtime while their producer streams
 /// are still alive.
-#[doc(hidden)]
 pub fn run_resident_lane_borrow(
     scheduler: &CompiledPipelineScheduler,
     observation_scope: Option<&RuntimeExecutionObservationScope>,

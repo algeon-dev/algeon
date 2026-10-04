@@ -2,9 +2,8 @@ use std::time::Instant;
 
 use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 use query_planning::{
-    admission::JoinStrategyChoice,
     capability::{
-        JoinForm, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
+        JoinForm, JoinStrategyChoice, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
         keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },

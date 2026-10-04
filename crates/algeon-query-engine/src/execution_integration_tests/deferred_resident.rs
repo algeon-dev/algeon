@@ -377,7 +377,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     )
     .with_producer_execution_scope(similarity_plan.execution_fingerprint());
     let similarity_reservation = grant
-        .retain_resident_owner(similarity_frame.device_allocated_size_bytes().unwrap())
+        .retain_resident_owner_for_test(similarity_frame.device_allocated_size_bytes().unwrap())
         .expect("similarity retention fits the immutable grant");
     let similarity_handle = runtime::resident::GpuResultHandle::new_with_resident_owner(
         context,
@@ -391,7 +391,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     )
     .with_producer_execution_scope(roles_plan.execution_fingerprint());
     let roles_reservation = grant
-        .retain_resident_owner(roles_frame.device_allocated_size_bytes().unwrap())
+        .retain_resident_owner_for_test(roles_frame.device_allocated_size_bytes().unwrap())
         .expect("roles retention fits the immutable grant");
     let roles_handle = runtime::resident::GpuResultHandle::new_with_resident_owner(
         context,

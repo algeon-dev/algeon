@@ -1,6 +1,7 @@
 //! Engine-owned empty graph input behavior.
 
 use arrow::datatypes::SchemaRef;
+use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
 use query_planning::plan::{
     EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy, GraphAlgorithmNode,
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphSimilarityParams,
@@ -10,7 +11,6 @@ use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     cudf_query_error, cudf_unsupported_type_error, traversal,
 };
-use crate::datatypes::cudf_dtype_from_arrow_type;
 
 pub(super) fn resolve_empty_graph_input(
     context: &ExecutionContext,

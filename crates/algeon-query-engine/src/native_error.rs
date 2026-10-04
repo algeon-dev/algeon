@@ -103,7 +103,7 @@ fn is_safe_cuvs_context_fact(key: &str) -> bool {
 }
 
 #[cfg(feature = "cuml")]
-pub fn query_error_code_for_cuml_error(error: &cuml::Error) -> QueryErrorCode {
+pub(crate) fn query_error_code_for_cuml_error(error: &cuml::Error) -> QueryErrorCode {
     classify_cuml_error(error.code(), error.kind(), error.status(), cuml::allocation_attribution(error))
 }
 

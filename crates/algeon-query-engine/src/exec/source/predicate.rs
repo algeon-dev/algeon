@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cudf::{
     DataType as CudfDataType, Error as CudfError, ScalarValue, TimestampResolution, TypeId,
     core::Scalar as CudfScalar,
+    interop::arrow_host::cudf_dtype_from_arrow_type,
     io::source::{
         LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk,
         SourceReaderPredicate as CudfSourceReaderPredicate,
@@ -24,9 +25,7 @@ use super::{
     Result, cudf_query_error, cudf_query_error_without_source,
 };
 use crate::{
-    datatypes::{
-        UnrepresentableLiteral, arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, cudf_scalar_value,
-    },
+    datatypes::{UnrepresentableLiteral, arrow_decimal_scale_to_cudf_scale, cudf_scalar_value},
     rapids_backend::rapids_analysis_context,
 };
 

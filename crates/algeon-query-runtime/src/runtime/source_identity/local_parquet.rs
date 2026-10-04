@@ -13,7 +13,6 @@ use super::fingerprint::*;
 /// predicates, resolved read contract, file content identity, and chunk
 /// boundaries. It is local-process data, never a persistence format.
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[doc(hidden)]
 pub struct GpuLocalParquetSourceCacheKey {
     fingerprint: String,
     diagnostic_fingerprint: String,

@@ -16,9 +16,7 @@ pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape
 #[doc(hidden)]
 pub use evidence::CUGRAPH_GRAPH_EXECUTION_CAPABILITY;
 #[doc(hidden)]
-pub use evidence::{
-    AttemptCapabilityEvidence, AttemptCapabilityEvidence as AttemptRequirement, ExecutionCapability, capability_labels,
-};
+pub use evidence::{AttemptCapabilityEvidence, ExecutionCapability, capability_labels};
 #[doc(hidden)]
 pub use scope::{
     AttemptExecutionManifest, AttemptExecutionOccurrence, AttemptExecutionScope, AttemptProducerOccurrence,
@@ -30,8 +28,3 @@ pub use support::pipeline_tasks_within_migrated_contract;
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
-
-#[doc(hidden)]
-pub use crate::capability::{JoinStrategy, JoinStrategyChoice};
-#[doc(hidden)]
-pub use crate::plan::DeferredGraphExecutionScopeIdentity;

@@ -87,11 +87,14 @@ pub use semijoin_reduction::{
     SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions,
     SemijoinReductionRejectedReason,
 };
+#[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
+pub use shared_resident_extraction::SharedResidentPlan;
+#[doc(hidden)]
+pub use shared_resident_extraction::SharedResidentProducerPlan;
 pub use shared_resident_extraction::{
     SHARED_RESIDENT_EXTRACTION_RULE_NAME, SharedResidentExtractionCandidateDiagnostics,
     SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
-    SharedResidentPlan, SharedResidentProducerPlan,
 };
 pub use shared_subplan_materialization::{
     SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, SharedSubplanMaterializationCandidateDiagnostics,

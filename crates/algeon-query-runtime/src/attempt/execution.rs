@@ -15,7 +15,6 @@ use query_planning::{
 /// round. The adapter reports DataFusion boundary events through this type;
 /// dependency and duplicate-execution authority remains in the runtime.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
 pub struct AttemptExecutionRound {
     manifest: Option<Arc<AttemptExecutionManifest>>,
     state: Arc<Mutex<AttemptExecutionRoundState>>,
@@ -31,7 +30,6 @@ struct AttemptExecutionRoundState {
 /// Dropping an incomplete claim releases it for retry without satisfying its
 /// dependants.
 #[derive(Debug)]
-#[doc(hidden)]
 pub struct AttemptHostOccurrence {
     round: AttemptExecutionRound,
     occurrence_id: String,

@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, ScalarFunctionExpr,
@@ -16,7 +17,6 @@ use datafusion::{
         projection::ProjectionExec,
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::{
     capability::is_cudf_median_input_type, datatypes::is_timestamp_with_timezone,
     expr::AggregateFunction as NativeAggregateFunction,

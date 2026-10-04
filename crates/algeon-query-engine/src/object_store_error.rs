@@ -20,6 +20,7 @@ const MAX_ERROR_CHAIN_DEPTH: usize = 32;
 const MAX_ERROR_CHAIN_BYTES: usize = 16_384;
 
 /// Stable `object_store_error_kind` fact value for a typed object-store error.
+#[doc(hidden)]
 pub fn object_store_error_kind(error: &ObjectStoreError) -> &'static str {
     match error {
         ObjectStoreError::PermissionDenied { .. } => "permission_denied",
@@ -41,6 +42,7 @@ pub fn object_store_error_kind(error: &ObjectStoreError) -> &'static str {
 /// Stable `object_store_error_detail` fact value for access, credential,
 /// HTTP-status, timeout, and transport failures, or `None` when the error
 /// carries no recognized marker.
+#[doc(hidden)]
 pub fn object_store_error_detail(error: &ObjectStoreError) -> Option<&'static str> {
     match error {
         ObjectStoreError::PermissionDenied { .. } => Some("access_denied"),
@@ -56,6 +58,7 @@ pub fn object_store_error_detail(error: &ObjectStoreError) -> Option<&'static st
 /// Access, credential, and missing-object variants keep their source codes.
 /// A `Generic` error is a temporary source failure unless its detail names a
 /// credential or access problem.
+#[doc(hidden)]
 pub fn query_error_code_for_object_store_error(error: &ObjectStoreError) -> QueryErrorCode {
     match error {
         ObjectStoreError::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,

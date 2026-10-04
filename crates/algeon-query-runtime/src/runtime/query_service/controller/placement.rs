@@ -1,7 +1,7 @@
 //! Device placement and immutable-grant admission against per-device ledgers.
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability, capability_labels},
+    admission::{AttemptCapabilityEvidence, ExecutionCapability, capability_labels},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -25,7 +25,7 @@ use crate::{
 
 /// Returns the immutable capabilities required before placement.
 pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
-    requirement: &AttemptRequirement,
+    requirement: &AttemptCapabilityEvidence,
 ) -> Vec<ExecutionCapability> {
     requirement.required_capabilities.clone()
 }
@@ -39,7 +39,7 @@ impl AdmissionController {
         &self,
         device_ordinal: usize,
         identities: &AdmittedPlanIdentities,
-        fragment: &AttemptRequirement,
+        fragment: &AttemptCapabilityEvidence,
     ) -> Result<()> {
         if !self.device_supports_capabilities(device_ordinal, &fragment.required_capabilities) {
             return Err(QueryError::new(
@@ -72,7 +72,7 @@ impl AdmissionController {
         device_ordinal: usize,
         admission_request_id: AdmissionRequestId,
         attempt_id: AttemptId,
-        requirement: &AttemptRequirement,
+        requirement: &AttemptCapabilityEvidence,
         requested_query_cap_bytes: Option<u64>,
     ) -> Result<Option<PlacedQuery>> {
         let _fleet_admission = self.fleet_admission.lock().map_err(|_error| {

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 #[cfg(test)]
 use query_planning::policy::PlanningPolicy;
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     correlation::QueryId,
@@ -51,10 +51,10 @@ pub use handle::{AdmittedQueryContext, QueryHandle};
 pub use service::DeviceQuarantineInjection;
 #[cfg(test)]
 pub(crate) use service::QueryAdmissionOutcome;
-#[doc(hidden)]
-pub use service::QueryService;
 use service::QueryServiceInner;
-pub use service::{BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot};
+pub use service::{
+    BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryService, QueryServiceAdmissionSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryServiceDrainPhase {

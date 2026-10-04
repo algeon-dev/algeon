@@ -175,8 +175,7 @@ pub enum DimensionDerivedRowGroupPruningRejectedReason {
     NoRowGroupReduction,
 }
 
-#[doc(hidden)]
-pub struct DimensionDerivedRowGroupPruningResult {
+pub(crate) struct DimensionDerivedRowGroupPruningResult {
     pub plan: QueryPlan,
     pub change: super::NativeOptimizerChange,
     pub diagnostics: DimensionDerivedRowGroupPruningDiagnostics,

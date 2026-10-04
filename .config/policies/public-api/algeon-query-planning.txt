@@ -366,7 +366,6 @@ pub query_planning::capability::Rejection::reason: query_planning::capability::R
 impl query_planning::capability::Rejection
 pub const fn query_planning::capability::Rejection::boundary(&self) -> &'static str
 pub const fn query_planning::capability::Rejection::category(&self) -> query_planning::capability::CapabilityRejectionCategory
-pub const fn query_planning::capability::Rejection::contract_scope(&self) -> query_planning::capability::CapabilityScope
 pub fn query_planning::capability::Rejection::new(query_planning::capability::RejectionOwner, query_planning::capability::Reason, impl core::iter::traits::collect::IntoIterator<Item = (&'static str, alloc::string::String)>) -> Self
 pub struct query_planning::capability::SubgraphInvariant
 pub query_planning::capability::SubgraphInvariant::decision: query_planning::capability::CapabilityDecision
@@ -399,7 +398,7 @@ pub query_planning::chunk::SourceChunk::row_group_indexes: alloc::vec::Vec<usize
 pub query_planning::chunk::SourceChunk::scan_limit_rows: core::option::Option<usize>
 pub query_planning::chunk::SourceChunk::size_estimate_based: bool
 pub query_planning::chunk::SourceChunk::source_batching_reason: core::option::Option<alloc::string::String>
-pub query_planning::chunk::SourceChunk::source_chunk_planning_mode: crate::execution_contracts::SourceChunkPlanningMode
+pub query_planning::chunk::SourceChunk::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
 pub query_planning::chunk::SourceChunk::source_chunk_planning_reason: alloc::string::String
 pub query_planning::chunk::SourceChunk::source_file_projected_compressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
 pub query_planning::chunk::SourceChunk::source_file_projected_uncompressed_bytes: core::option::Option<alloc::vec::Vec<u64>>
@@ -448,13 +447,15 @@ pub struct query_planning::chunk::SourceChunkPlanningPolicy
 pub query_planning::chunk::SourceChunkPlanningPolicy::max_row_groups_per_chunk: usize
 pub query_planning::chunk::SourceChunkPlanningPolicy::max_source_chunk_bytes: core::option::Option<u64>
 impl query_planning::chunk::SourceChunkPlanningPolicy
-pub fn query_planning::chunk::SourceChunkPlanningPolicy::for_source_task(MemoryControlPolicy, query_planning::chunk::SourceTaskMemoryModel) -> Self
-pub fn query_planning::chunk::SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(&query_planning::source::LocalParquetSource, MemoryControlPolicy, query_planning::chunk::SourceTaskMemoryModel, SourceChunkPlanningMode, query_planning::chunk::SourceChunkPlanningOptions) -> Self
-pub fn query_planning::chunk::SourceChunkPlanningPolicy::from_memory_policy_with_mode(&query_planning::source::LocalParquetSource, MemoryControlPolicy, SourceChunkPlanningMode) -> Self
-pub fn query_planning::chunk::SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(&query_planning::source::LocalParquetSource, MemoryControlPolicy, SourceChunkPlanningMode, query_planning::chunk::SourceChunkPlanningOptions) -> Self
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::for_source_task(query_planning::execution_contracts::MemoryControlPolicy, query_planning::chunk::SourceTaskMemoryModel) -> Self
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(&query_planning::source::LocalParquetSource, query_planning::execution_contracts::MemoryControlPolicy, query_planning::chunk::SourceTaskMemoryModel, query_planning::execution_contracts::SourceChunkPlanningMode, query_planning::chunk::SourceChunkPlanningOptions) -> Self
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::from_memory_policy_with_mode(&query_planning::source::LocalParquetSource, query_planning::execution_contracts::MemoryControlPolicy, query_planning::execution_contracts::SourceChunkPlanningMode) -> Self
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(&query_planning::source::LocalParquetSource, query_planning::execution_contracts::MemoryControlPolicy, query_planning::execution_contracts::SourceChunkPlanningMode, query_planning::chunk::SourceChunkPlanningOptions) -> Self
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::mark_downstream_cap(&mut self, &'static str)
 pub const fn query_planning::chunk::SourceChunkPlanningPolicy::new(core::option::Option<u64>, usize) -> Self
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::source_chunk_planning_reason(self) -> &'static str
+impl core::convert::From<query_planning::execution_contracts::MemoryControlPolicy> for query_planning::chunk::SourceChunkPlanningPolicy
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::from(query_planning::execution_contracts::MemoryControlPolicy) -> Self
 impl core::default::Default for query_planning::chunk::SourceChunkPlanningPolicy
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::default() -> Self
 pub struct query_planning::chunk::SourceReadSizing<'a>
@@ -486,8 +487,8 @@ pub fn query_planning::contract_report::CapabilityContractReport::execution_mode
 pub fn query_planning::contract_report::CapabilityContractReport::from_admission(&query_planning::admission::AdmittedPlan) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityContractReport::from_decision_rows(query_planning::mode::CapabilityEnvelopeStatus, alloc::vec::Vec<query_planning::contract_report::CapabilityDecisionRow>) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityContractReport::is_ready(&self) -> bool
-pub fn query_planning::contract_report::CapabilityContractReport::with_query_id(self, impl core::convert::Into<QueryId>) -> Self
-pub fn query_planning::contract_report::CapabilityContractReport::with_trace_id(self, impl core::convert::Into<TraceId>) -> Self
+pub fn query_planning::contract_report::CapabilityContractReport::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
+pub fn query_planning::contract_report::CapabilityContractReport::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
 pub struct query_planning::contract_report::CapabilityDecisionId
 pub query_planning::contract_report::CapabilityDecisionId::index: usize
 pub query_planning::contract_report::CapabilityDecisionId::scope: query_planning::capability::CapabilityScope
@@ -508,6 +509,58 @@ pub fn query_planning::contract_report::CapabilityDecisionRow::from_rejection(us
 pub fn query_planning::contract_report::CapabilityDecisionRow::to_stable_kv_row(&self) -> alloc::string::String
 impl core::fmt::Display for query_planning::contract_report::CapabilityDecisionRow
 pub fn query_planning::contract_report::CapabilityDecisionRow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod query_planning::correlation
+pub struct query_planning::correlation::CompiledTaskId(_)
+impl query_planning::correlation::CompiledTaskId
+pub fn query_planning::correlation::CompiledTaskId::as_str(&self) -> &str
+pub fn query_planning::correlation::CompiledTaskId::new(impl alloc::string::ToString) -> Self
+impl core::convert::From<&str> for query_planning::correlation::CompiledTaskId
+pub fn query_planning::correlation::CompiledTaskId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for query_planning::correlation::CompiledTaskId
+pub fn query_planning::correlation::CompiledTaskId::from(alloc::string::String) -> Self
+impl core::fmt::Display for query_planning::correlation::CompiledTaskId
+pub fn query_planning::correlation::CompiledTaskId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::correlation::PlanNodeId(_)
+impl query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::as_str(&self) -> &str
+pub fn query_planning::correlation::PlanNodeId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&str> for query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::from(alloc::string::String) -> Self
+impl core::convert::From<query_planning::plan::NodeId> for query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::from(query_planning::plan::NodeId) -> Self
+impl core::fmt::Display for query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::correlation::QueryId(_)
+impl query_planning::correlation::QueryId
+pub const query_planning::correlation::QueryId::UNASSIGNED: &'static str
+pub fn query_planning::correlation::QueryId::as_str(&self) -> &str
+pub fn query_planning::correlation::QueryId::is_assigned(&self) -> bool
+pub fn query_planning::correlation::QueryId::mint() -> Self
+pub fn query_planning::correlation::QueryId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&alloc::string::String> for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::from(&alloc::string::String) -> Self
+impl core::convert::From<&str> for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::from(alloc::string::String) -> Self
+impl core::default::Default for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::default() -> Self
+impl core::fmt::Display for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for query_planning::correlation::QueryId
+pub fn query_planning::correlation::QueryId::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct query_planning::correlation::TraceId(_)
+impl query_planning::correlation::TraceId
+pub fn query_planning::correlation::TraceId::as_str(&self) -> &str
+pub fn query_planning::correlation::TraceId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<&str> for query_planning::correlation::TraceId
+pub fn query_planning::correlation::TraceId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for query_planning::correlation::TraceId
+pub fn query_planning::correlation::TraceId::from(alloc::string::String) -> Self
+impl core::fmt::Display for query_planning::correlation::TraceId
+pub fn query_planning::correlation::TraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod query_planning::datatypes
 pub fn query_planning::datatypes::arrow_decimal_scale_to_cudf_scale(i8) -> i32
 pub fn query_planning::datatypes::arrow_fixed_width_byte_size(&arrow_schema::datatype::DataType) -> core::option::Option<u64>
@@ -634,6 +687,23 @@ pub query_planning::error::AllocationSource::StdBadAlloc
 pub query_planning::error::AllocationSource::Unknown
 impl query_planning::error::AllocationSource
 pub const fn query_planning::error::AllocationSource::as_str(self) -> &'static str
+pub enum query_planning::error::AttemptFailureCode
+pub query_planning::error::AttemptFailureCode::BackendClosing
+pub query_planning::error::AttemptFailureCode::CleanupCallbackAbandoned
+pub query_planning::error::AttemptFailureCode::DatafusionError
+pub query_planning::error::AttemptFailureCode::Dropped
+pub query_planning::error::AttemptFailureCode::Panicked
+pub query_planning::error::AttemptFailureCode::Query(query_planning::error::QueryErrorCode)
+pub query_planning::error::AttemptFailureCode::StreamSynchronizationFailed
+impl query_planning::error::AttemptFailureCode
+pub const fn query_planning::error::AttemptFailureCode::as_str(self) -> &'static str
+pub const fn query_planning::error::AttemptFailureCode::from_query_error_code(query_planning::error::QueryErrorCode) -> Self
+impl core::fmt::Debug for query_planning::error::AttemptFailureCode
+pub fn query_planning::error::AttemptFailureCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for query_planning::error::AttemptFailureCode
+pub fn query_planning::error::AttemptFailureCode::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for query_planning::error::AttemptFailureCode
+pub fn query_planning::error::AttemptFailureCode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum query_planning::error::QueryErrorCode
 pub query_planning::error::QueryErrorCode::AlgorithmDidNotConverge
 pub query_planning::error::QueryErrorCode::Cancelled
@@ -726,19 +796,19 @@ pub fn query_planning::error::QueryError::kind(&self) -> query_planning::error::
 pub fn query_planning::error::QueryError::message(&self) -> &str
 pub fn query_planning::error::QueryError::new(query_planning::error::QueryErrorCode, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::error::QueryError::operation(&self) -> &'static str
-pub fn query_planning::error::QueryError::query_id(&self) -> core::option::Option<&QueryId>
+pub fn query_planning::error::QueryError::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn query_planning::error::QueryError::source_error(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn query_planning::error::QueryError::status(&self) -> query_planning::error::QueryErrorStatus
 pub fn query_planning::error::QueryError::to_json(&self) -> serde_json::value::Value
-pub fn query_planning::error::QueryError::trace_id(&self) -> core::option::Option<&TraceId>
+pub fn query_planning::error::QueryError::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 pub fn query_planning::error::QueryError::wire_fact(&self, &str) -> core::option::Option<alloc::borrow::Cow<'_, str>>
 pub fn query_planning::error::QueryError::wire_facts(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, alloc::borrow::Cow<'_, str>)>
 pub fn query_planning::error::QueryError::with_fact(self, &'static str, impl alloc::string::ToString) -> Self
 pub fn query_planning::error::QueryError::with_memory_failure(self, query_planning::error::MemoryFailure) -> Self
-pub fn query_planning::error::QueryError::with_query_id(self, impl core::convert::Into<QueryId>) -> Self
+pub fn query_planning::error::QueryError::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
 pub fn query_planning::error::QueryError::with_resource_boundary(self, query_planning::error::ResourceBoundary) -> Self
 pub fn query_planning::error::QueryError::with_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
-pub fn query_planning::error::QueryError::with_trace_id(self, impl core::convert::Into<TraceId>) -> Self
+pub fn query_planning::error::QueryError::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
 impl query_planning::error::QueryError
 pub fn query_planning::error::QueryError::triage_summary(&self) -> query_planning::triage::TriageSummary
 impl core::error::Error for query_planning::error::QueryError
@@ -760,6 +830,24 @@ pub const fn query_planning::error::ResourceBoundary::with_side(self, query_plan
 pub const fn query_planning::error::ResourceBoundary::with_stage(self, &'static str) -> Self
 pub fn query_planning::error::redact_uri_tokens(&str) -> alloc::string::String
 pub type query_planning::error::Result<T> = core::result::Result<T, query_planning::error::QueryError>
+pub mod query_planning::execution_contracts
+pub enum query_planning::execution_contracts::SourceChunkPlanningMode
+pub query_planning::execution_contracts::SourceChunkPlanningMode::Conservative
+pub query_planning::execution_contracts::SourceChunkPlanningMode::LocalParquetThroughput
+impl query_planning::execution_contracts::SourceChunkPlanningMode
+pub const fn query_planning::execution_contracts::SourceChunkPlanningMode::as_str(self) -> &'static str
+impl core::fmt::Display for query_planning::execution_contracts::SourceChunkPlanningMode
+pub fn query_planning::execution_contracts::SourceChunkPlanningMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::execution_contracts::MemoryControlPolicy
+pub query_planning::execution_contracts::MemoryControlPolicy::device_budget_bytes: u64
+pub query_planning::execution_contracts::MemoryControlPolicy::max_retry_attempts: usize
+pub query_planning::execution_contracts::MemoryControlPolicy::max_row_groups_per_chunk: usize
+pub query_planning::execution_contracts::MemoryControlPolicy::max_source_chunk_bytes: u64
+pub query_planning::execution_contracts::MemoryControlPolicy::min_retry_chunk_row_groups: usize
+impl query_planning::execution_contracts::MemoryControlPolicy
+pub fn query_planning::execution_contracts::MemoryControlPolicy::validate(self) -> query_planning::error::Result<()>
+impl core::convert::From<query_planning::execution_contracts::MemoryControlPolicy> for query_planning::chunk::SourceChunkPlanningPolicy
+pub fn query_planning::chunk::SourceChunkPlanningPolicy::from(query_planning::execution_contracts::MemoryControlPolicy) -> Self
 pub mod query_planning::expr
 pub enum query_planning::expr::AggregateFunction
 pub query_planning::expr::AggregateFunction::Avg
@@ -820,7 +908,6 @@ pub query_planning::expr::DatePart::Year
 impl query_planning::expr::DatePart
 pub const query_planning::expr::DatePart::DATE_TRUNC_FIELDS: [Self; 7]
 pub const query_planning::expr::DatePart::EXTRACT_FIELDS: [Self; 4]
-pub const query_planning::expr::DatePart::POST_JOIN_EXTRACT_FIELDS: [Self; 3]
 pub fn query_planning::expr::DatePart::from_sql_name(&str) -> core::option::Option<Self>
 impl core::fmt::Display for query_planning::expr::DatePart
 pub fn query_planning::expr::DatePart::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1217,6 +1304,18 @@ pub query_planning::optimizer::SemijoinReductionRejectedReason::RootSchemaMismat
 pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedCrossedJoinType
 pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedLeftShape
 pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedNullEquality
+pub enum query_planning::optimizer::SharedResidentExtractionDecision
+pub query_planning::optimizer::SharedResidentExtractionDecision::Extracted
+pub query_planning::optimizer::SharedResidentExtractionDecision::Rejected
+pub query_planning::optimizer::SharedResidentExtractionDecision::Skipped
+pub enum query_planning::optimizer::SharedResidentExtractionReason
+pub query_planning::optimizer::SharedResidentExtractionReason::ContainsGpuResidentSource
+pub query_planning::optimizer::SharedResidentExtractionReason::DynamicFilterRoutesUnremappable
+pub query_planning::optimizer::SharedResidentExtractionReason::Extracted
+pub query_planning::optimizer::SharedResidentExtractionReason::NestedUnderSelectedSubplan
+pub query_planning::optimizer::SharedResidentExtractionReason::NotRepeated
+pub query_planning::optimizer::SharedResidentExtractionReason::ResidentRowBoundUnavailable
+pub query_planning::optimizer::SharedResidentExtractionReason::SubplanNotClosed
 pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
@@ -1422,7 +1521,7 @@ pub query_planning::optimizer::NativeOptimizerDiagnostics::local_parquet_source_
 pub query_planning::optimizer::NativeOptimizerDiagnostics::outer_join_null_rejection: query_planning::optimizer::OuterJoinNullRejectionDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::projection_simplification: query_planning::optimizer::ProjectionSimplificationDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::semijoin_reduction: query_planning::optimizer::SemijoinReductionDiagnostics
-pub query_planning::optimizer::NativeOptimizerDiagnostics::shared_resident_extraction: query_planning::optimizer::shared_resident_extraction::SharedResidentExtractionDiagnostics
+pub query_planning::optimizer::NativeOptimizerDiagnostics::shared_resident_extraction: query_planning::optimizer::SharedResidentExtractionDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::shared_subplan_materialization: query_planning::optimizer::SharedSubplanMaterializationDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::stream_fanout_replay: query_planning::optimizer::StreamFanoutReplayDiagnostics
 impl query_planning::optimizer::NativeOptimizerDiagnostics
@@ -1507,6 +1606,18 @@ pub fn query_planning::optimizer::SemijoinReductionOptions::disabled() -> Self
 pub fn query_planning::optimizer::SemijoinReductionOptions::validate(&self) -> query_planning::error::Result<()>
 impl core::default::Default for query_planning::optimizer::SemijoinReductionOptions
 pub fn query_planning::optimizer::SemijoinReductionOptions::default() -> Self
+pub struct query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::consumer_occurrences: alloc::vec::Vec<query_planning::plan::NodeId>
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::decision: query_planning::optimizer::SharedResidentExtractionDecision
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::node_id: query_planning::plan::NodeId
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::reason: query_planning::optimizer::SharedResidentExtractionReason
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::resident_input_name: core::option::Option<alloc::string::String>
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::subplan_fingerprint: query_planning::plan::PlanFingerprint
+pub struct query_planning::optimizer::SharedResidentExtractionDiagnostics
+pub query_planning::optimizer::SharedResidentExtractionDiagnostics::candidates: alloc::vec::Vec<query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics>
+pub query_planning::optimizer::SharedResidentExtractionDiagnostics::considered_count: usize
+pub query_planning::optimizer::SharedResidentExtractionDiagnostics::extracted_count: usize
+pub query_planning::optimizer::SharedResidentExtractionDiagnostics::rejected_count: usize
 pub struct query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics
 pub query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics::aggregate_exprs: alloc::vec::Vec<alloc::string::String>
 pub query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics::aggregate_node_ids: alloc::vec::Vec<query_planning::plan::NodeId>
@@ -1563,6 +1674,7 @@ pub const query_planning::optimizer::LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME: &str
 pub const query_planning::optimizer::OUTER_JOIN_NULL_REJECTION_RULE_NAME: &str
 pub const query_planning::optimizer::PROJECTION_SIMPLIFICATION_RULE_NAME: &str
 pub const query_planning::optimizer::SEMIJOIN_REDUCTION_RULE_NAME: &str
+pub const query_planning::optimizer::SHARED_RESIDENT_EXTRACTION_RULE_NAME: &str
 pub const query_planning::optimizer::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME: &str
 pub const query_planning::optimizer::STREAM_FANOUT_REPLAY_RULE_NAME: &str
 pub trait query_planning::optimizer::LakehouseFooterPruningResolver
@@ -1734,12 +1846,6 @@ pub fn query_planning::pipeline::CompiledPipeline::shadow_memory_estimate(&self,
 impl core::fmt::Display for query_planning::pipeline::CompiledPipeline
 pub fn query_planning::pipeline::CompiledPipeline::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::pipeline::JoinPlan
-impl query_planning::pipeline::JoinPlan
-pub fn query_planning::pipeline::JoinPlan::allowed(&self) -> &[JoinStrategy]
-pub const fn query_planning::pipeline::JoinPlan::form(&self) -> JoinForm
-pub fn query_planning::pipeline::JoinPlan::new(JoinForm, JoinStrategy, alloc::vec::Vec<JoinStrategy>) -> query_planning::error::Result<Self>
-pub const fn query_planning::pipeline::JoinPlan::planned(&self) -> JoinStrategy
-pub fn query_planning::pipeline::JoinPlan::refine(&self, &query_planning::plan::JoinNode, KeyedHashJoinStrategyInputFacts, &query_planning::capability::KeyedHashJoinStrategyOptions) -> query_planning::error::Result<JoinStrategyChoice>
 pub struct query_planning::pipeline::PipelineBarrier
 impl query_planning::pipeline::PipelineBarrier
 pub fn query_planning::pipeline::PipelineBarrier::downstream_tasks(&self) -> &[query_planning::pipeline::PipelineTaskId]
@@ -2267,7 +2373,6 @@ pub query_planning::plan::ResultSink::HostArrow
 pub query_planning::plan::ResultSink::HostArrow::input: query_planning::plan::NodeId
 pub query_planning::plan::ResultSink::HostArrow::schema: arrow_schema::schema::SchemaRef
 impl query_planning::plan::ResultSink
-pub fn query_planning::plan::ResultSink::caller_visible_host_schema(&self) -> core::option::Option<&arrow_schema::schema::SchemaRef>
 pub fn query_planning::plan::ResultSink::input(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::ResultSink::materializes_host_boundary(&self) -> bool
 pub enum query_planning::plan::ShiftDirection
@@ -2896,6 +3001,8 @@ pub fn query_planning::plan::NativePlanCostOptions::default() -> Self
 pub struct query_planning::plan::NodeId(_)
 impl query_planning::plan::NodeId
 pub const fn query_planning::plan::NodeId::index(self) -> usize
+impl core::convert::From<query_planning::plan::NodeId> for query_planning::correlation::PlanNodeId
+pub fn query_planning::correlation::PlanNodeId::from(query_planning::plan::NodeId) -> Self
 impl core::fmt::Display for query_planning::plan::NodeId
 pub fn query_planning::plan::NodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::PlanFacts
@@ -3514,8 +3621,8 @@ pub fn query_planning::triage::TriageVerdict::fmt(&self, &mut core::fmt::Formatt
 pub struct query_planning::triage::TriageEvidenceRef
 impl query_planning::triage::TriageEvidenceRef
 pub fn query_planning::triage::TriageEvidenceRef::new(&'static str) -> Self
-pub fn query_planning::triage::TriageEvidenceRef::with_plan_node_id(self, impl core::convert::Into<PlanNodeId>) -> Self
-pub fn query_planning::triage::TriageEvidenceRef::with_query_id(self, impl core::convert::Into<QueryId>) -> Self
+pub fn query_planning::triage::TriageEvidenceRef::with_plan_node_id(self, impl core::convert::Into<query_planning::correlation::PlanNodeId>) -> Self
+pub fn query_planning::triage::TriageEvidenceRef::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
 pub fn query_planning::triage::TriageEvidenceRef::with_row_index(self, usize) -> Self
 pub struct query_planning::triage::TriageSignal
 pub query_planning::triage::TriageSignal::code: query_planning::triage::TriageCode

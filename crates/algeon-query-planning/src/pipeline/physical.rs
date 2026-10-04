@@ -118,6 +118,7 @@ pub struct JoinPlan {
 
 impl JoinPlan {
     /// A plan whose chosen strategy is one of the allowed ones.
+    #[doc(hidden)]
     pub fn new(form: JoinForm, planned: JoinStrategy, allowed: Vec<JoinStrategy>) -> Result<Self> {
         if !allowed.contains(&planned) || allowed.iter().any(|strategy| !form.strategies().contains(strategy)) {
             return Err(QueryError::new(
@@ -143,14 +144,17 @@ impl JoinPlan {
         Self { form: self.form, planned: self.planned, allowed: allowed.collect() }
     }
 
+    #[doc(hidden)]
     pub const fn form(&self) -> JoinForm {
         self.form
     }
 
+    #[doc(hidden)]
     pub const fn planned(&self) -> JoinStrategy {
         self.planned
     }
 
+    #[doc(hidden)]
     pub fn allowed(&self) -> &[JoinStrategy] {
         &self.allowed
     }
@@ -158,6 +162,7 @@ impl JoinPlan {
     /// Chooses the strategy for observed facts. The choice must stay within
     /// the strategies this plan proved executable for the task's input,
     /// state, and output forms; anything else is an invariant violation.
+    #[doc(hidden)]
     pub fn refine(
         &self,
         join: &JoinNode,

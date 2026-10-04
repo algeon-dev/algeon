@@ -56,7 +56,6 @@ impl fmt::Debug for BackendLifecycleInner {
 /// Cloning this value shares one open/closing gate.  It does not represent a
 /// backend resource owner and does not contain or retain any GPU resource.
 #[derive(Clone, Debug)]
-#[doc(hidden)]
 pub struct BackendLifecycle {
     inner: Arc<BackendLifecycleInner>,
 }
@@ -68,8 +67,7 @@ pub struct BackendLifecycle {
 /// point.
 #[must_use = "an observation permit must be held until observation work finishes"]
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ObservationPermit {
+pub(crate) struct ObservationPermit {
     lifecycle: BackendLifecycle,
 }
 
@@ -111,8 +109,7 @@ impl BackendLifecycleSnapshot {
 
 impl BackendLifecycle {
     /// Creates an open observation lifecycle.
-    #[doc(hidden)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(BackendLifecycleInner {
                 state: AtomicUsize::new(0),
@@ -127,8 +124,7 @@ impl BackendLifecycle {
     /// The close bit and count are changed in one atomic state machine, so a
     /// losing acquisition creates no permit and cannot leave a half-created
     /// observation.  The returned permit has no resource-core reference.
-    #[doc(hidden)]
-    pub fn try_begin_observation(&self) -> Result<ObservationPermit> {
+    pub(crate) fn try_begin_observation(&self) -> Result<ObservationPermit> {
         let mut state = self.inner.state.load(Ordering::Acquire);
         loop {
             if state & CLOSING_BIT != 0 {

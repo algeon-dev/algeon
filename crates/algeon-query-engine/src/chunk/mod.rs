@@ -6,7 +6,7 @@ pub(crate) use query_planning::chunk::{
 };
 pub(crate) use query_planning::chunk::{
     SourceChunk, SourceChunkBatch, SourceChunkPlan, annotate_source_chunk_batching_reasons,
-    object_store_decimal_reader_predicate_requires_footer_contract, plan_source_chunk_batches,
+    decimal::object_store_decimal_reader_predicate_requires_footer_contract, plan_source_chunk_batches,
     plan_source_chunk_batches_with_row_cap, source_file_for_chunk,
 };
 
@@ -15,6 +15,8 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use crate::source_chunk::metadata;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
 pub use crate::source_chunk::{
     SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
 };

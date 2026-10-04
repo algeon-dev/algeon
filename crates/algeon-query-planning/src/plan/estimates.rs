@@ -73,7 +73,6 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
 ///
 /// Source estimates prefer projected uncompressed bytes because that is the
 /// closest retained-output signal available during planning.
-#[doc(hidden)]
 pub fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     match &plan.node(node_id)?.kind {
         PlanNode::Source(source) => match source.as_ref() {

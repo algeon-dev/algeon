@@ -125,7 +125,7 @@ impl QueryHandle {
     /// to what the attempt may execute. The queue and the ledger do not
     /// change. A device that lacks a capability, or a released handle,
     /// returns a typed error.
-    pub fn join_fragment(&self, fragment: &AttemptRequirement) -> Result<()> {
+    pub fn join_fragment(&self, fragment: &AttemptCapabilityEvidence) -> Result<()> {
         let service = QueryService { inner: self.lifetime.service()? };
         service.inner.admission.join_admitted_fragment(
             self.device_ordinal,

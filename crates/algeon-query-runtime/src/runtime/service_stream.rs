@@ -166,12 +166,11 @@ pub(super) struct ServiceStreamPoolState {
 ///
 /// The pool owns a bounded set of same-device cuDF runtimes. Each runtime
 /// carries one CUDA stream and the process-local device memory manager. Streams
-/// are created lazily up to `pool_size`; dropping a [`StreamLease`] returns the
+/// are created lazily up to `pool_size`; dropping a `StreamLease` returns the
 /// runtime to the pool for reuse. This avoids creating a CUDA stream for every
 /// bounded source-read worker while preserving the existing reservation-aware
 /// allocator contract.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
 pub struct ServiceStreamPool {
     pub(super) inner: Arc<ServiceStreamPoolInner>,
 }
@@ -1186,7 +1185,6 @@ impl Drop for StreamLease {
 ///
 /// Execution lanes and scheduled source reads hold the same lease; a lane's
 /// context additionally carries that lane's fork subset.
-#[doc(hidden)]
 pub struct AttemptWorkLease {
     context: ExecutionContext,
     _stream_lease: StreamLease,

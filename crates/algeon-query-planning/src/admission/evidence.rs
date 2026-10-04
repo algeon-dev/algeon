@@ -67,8 +67,7 @@ pub struct AttemptCapabilityEvidence {
     pub(crate) attested_cugraph_graph_execution_scopes: Vec<AttestedCugraphGraphExecutionScope>,
     /// Plan-scope and output-schema identity for each admitted fragment.
     pub(crate) execution_scopes: Vec<AttemptExecutionScope>,
-    /// GPU UDTF occurrences and CPU dependency boundaries for this
-    /// DataFusion invocation.
+    /// GPU UDTF occurrences and CPU dependency boundaries for this DataFusion invocation.
     pub(crate) execution_manifest: Option<AttemptExecutionManifest>,
 }
 

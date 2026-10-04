@@ -668,7 +668,7 @@ impl DatePart {
     /// cast from integer seconds.
     pub const EXTRACT_FIELDS: [Self; 4] = [Self::Year, Self::Month, Self::Day, Self::Minute];
     /// Fields `EXTRACT` returns inside a post-join residual filter.
-    pub const POST_JOIN_EXTRACT_FIELDS: [Self; 3] = [Self::Year, Self::Month, Self::Day];
+    pub(crate) const POST_JOIN_EXTRACT_FIELDS: [Self; 3] = [Self::Year, Self::Month, Self::Day];
     /// Fields native `DATE_TRUNC` floors a timestamp to: the fixed-duration
     /// ones. Calendar months and years are not.
     pub const DATE_TRUNC_FIELDS: [Self; 7] =

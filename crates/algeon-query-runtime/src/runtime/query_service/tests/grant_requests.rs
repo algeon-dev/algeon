@@ -151,7 +151,7 @@ fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_gran
     let before = service.admission_snapshot().unwrap();
     let ledgers = service.device_ledger_reports().unwrap();
 
-    let mut graph_fragment = AttemptRequirement::for_query_plan(&explicit_sink_plan("graph-input"));
+    let mut graph_fragment = AttemptCapabilityEvidence::for_query_plan(&explicit_sink_plan("graph-input"));
     graph_fragment.required_capabilities = vec![CUGRAPH_GRAPH_EXECUTION_CAPABILITY];
     let error = admitted.join_fragment(&graph_fragment).expect_err("the granted device has no cuGraph");
 
@@ -166,7 +166,7 @@ fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_gran
         "a refused fragment adds no plan identity"
     );
 
-    let plain_fragment = AttemptRequirement::for_query_plan(&explicit_sink_plan("plain-input"));
+    let plain_fragment = AttemptCapabilityEvidence::for_query_plan(&explicit_sink_plan("plain-input"));
     admitted.join_fragment(&plain_fragment).expect("a fragment without capability requirements joins");
     assert_eq!(service.admission_snapshot().unwrap(), before, "joining does not touch the queue");
     assert_eq!(service.device_ledger_reports().unwrap(), ledgers, "joining does not touch the ledger");
@@ -198,9 +198,9 @@ fn submitted_plan_evidence_survives_admission_while_internal_placement_requireme
     assert!(placement_only.admitted_capability_evidence().is_none());
 }
 
-fn explicit_sink_capability_evidence() -> AttemptRequirement {
+fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     let plan = explicit_sink_plan("input");
-    AttemptRequirement::for_query_plan(&plan)
+    AttemptCapabilityEvidence::for_query_plan(&plan)
 }
 
 fn explicit_sink_plan(input_name: &str) -> QueryPlan {
@@ -218,7 +218,7 @@ fn explicit_sink_plan(input_name: &str) -> QueryPlan {
     builder.finish_with_host_sink(source).unwrap()
 }
 
-fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {
+fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptCapabilityEvidence) {
     use query_planning::admission::ExecutionCapability;
 
     use crate::runtime::{DeviceCapabilities, DeviceCapability};

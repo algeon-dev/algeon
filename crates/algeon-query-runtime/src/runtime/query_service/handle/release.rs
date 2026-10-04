@@ -39,7 +39,7 @@ pub(super) struct QueryHandleRelease {
     pub(super) service_epoch_user: Option<QueryServiceEpochUser>,
     pub(super) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     pub(super) device_ordinal: usize,
-    pub(super) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    pub(super) admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
     pub(super) compatible_devices: Vec<usize>,
     pub(super) root_context: Option<ExecutionContext>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,

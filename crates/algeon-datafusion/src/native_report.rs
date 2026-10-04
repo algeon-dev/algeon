@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
@@ -32,7 +33,6 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::source::SourceDiagnostics as NativeSourceDiagnostics;
 pub use query_planning::{
     contract_report::CapabilityDecisionRow, mode::StatisticalAggregateExecutionMode,

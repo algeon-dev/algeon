@@ -1,8 +1,6 @@
-//! GPU execution ownership for compiled native pipelines.
-//!
-//! This target is intentionally separate from `native_contract_tests`: its
-//! cases create a process-owned GPU backend, while the remaining contract
-//! target is CPU-only.
+//! GPU execution ownership for compiled native pipelines. The cases create a
+//! process-owned GPU backend and drive the crate's compiled scheduler and
+//! executors directly.
 
 use std::{
     cell::RefCell,
@@ -20,14 +18,6 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use query_engine::{
-    exec::{
-        CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest, admit_query_plan,
-        execute_query_plan as execute_engine_query_plan, materialize_gpu_result_to_host,
-        output::{QueryExecutionResult, QueryOutput},
-    },
-    rapids_backend::rapids_analysis_context,
-};
 use query_planning::{
     admission::{
         AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
@@ -69,6 +59,16 @@ use query_runtime::{
     },
 };
 
+use super::{CompiledGpuTaskExecutor, CompiledPipelineScheduler};
+use crate::{
+    exec::{
+        QueryExecutionRequest, admit_query_plan, execute_query_plan as execute_engine_query_plan,
+        materialize_gpu_result_to_host,
+        output::{QueryExecutionResult, QueryOutput},
+    },
+    rapids_backend::rapids_analysis_context,
+};
+
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
     Ok(admit(
         plan,
@@ -100,22 +100,16 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
         .collect()
 }
 
-#[path = "native_contract_tests/pipeline_compiled_execution/fixtures_parquet.rs"]
+mod final_aggregate_fanout;
 mod fixtures_parquet;
-#[path = "native_contract_tests/pipeline_compiled_execution/fixtures_plans.rs"]
-// Shared with the CPU contract target. Only a subset is exercised here, so
-// unused fixture constructors are expected for this binary.
-#[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]
+#[expect(dead_code, reason = "fixture constructors cover more plan shapes than these cases use")]
 mod fixtures_plans;
-#[path = "native_contract_tests/pipeline_compiled_execution/gpu_execution.rs"]
 mod gpu_execution;
-#[path = "native_contract_tests/pipeline_compiled_execution/lane_execution.rs"]
 mod lane_execution;
-#[path = "native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
-// Shared with the CPU contract target; this binary only calls three constructors.
-#[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]
+#[path = "../../../../tests/native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
+// Shared with the CPU contract target; these cases call three constructors.
+#[expect(dead_code, reason = "shared fixture file partially exercised by these cases")]
 mod remaining_topologies;
-#[path = "native_contract_tests/pipeline_compiled_execution/source_read_lease.rs"]
 mod source_read_lease;
 
 use fixtures_parquet::*;
@@ -159,11 +153,11 @@ fn ensure_suite_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {
 }
 
 // The shared execution cases historically spell their suite request as
-// `cudf::Runtime::new()`. In this integration target that name intentionally
+// `suite_backend::Runtime::new()`. In this integration target that name intentionally
 // resolves to an inert request token. It serializes backend ownership for the
 // whole test and can only create contexts through the public backend/session
 // route below; it never constructs or exposes a raw cuDF runtime.
-mod cudf {
+mod suite_backend {
     use super::*;
 
     pub(super) struct Runtime {
@@ -220,17 +214,40 @@ mod cudf {
             self.acquire_context_with_evidence_items([evidence])
         }
 
+        pub(super) fn acquire_capped_context_for_compiled_executor_test(
+            self: &Arc<Self>,
+            plan: &QueryPlan,
+            query_cap_bytes: u64,
+        ) -> Result<PipelineTestContext> {
+            let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
+            self.acquire_context_with_request(
+                QueryAdmissionRequest::test_attempt()
+                    .with_query_plan_capability_evidence(evidence)
+                    .with_query_cap_bytes(query_cap_bytes),
+            )
+        }
+
         pub(super) fn acquire_context_with_evidence_items(
             self: &Arc<Self>,
             evidence_items: impl IntoIterator<Item = AttemptCapabilityEvidence>,
         ) -> Result<PipelineTestContext> {
             let evidence = AttemptCapabilityEvidence::aggregate(evidence_items)?;
+            self.acquire_context_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
+            )
+        }
+
+        fn acquire_context_with_request(
+            self: &Arc<Self>,
+            request: QueryAdmissionRequest,
+        ) -> Result<PipelineTestContext> {
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
-            let handle =
-                backend.as_ref().expect("suite backend is installed").session_capability().admit_query_with_request(
-                    QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
-                )?;
+            let handle = backend
+                .as_ref()
+                .expect("suite backend is installed")
+                .session_capability()
+                .admit_query_with_request(request)?;
             let context = handle.acquire_context()?;
             Ok(PipelineTestContext { context, _handle: handle, _attempt: None, _request: Arc::clone(self) })
         }
@@ -242,7 +259,7 @@ struct PipelineTestContext {
     _handle: QueryHandle,
     // Declared after `_handle`: dropping the owner commits `Dropped` and releases the grant.
     _attempt: Option<AttemptOwner>,
-    _request: Arc<cudf::Runtime>,
+    _request: Arc<suite_backend::Runtime>,
 }
 
 impl Deref for PipelineTestContext {
@@ -364,23 +381,38 @@ fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, e
     );
 }
 
-fn bounded_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
+// The request holds the suite backend's lock guard, so it stays on the test
+// thread; the `Arc` only lets that thread's contexts keep it alive.
+#[expect(clippy::arc_with_non_send_sync, reason = "the suite request never leaves its test thread")]
+fn shared_runtime(runtime: suite_backend::Runtime) -> Arc<suite_backend::Runtime> {
+    Arc::new(runtime)
+}
+
+fn bounded_context(runtime: Arc<suite_backend::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
     runtime.acquire_context_for_plan(plan).unwrap()
 }
 
 fn bounded_observed_context(
-    runtime: Arc<cudf::Runtime>,
+    runtime: Arc<suite_backend::Runtime>,
     plan: &QueryPlan,
 ) -> (PipelineTestContext, RuntimeObservationHandle) {
     runtime.acquire_context_for_plan_with_observation(plan, RuntimeObservationConfig::native_execution()).unwrap()
 }
 
-fn compiled_executor_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
+fn compiled_executor_context(runtime: Arc<suite_backend::Runtime>, plan: &QueryPlan) -> PipelineTestContext {
     runtime.acquire_context_for_compiled_executor_test(plan).unwrap()
 }
 
+fn capped_compiled_executor_context(
+    runtime: Arc<suite_backend::Runtime>,
+    plan: &QueryPlan,
+    query_cap_bytes: u64,
+) -> PipelineTestContext {
+    runtime.acquire_capped_context_for_compiled_executor_test(plan, query_cap_bytes).unwrap()
+}
+
 fn bounded_context_for_evidence_items(
-    runtime: Arc<cudf::Runtime>,
+    runtime: Arc<suite_backend::Runtime>,
     evidence_items: impl IntoIterator<Item = AttemptCapabilityEvidence>,
 ) -> PipelineTestContext {
     runtime.acquire_context_with_evidence_items(evidence_items).unwrap()

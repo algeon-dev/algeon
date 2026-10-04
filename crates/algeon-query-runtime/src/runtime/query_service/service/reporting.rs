@@ -11,7 +11,7 @@ use query_planning::error::Result;
 #[cfg(test)]
 use query_planning::error::{QueryError, QueryErrorCode};
 
-use super::{super::config::QueryExecutionConfig, QueryService};
+use super::QueryService;
 use crate::runtime::{
     DeviceFacts, DeviceResourceProfile,
     cache::{CacheSourceEventSnapshot, DeviceCacheReport},
@@ -159,11 +159,6 @@ impl QueryService {
             context.stream_pool().wait_until_quiescent(expected, deadline, operation)?;
         }
         Ok(())
-    }
-
-    /// Returns the execution policy copied into admitted query contexts.
-    pub fn config(&self) -> &QueryExecutionConfig {
-        &self.inner.config
     }
 
     /// Reads every service report once.

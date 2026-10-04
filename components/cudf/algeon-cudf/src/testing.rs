@@ -59,8 +59,33 @@ pub mod device_copy {
 pub mod event {
     use cudf_sys::{
         CUDF_SUCCESS,
-        test_support::{cudf_test_event_reset_observation, cudf_test_event_synchronize_call_count},
+        test_support::{
+            cudf_test_event_allow_synchronize, cudf_test_event_fail_synchronize, cudf_test_event_reset_observation,
+            cudf_test_event_synchronize_call_count,
+        },
     };
+
+    /// Fails every CUDA event synchronization in the process until dropped.
+    ///
+    /// Dropping restores synchronization even when the test panics, so the
+    /// fault never reaches a later test in the same process.
+    #[must_use = "the fault clears when the guard drops"]
+    pub struct EventSynchronizeFault(());
+
+    impl EventSynchronizeFault {
+        pub fn inject() -> Self {
+            // SAFETY: the hook only sets a process-wide test fault flag.
+            unsafe { cudf_test_event_fail_synchronize() };
+            Self(())
+        }
+    }
+
+    impl Drop for EventSynchronizeFault {
+        fn drop(&mut self) {
+            // SAFETY: the hook only clears a process-wide test fault flag.
+            unsafe { cudf_test_event_allow_synchronize() };
+        }
+    }
 
     /// Clears the process-wide CUDA event observation counters.
     pub fn reset_event_observation_for_test() {
@@ -77,6 +102,32 @@ pub mod event {
         let status = unsafe { cudf_test_event_synchronize_call_count(&mut count) };
         assert_eq!(status, CUDF_SUCCESS, "the event observation hook reads its counter");
         count
+    }
+}
+
+pub mod stream {
+    use cudf_sys::test_support::{cudf_test_stream_block_synchronize, cudf_test_stream_unblock_synchronize};
+
+    /// Blocks every CUDA stream synchronization in the process until dropped.
+    ///
+    /// Dropping releases blocked and later synchronizations even when the test
+    /// panics, so no caller stays parked past the test.
+    #[must_use = "the block releases when the guard drops"]
+    pub struct StreamSynchronizeBlock(());
+
+    impl StreamSynchronizeBlock {
+        pub fn engage() -> Self {
+            // SAFETY: the hook only sets a process-wide test gate.
+            unsafe { cudf_test_stream_block_synchronize() };
+            Self(())
+        }
+    }
+
+    impl Drop for StreamSynchronizeBlock {
+        fn drop(&mut self) {
+            // SAFETY: the hook only opens a process-wide test gate.
+            unsafe { cudf_test_stream_unblock_synchronize() };
+        }
     }
 }
 

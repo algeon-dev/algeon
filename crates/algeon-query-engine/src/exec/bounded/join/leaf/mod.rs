@@ -24,9 +24,7 @@ use super::{
     validate_local_parquet_source,
 };
 use crate::{
-    chunk::{
-        SourceMetadataCache, plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
-    },
+    chunk::{plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata},
     exec::{
         bounded::BoundedPlan,
         source::{
@@ -36,6 +34,7 @@ use crate::{
         },
     },
     rapids_backend::rapids_analysis_context,
+    source_chunk::SourceMetadataCache,
 };
 
 mod batching;

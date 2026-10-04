@@ -12,7 +12,6 @@ mod backend_close;
 mod backend_core;
 mod backend_lifecycle;
 mod backend_metrics;
-#[doc(hidden)]
 pub mod cache;
 mod cache_fill;
 mod context;
@@ -49,8 +48,7 @@ pub use backend_core::{
 };
 pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
 #[cfg(any(test, feature = "test-hooks"))]
-#[doc(hidden)]
-pub use backend_lifecycle::BackendLifecycle;
+pub(crate) use backend_lifecycle::BackendLifecycle;
 pub(crate) use backend_lifecycle::ObservationPermit;
 pub use backend_metrics::{
     BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_METRIC_DEVICE_CAPACITY, BackendAdmissionHealth,
@@ -66,6 +64,7 @@ pub(crate) use cache_fill::CacheFillByteBudget;
 pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
 pub use context::{ExecutionCancellation, ExecutionContext};
 #[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
 pub use context::{RuntimeObservationBuildError, RuntimeObservedExecutionContext, StandaloneConfig};
 pub use execution_policy::{MemoryResourcePolicy, SourceSchedulerPolicy};
 pub(crate) use gpu::{AlgeonGpuInventory, DeviceContext, DeviceLedger, DeviceRegistry, MemoryGrant};
@@ -87,6 +86,7 @@ pub use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
 #[cfg(feature = "qualification")]
 pub use query_service::DeviceQuarantineInjection;
+#[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use query_service::QueryService;
 pub use query_service::{
@@ -95,11 +95,12 @@ pub use query_service::{
 };
 #[doc(hidden)]
 pub use reservation::RetryFacts;
+#[doc(hidden)]
+pub use service_stream::AttemptWorkLease;
 #[cfg(test)]
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use service_stream::DEFAULT_SERVICE_STREAM_POOL_SIZE;
-#[doc(hidden)]
-pub use service_stream::{AttemptWorkLease, ServiceStreamPool};
+pub use service_stream::ServiceStreamPool;
 pub(crate) use service_stream::{StreamLease, StreamPermitClass};
 #[doc(hidden)]
 pub use supervised_worker::{SupervisedWorker, SupervisedWorkerJoin};

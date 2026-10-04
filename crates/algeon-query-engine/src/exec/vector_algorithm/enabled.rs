@@ -438,7 +438,6 @@ static VECTOR_AFTER_INDEX_BUILD_HOOK: Mutex<Option<fn(&ExecutionContext)>> = Mut
 
 /// Runs `hook` after a kNN index build and before its cancellation checkpoint.
 #[cfg(feature = "test-hooks")]
-#[doc(hidden)]
 pub fn set_vector_after_index_build_hook_for_tests(hook: Option<fn(&ExecutionContext)>) {
     *VECTOR_AFTER_INDEX_BUILD_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
 }
@@ -451,7 +450,6 @@ static VECTOR_POOL_COVERAGE_HOOK: Mutex<Option<VectorPoolCoverageHook>> = Mutex:
 
 /// Samples existing RAFT pool members after native dispatch and before their leases detach.
 #[cfg(feature = "test-hooks")]
-#[doc(hidden)]
 pub fn set_vector_pool_coverage_hook_for_tests(hook: Option<fn(&ExecutionContext, &[ReservationUsage])>) {
     *VECTOR_POOL_COVERAGE_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
 }

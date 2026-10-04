@@ -280,7 +280,6 @@ impl AttemptCacheScopeCorrelationCollector {
 #[cfg(feature = "cugraph")]
 #[must_use = "dropping an unclosed scope window deliberately discards its allocator evidence"]
 #[derive(Debug)]
-#[doc(hidden)]
 pub struct CacheScopeCorrelationGuard {
     collector: Arc<AttemptCacheScopeCorrelationCollector>,
     scope: Option<Arc<CacheAllocationScope>>,

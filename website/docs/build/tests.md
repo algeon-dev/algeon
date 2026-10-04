@@ -39,7 +39,8 @@ With no arguments it starts every phase at once, in four groups:
   API surface snapshot, in sequence.
 - **hygiene**: the seven feature-isolation shards plus their union check,
   the shipped-server clippy lane, `msrv-check`, a docs.rs native-free compile
-  check, and the component-package check, each in its own target directory.
+  check, the hidden-API consumer probe, and the component-package check, each
+  in its own target directory.
 
 Hygiene never blocks tests. Every other Cargo phase uses `--workspace
 --all-features`; feature-isolation and the shipped-server clippy lane are the
@@ -88,7 +89,7 @@ FAIL: full pre-merge gate reported problems.
 and the CPU nextest tests (`cargo nt -E 'not group(gpu) & not
 group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, the
 shipped-server clippy lane, every GPU test, doctests, rustdoc, the public API
-snapshot, and clippy:
+snapshot, the hidden-API consumer probe, and clippy:
 
 ```bash
 bash scripts/check_all.sh --fast
@@ -246,7 +247,9 @@ Every test binary lands in exactly one of:
   `binary_id(...)` filterset) to that override list; an unlisted binary
   defaults into `gpu`, so a misclassification is only slower, never a
   scheduling hazard.
-- **`gpu-exclusive`**: any target whose name ends `_gpu_exclusive`.
+- **`gpu-exclusive`**: any target whose name ends `_gpu_exclusive`, and any
+  test under a module named `gpu_exclusive` inside a crate's own unit-test
+  binary.
 - **`gpu`**: every remaining test, matched last.
 
 `scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every

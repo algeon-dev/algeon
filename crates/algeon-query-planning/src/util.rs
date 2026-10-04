@@ -17,6 +17,7 @@ use fnv::FnvHasher;
 ///
 /// Not collision resistant.
 #[derive(Debug, Clone)]
+#[doc(hidden)]
 pub struct StableFnv1a64 {
     state: u64,
 }
@@ -75,6 +76,7 @@ impl Default for StableFnv1a64 {
     }
 }
 
+#[doc(hidden)]
 pub fn comma_separated_usize(values: &[usize]) -> String {
     let mut output = String::new();
     for (index, value) in values.iter().enumerate() {
@@ -86,6 +88,7 @@ pub fn comma_separated_usize(values: &[usize]) -> String {
     output
 }
 
+#[doc(hidden)]
 pub fn escape_kv_delimited(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {

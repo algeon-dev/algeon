@@ -1,6 +1,7 @@
 use std::{any::Any, collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     functions_window::{
@@ -16,7 +17,6 @@ use datafusion::{
     },
     physical_plan::windows::WindowUDFExpr,
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{

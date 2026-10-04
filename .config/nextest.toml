@@ -25,8 +25,10 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = 'all()'
 run-wrapper = 'gpu-lock'
 
+# A `_gpu_exclusive` target, or tests under a `gpu_exclusive` module inside a
+# crate's own unit-test binary, own the device for their whole run.
 [[profile.default.overrides]]
-filter = 'binary(/_gpu_exclusive$/)'
+filter = 'binary(/_gpu_exclusive$/) | test(/(^|::)gpu_exclusive::/)'
 test-group = 'gpu-exclusive'
 threads-required = 'num-test-threads'
 priority = -100
@@ -38,7 +40,7 @@ filter = '''
 binary(/_cpu$/)
 | binary_id(algeon-cudf-sys) | binary_id(algeon-cugraph-sys) | binary_id(algeon-cuvs-sys) | binary_id(algeon-cuml-sys)
 | binary_id(datafusion-facade-consumer) | binary_id(bench) | binary_id(algeon-build-support)
-| binary_id(algeon-query-engine) | binary_id(algeon-query-planning)
+| binary_id(algeon-query-planning)
 | binary_id(algeon-interop)
 | binary_id(algeon-cudf-sys::build_link_contract) | binary_id(algeon-cudf-sys::fingerprint_matrix_contract)
 | binary_id(algeon-datafusion::cpu_contract_tests) | binary_id(algeon-datafusion::native_planning_tests)

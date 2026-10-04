@@ -38,11 +38,11 @@ mod expressions;
 mod join;
 mod types;
 
+use aggregate::validate_aggregate_capability;
 #[doc(hidden)]
 pub use aggregate::{
-    global_count_star_expr, global_valid_count_state_alias, validate_aggregate_capability,
-    validate_aggregate_output_names, validate_avg_output_fields, validate_final_aggregate_capability,
-    validate_global_aggregate_capability,
+    global_count_star_expr, global_valid_count_state_alias, validate_aggregate_output_names,
+    validate_avg_output_fields, validate_global_aggregate_capability,
 };
 pub(crate) use expressions::validate_expr;
 use expressions::{comma_separated, validate_projection_output_expr};

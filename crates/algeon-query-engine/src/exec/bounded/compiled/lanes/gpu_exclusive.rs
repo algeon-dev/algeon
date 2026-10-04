@@ -1,7 +1,7 @@
 //! Resident chunk-lane execution and source-work ownership regressions.
 //!
-//! This target owns the whole device while native event and stream hooks are
-//! active. Its `_gpu_exclusive` suffix selects the exclusive nextest lane.
+//! These cases own the whole device while native event and stream hooks are
+//! active; the `gpu_exclusive` module name selects the exclusive nextest lane.
 
 use std::{
     cell::RefCell,
@@ -16,19 +16,8 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_sys::test_support::{
-    cudf_test_event_allow_synchronize, cudf_test_event_fail_synchronize, cudf_test_stream_block_synchronize,
-    cudf_test_stream_unblock_synchronize,
-};
+use cudf::testing::{event::EventSynchronizeFault, stream::StreamSynchronizeBlock};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use query_engine::{
-    exec::{
-        CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
-        QueryExecutionRequest, admit_query_plan, execute_query_plan, materialize_gpu_result_to_host,
-        output::QueryOutput, run_resident_lane_borrow,
-    },
-    rapids_backend::rapids_analysis_context,
-};
 use query_planning::{
     admission::{AttemptCapabilityEvidence, admit},
     error::{QueryErrorCode, Result},
@@ -54,6 +43,17 @@ use query_runtime::{
     },
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
+
+use super::{LaneDispatchSupport, run_resident_lane_borrow};
+use crate::{
+    exec::{
+        ExecutionMetrics, QueryExecutionRequest, admit_query_plan,
+        bounded::compiled::{CompiledGpuTaskExecutor, CompiledPipelineScheduler},
+        execute_query_plan, materialize_gpu_result_to_host,
+        output::QueryOutput,
+    },
+    rapids_backend::rapids_analysis_context,
+};
 
 static LANE_BACKEND: Mutex<Option<GpuBackendCore>> = Mutex::new(None);
 
@@ -812,38 +812,6 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
     drop(source_worker_lease);
 }
 
-/// RAII restore for CUDA test-support fault hooks: the fault clears even when the test
-/// panics, so the serial exclusive binary never leaks a global hook into the next test.
-struct EventSyncFaultGuard;
-
-impl EventSyncFaultGuard {
-    fn fail() -> Self {
-        unsafe { cudf_test_event_fail_synchronize() };
-        Self
-    }
-}
-
-impl Drop for EventSyncFaultGuard {
-    fn drop(&mut self) {
-        unsafe { cudf_test_event_allow_synchronize() };
-    }
-}
-
-struct StreamSyncBlockGuard;
-
-impl StreamSyncBlockGuard {
-    fn block() -> Self {
-        unsafe { cudf_test_stream_block_synchronize() };
-        Self
-    }
-}
-
-impl Drop for StreamSyncBlockGuard {
-    fn drop(&mut self) {
-        unsafe { cudf_test_stream_unblock_synchronize() };
-    }
-}
-
 fn union_output_data_form(pipeline: &CompiledPipeline, task_kind: PipelineTaskKind) -> ResidentDataForm {
     use ResidentDataForm;
     let producer = pipeline
@@ -1095,7 +1063,7 @@ fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
             metrics.clone(),
         )
         .with_requested_lanes(2);
-        let _fault = EventSyncFaultGuard::fail();
+        let _fault = EventSynchronizeFault::inject();
         let error = match run_resident_lane_borrow(&scheduler, None, &support) {
             Ok(_) => panic!("a failed head readiness must abort the lane run"),
             Err(error) => error,
@@ -1158,7 +1126,7 @@ fn lane_workers_complete_chunks_without_stream_synchronize() {
     let arrivals = Arc::new(Mutex::new(Vec::new()));
     let arrivals_in = Arc::clone(&arrivals);
     let support_route = Arc::clone(&route);
-    let _block = StreamSyncBlockGuard::block();
+    let _block = StreamSynchronizeBlock::engage();
     let worker = std::thread::spawn(move || {
         let metrics = ExecutionMetrics::detached("lane-no-worker-sync");
         let metrics_context = metrics.scope_context(&owned_context).expect("metrics scope applies");

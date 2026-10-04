@@ -1,38 +1,31 @@
 use super::{AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, Expr};
 
-#[doc(hidden)]
 pub fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
 }
 
-#[doc(hidden)]
 pub fn aggregate_spec_has_floating_statistical_aggregate(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
 }
 
-#[doc(hidden)]
 pub fn aggregate_spec_has_median(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median)
 }
 
-#[doc(hidden)]
 pub fn aggregate_spec_requires_whole_input(spec: &AggregateSpec) -> bool {
     aggregate_spec_has_floating_statistical_aggregate(spec)
         || aggregate_spec_has_distinct(spec)
         || aggregate_spec_has_median(spec)
 }
 
-#[doc(hidden)]
 pub fn aggregate_spec_has_distinct(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(aggregate_expr_is_exact_nunique)
 }
 
-#[doc(hidden)]
 pub fn aggregate_expr_is_exact_nunique(expr: &AggregateExpr) -> bool {
     expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
 }
 
-#[doc(hidden)]
 pub fn aggregate_spec_has_filters(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.filter.is_some())
 }
@@ -44,7 +37,6 @@ pub fn aggregate_spec_has_filters(spec: &AggregateSpec) -> bool {
 /// types, so aggregates evaluated beside STDDEV/VAR keep DataFusion's integer
 /// width, wrapping arithmetic, and NaN ordering instead of passing through
 /// `f64`.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFusionExactHostAccumulator {
     /// Non-null input count.
@@ -78,7 +70,6 @@ pub enum DataFusionExactHostAccumulator {
 ///
 /// `input_type` is `None` when the aggregate has no input column, as for
 /// `COUNT(*)`.
-#[doc(hidden)]
 pub fn datafusion_exact_host_accumulator(
     expr: &AggregateExpr,
     input_type: Option<&ArrowDataType>,
@@ -125,7 +116,6 @@ pub fn datafusion_exact_host_accumulator(
 ///
 /// String keys are interned, so any string input type can produce any string
 /// output type; every other key keeps its input type.
-#[doc(hidden)]
 pub fn datafusion_exact_host_group_key_supported(input_type: &ArrowDataType, output_type: &ArrowDataType) -> bool {
     let is_string = |data_type: &ArrowDataType| {
         matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
@@ -146,7 +136,6 @@ pub fn datafusion_exact_host_group_key_supported(input_type: &ArrowDataType, out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct AvgStateAliases {
     sum_alias: String,
     count_alias: String,

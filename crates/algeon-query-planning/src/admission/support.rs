@@ -118,7 +118,6 @@ pub fn compiled_bounded_query_plan_support(
 /// their component owners prove safe overlap. A window is admitted only when
 /// its input ordering is proved, and stays on the serial coordinator outside
 /// this set.
-#[doc(hidden)]
 pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> bool {
     !pipeline.tasks().is_empty() && pipeline.tasks().iter().all(|task| task_kind_within_migrated_contract(task.kind()))
 }

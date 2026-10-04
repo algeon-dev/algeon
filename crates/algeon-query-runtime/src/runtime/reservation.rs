@@ -9,7 +9,6 @@ use query_planning::error::QueryError;
 /// [`Self::attach_to_error`] are stable diagnostics used by tests and higher
 /// level error reports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct RetryFacts {
     /// Stable retry action string, for example splitting a chunk or reducing
     /// merge fan-in.

@@ -104,6 +104,7 @@ POLICY_SCRIPTS=(
   scripts/ci/tests/check_clean_target_artifacts_tests.sh
   scripts/ci/tests/check_pass_as_skip_policy_tests.sh
   scripts/ci/tests/check_public_api_surface_tests.sh
+  scripts/ci/tests/check_public_api_consumers_tests.sh
   scripts/ci/tests/check_nextest_gpu_lock_tests.sh
   scripts/ci/tests/check_prose_slop_tests.sh
   scripts/ci/check_prose_slop.sh
@@ -207,7 +208,7 @@ shipped_clippy() {
 
 if [[ "${mode}" == full ]]; then
   PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy rustdoc
-    public-api-surface feature-isolation shipped-clippy msrv native-free publication-policy)
+    public-api-surface feature-isolation shipped-clippy msrv native-free public-api-consumers publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
 fi
@@ -263,6 +264,8 @@ if [[ "${mode}" == full ]]; then
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
     run msrv cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
   DOCS_RS=1 run native-free cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
+  run public-api-consumers python3 scripts/ci/check_public_api_consumers.py "${ROOT}" .config/policies/public-api \
+    target/check-all/public-api-consumers &
   run publication-policy python3 scripts/ci/check_workspace_publication.py &
 else
   run cpu-tests cargo nt -E 'not group(gpu) & not group(gpu-exclusive)' &

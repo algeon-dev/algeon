@@ -189,7 +189,6 @@ impl Default for KeyedHashJoinStrategyOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct KeyedHashJoinStrategyInputFacts {
     #[doc(hidden)]
     pub estimated_build_rows: Option<u64>,
@@ -212,7 +211,6 @@ pub struct KeyedHashJoinStrategyInputFacts {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
 pub enum KeylessConditionalJoinKind {
     Inner,
     Left,
@@ -227,7 +225,6 @@ pub enum KeylessConditionalJoinKind {
 /// ([`JoinForm::strategies`]); strategy choice picks among them from size
 /// facts and never widens the set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
 pub enum JoinForm {
     /// Equality keys without a residual: an inner join, a left join that
     /// builds its right side, or a full join.
@@ -396,7 +393,6 @@ pub(crate) fn choose_join_strategy(
     }
 }
 
-#[doc(hidden)]
 pub fn keyed_hash_join_strategy_input_facts_for_plan(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -546,7 +542,6 @@ fn partitioned_mixed_keyed_residual_evidence(
 /// Large-build evidence is monotone in observed rows and bytes: once a build
 /// is large under partial observation it stays large, so callers may commit to
 /// partition-wise consumption before the whole build side is materialized.
-#[doc(hidden)]
 pub fn keyed_hash_join_build_is_large(
     input: &KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
@@ -559,7 +554,6 @@ pub fn keyed_hash_join_build_is_large(
 /// Whether measuring build-key uniqueness could move a keyed left join from
 /// partitioning to a one-shot join: the choice is not one-shot without the
 /// measurement and would be with a unique build key.
-#[doc(hidden)]
 pub fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
     form: JoinForm,
     join: &JoinNode,

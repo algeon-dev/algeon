@@ -301,7 +301,6 @@ impl CacheFillConcurrencyGate {
     }
 }
 
-#[doc(hidden)]
 pub struct CacheFillOperationPermit {
     gate: CacheFillConcurrencyGate,
 }
