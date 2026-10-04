@@ -431,17 +431,24 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
         rejected_plan,
         rejected_diagnostics,
     )]);
-    assert_eq!(rejected.rows.len(), 1);
-    assert_eq!(rejected.selected_count(), 0);
+    // The filter's TRY_CAST has no native expression, so the root stays on
+    // DataFusion over a native scan fragment; each row reports the source
+    // diagnostics of both lowerings.
+    assert_eq!(rejected.rows.len(), 2);
+    assert_eq!(rejected.selected_count(), 1);
     assert_eq!(rejected.not_selected_count(), 1);
     let rejected_row = &rejected.rows[0];
     assert_eq!(rejected_row.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(rejected_row.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(rejected_row.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
-    assert_eq!(rejected_row.final_disposition, Some(FinalPlanDisposition::DataFusion));
+    assert_eq!(rejected_row.final_disposition, Some(FinalPlanDisposition::Mixed));
     assert!(!rejected_row.rejected_before_execution);
-    assert_eq!(rejected_row.source_diagnostics.len(), 1);
-    assert!(rejected_row.source_diagnostics[0].direct_device_read);
+    assert_eq!(rejected_row.source_diagnostics.len(), 2);
+    assert!(rejected_row.source_diagnostics.iter().all(|source| source.direct_device_read));
+    let fragment_row = &rejected.rows[1];
+    assert_eq!(fragment_row.outcome, Some(CandidateOutcomeKind::Selected));
+    assert_eq!(fragment_row.native_candidate_shape.as_deref(), Some("LocalParquetScan"));
+    assert_eq!(fragment_row.native_plan_fragment_count, Some(1));
 
     let planning_failure =
         NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::planning_failure(
@@ -522,12 +529,16 @@ async fn exact_statistical_aggregate_mode_keeps_aggregates_outside_the_host_kern
     assert_eq!(tolerant.rows.len(), 1);
     assert_eq!(tolerant.rows[0].final_disposition, Some(FinalPlanDisposition::Native));
 
+    // The aggregate stays on DataFusion; its scan runs as a native fragment.
     let exact = planning_report("exact", StatisticalAggregateExecutionMode::DataFusionExactHostWelford).await;
-    assert_eq!(exact.rows.len(), 1);
-    let exact_row = &exact.rows[0];
+    let [exact_row, fragment_row] = exact.rows.as_slice() else {
+        panic!("expected the aggregate's rejection and the scan fragment: {:?}", exact.rows);
+    };
     assert_eq!(exact_row.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(exact_row.reason_code.as_deref(), Some("unsupported_type"));
-    assert_eq!(exact_row.final_disposition, Some(FinalPlanDisposition::DataFusion));
+    assert_eq!(exact_row.final_disposition, Some(FinalPlanDisposition::Mixed));
+    assert_eq!(fragment_row.outcome, Some(CandidateOutcomeKind::Selected));
+    assert_eq!(fragment_row.native_candidate_shape.as_deref(), Some("LocalParquetScan"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -567,11 +578,21 @@ async fn exact_statistical_aggregate_mode_keeps_partitioned_aggregate_input_on_d
         native_datafusion_planning_report_with_optimizer_config(query_id, &dir, sql, session_config, optimizer_config)
     };
 
+    // The aggregate stays on DataFusion and reads the join as one native
+    // fragment, whose single partition satisfies its key partitioning.
     let partitioned = planning_report("partitioned", 4).await;
-    assert_eq!(partitioned.rows.len(), 1);
-    assert_eq!(partitioned.rows[0].outcome, Some(CandidateOutcomeKind::NotSupported));
-    assert_eq!(partitioned.rows[0].reason_code.as_deref(), Some("native_exact_statistical_input_partitioned"));
-    assert_eq!(partitioned.rows[0].final_disposition, Some(FinalPlanDisposition::DataFusion));
+    let [aggregate_row, fragment_row] = partitioned.rows.as_slice() else {
+        panic!("expected the aggregate's rejection and the join fragment: {:?}", partitioned.rows);
+    };
+    assert_eq!(aggregate_row.outcome, Some(CandidateOutcomeKind::NotSupported));
+    assert_eq!(aggregate_row.reason_code.as_deref(), Some("native_exact_statistical_input_partitioned"));
+    assert_eq!(aggregate_row.final_disposition, Some(FinalPlanDisposition::Mixed));
+    assert_eq!(fragment_row.outcome, Some(CandidateOutcomeKind::Selected));
+    assert!(
+        fragment_row.native_candidate_shape.as_deref().is_some_and(|shape| shape.starts_with("HashJoinExec(")),
+        "{:?}",
+        fragment_row.native_candidate_shape
+    );
 
     let single_partition = planning_report("single_partition", 1).await;
     assert_eq!(single_partition.rows.len(), 1);

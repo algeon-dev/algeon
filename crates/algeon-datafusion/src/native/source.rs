@@ -131,7 +131,7 @@ pub(super) fn native_parquet_object_store_scan_is_supported(file_scan: &FileScan
 const STOCK_PARQUET_FILE_READER_FACTORY_DEBUG_PREFIXES: [&str; 2] =
     ["DefaultParquetFileReaderFactory { store: ", "CachedParquetFileReaderFactory { store: "];
 
-pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
+pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
     // DataFusion's normal local-file scans can carry its default or cached
     // object-store reader factory. Native local reads represent that contract
     // directly through filesystem paths; caller-provided factories remain

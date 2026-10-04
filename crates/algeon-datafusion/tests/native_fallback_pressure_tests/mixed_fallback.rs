@@ -1,12 +1,10 @@
-//! DataFusion-baseline execution coverage migrated from
-//! `native_mixed_fallback_report` (formerly `c1_mixed_fallback_experiment`).
-//!
-//! Asserts whole-plan native selection under the normal session configuration:
-//! - post-native execution path
-//! - exact native fragment count
-//! - retained DataFusion baseline for unsupported relational parents
-//! - candidate rewritten/rejected outcomes
-//! - session results vs plain DataFusion parity
+//! Execution coverage of native selection under the normal session
+//! configuration. A fully supported query runs as one native plan. A query
+//! whose relational parent or expression has no native contract keeps that
+//! operator on DataFusion and runs the supported subtrees below it as native
+//! fragments. Each case checks the final disposition, the fragment count, that
+//! the report selects exactly the fragments in the final plan after the root's
+//! rejection, and parity with plain DataFusion.
 
 use std::fs::File;
 
@@ -25,35 +23,34 @@ use datafusion::{
 
 use super::*;
 
-struct DataFusionBaselineCase {
+struct ExecutionCase {
     id: &'static str,
     sql: &'static str,
     expected_path: FinalPlanDisposition,
     expected_native_fragment_count: usize,
 }
 
-const DATAFUSION_BASELINE_CASES: &[DataFusionBaselineCase] = &[
-    // Control: fully supported query should be rewritten whole.
-    DataFusionBaselineCase {
+const EXECUTION_CASES: &[ExecutionCase] = &[
+    ExecutionCase {
         id: "control_supported",
         sql: "SELECT key, SUM(m00) AS s, COUNT(*) AS c FROM bench GROUP BY key ORDER BY key",
         expected_path: FinalPlanDisposition::Native,
         expected_native_fragment_count: 1,
     },
-    // APPROX_DISTINCT is an unsupported relational parent. Its supported join
-    // subtree must not be extracted into a separate native fragment.
-    DataFusionBaselineCase {
-        id: "datafusion_baseline_unsupported_aggregate",
+    // APPROX_DISTINCT has no native aggregate; its join input runs as one
+    // native fragment.
+    ExecutionCase {
+        id: "unsupported_aggregate_over_join_fragment",
         sql: "SELECT t.key, APPROX_DISTINCT(t.name) AS d \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
-        expected_path: FinalPlanDisposition::DataFusion,
-        expected_native_fragment_count: 0,
+        expected_path: FinalPlanDisposition::Mixed,
+        expected_native_fragment_count: 1,
     },
-    // A union of unsupported relational parents remains a single DataFusion
-    // plan; no disjoint native child fragments are producerized.
-    DataFusionBaselineCase {
-        id: "datafusion_baseline_two_disjoint_rejections",
+    // Each union branch keeps its APPROX_DISTINCT on DataFusion over its own
+    // join fragment.
+    ExecutionCase {
+        id: "union_of_unsupported_aggregates_over_two_fragments",
         sql: "SELECT * FROM ( \
               SELECT 'a' AS src, t.key, APPROX_DISTINCT(t.name) AS d \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
@@ -62,40 +59,46 @@ const DATAFUSION_BASELINE_CASES: &[DataFusionBaselineCase] = &[
               SELECT 'b' AS src, u.key, APPROX_DISTINCT(u.name) AS d \
               FROM (SELECT b2.key, b2.name FROM bench2 b2 JOIN bench b3 ON b2.key = b3.key WHERE b3.m00 >= 2.0) u \
               GROUP BY u.key) v ORDER BY src, key",
-        expected_path: FinalPlanDisposition::DataFusion,
-        expected_native_fragment_count: 0,
+        expected_path: FinalPlanDisposition::Mixed,
+        expected_native_fragment_count: 2,
     },
-    // Unsupported expressions likewise retain the whole query on DataFusion.
-    DataFusionBaselineCase {
-        id: "negative_unsupported_expression",
+    // ILIKE has no native expression. DataFusion copies the filter's predicate
+    // into the Parquet scan for pruning; the fragment reads the scan without
+    // the copy while the filter evaluates it.
+    ExecutionCase {
+        id: "ilike_filter_over_scan_fragment",
+        sql: "SELECT key, name FROM bench WHERE name ILIKE 'NAME_1%' ORDER BY key, name",
+        expected_path: FinalPlanDisposition::Mixed,
+        expected_native_fragment_count: 1,
+    },
+    // TRY_CAST has no native expression; the join below its aggregate input
+    // runs as a native fragment.
+    ExecutionCase {
+        id: "unsupported_expression_over_join_fragment",
         sql: "SELECT t.key, SUM(TRY_CAST(t.name AS DOUBLE)) AS s \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
-        expected_path: FinalPlanDisposition::DataFusion,
-        expected_native_fragment_count: 0,
+        expected_path: FinalPlanDisposition::Mixed,
+        expected_native_fragment_count: 1,
     },
 ];
 
 #[tokio::test]
-async fn datafusion_baseline_execution_coverage_preserves_datafusion_plans() {
-    let dir = unique_temp_dir("algeon-datafusion-datafusion-baseline");
+async fn native_selection_execution_coverage_matches_datafusion() {
+    let dir = unique_temp_dir("algeon-datafusion-native-selection-execution");
     let bench = dir.join("bench.parquet");
     let bench2 = dir.join("bench2.parquet");
-    write_datafusion_baseline_input_parquet(&bench, 0);
-    write_datafusion_baseline_input_parquet(&bench2, 1);
+    write_execution_input_parquet(&bench, 0);
+    write_execution_input_parquet(&bench2, 1);
 
-    for case in DATAFUSION_BASELINE_CASES {
-        run_datafusion_baseline_case(case, &bench, &bench2).await;
+    for case in EXECUTION_CASES {
+        run_execution_case(case, &bench, &bench2).await;
     }
 
     fs::remove_dir_all(&dir).ok();
 }
 
-async fn run_datafusion_baseline_case(
-    case: &DataFusionBaselineCase,
-    bench: &std::path::Path,
-    bench2: &std::path::Path,
-) {
+async fn run_execution_case(case: &ExecutionCase, bench: &std::path::Path, bench2: &std::path::Path) {
     // Share the execution suite's process-owned backend across cases. A second
     // whole-device backend must not be installed after the first case runs.
     let backend = test_gpu_backend();
@@ -105,7 +108,7 @@ async fn run_datafusion_baseline_case(
         .unwrap_or_else(|error| panic!("{}: backend install failed: {error}", case.id))
         .build();
     let gpu_ctx = SessionContext::new_with_state(state);
-    register_datafusion_baseline_tables(&gpu_ctx, bench, bench2).await;
+    register_execution_tables(&gpu_ctx, bench, bench2).await;
 
     let df = gpu_ctx.sql(case.sql).await.expect(case.id);
     let (session_state, logical) = df.into_parts();
@@ -143,7 +146,7 @@ async fn run_datafusion_baseline_case(
     let cpu_ctx = SessionContext::new_with_state(
         SessionStateBuilder::new_with_default_features().with_config(direct_friendly_sql_session_config()).build(),
     );
-    register_datafusion_baseline_tables(&cpu_ctx, bench, bench2).await;
+    register_execution_tables(&cpu_ctx, bench, bench2).await;
     let cpu_batches = cpu_ctx.sql(case.sql).await.expect(case.id).collect().await.expect(case.id);
 
     let gpu_text = pretty_format_batches(&gpu_batches).expect(case.id).to_string();
@@ -168,28 +171,26 @@ async fn run_datafusion_baseline_case(
         "{}: unexpected native fragment count",
         case.id,
     );
+    assert_eq!(
+        rewritten, case.expected_native_fragment_count,
+        "{}: the report selects exactly the native fragments of the final plan",
+        case.id
+    );
 
     match case.expected_path {
-        FinalPlanDisposition::DataFusion => {
-            assert_eq!(
-                rewritten, 0,
-                "{}: DataFusion baseline should have zero rewritten candidates, got {rewritten}",
+        FinalPlanDisposition::Mixed => {
+            assert!(
+                matches!(planning_report.outcomes().first(), Some(CandidateOutcome::NotSupported { .. })),
+                "{}: the root's rejection leads the report: {rejected_reasons:?}",
                 case.id
             );
             assert!(
-                !rejected_reasons.is_empty(),
-                "{}: DataFusion baseline should retain its native rejection evidence",
-                case.id
-            );
-            assert_eq!(
-                row.host_datafusion_boundary_count,
-                Some(0),
-                "{}: ordinary relational DataFusion baseline must not create a host/native boundary",
+                row.host_datafusion_boundary_count.is_some_and(|count| count > 0),
+                "{}: DataFusion operators read the native fragments' host output",
                 case.id
             );
         },
         FinalPlanDisposition::Native => {
-            assert_eq!(rewritten, 1, "{}: supported whole plan should have one rewrite", case.id);
             assert!(rejected_reasons.is_empty(), "{}: supported whole plan should not have rejections", case.id);
             assert_eq!(
                 row.host_datafusion_boundary_count,
@@ -198,11 +199,86 @@ async fn run_datafusion_baseline_case(
                 case.id
             );
         },
-        unexpected => panic!("{}: DataFusion-baseline coverage does not admit {unexpected:?}", case.id),
+        unexpected => panic!("{}: execution coverage does not admit {unexpected:?}", case.id),
     }
 }
 
-async fn register_datafusion_baseline_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {
+/// A fragment whose single partition would break the co-partitioning of a
+/// partitioned hash join is abandoned with that reason, and the fragments
+/// below each hash repartition keep the join's partition layout.
+#[tokio::test]
+async fn fragment_that_breaks_a_co_partitioned_join_is_abandoned_for_fragments_below_it() {
+    let dir = unique_temp_dir("algeon-datafusion-co-partitioned-join-fragments");
+    // Four files per table give each scan four partitions.
+    let bench = dir.join("bench/");
+    let bench2 = dir.join("bench2/");
+    for (table, salt) in [(&bench, 0), (&bench2, 1)] {
+        fs::create_dir_all(table).unwrap();
+        for file in 0..4 {
+            write_execution_input_parquet(&table.join(format!("part-{file}.parquet")), salt + 2 * file);
+        }
+    }
+    // The ILIKE join filter has no native expression, so the join stays on
+    // DataFusion; without a size threshold DataFusion partitions it by key.
+    let sql = "SELECT a.key, a.name, b.payload FROM bench a JOIN bench2 b \
+               ON a.key = b.key AND a.name ILIKE b.name ORDER BY a.key, a.name, b.payload";
+    let mut session_config = SessionConfig::new().with_target_partitions(4);
+    session_config.options_mut().optimizer.hash_join_single_partition_threshold = 0;
+    session_config.options_mut().optimizer.hash_join_single_partition_threshold_rows = 0;
+    let state = test_gpu_backend()
+        .install_on(SessionStateBuilder::new_with_default_features().with_config(session_config.clone()))
+        .expect("backend install")
+        .build();
+    let gpu_ctx = SessionContext::new_with_state(state);
+    register_execution_tables(&gpu_ctx, &bench, &bench2).await;
+
+    let (session_state, logical) = gpu_ctx.sql(sql).await.unwrap().into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&session_state, &logical).await.unwrap();
+    drop(session_state);
+
+    assert!(
+        matches!(
+            diagnostics.report.outcomes(),
+            [
+                CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. },
+                CandidateOutcome::NotSupported {
+                    capability_reason: CapabilityReason::NativeFragmentParentContractUnsupported,
+                    ..
+                },
+                CandidateOutcome::Selected { .. },
+                CandidateOutcome::NotSupported {
+                    capability_reason: CapabilityReason::NativeFragmentParentContractUnsupported,
+                    ..
+                },
+                CandidateOutcome::Selected { .. },
+            ]
+        ),
+        "{:?}",
+        diagnostics.report.outcomes()
+    );
+    let mut join = below_native_admission(&plan);
+    while join.name() != "HashJoinExec" {
+        join = join.children()[0];
+    }
+    for side in join.children() {
+        assert_eq!(side.name(), "RepartitionExec");
+        assert!(matches!(side.properties().output_partitioning(), Partitioning::Hash(_, 4)));
+        assert!(side.children()[0].downcast_ref::<AlgeonNativeExec>().is_some());
+    }
+
+    let gpu_batches = collect(Arc::clone(&plan), gpu_ctx.task_ctx()).await.unwrap();
+    let cpu_ctx = SessionContext::new_with_config(session_config);
+    register_execution_tables(&cpu_ctx, &bench, &bench2).await;
+    let cpu_batches = cpu_ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    assert_eq!(
+        pretty_format_batches(&gpu_batches).unwrap().to_string(),
+        pretty_format_batches(&cpu_batches).unwrap().to_string()
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+async fn register_execution_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {
     ctx.register_parquet("bench", bench.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     ctx.register_parquet("bench2", bench2.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 }
@@ -219,7 +295,7 @@ fn direct_friendly_sql_session_config() -> SessionConfig {
     config
 }
 
-fn write_datafusion_baseline_input_parquet(path: &std::path::Path, salt: i64) {
+fn write_execution_input_parquet(path: &std::path::Path, salt: i64) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),

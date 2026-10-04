@@ -18,6 +18,11 @@ pub(super) const fn cost_remedy(reason: NativePlanCostReason) -> QueryGpuRemedy 
             QueryGpuRemedyKind::CpuPreferred,
             "The plan reads no column data, so there is no GPU work to accelerate; DataFusion produces its rows directly.",
         ),
+        NativePlanCostReason::HostLiteralPassthrough => QueryGpuRemedy::new(
+            "keep_cpu_for_host_literal_rows",
+            QueryGpuRemedyKind::CpuPreferred,
+            "The plan only returns rows it already holds in host memory; DataFusion returns them without a device round trip.",
+        ),
     }
 }
 

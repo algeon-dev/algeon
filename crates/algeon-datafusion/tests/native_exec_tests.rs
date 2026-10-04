@@ -32,8 +32,8 @@ use arrow::{
 use datafusion::{
     arrow::util::pretty::pretty_format_batches,
     common::{DataFusionError, config::ConfigOptions},
-    datasource::{memory::MemorySourceConfig, physical_plan::ParquetSource, source::DataSourceExec},
-    execution::{SessionStateBuilder, context::TaskContext, object_store::ObjectStoreUrl},
+    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
+    execution::{SessionStateBuilder, context::TaskContext},
     logical_expr::Operator,
     physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr, expressions::col},
     physical_optimizer::PhysicalOptimizerRule,
@@ -148,8 +148,8 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike");
+fn native_optimizer_ilike_filter_over_native_scan_fragment_is_mixed_and_idempotent() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let plan = ilike_filter_plan(&path);
@@ -158,43 +158,45 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
     let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
     let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
-        "ilike_boundary",
+        "ilike_fragment",
         Arc::clone(&optimized),
         diagnostics,
     )]);
 
-    assert_eq!(report.rows.len(), 1);
-    let row = &report.rows[0];
-    assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
-    assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
-    assert_eq!(row.native_plan_fragment_count, Some(1));
-    assert_eq!(row.host_datafusion_boundary_count, Some(1));
-    assert_eq!(row.source_diagnostics.len(), 1);
-    assert!(row.source_diagnostics[0].direct_device_read);
+    // The root filter's ILIKE has no native expression; the scan below it is
+    // the one native fragment.
+    let [root, fragment] = report.rows.as_slice() else {
+        panic!("expected the root rejection and the fragment: {:?}", report.rows);
+    };
+    assert_eq!(root.outcome, Some(CandidateOutcomeKind::NotSupported));
+    assert_eq!(root.reason_code.as_deref(), Some("unsupported_expression"));
+    assert_eq!(fragment.outcome, Some(CandidateOutcomeKind::Selected));
+    assert_eq!(fragment.native_candidate_shape.as_deref(), Some("LocalParquetScan"));
+    assert_eq!(fragment.final_disposition, Some(FinalPlanDisposition::Mixed));
+    assert_eq!(fragment.native_plan_fragment_count, Some(1));
+    assert_eq!(fragment.host_datafusion_boundary_count, Some(1));
+    assert!(fragment.source_diagnostics.iter().any(|source| source.direct_device_read));
 
     let filter = below_native_admission(&optimized)
         .downcast_ref::<FilterExec>()
-        .expect("mixed boundary must retain the CPU root filter");
-    let native = filter
-        .input()
-        .downcast_ref::<AlgeonNativeExec>()
-        .expect("mixed boundary must replace only the local-Parquet leaf");
+        .expect("the CPU root filter stays on DataFusion");
+    let native = filter.input().downcast_ref::<AlgeonNativeExec>().expect("the scan is replaced by a native fragment");
     assert_mixed_boundary_properties(filter, native);
 
     let (repeated, repeat_diagnostics) =
         rule.optimize_with_diagnostics(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
-    assert!(Arc::ptr_eq(&optimized, &repeated), "mixed boundary must be an optimizer fixed point");
+    assert!(Arc::ptr_eq(&optimized, &repeated), "a plan holding a fragment is an optimizer fixed point");
     assert!(
         repeat_diagnostics.is_none(),
-        "the rule records nothing for a plan it already selected, so idempotence keeps the selected-leaf report"
+        "the rule records nothing for a plan it already selected, so idempotence keeps the fragment report"
     );
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperative_wrapper() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-cooperative");
+fn native_optimizer_ilike_fragment_keeps_a_transparent_cooperative_wrapper() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-cooperative");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(ilike_filter_plan(&path)));
@@ -203,7 +205,7 @@ fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperati
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
     let cooperative = below_native_admission(&optimized)
         .downcast_ref::<CooperativeExec>()
-        .expect("the certified transparent wrapper should remain in the final plan");
+        .expect("the transparent wrapper should remain in the final plan");
     let filter = cooperative
         .input()
         .downcast_ref::<FilterExec>()
@@ -217,61 +219,8 @@ fn native_optimizer_property_checked_ilike_boundary_allows_transparent_cooperati
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-nonlocal");
-    let path = dir.join("input.parquet");
-    write_ilike_parquet_file(&path);
-    let plan = ilike_filter_over_scan(parquet_scan_with_object_store_url(
-        &path,
-        ObjectStoreUrl::parse("s3://mixed-boundary-test").unwrap(),
-    ));
-    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-
-    let (optimized, diagnostics) =
-        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-    assert!(
-        Arc::ptr_eq(&optimized, &plan),
-        "the mixed certificate must not replace a remote Parquet source through its local-only boundary"
-    );
-    let diagnostics = diagnostics.expect("native optimizer should record the whole-plan rejection");
-    let report = &diagnostics.report;
-    assert_eq!(report.selected_count(), 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn native_optimizer_property_checked_ilike_boundary_rejects_partition_grouped_scan() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-partition-grouped");
-    let path = dir.join("input.parquet");
-    write_ilike_parquet_file(&path);
-    let scan = support::parquet_scan_with_partition_field(&path, Field::new("part", DataType::Int32, false));
-    let partition_grouped = scan.downcast_ref::<DataSourceExec>().expect("partition scan should be DataSourceExec");
-    let (file_scan, _parquet_source) =
-        partition_grouped.downcast_to_file_source::<ParquetSource>().expect("partition scan should use ParquetSource");
-    assert!(!file_scan.table_partition_cols().is_empty());
-    assert!(matches!(file_scan.output_partitioning, Some(Partitioning::Hash(_, _))));
-    let plan = ilike_filter_over_scan(scan);
-    let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
-
-    let (optimized, diagnostics) =
-        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-    assert!(
-        Arc::ptr_eq(&optimized, &plan),
-        "the mixed certificate must not replace a partition-grouped scan whose partition state is observable DataFusion 55 state"
-    );
-    let diagnostics = diagnostics.expect("native optimizer should record the whole-plan rejection");
-    let report = &diagnostics.report;
-    assert_eq!(report.selected_count(), 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion_cpu() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-no-datafusion-cpu");
+fn native_optimizer_ilike_fragment_is_rejected_by_native_required() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-native-required");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let config = native_optimizer_config();
@@ -291,20 +240,22 @@ fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion
     assert_eq!(report.rows[0].native_plan_fragment_count, Some(1));
     assert_eq!(report.rows[0].host_datafusion_boundary_count, Some(1));
 
+    // A plan that must not keep DataFusion operators places no fragments, so
+    // the rejected plan is the DataFusion one.
     let error = reject_rule
         .optimize(ilike_filter_plan(&path), &ConfigOptions::default())
-        .expect_err("NoDataFusionCpu must reject the exact selected mixed plan");
+        .expect_err("NativeRequired must reject a plan whose root filter stays on DataFusion");
     let adapter_error = adapter_error(&error);
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(adapter_error.fact_value("requirement"), Some("no_datafusion_cpu"));
-    assert_eq!(adapter_error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+    assert_eq!(adapter_error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-parity");
+fn native_optimizer_ilike_fragment_matches_cpu_results() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-parity");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
 
@@ -323,10 +274,10 @@ fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_d2h() {
+fn native_optimizer_ilike_fragment_reserves_host_output_before_d2h() {
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-host-budget");
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-host-budget");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let backend = test_gpu_backend();
@@ -339,7 +290,7 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
     let error = block_on(collect(Arc::clone(&plan), task_context))
-        .expect_err("the optimizer-built mixed boundary must reserve its host Arrow output before D2H");
+        .expect_err("the optimizer-built fragment must reserve its host Arrow output before D2H");
 
     assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
     assert!(error.to_string().contains("AlgeonNativeExec[host-output]"), "unexpected error: {error}");
@@ -359,8 +310,8 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
 }
 
 #[test]
-fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_and_observation_owner() {
-    let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-admission");
+fn native_optimizer_ilike_fragment_uses_one_backend_admission_and_observation_owner() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-ilike-fragment-admission");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let backend = test_gpu_backend();
@@ -382,10 +333,7 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
         std::thread::sleep(Duration::from_millis(1));
     }
     let snapshot = backend.admission_snapshot().unwrap();
-    assert_eq!(
-        snapshot.active_queries, 0,
-        "the mixed-boundary admission ticket must release after its stream completes"
-    );
+    assert_eq!(snapshot.active_queries, 0, "the fragment's admission ticket must release after its stream completes");
     assert_eq!(snapshot.queued_queries, 0);
 
     fs::remove_dir_all(dir).unwrap();
@@ -397,15 +345,14 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
-    /// Generates only the certified mixed-boundary family. This proves the invariant
-    /// across nullable UTF-8 view inputs and deterministic ASCII prefixes
-    /// without broadening the root-only local-Parquet certificate.
+    /// An ILIKE filter over a native scan fragment keeps its contract across
+    /// nullable UTF-8 view inputs and deterministic ASCII prefixes.
     #[test]
-    fn native_optimizer_property_based_ilike_boundary_preserves_contract(
+    fn native_optimizer_property_based_ilike_fragment_preserves_contract(
         mut labels in prop::collection::vec(prop::option::of("[A-Za-z]{0,12}"), 1..16),
         prefix in "[A-Za-z]{0,5}",
     ) {
-        // Retain a null in every generated mixed-boundary fixture while still varying
+        // Retain a null in every generated fixture while still varying
         // nullable input values in the generated rows.
         labels.push(None);
         let dir = unique_temp_dir("algeon-datafusion-native-exec-property-based-ilike");
@@ -423,21 +370,22 @@ proptest! {
         let (planned, diagnostics) = native_rule
             .optimize_with_diagnostics(ilike_filter_plan_with_pattern(&path, pattern.clone()), &ConfigOptions::default())
             .unwrap();
-        let diagnostics = diagnostics.expect("mixed-boundary selected report should be retained");
+        let diagnostics = diagnostics.expect("the fragment report should be retained");
         let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
-            "generated_ilike_boundary",
+            "generated_ilike_fragment",
             Arc::clone(&planned),
             diagnostics,
         )]);
 
-        prop_assert_eq!(report.rows.len(), 1);
-        let row = &report.rows[0];
+        prop_assert_eq!(report.rows.len(), 2);
+        prop_assert_eq!(report.rows[0].outcome, Some(CandidateOutcomeKind::NotSupported));
+        let row = &report.rows[1];
         prop_assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
         prop_assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
         prop_assert_eq!(row.native_plan_fragment_count, Some(1));
         prop_assert_eq!(row.host_datafusion_boundary_count, Some(1));
-        let filter = below_native_admission(&planned).downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
-        let native = filter.input().downcast_ref::<AlgeonNativeExec>().expect("mixed boundary must replace only the source leaf");
+        let filter = below_native_admission(&planned).downcast_ref::<FilterExec>().expect("the CPU root filter stays on DataFusion");
+        let native = filter.input().downcast_ref::<AlgeonNativeExec>().expect("the scan is replaced by a native fragment");
         assert_mixed_boundary_properties(filter, native);
 
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
@@ -457,18 +405,18 @@ proptest! {
         );
         let error = reject_rule
             .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
-            .expect_err("NoDataFusionCpu must reject the exact generated mixed plan");
+            .expect_err("NativeRequired must reject a plan whose root filter stays on DataFusion");
         let error = adapter_error(&error);
         prop_assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-        prop_assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("mixed"));
+        prop_assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
 
         fs::remove_dir_all(dir).unwrap();
     }
 }
 
 fn mixed_boundary_native_leaf(plan: &dyn ExecutionPlan) -> &AlgeonNativeExec {
-    let filter = plan.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
-    filter.input().downcast_ref::<AlgeonNativeExec>().expect("mixed-boundary filter input must be the native leaf")
+    let filter = plan.downcast_ref::<FilterExec>().expect("the CPU root filter stays on DataFusion");
+    filter.input().downcast_ref::<AlgeonNativeExec>().expect("the filter input is the native fragment")
 }
 
 fn assert_mixed_boundary_properties(filter: &FilterExec, native: &AlgeonNativeExec) {
@@ -639,7 +587,7 @@ fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
 }
 
 #[test]
-fn native_optimizer_rule_preserves_rejected_plan_as_datafusion_baseline() {
+fn native_optimizer_rule_runs_the_filtered_scan_below_an_unsupported_projection_as_a_fragment() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
@@ -648,16 +596,19 @@ fn native_optimizer_rule_preserves_rejected_plan_as_datafusion_baseline() {
 
     let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
+    assert!(below_native_admission(&optimized).downcast_ref::<LocalLimitExec>().is_some());
+    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Mixed);
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
-    assert_eq!(report.selected_count(), 0);
-    assert_eq!(report.not_selected_count(), 1);
     assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
-    assert!(matches!(
-        report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    let [
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. },
+        CandidateOutcome::Selected { candidate },
+    ] = report.outcomes()
+    else {
+        panic!("expected the root rejection and one fragment: {:?}", report.outcomes());
+    };
+    assert_eq!(candidate.shape.to_string(), "FilterExec(LocalParquetScan)");
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -988,7 +939,7 @@ fn session_without_native_rule_has_no_native_optimizer_stages() {
 }
 
 #[test]
-fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
+fn native_optimizer_rule_runs_the_supported_child_of_an_unsupported_parent_as_one_fragment() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
@@ -998,26 +949,27 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
     let (optimized, diagnostics) =
         rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
-    assert!(Arc::ptr_eq(&optimized, &plan), "a relational lowering miss must retain the baseline DataFusion plan");
-    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
-    let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
+    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Mixed);
+    let partial_sort = below_native_admission(&optimized);
+    assert_eq!(partial_sort.name(), "PartialSortExec");
     assert!(
-        !optimized_tree.contains("AlgeonNativeExec"),
-        "ordinary relational DataFusion baseline must not retain a native fragment"
-    );
-    assert!(
-        !optimized_tree.contains("AlgeonNativeGpuProducerExec"),
-        "ordinary relational DataFusion baseline must not producerize a native child"
+        partial_sort.children()[0].downcast_ref::<AlgeonNativeExec>().is_some(),
+        "the parent reads one native fragment"
     );
     let diagnostics = diagnostics.expect("native optimizer should record a planning report");
     let report = &diagnostics.report;
-    assert_eq!(report.selected_count(), 0);
-    assert_eq!(report.not_selected_count(), 1);
-    assert!(matches!(
-        report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. }
-    ));
-    assert!(diagnostics.source_diagnostics.is_empty());
+    assert!(
+        matches!(
+            report.outcomes(),
+            [
+                CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. },
+                CandidateOutcome::Selected { .. },
+            ]
+        ),
+        "{:?}",
+        report.outcomes()
+    );
+    assert_eq!(diagnostics.source_diagnostics.len(), 1, "the fragment reports its source");
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1542,12 +1494,12 @@ fn dense_rank_and_percent_rank_windows_stay_in_datafusion() {
 
 /// An Int16-keyed STDDEV under host-exact statistical execution: a legal
 /// aggregate that admission refuses (the exact host kernel has no Int16
-/// group key), returning the session, its physical plan, and the final
-/// native rule configured with `policy`.
+/// group key), returning its physical plan and the final native rule
+/// configured with `policy`.
 fn admission_refused_stddev_plan(
     dir: &std::path::Path,
     policy: AlgeonGpuExecutionMode,
-) -> (SessionContext, Arc<dyn ExecutionPlan>, Arc<dyn PhysicalOptimizerRule + Send + Sync>) {
+) -> (Arc<dyn ExecutionPlan>, Arc<dyn PhysicalOptimizerRule + Send + Sync>) {
     let path = dir.join("input.parquet");
     let schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int16, false), Field::new("x", DataType::Float64, false)]));
@@ -1573,22 +1525,31 @@ fn admission_refused_stddev_plan(
         .into_iter()
         .find(|rule| rule.name() == "algeon_datafusion_native")
         .expect("native optimizer rules should contain the final native rule");
-    (ctx, plan, final_native)
+    (plan, final_native)
 }
 
 #[test]
 fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-fallback");
-    let (ctx, plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativePreferred);
+    let (plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativePreferred);
 
     let optimized = final_native
         .optimize(plan, &ConfigOptions::default())
         .expect("a legal plan admission refuses stays on DataFusion");
 
-    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
-    let batches = block_on(collect(optimized, ctx.task_ctx())).unwrap();
-    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
-    assert_eq!(rows, 2, "{batches:?}");
+    // The refused aggregate stays on DataFusion over a native scan fragment.
+    // The fragment is admitted under the host-exact statistical mode, which
+    // the shared test backend does not execute, so the plan is not run.
+    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::Mixed);
+    let mut node = below_native_admission(&optimized);
+    while node.name() != "AggregateExec" {
+        node = node.children()[0];
+    }
+    assert!(
+        node.children()[0].downcast_ref::<AlgeonNativeExec>().is_some(),
+        "{}",
+        displayable(optimized.as_ref()).indent(false)
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1597,7 +1558,7 @@ fn native_preferred_keeps_an_admission_refusal_on_datafusion() {
 #[test]
 fn native_required_rejection_names_the_admission_refusal() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-admission-refusal");
-    let (_ctx, plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativeRequired);
+    let (plan, final_native) = admission_refused_stddev_plan(&dir, AlgeonGpuExecutionMode::NativeRequired);
 
     let error = final_native
         .optimize(plan, &ConfigOptions::default())

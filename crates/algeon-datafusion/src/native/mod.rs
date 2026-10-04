@@ -123,10 +123,7 @@ use query_engine::{
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
 use source::source_diagnostics_for_normalized_plan;
-pub(crate) use source::{
-    ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint,
-    native_parquet_file_reader_factory_is_supported,
-};
+pub(crate) use source::{ParquetReadStrategyConfig, S3_STORAGE_PROFILE_ID, ambient_s3_endpoint};
 #[cfg(feature = "cugraph")]
 pub(crate) use source::{
     datafusion_local_parquet_scan_has_simple_directed_edge_topology, exact_row_count_for_datafusion_local_parquet_scan,

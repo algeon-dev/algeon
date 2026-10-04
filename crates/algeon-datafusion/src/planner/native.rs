@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
+    common::{
+        DataFusionError, Result as DataFusionResult,
+        config::{ConfigOptions, OptimizerOptions},
+    },
     execution::SessionState,
     logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
@@ -38,8 +41,8 @@ use crate::{
 
 mod attempt;
 mod capability_envelope;
+mod fragment;
 mod invocation;
-mod mixed;
 
 use attempt::{
     NativeCostSelection, NativeOptimizationAttempt, NativeReplacementSink, optimize_count_only_native_plan,
@@ -52,7 +55,6 @@ pub use capability_envelope::{
 pub(crate) use invocation::Invocation;
 #[cfg(feature = "server")]
 pub(crate) use invocation::InvocationExecution;
-use mixed::is_certified_mixed_execution_plan;
 
 /// Rejects a completed plan that executes DataFusion CPU operators.
 ///
@@ -281,7 +283,7 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         let invocation = Invocation::of_options(config);
         let rewritten = {
             let _footers = invocation.map(Invocation::footer_scope);
-            self.rewrite(plan, invocation)
+            self.rewrite(plan, invocation, &config.optimizer)
         };
         if self.ends_planning_pass()
             && let Some(invocation) = invocation
@@ -321,16 +323,13 @@ impl AlgeonNativePhysicalOptimizerRule {
         &self,
         plan: Arc<dyn ExecutionPlan>,
         invocation: Option<&Invocation>,
+        optimizer_options: &OptimizerOptions,
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<PlanningReport>)> {
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok((plan, None));
         }
-        let already_selected =
-            if plan.downcast_ref::<AlgeonNativeExec>().is_some() || is_certified_mixed_execution_plan(plan.as_ref()) {
-                Some(Arc::clone(&plan))
-            } else {
-                peel_cooperative_native_exec(&plan)
-            };
+        let already_selected = peel_cooperative_native_exec(&plan)
+            .or_else(|| plan_holds_native_selection(plan.as_ref()).then(|| Arc::clone(&plan)));
         let retains_prior_selection_report = already_selected.is_some();
         // The DataFusion input as this rewrite saw it; native replacement can
         // remove the join nodes these diagnostics describe.
@@ -374,6 +373,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                 native_optimizer_options,
                 cost_selection,
                 &self.root_sink,
+                optimizer_options,
             )?,
         };
         let mut optimized = optimized;
@@ -616,6 +616,20 @@ fn collect_gpu_function_occurrences(
     )
     .with_log_safe_fact("reason", "gpu_function_occurrence_lineage_missing")
     .with_log_safe_fact("producer_identity", producer.gpu_result_input_name()))
+}
+
+/// Whether `plan` holds this rule's selection: a native root, or a fragment
+/// that streams host Arrow to a DataFusion parent. Device-resident native
+/// units below GPU functions and graphs are planned before the final run, so
+/// they do not mark a selection.
+fn plan_holds_native_selection(plan: &dyn ExecutionPlan) -> bool {
+    fn holds_host_fragment(plan: &dyn ExecutionPlan) -> bool {
+        plan.children().iter().any(|child| {
+            child.downcast_ref::<AlgeonNativeExec>().is_some_and(AlgeonNativeExec::materializes_host)
+                || holds_host_fragment(child.as_ref())
+        })
+    }
+    plan.downcast_ref::<AlgeonNativeExec>().is_some() || holds_host_fragment(plan)
 }
 
 fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
