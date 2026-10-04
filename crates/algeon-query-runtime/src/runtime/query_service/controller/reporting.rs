@@ -13,37 +13,20 @@ use crate::runtime::{
     deadline::{DeadlineMutexLockError, deadline_remaining, mutex_lock_until},
     query_service::admission::AdmissionState,
 };
-use crate::runtime::{
-    gpu::{DeviceLedgerReport, LedgerSnapshot},
-    query_service::{QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot},
-};
+use crate::runtime::{gpu::DeviceLedgerReport, query_service::QueryServiceAdmissionSnapshot};
 
 impl AdmissionController {
     pub(in crate::runtime::query_service) fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
         self.devices.ledgers().map(|ledger| ledger.report()).collect()
     }
 
-    /// Returns process-wide active-query slot counts for each service device.
-    pub(in crate::runtime::query_service) fn device_admission_snapshots(
-        &self,
-    ) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
-        self.devices
-            .ledgers()
-            .map(|ledger| {
-                let snapshot = ledger.snapshot();
-                QueryServiceDeviceAdmissionSnapshot {
-                    device_ordinal: ledger.device_ordinal(),
-                    process_active_query_slots: snapshot.as_ref().map_or(0, |snapshot| snapshot.active_attempts),
-                    has_protection: snapshot.as_ref().is_ok_and(|snapshot| snapshot.protected_slot),
-                }
-            })
-            .collect()
-    }
-
     /// Returns a point-in-time admission snapshot for service reports.
+    ///
+    /// It only reads: a cancelled or expired waiter is not counted as
+    /// queued, and its own step or the next submission sweep removes it, so
+    /// a reader never finishes another caller's request.
     pub(in crate::runtime::query_service) fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        let mut state = self.lock_admission()?;
-        let expired = self.sweep_expired_queued_requests_locked(&mut state);
+        let state = self.lock_admission()?;
         // A ledger grant becomes provisional before the complete physical
         // envelope can publish, so provisional transactions stay hidden.
         // A published handle in terminal cleanup still owns its immutable
@@ -53,33 +36,14 @@ impl AdmissionController {
         let active_queries = lifecycle.active.saturating_add(lifecycle.published_cleanup);
         let snapshot = QueryServiceAdmissionSnapshot {
             active_queries,
-            queued_queries: state.queued.len(),
+            queued_queries: self.queue_member_count_locked(&state),
             queue_high_watermark: state.queue_high_watermark(),
-            protected_devices: self
-                .device_ledger_snapshots()
-                .map(|snapshots| {
-                    snapshots
-                        .iter()
-                        .filter(|snapshot| snapshot.protected_slot)
-                        .map(|snapshot| snapshot.device_ordinal)
-                        .collect()
-                })
-                .unwrap_or_default(),
         };
-        // Queue-sweep completion may reenter service callers, so release the admission lock first.
-        drop(state);
-        expired.finish();
         Ok(snapshot)
     }
 
-    /// One atomic snapshot per device ledger, for placement, reports, and
-    /// metrics.
-    pub(in crate::runtime::query_service) fn device_ledger_snapshots(&self) -> Result<Vec<LedgerSnapshot>> {
-        self.devices.ledgers().map(|ledger| ledger.snapshot()).collect()
-    }
-
-    /// Test hook: closes new admission on one device ledger, driving the
-    /// queue's protection retarget path without a real device fault.
+    /// Test hook: closes new admission on one device ledger without a real
+    /// device fault.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn close_device_admission_for_test(
         &self,

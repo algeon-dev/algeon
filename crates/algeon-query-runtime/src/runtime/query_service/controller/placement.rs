@@ -66,8 +66,7 @@ impl AdmissionController {
     ///
     /// The queue's oldest-runnable decision already ranked eligible devices;
     /// this performs the health check and the ledger transaction on exactly
-    /// that device so overtake accounting
-    /// and protection consumption observe the same ordinal.
+    /// that device.
     pub(in crate::runtime::query_service) fn try_place_on_device(
         &self,
         device_ordinal: usize,

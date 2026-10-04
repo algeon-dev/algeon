@@ -870,8 +870,6 @@ mod tests {
                 root_worker_slots_available: 4,
                 auxiliary_worker_slots_available: 4,
                 worker_depth: active_attempts,
-                protected_slot: false,
-                protected_reserve_bytes: 0,
                 cache_evictable_resident_bytes: cache_resident_bytes,
                 cache_pinned_in_use_bytes: cache_resident_bytes,
                 health: DeviceAdmissionHealth::Open,

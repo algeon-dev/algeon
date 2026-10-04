@@ -32,7 +32,7 @@ async fn three_simultaneous_query_caps_fill_the_device_and_the_fourth_query_wait
     let holders = vec![server.hold_one_slot().await, server.hold_one_slot().await, server.hold_one_slot().await];
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 0).await;
 
-    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.managed_capacity_bytes, MANAGED_CAPACITY_BYTES);
     assert_eq!(report.max_active_attempts, MAX_ACTIVE_ATTEMPTS);
     assert_eq!(report.active_attempts, MAX_ACTIVE_ATTEMPTS);
@@ -52,7 +52,7 @@ async fn three_simultaneous_query_caps_fill_the_device_and_the_fourth_query_wait
     let queued = tokio::spawn(async move { queued_client.do_get(ticket).await?.try_collect::<Vec<_>>().await });
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 1).await;
 
-    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.grants.len(), MAX_ACTIVE_ATTEMPTS, "a waiting query holds no grant: {:?}", report.grants);
     assert_eq!(report.live_grants_bytes, MANAGED_CAPACITY_BYTES);
 
@@ -80,7 +80,7 @@ async fn the_active_attempt_limit_holds_a_fourth_query_back_while_capacity_is_st
     let holders = vec![server.hold_one_slot().await, server.hold_one_slot().await, server.hold_one_slot().await];
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 0).await;
 
-    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     let live = UNDERSUBSCRIBED_QUERY_CAP_BYTES * MAX_ACTIVE_ATTEMPTS as u64;
     assert_eq!(report.live_grants_bytes, live);
     assert!(
@@ -97,7 +97,7 @@ async fn the_active_attempt_limit_holds_a_fourth_query_back_while_capacity_is_st
     let queued = tokio::spawn(async move { queued_client.do_get(ticket).await?.try_collect::<Vec<_>>().await });
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 1).await;
     assert_eq!(
-        server.backend.device_ledger_reports().expect("ledger report").remove(0).grants.len(),
+        server.backend.diagnostics().expect("ledger report").ledgers.remove(0).grants.len(),
         MAX_ACTIVE_ATTEMPTS,
         "the fourth query waits on the active-attempt limit, not on capacity"
     );
@@ -136,7 +136,7 @@ async fn flight_queries_execute_concurrently_on_one_device_with_independent_gran
     // so this observes all three grants directly instead of sampling a short
     // query and hoping a timer catches it.
     server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 0).await;
-    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.grants.len(), MAX_ACTIVE_ATTEMPTS, "both holders and the Flight query own grants: {report:?}");
     assert!(report.grants.iter().all(|grant| grant.grant_bytes == QUERY_CAP_BYTES));
 
@@ -206,7 +206,7 @@ async fn one_query_exceeding_its_cap_leaves_the_other_query_and_the_ledger_intac
     drop(holder);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.grants.is_empty() && report.live_grants_bytes == 0 {
             assert_eq!(report.available_bytes, SMALL_MANAGED_CAPACITY_BYTES);
             break;
@@ -271,7 +271,7 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
     // drain and hand the whole cap back before the ledger reports it free.
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.grants.is_empty() && report.live_grants_bytes == 0 {
             assert_eq!(report.available_bytes, MANAGED_CAPACITY_BYTES);
             break;
@@ -304,7 +304,7 @@ async fn a_slow_flight_consumer_keeps_the_query_cap_until_its_stream_drains() {
         // Read deliberately slowly so the server's bounded output channel has
         // to apply backpressure instead of buffering the whole result.
         sleep(Duration::from_millis(20)).await;
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.live_grants_bytes == QUERY_CAP_BYTES {
             saw_cap_held_mid_stream = true;
         }
@@ -315,7 +315,7 @@ async fn a_slow_flight_consumer_keeps_the_query_cap_until_its_stream_drains() {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.grants.is_empty() && report.live_grants_bytes == 0 {
             break;
         }
@@ -344,7 +344,7 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
     let watcher = tokio::spawn(async move {
         let mut worst = (0usize, 0u64);
         while !watcher_token.is_cancelled() {
-            if let Ok(mut reports) = watcher_backend.device_ledger_reports() {
+            if let Ok(mut reports) = watcher_backend.diagnostics().map(|diagnostics| diagnostics.ledgers) {
                 let report = reports.remove(0);
                 worst.0 = worst.0.max(report.grants.len());
                 worst.1 = worst.1.max(report.live_grants_bytes);
@@ -395,7 +395,7 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
 
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.grants.is_empty() && report.live_grants_bytes == 0 {
             assert_eq!(report.available_bytes, SMALL_MANAGED_CAPACITY_BYTES);
             break;

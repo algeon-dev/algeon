@@ -87,7 +87,7 @@ pub(super) fn collect_sample(
         .map(|ordinal| (ordinal, DeviceSampleFacts::default()))
         .collect::<BTreeMap<_, _>>();
 
-    if let Ok(reports) = backend.device_ledger_reports() {
+    if let Ok(reports) = backend.diagnostics().map(|diagnostics| diagnostics.ledgers) {
         for report in reports {
             if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
                 facts.governor_capacity_bytes = report.managed_capacity_bytes;
@@ -99,13 +99,14 @@ pub(super) fn collect_sample(
     }
 
     let (active_queries, queued_queries) = backend
-        .admission_snapshot()
+        .diagnostics()
+        .map(|diagnostics| diagnostics.admission)
         .map(|snapshot| (snapshot.active_queries, snapshot.queued_queries))
         .unwrap_or_default();
 
     let mut allocation_failure_count = 0u64;
     let mut trim_retry_count = 0u64;
-    for report in backend.device_memory_failure_reports().unwrap() {
+    for report in backend.diagnostics().unwrap().memory_failures {
         allocation_failure_count = allocation_failure_count.saturating_add(report.allocation_failure_count);
         trim_retry_count = trim_retry_count.saturating_add(report.trim_retry_count);
         if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
@@ -114,7 +115,7 @@ pub(super) fn collect_sample(
         }
     }
 
-    for report in backend.gpu_execution_pool_reports().unwrap() {
+    for report in backend.diagnostics().unwrap().execution_pools {
         if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
             facts.gpu_execution_worker_count = report.worker_count;
             facts.gpu_execution_active_jobs = report.active_jobs;

@@ -329,10 +329,10 @@ fn native_optimizer_ilike_fragment_uses_one_backend_admission_and_observation_ow
     assert_eq!(metrics.sum_by_name("query_grant_bytes_observed").unwrap().as_usize(), 1);
     assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while backend.admission_snapshot().unwrap().active_queries != 0 && Instant::now() < deadline {
+    while backend.diagnostics().unwrap().admission.active_queries != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
-    let snapshot = backend.admission_snapshot().unwrap();
+    let snapshot = backend.diagnostics().unwrap().admission;
     assert_eq!(snapshot.active_queries, 0, "the fragment's admission ticket must release after its stream completes");
     assert_eq!(snapshot.queued_queries, 0);
 

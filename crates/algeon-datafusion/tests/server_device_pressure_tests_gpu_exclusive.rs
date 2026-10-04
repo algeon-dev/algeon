@@ -64,7 +64,7 @@ async fn a_physically_exhausted_device_fails_the_query_without_quarantining_itse
     // open and the capacity must come back.
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+        let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
         if report.grants.is_empty() && report.live_grants_bytes == 0 {
             assert_eq!(report.health, "open", "a physical OOM must not quarantine the device: {report:?}");
             break;

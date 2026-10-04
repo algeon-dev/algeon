@@ -32,8 +32,6 @@
     "managed_capacity_bytes": "number",
     "max_active_attempts": "number",
     "frozen_resident_bytes": "number",
-    "protected_reserve_bytes": "number",
-    "protected_slot": "boolean",
     "root_streams_available": "number",
     "root_worker_slots_available": "number",
     "sequence": "number",

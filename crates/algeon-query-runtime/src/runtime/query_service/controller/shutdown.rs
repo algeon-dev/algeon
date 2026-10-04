@@ -2,7 +2,7 @@
 
 use std::{
     mem,
-    sync::{TryLockError, atomic::Ordering},
+    sync::{PoisonError, TryLockError, atomic::Ordering},
     time::Instant,
 };
 
@@ -10,7 +10,7 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{AdmissionController, query_service_shutdown_timeout};
 use crate::runtime::{
-    deadline::{DeadlineMutexLockError, deadline_expired, deadline_remaining, mutex_lock_until},
+    deadline::{deadline_expired, deadline_remaining, mutex_lock_recovering_until},
     query_service::{
         QueryServiceDrainPhase, QueryServiceDrainPhaseOutcome,
         admission::{AdmissionRequest, finish_closed_queued_requests},
@@ -86,31 +86,15 @@ impl AdmissionController {
         deadline: Instant,
         operation: &'static str,
     ) -> QueryServiceDrainPhaseOutcome {
-        let (mut state, admission_was_poisoned) = match mutex_lock_until(&self.state, deadline) {
-            Ok(state) => (state, false),
-            Err(DeadlineMutexLockError::Poisoned) => {
-                let state = match self.state.try_lock() {
-                    Err(TryLockError::Poisoned(error)) => error.into_inner(),
-                    Ok(_) | Err(TryLockError::WouldBlock) => {
-                        return QueryServiceDrainPhaseOutcome::PermanentFailure {
-                            phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                            error: QueryError::new(
-                                QueryErrorCode::Internal,
-                                operation,
-                                "query service admission mutex poison state changed during shutdown recovery",
-                            )
-                            .with_fact("reason", "admission_mutex_poison_recovery_raced"),
-                        };
-                    },
-                };
-                (state, true)
-            },
-            Err(DeadlineMutexLockError::TimedOut) => {
-                return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
-                    phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                    error: query_service_shutdown_timeout(operation, None, "admission_mutex"),
-                };
-            },
+        // A panic under the admission mutex leaves the queue, preflight set,
+        // and lifecycle tickets valid: a placement that unwinds before its
+        // ticket exists drops its grant. Recovering the guard and waiting for
+        // the tickets therefore still proves admission quiescence.
+        let Some(mut state) = mutex_lock_recovering_until(&self.state, deadline) else {
+            return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
+                phase: QueryServiceDrainPhase::AdmissionQuiescence,
+                error: query_service_shutdown_timeout(operation, None, "admission_mutex"),
+            };
         };
         state.closed = true;
         let closed_requests = mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
@@ -126,17 +110,6 @@ impl AdmissionController {
                         Err(error),
                     );
                 },
-            };
-        }
-        if admission_was_poisoned {
-            return QueryServiceDrainPhaseOutcome::PermanentFailure {
-                phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                error: QueryError::new(
-                    QueryErrorCode::Internal,
-                    operation,
-                    "query service admission mutex was poisoned during shutdown",
-                )
-                .with_fact("reason", "admission_mutex_poisoned"),
             };
         }
         let mut waited_for_quiescence = false;
@@ -167,24 +140,12 @@ impl AdmissionController {
             waited_for_quiescence = true;
             #[cfg(test)]
             self.shutdown_waiters.fetch_add(1, Ordering::AcqRel);
-            let waited = self.admission_available.wait_timeout(state, remaining);
+            let (next, _timeout) =
+                self.admission_available.wait_timeout(state, remaining).unwrap_or_else(PoisonError::into_inner);
             #[cfg(test)]
             self.shutdown_waiters.fetch_sub(1, Ordering::AcqRel);
             // A timed-out wait is not terminal by itself: the loop head re-checks quiescence on the reacquired
             // state before it reports the deadline.
-            let (next, _timeout) = match waited {
-                Ok(waited) => waited,
-                Err(_error) => {
-                    return QueryServiceDrainPhaseOutcome::PermanentFailure {
-                        phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                        error: QueryError::new(
-                            QueryErrorCode::Internal,
-                            operation,
-                            "query service admission condition variable was poisoned during shutdown",
-                        ),
-                    };
-                },
-            };
             state = next;
         }
     }

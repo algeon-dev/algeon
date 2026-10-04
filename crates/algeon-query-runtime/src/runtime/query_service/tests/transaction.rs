@@ -287,6 +287,46 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
 }
 
+/// A panic under the admission mutex while an envelope is being built makes
+/// its publication refuse: the envelope rolls back, returning its grant and
+/// lifecycle ticket.
+#[test]
+fn publication_after_admission_poison_rolls_back_the_envelope() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for poisoned publication");
+    let device = service.inner.resources.devices.context_by_ordinal(0).expect("device context");
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
+    let admission_service = service.clone();
+    let admission = std::thread::spawn(move || {
+        admission_service.admit_query_with_probe(QueryAdmissionRequest::test_attempt(), Arc::new(probe))
+    });
+    pause.wait_until_entered(Duration::from_secs(10));
+    let poisoner = service.clone();
+    std::thread::spawn(move || {
+        let _state = poisoner.inner.admission.state.lock().unwrap();
+        panic!("poison the admission state while the envelope builds");
+    })
+    .join()
+    .expect_err("the poisoning thread panics while holding the admission state");
+
+    pause.release();
+    let error = admission
+        .join()
+        .expect("admission thread must not panic")
+        .expect_err("a poisoned admission state refuses publication");
+    assert_eq!(error.fact_value("reason"), Some("admission_mutex_poisoned"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let live_grants_bytes = device.ledger().snapshot().expect("ledger snapshot").live_grants_bytes;
+        let quiescent =
+            service.inner.admission.state.lock().unwrap_or_else(PoisonError::into_inner).lifecycle.is_quiescent();
+        if live_grants_bytes == 0 && quiescent {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the rolled-back envelope releases its grant and lifecycle ticket");
+        std::thread::yield_now();
+    }
+}
+
 /// A published admission always carries the complete physical envelope: the
 /// root stream is held from admission time (before any context acquisition),
 /// the domain matches the grant, and the lane/worker identity is consistent.

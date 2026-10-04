@@ -129,27 +129,12 @@ pub struct DeviceFacts {
 
 /// Query GPU facts behind a fakeable interface.
 pub(crate) trait GpuInventory: Send + Sync {
-    /// Number of CUDA devices visible to this process.
-    fn device_count(&self) -> Result<usize>;
-
     /// Facts for one device ordinal.
     ///
     /// `Err` means the required CUDA facts for the ordinal are unavailable.
     /// Optional fields are `None` when their diagnostics substrate is
     /// unavailable rather than failing the query.
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts>;
-
-    /// Facts for ordinals `0..device_count()`, queried one ordinal at a time
-    /// in order. The default returns the first error and no facts.
-    #[cfg(test)]
-    fn all_facts(&self) -> Result<Vec<DeviceFacts>> {
-        let device_count = self.device_count()?;
-        let mut facts = Vec::with_capacity(device_count);
-        for device_ordinal in 0..device_count {
-            facts.push(self.facts(device_ordinal)?);
-        }
-        Ok(facts)
-    }
 }
 
 /// Production GPU inventory backed by cudf.
@@ -157,12 +142,6 @@ pub(crate) trait GpuInventory: Send + Sync {
 pub(crate) struct AlgeonGpuInventory;
 
 impl GpuInventory for AlgeonGpuInventory {
-    fn device_count(&self) -> Result<usize> {
-        cudf::DeviceId::count().map_err(|error| {
-            cudf_query_error("query_engine.gpu_inventory.device_count", "failed to query CUDA device count", error)
-        })
-    }
-
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
         let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
             cudf_query_error(

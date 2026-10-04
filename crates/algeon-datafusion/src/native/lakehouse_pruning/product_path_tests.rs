@@ -486,13 +486,13 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
     // The grant belongs to the attempt, which releases it when it ends.
     drop(ticket_attempt);
     timeout(Duration::from_secs(5), async {
-        while backend.backend().admission_snapshot().unwrap().active_queries != 0 {
+        while backend.backend().diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })
     .await
     .expect("ending the attempt must release its grant");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
     remove_fixture(dir);
 }
 
@@ -541,7 +541,7 @@ async fn native_host_refined_after_the_claim_joins_its_grant() {
         assert_eq!(native.operation(), "algeon_datafusion.native_exec.execute", "{native:?}");
     }
     assert!(first_gets.load(Ordering::Relaxed) > 0 && second_gets.load(Ordering::Relaxed) > 0);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1, "both fragments share one grant");
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1, "both fragments share one grant");
     remove_fixture(dir);
 }
 
@@ -579,7 +579,7 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
     assert_eq!(native.fact_value("reason"), Some("native_host_admission_evidence_scope_mismatch"));
     assert_eq!(native.fact_value("ticket_evidence_scope"), Some("different_native_plan"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
     assert_eq!(ticket.attempt_capability_evidence_for_rebind(), Some(expected_unrelated_evidence));
     remove_fixture(dir);
 }

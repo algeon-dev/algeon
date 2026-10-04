@@ -49,6 +49,20 @@ pub(crate) fn mutex_lock_until<T>(
     }
 }
 
+/// [`mutex_lock_until`] for an owner whose state stays valid after a panic in
+/// its critical section: a poisoned guard is recovered. `None` means the
+/// deadline passed.
+pub(crate) fn mutex_lock_recovering_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) if deadline_expired(deadline) => return None,
+            Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+        }
+    }
+}
+
 /// Blocks the calling thread until `future` completes, or returns `None` once
 /// `deadline` passes.
 ///

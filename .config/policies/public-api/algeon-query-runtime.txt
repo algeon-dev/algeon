@@ -555,7 +555,6 @@ pub query_runtime::observability::AttemptFailureFactValue::CugraphRmmOutOfMemory
 pub query_runtime::observability::AttemptFailureFactValue::CugraphStdBadAlloc
 pub query_runtime::observability::AttemptFailureFactValue::DeadlineExpired
 pub query_runtime::observability::AttemptFailureFactValue::MemoryGrantWaitTimeout
-pub query_runtime::observability::AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice
 pub query_runtime::observability::AttemptFailureFactValue::QueryCapExceedsResidentCapacity
 pub query_runtime::observability::AttemptFailureFactValue::QueueWaitElapsed
 pub query_runtime::observability::AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity
@@ -1662,6 +1661,14 @@ pub struct query_runtime::runtime::BackendDeviceMetricsSnapshot
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::admission: query_runtime::runtime::BackendAdmissionMetricsSnapshot
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::device_ordinal: usize
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::ledger_sequence: u64
+pub struct query_runtime::runtime::BackendDiagnostics
+pub query_runtime::runtime::BackendDiagnostics::admission: query_runtime::runtime::QueryServiceAdmissionSnapshot
+pub query_runtime::runtime::BackendDiagnostics::cache_source_events: alloc::vec::Vec<crate::runtime::cache::CacheSourceEventSnapshot>
+pub query_runtime::runtime::BackendDiagnostics::caches: alloc::vec::Vec<crate::runtime::cache::DeviceCacheReport>
+pub query_runtime::runtime::BackendDiagnostics::execution_pools: alloc::vec::Vec<query_runtime::runtime::GpuExecutionPoolSnapshot>
+pub query_runtime::runtime::BackendDiagnostics::execution_queries: query_runtime::runtime::GpuExecutionQuerySnapshot
+pub query_runtime::runtime::BackendDiagnostics::ledgers: alloc::vec::Vec<query_runtime::runtime::DeviceLedgerReport>
+pub query_runtime::runtime::BackendDiagnostics::memory_failures: alloc::vec::Vec<query_runtime::runtime::DeviceMemoryFailureReport>
 pub struct query_runtime::runtime::BackendHistogramProjection
 pub query_runtime::runtime::BackendHistogramProjection::bucket_counts: [u64; 8]
 pub query_runtime::runtime::BackendHistogramProjection::count: u64
@@ -1832,14 +1839,15 @@ pub query_runtime::runtime::GpuBackendCloseSnapshot::cleanup_late_success_count:
 pub query_runtime::runtime::GpuBackendCloseSnapshot::closing: bool
 pub query_runtime::runtime::GpuBackendCloseSnapshot::gpu_resource_quiescent: bool
 pub query_runtime::runtime::GpuBackendCloseSnapshot::observation_quiescent: bool
-pub struct query_runtime::runtime::GpuBackendControllerDraft
-impl query_runtime::runtime::GpuBackendControllerDraft
-pub fn query_runtime::runtime::GpuBackendControllerDraft::new(query_runtime::runtime::QueryExecutionConfig, query_runtime::runtime::QueueBounds) -> Self
+pub struct query_runtime::runtime::GpuBackendConfig
+impl query_runtime::runtime::GpuBackendConfig
+pub fn query_runtime::runtime::GpuBackendConfig::new(alloc::vec::Vec<query_runtime::runtime::GpuBackendDeviceConfig>, query_runtime::runtime::QueryExecutionConfig, query_runtime::runtime::QueueBounds) -> Self
+pub fn query_runtime::runtime::GpuBackendConfig::validate(self) -> query_planning::error::Result<query_runtime::runtime::ValidatedGpuBackendConfig>
+pub fn query_runtime::runtime::GpuBackendConfig::with_attempt_completion_queue_capacity(self, usize) -> Self
 pub struct query_runtime::runtime::GpuBackendCore
 impl query_runtime::runtime::GpuBackendCore
 pub fn query_runtime::runtime::GpuBackendCore::backend_metrics_snapshot(&self) -> query_runtime::runtime::BackendMetricsSnapshot
 pub fn query_runtime::runtime::GpuBackendCore::begin_attempt(&self, query_runtime::attempt::BeginAttemptRequest) -> query_planning::error::Result<query_runtime::attempt::AttemptBegin>
-pub fn query_runtime::runtime::GpuBackendCore::builder(query_runtime::runtime::GpuBackendCoreDraft) -> query_runtime::runtime::backend_core::GpuBackendCoreBuilder
 pub fn query_runtime::runtime::GpuBackendCore::close(&self) -> bool
 pub fn query_runtime::runtime::GpuBackendCore::close_and_wait(&self, core::time::Duration) -> query_planning::error::Result<query_runtime::runtime::GpuBackendCloseSnapshot>
 pub async fn query_runtime::runtime::GpuBackendCore::close_and_wait_async(&self, core::time::Duration) -> query_planning::error::Result<query_runtime::runtime::GpuBackendCloseSnapshot>
@@ -1849,13 +1857,10 @@ pub fn query_runtime::runtime::GpuBackendCore::device_startup_records(&self) -> 
 pub fn query_runtime::runtime::GpuBackendCore::fault_injector(&self) -> query_runtime::runtime::GpuBackendFaultInjector
 pub fn query_runtime::runtime::GpuBackendCore::identity(&self) -> query_runtime::runtime::backend_core::GpuBackendCoreIdentity
 pub fn query_runtime::runtime::GpuBackendCore::session_capability(&self) -> query_runtime::runtime::GpuBackendSession
+impl query_runtime::runtime::GpuBackendCore
+pub fn query_runtime::runtime::GpuBackendCore::new(query_runtime::runtime::ValidatedGpuBackendConfig) -> query_planning::error::Result<Self>
 impl core::clone::Clone for query_runtime::runtime::GpuBackendCore
 pub fn query_runtime::runtime::GpuBackendCore::clone(&self) -> Self
-pub struct query_runtime::runtime::GpuBackendCoreDraft
-impl query_runtime::runtime::GpuBackendCoreDraft
-pub fn query_runtime::runtime::GpuBackendCoreDraft::new(alloc::vec::Vec<query_runtime::runtime::GpuBackendDeviceConfig>, query_runtime::runtime::GpuBackendControllerDraft) -> Self
-pub fn query_runtime::runtime::GpuBackendCoreDraft::validate(&self) -> query_planning::error::Result<()>
-pub fn query_runtime::runtime::GpuBackendCoreDraft::with_attempt_completion_queue_capacity(self, usize) -> Self
 pub struct query_runtime::runtime::GpuBackendDeviceConfig
 impl query_runtime::runtime::GpuBackendDeviceConfig
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::backend_reserve_bytes(&self) -> u64
@@ -1865,15 +1870,12 @@ pub fn query_runtime::runtime::GpuBackendDeviceConfig::device_capabilities(&self
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::device_ordinal(&self) -> usize
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::homogeneous(impl core::iter::traits::collect::IntoIterator<Item = usize>, &query_runtime::runtime::GpuBackendDeviceProfile, query_runtime::runtime::GpuMemoryOwnership) -> alloc::vec::Vec<Self>
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::install_telemetry(&self) -> bool
-pub fn query_runtime::runtime::GpuBackendDeviceConfig::lane_count(&self) -> usize
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::max_active_attempts(&self) -> usize
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::memory_limit(&self) -> query_runtime::runtime::GpuDeviceMemoryLimit
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::memory_ownership(&self) -> query_runtime::runtime::GpuMemoryOwnership
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::new(query_runtime::runtime::GpuBackendDeviceProfile, query_runtime::runtime::GpuMemoryOwnership) -> Self
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::profile(&self) -> &query_runtime::runtime::GpuBackendDeviceProfile
 pub fn query_runtime::runtime::GpuBackendDeviceConfig::source_work_per_attempt(&self) -> usize
-pub fn query_runtime::runtime::GpuBackendDeviceConfig::stream_pool_size(&self) -> usize
-pub fn query_runtime::runtime::GpuBackendDeviceConfig::worker_count(&self) -> usize
 #[non_exhaustive] pub struct query_runtime::runtime::GpuBackendDeviceInstallationBounds
 pub query_runtime::runtime::GpuBackendDeviceInstallationBounds::lane_count: usize
 pub query_runtime::runtime::GpuBackendDeviceInstallationBounds::stream_pool_size: usize
@@ -1928,23 +1930,14 @@ impl query_runtime::runtime::GpuBackendFaultInjector
 pub fn query_runtime::runtime::GpuBackendFaultInjector::quarantine_device(&self, usize) -> query_planning::error::Result<query_runtime::runtime::DeviceQuarantineInjection>
 pub struct query_runtime::runtime::GpuBackendSession
 impl query_runtime::runtime::GpuBackendSession
-pub fn query_runtime::runtime::GpuBackendSession::admission_snapshot(&self) -> query_planning::error::Result<query_runtime::runtime::QueryServiceAdmissionSnapshot>
 pub async fn query_runtime::runtime::GpuBackendSession::admit_async_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
 pub fn query_runtime::runtime::GpuBackendSession::attempt_counters_snapshot(&self) -> query_runtime::attempt::AttemptBackendCountersSnapshot
 pub fn query_runtime::runtime::GpuBackendSession::backend_metrics_snapshot(&self) -> query_runtime::runtime::BackendMetricsSnapshot
 pub fn query_runtime::runtime::GpuBackendSession::begin_attempt(&self, query_runtime::attempt::BeginAttemptRequest) -> query_planning::error::Result<query_runtime::attempt::AttemptBegin>
-pub fn query_runtime::runtime::GpuBackendSession::config(&self) -> query_planning::error::Result<query_runtime::runtime::QueryExecutionConfig>
-pub fn query_runtime::runtime::GpuBackendSession::device_admission_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::QueryServiceDeviceAdmissionSnapshot>>
-pub fn query_runtime::runtime::GpuBackendSession::device_cache_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<DeviceCacheReport>>
-pub fn query_runtime::runtime::GpuBackendSession::device_cache_source_event_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<CacheSourceEventSnapshot>>
-pub fn query_runtime::runtime::GpuBackendSession::device_ledger_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::DeviceLedgerReport>>
-pub fn query_runtime::runtime::GpuBackendSession::device_memory_failure_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::DeviceMemoryFailureReport>>
 pub fn query_runtime::runtime::GpuBackendSession::device_telemetry_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::DeviceTelemetrySnapshot>>
-pub fn query_runtime::runtime::GpuBackendSession::gpu_execution_pool_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::GpuExecutionPoolSnapshot>>
-pub fn query_runtime::runtime::GpuBackendSession::gpu_execution_query_report(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutionQuerySnapshot>
+pub fn query_runtime::runtime::GpuBackendSession::diagnostics(&self) -> query_planning::error::Result<query_runtime::runtime::BackendDiagnostics>
 pub fn query_runtime::runtime::GpuBackendSession::identity(&self) -> query_runtime::runtime::backend_core::GpuBackendCoreIdentity
 pub fn query_runtime::runtime::GpuBackendSession::is_closing(&self) -> bool
-pub fn query_runtime::runtime::GpuBackendSession::max_device_total_memory_bytes(&self) -> query_planning::error::Result<u64>
 pub fn query_runtime::runtime::GpuBackendSession::same_backend(&self, &Self) -> bool
 pub fn query_runtime::runtime::GpuBackendSession::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<query_runtime::observability::QueryAttemptReport>>
 #[non_exhaustive] pub struct query_runtime::runtime::GpuDeviceCapacityProbe
@@ -2043,9 +2036,6 @@ pub struct query_runtime::runtime::QueryServiceAdmissionSnapshot
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::active_queries: usize
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::queue_high_watermark: usize
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::queued_queries: usize
-pub struct query_runtime::runtime::QueryServiceDeviceAdmissionSnapshot
-pub query_runtime::runtime::QueryServiceDeviceAdmissionSnapshot::device_ordinal: usize
-pub query_runtime::runtime::QueryServiceDeviceAdmissionSnapshot::process_active_query_slots: usize
 pub struct query_runtime::runtime::QueueBounds
 pub query_runtime::runtime::QueueBounds::max_wait: core::time::Duration
 pub query_runtime::runtime::QueueBounds::max_waiters: usize
@@ -2119,6 +2109,9 @@ impl query_runtime::runtime::StandaloneConfig
 pub const query_runtime::runtime::StandaloneConfig::DEFAULT_DEVICE_BUDGET_BYTES: u64
 impl core::default::Default for query_runtime::runtime::StandaloneConfig
 pub fn query_runtime::runtime::StandaloneConfig::default() -> Self
+pub struct query_runtime::runtime::ValidatedGpuBackendConfig
+impl query_runtime::runtime::ValidatedGpuBackendConfig
+pub fn query_runtime::runtime::ValidatedGpuBackendConfig::devices(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &query_runtime::runtime::GpuBackendDeviceConfig> + '_
 pub const query_runtime::runtime::BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize
 pub const query_runtime::runtime::BACKEND_METRIC_DEVICE_CAPACITY: usize
 pub fn query_runtime::runtime::probe_device_capacity(usize, query_runtime::runtime::GpuMemoryOwnership, u64) -> query_planning::error::Result<query_runtime::runtime::GpuDeviceCapacityProbe>

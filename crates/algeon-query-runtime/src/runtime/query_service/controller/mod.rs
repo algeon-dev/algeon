@@ -27,7 +27,7 @@ mod shutdown;
 mod submission;
 
 pub(in crate::runtime::query_service) use placement::required_capabilities_for_placement;
-pub(in crate::runtime::query_service) use queue::query_service_shutdown_timeout;
+pub(in crate::runtime::query_service) use queue::{admission_mutex_poisoned_error, query_service_shutdown_timeout};
 #[cfg(test)]
 pub(in crate::runtime::query_service) use submission::PendingSubmission;
 

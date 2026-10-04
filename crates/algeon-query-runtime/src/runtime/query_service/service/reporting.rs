@@ -20,7 +20,7 @@ use crate::runtime::{
         GpuTelemetry, registry::EngineDeviceHealthIdentity,
     },
     gpu_execution_pool::{GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
-    query_service::{QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot},
+    query_service::{BackendDiagnostics, QueryServiceAdmissionSnapshot},
 };
 
 impl QueryService {
@@ -51,27 +51,22 @@ impl QueryService {
             .collect()
     }
 
-    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
+    pub(crate) fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
         self.inner.admission.device_ledger_reports()
     }
 
     /// Returns physical allocation-domain usage and cache activity for every
     /// cache-enabled device.  It is diagnostic-only and never participates in
     /// admission; `device_ledger_reports` remains the ownership authority.
-    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
+    pub(crate) fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
         self.inner.resources.resident_caches.reports()
     }
 
     /// Returns bounded source-cache state-machine observations across enabled
     /// device domains. They are correlation diagnostics, never admission or
     /// residency accounting inputs.
-    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
+    pub(crate) fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
         self.inner.resources.resident_caches.source_event_snapshots()
-    }
-
-    /// Returns process-wide active-query slot counts for each service device.
-    pub fn device_admission_snapshots(&self) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
-        self.inner.admission.device_admission_snapshots()
     }
 
     /// Samples current CUDA and optional NVML telemetry for each service
@@ -92,12 +87,12 @@ impl QueryService {
     }
 
     /// Returns one device memory allocation-failure report for each installed service device.
-    pub fn device_memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
+    pub(crate) fn device_memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
         self.inner.resources.devices.memory_failure_reports()
     }
 
     /// Returns one dedicated GPU execution-pool report per service device.
-    pub fn gpu_execution_pool_reports(&self) -> Vec<GpuExecutionPoolSnapshot> {
+    pub(crate) fn gpu_execution_pool_reports(&self) -> Vec<GpuExecutionPoolSnapshot> {
         let resources = &self.inner.resources;
         resources
             .devices
@@ -108,7 +103,7 @@ impl QueryService {
     }
 
     /// Returns the exact current and peak query concurrency across all service GPU pools.
-    pub fn gpu_execution_query_report(&self) -> GpuExecutionQuerySnapshot {
+    pub(crate) fn gpu_execution_query_report(&self) -> GpuExecutionQuerySnapshot {
         self.inner.resources.gpu_execution_query_tracker.snapshot()
     }
 
@@ -171,21 +166,21 @@ impl QueryService {
         &self.inner.config
     }
 
-    /// Returns a point-in-time admission snapshot for service reports.
-    pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        self.inner.admission.admission_snapshot()
+    /// Reads every service report once.
+    pub fn diagnostics(&self) -> Result<BackendDiagnostics> {
+        Ok(BackendDiagnostics {
+            admission: self.admission_snapshot()?,
+            ledgers: self.device_ledger_reports()?,
+            caches: self.device_cache_reports()?,
+            cache_source_events: self.device_cache_source_event_snapshots()?,
+            memory_failures: self.device_memory_failure_reports(),
+            execution_pools: self.gpu_execution_pool_reports(),
+            execution_queries: self.gpu_execution_query_report(),
+        })
     }
-}
 
-impl QueryService {
-    /// Largest physical device-total byte count represented by this query service.
-    pub fn max_device_total_memory_bytes(&self) -> u64 {
-        self.inner
-            .resources
-            .devices
-            .contexts()
-            .map(|context| context.facts().total_bytes)
-            .max()
-            .expect("runtime service has an installed device")
+    /// Returns a point-in-time admission snapshot for service reports.
+    pub(crate) fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
+        self.inner.admission.admission_snapshot()
     }
 }

@@ -28,11 +28,7 @@ use super::{
 };
 use crate::{
     observability::{AdmissionLifecycleState, AdmissionRequestId, AttemptFaultIsolation, RuntimeTerminalOutcome},
-    runtime::{
-        DeviceLedger,
-        deadline::{DeadlineMutexLockError, mutex_lock_until},
-        gpu::DeviceAdmissionHealth,
-    },
+    runtime::{DeviceLedger, deadline::mutex_lock_recovering_until, gpu::DeviceAdmissionHealth},
 };
 
 impl AdmissionController {
@@ -340,13 +336,8 @@ impl AdmissionController {
         deadline: Instant,
         operation: &'static str,
     ) -> Result<MutexGuard<'_, AdmissionState>> {
-        match mutex_lock_until(&self.state, deadline) {
-            Ok(state) => Ok(state),
-            Err(DeadlineMutexLockError::Poisoned) => self.lock_admission(),
-            Err(DeadlineMutexLockError::TimedOut) => {
-                Err(query_service_shutdown_timeout(operation, None, "admission_mutex"))
-            },
-        }
+        mutex_lock_recovering_until(&self.state, deadline)
+            .ok_or_else(|| query_service_shutdown_timeout(operation, None, "admission_mutex"))
     }
 
     pub(in crate::runtime::query_service) fn sweep_expired_queued_requests_locked(
@@ -562,7 +553,7 @@ impl AdmissionController {
     }
 }
 
-pub(super) fn admission_mutex_poisoned_error() -> QueryError {
+pub(in crate::runtime::query_service) fn admission_mutex_poisoned_error() -> QueryError {
     QueryError::new(
         QueryErrorCode::Internal,
         "query_engine.query_service.admission",

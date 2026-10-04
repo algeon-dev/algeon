@@ -11,7 +11,7 @@ use std::{
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -233,14 +233,9 @@ fn run_cleanup(
     process_exit_requested: &AtomicBool,
 ) {
     lifecycle.close();
-    let generation = match resource.generation.lock() {
-        Ok(mut generation) => generation.take(),
-        Err(_error) => {
-            state.fail("resource_generation", "resource-core generation mutex was poisoned");
-            std::mem::forget(Arc::clone(&resource));
-            return;
-        },
-    };
+    // The slot is one `Option` take or set; a guard recovered from a panic
+    // still holds the published generation, which close then drains.
+    let generation = resource.generation.lock().unwrap_or_else(PoisonError::into_inner).take();
     let Some(generation) = generation else {
         state.mark_gpu_quiescent();
         wait_for_observation_forever(&lifecycle, &state, process_exit_requested);

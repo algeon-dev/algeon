@@ -255,9 +255,11 @@ evidence through SQL.
 
 ## Observe and shut down
 
-Per-attempt evidence comes from `QueryAttemptReport`. The backend exposes
-service-level `admission_snapshot`, `device_ledger_reports`,
-`device_memory_failure_reports`, and `backend_metrics_snapshot` methods. At
+Per-attempt evidence comes from `QueryAttemptReport`. The backend's
+`diagnostics()` reads the admission snapshot and the device ledger, cache,
+memory-failure, and execution-pool reports in one call;
+`backend_metrics_snapshot()` and `device_telemetry_snapshots()` stay
+separate. At
 shutdown, stop accepting work, drain streams and sessions, then call
 `close_and_wait` on the shared backend.
 

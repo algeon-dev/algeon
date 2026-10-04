@@ -24,7 +24,7 @@ use super::{
 };
 use crate::observability::AdmissionRequestId;
 
-fn p6_snapshot_json_samples() -> [(&'static str, Value); 9] {
+fn p6_snapshot_json_samples() -> [(&'static str, Value); 8] {
     let backend_metrics = super::backend_metrics::BackendMetricsStore::new(7, &[3])
         .expect("fixed backend metrics fixture initializes")
         .snapshot();
@@ -46,8 +46,6 @@ fn p6_snapshot_json_samples() -> [(&'static str, Value); 9] {
         available_bytes: 9_100,
         free_bytes: 8_900,
         evictable_bytes: 200,
-        protected_slot: true,
-        protected_reserve_bytes: 100,
         cache_evictable_resident_bytes: 128,
         cache_pinned_in_use_bytes: 64,
         health: "open".to_owned(),
@@ -113,18 +111,8 @@ fn p6_snapshot_json_samples() -> [(&'static str, Value); 9] {
                 active_queries: 2,
                 queued_queries: 1,
                 queue_high_watermark: 4,
-                protected_devices: vec![1, 3],
             })
             .expect("admission snapshot serializes"),
-        ),
-        (
-            "query_service_device_admission_snapshot",
-            serde_json::to_value(QueryServiceDeviceAdmissionSnapshot {
-                device_ordinal: 3,
-                process_active_query_slots: 2,
-                has_protection: true,
-            })
-            .expect("device admission snapshot serializes"),
         ),
         ("device_ledger_report", serde_json::to_value(ledger_report).expect("ledger report serializes")),
         (
@@ -227,10 +215,6 @@ struct FakeGpuInventory {
 }
 
 impl GpuInventory for FakeGpuInventory {
-    fn device_count(&self) -> Result<usize> {
-        Ok(self.facts.len())
-    }
-
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
         self.facts.get(device_ordinal).cloned().ok_or_else(|| {
             QueryError::new(
@@ -263,21 +247,6 @@ fn gpu_inventory_fake_drives_pool_size_and_budget_math_without_gpu() {
 
     assert_eq!(default_service_stream_pool_size_from_device_facts(&facts), 24);
     assert_eq!(device_budget_bytes_from_facts(&facts, 512 * 1024 * 1024, 256 * 1024 * 1024), 16_642_998_272);
-}
-
-#[test]
-fn gpu_inventory_all_facts_uses_fake_ordinals_without_cuda_device_resolution() {
-    let inventory = FakeGpuInventory {
-        facts: vec![
-            fake_device_facts(0, 8 * 1024 * 1024 * 1024, Some(10)),
-            fake_device_facts(1, 12 * 1024 * 1024 * 1024, Some(20)),
-        ],
-    };
-
-    let facts = inventory.all_facts().unwrap();
-
-    assert_eq!(facts.iter().map(|facts| facts.device).collect::<Vec<_>>(), vec![0, 1]);
-    assert_eq!(facts.iter().filter_map(|facts| facts.sm_count).collect::<Vec<_>>(), vec![10, 20]);
 }
 
 #[test]

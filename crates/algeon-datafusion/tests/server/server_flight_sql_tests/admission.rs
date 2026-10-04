@@ -25,7 +25,7 @@ async fn hold_the_only_gpu_slot(
     let attempt = backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
     let mut stream = attempt.sql(ctx, sql).await.expect("holder should plan");
     stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 1, "holder occupies the only active slot");
+    assert_eq!(backend.diagnostics().unwrap().admission.active_queries, 1, "holder occupies the only active slot");
     (attempt, stream)
 }
 
@@ -136,7 +136,7 @@ async fn queued_flight_query_holds_no_gpu_grant_and_cancels_without_admission() 
 
     // A queued request must not materialize GPU state: the only live grant is
     // the holder's.
-    let reports = backend.device_ledger_reports().unwrap();
+    let reports = backend.diagnostics().unwrap().ledgers;
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].grants.len(), 1, "a queued request must not hold a grant: {:?}", reports[0].grants);
     assert_eq!(reports[0].active_attempts, 1);
@@ -150,14 +150,14 @@ async fn queued_flight_query_holds_no_gpu_grant_and_cancels_without_admission() 
     // Removing the waiter frees the queue slot without ever issuing a grant.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = backend.admission_snapshot().unwrap();
+        let snapshot = backend.diagnostics().unwrap().admission;
         if snapshot.queued_queries == 0 {
             break;
         }
         assert!(Instant::now() < deadline, "cancelled waiter was not removed: {snapshot:?}");
         sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(backend.device_ledger_reports().unwrap()[0].grants.len(), 1);
+    assert_eq!(backend.diagnostics().unwrap().ledgers[0].grants.len(), 1);
 
     drop(holder);
     wait_for_empty_gpu_ledger(&backend).await;
@@ -178,7 +178,7 @@ async fn disconnecting_a_queued_flight_client_releases_the_waiter_for_the_next_q
     queued.abort();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = backend.admission_snapshot().unwrap();
+        let snapshot = backend.diagnostics().unwrap().admission;
         if snapshot.queued_queries == 0 {
             break;
         }
@@ -216,8 +216,8 @@ async fn a_queued_flight_query_times_out_against_the_configured_queue_wait() {
     assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
 
     // The expired waiter is gone and never held a grant.
-    assert_eq!(backend.admission_snapshot().unwrap().queued_queries, 0);
-    assert_eq!(backend.device_ledger_reports().unwrap()[0].grants.len(), 1);
+    assert_eq!(backend.diagnostics().unwrap().admission.queued_queries, 0);
+    assert_eq!(backend.diagnostics().unwrap().ledgers[0].grants.len(), 1);
 
     drop(holder);
     wait_for_empty_gpu_ledger(&backend).await;

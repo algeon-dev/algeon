@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -114,10 +114,7 @@ impl QueryHandleReportCommit {
         // event before the seal so the sealed report retains it. The
         // mechanical capacity release still happens only after the seal.
         if let Some(service) = self.service.as_ref() {
-            let queue_depth = service.admission.state.lock().map(|state| state.queued.len()).unwrap_or_else(|error| {
-                eprintln!("[query-engine] warning: failed to read poisoned admission queue depth");
-                error.into_inner().queued.len()
-            });
+            let queue_depth = service.admission.state.lock().unwrap_or_else(PoisonError::into_inner).queued.len();
             record_admission_lifecycle(
                 &self.observation,
                 self.admission_request_id,
@@ -511,8 +508,6 @@ impl QueryHandleReportCommit {
             evidence.ledger_sample_ns = AttemptEvidenceField::device_snapshot(sampled_ns);
             evidence.live_grants_bytes = AttemptEvidenceField::device_snapshot(snapshot.live_grants_bytes);
             evidence.resident_owner_bytes = AttemptEvidenceField::device_snapshot(snapshot.resident_owner_bytes);
-            evidence.protected_slot = AttemptEvidenceField::device_snapshot(snapshot.protected_slot);
-            evidence.protected_reserve_bytes = AttemptEvidenceField::device_snapshot(snapshot.protected_reserve_bytes);
             evidence.cache_evictable_resident_bytes =
                 AttemptEvidenceField::device_snapshot(snapshot.cache_evictable_resident_bytes);
             evidence.cache_pinned_in_use_bytes =

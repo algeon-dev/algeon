@@ -892,12 +892,11 @@ async fn run_cache_same_key_cohort(
 }
 
 fn cache_reports_snapshot(backend: &AlgeonGpuBackend) -> ToolResult<Value> {
-    Ok(serde_json::to_value(backend.device_cache_reports()?)?)
+    Ok(serde_json::to_value(backend.diagnostics()?.caches)?)
 }
 
 fn cache_quarantine_observation(backend: &AlgeonGpuBackend, ordinal: usize) -> ToolResult<Value> {
-    let report =
-        serde_json::to_value(backend.device_cache_reports()?.into_iter().find(|r| r.device_ordinal == ordinal))?;
+    let report = serde_json::to_value(backend.diagnostics()?.caches.into_iter().find(|r| r.device_ordinal == ordinal))?;
     let Some(report) = report.as_object() else {
         return Err(format!("missing cache report for target ordinal {ordinal}").into());
     };
@@ -912,7 +911,7 @@ fn cache_quarantine_observation(backend: &AlgeonGpuBackend, ordinal: usize) -> T
 }
 
 fn cache_source_event_snapshots(backend: &AlgeonGpuBackend) -> ToolResult<Value> {
-    Ok(serde_json::to_value(backend.device_cache_source_event_snapshots()?)?)
+    Ok(serde_json::to_value(backend.diagnostics()?.cache_source_events)?)
 }
 
 /// Applies only the ordinary scenario clauses that the requested physical run

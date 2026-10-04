@@ -16,8 +16,8 @@ use query_planning::{
 use query_runtime::{
     metrics::QueryMetrics,
     runtime::{
-        ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendDeviceProfile, GpuMemoryOwnership, QueryExecutionConfig, QueueBounds,
+        ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig, GpuBackendDeviceProfile,
+        GpuMemoryOwnership, QueryExecutionConfig, QueueBounds, ValidatedGpuBackendConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
 };
@@ -26,12 +26,13 @@ use query_runtime::{
 fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _expr = Expr::column("c0");
     let _metrics = QueryMetrics::default();
-    let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
-    let draft = GpuBackendCoreDraft::new(
+    let _validate: fn(GpuBackendConfig) -> Result<ValidatedGpuBackendConfig> = GpuBackendConfig::validate;
+    let _construct: fn(ValidatedGpuBackendConfig) -> Result<GpuBackendCore> = GpuBackendCore::new;
+    let _config = GpuBackendConfig::new(
         vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
-        controller,
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
     );
-    let _supported_backend_builder = GpuBackendCore::builder(draft);
     let _resident_input_map = GpuResidentInputMap::new();
     let _gpu_frame_new: fn(cudf::DataFrame) -> GpuDataFrame = GpuDataFrame::new;
     let _gpu_handle_new: fn(&ExecutionContext, GpuDataFrame, SchemaRef) -> Result<GpuResultHandle> =

@@ -1,8 +1,0 @@
-{
-  "fields": {
-    "device_ordinal": "number",
-    "has_protection": "boolean",
-    "process_active_query_slots": "number"
-  },
-  "type": "object"
-}

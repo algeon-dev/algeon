@@ -5,10 +5,9 @@ use query_planning::error::QueryErrorCode;
 use query_runtime::{
     observability::RuntimeObservationHandle,
     runtime::{
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, S3SourceStorageProfile,
-        SourceStorageProfile,
+        GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
+        GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig,
+        QueryHandle, QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
     },
 };
 use tokio::{
@@ -32,7 +31,7 @@ fn canonical_options() -> DeviceMemoryManagerOptions {
     }
 }
 
-fn backend_draft(config: QueryExecutionConfig) -> GpuBackendCoreDraft {
+fn backend_draft(config: QueryExecutionConfig) -> GpuBackendConfig {
     backend_draft_with_limits_and_queue_bounds(config, QueueBounds::default(), 1)
 }
 
@@ -40,11 +39,10 @@ fn backend_draft_with_limits_and_queue_bounds(
     config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
     max_active_attempts: usize,
-) -> GpuBackendCoreDraft {
+) -> GpuBackendConfig {
     let device_ordinal = DeviceId::current().expect("current CUDA device").ordinal();
     let source_work_per_attempt = 1;
     let stream_pool_size = max_active_attempts.saturating_mul(1 + source_work_per_attempt).max(1);
-    let controller = GpuBackendControllerDraft::new(config, queue_bounds);
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(device_ordinal)
             .with_source_work_per_attempt(source_work_per_attempt)
@@ -57,7 +55,7 @@ fn backend_draft_with_limits_and_queue_bounds(
             )),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    GpuBackendCoreDraft::new(vec![device], controller)
+    GpuBackendConfig::new(vec![device], config, queue_bounds)
 }
 
 #[test]
@@ -88,7 +86,9 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
     );
 
     DeviceMemoryManager::install(device, InstallSpec::default()).unwrap();
-    let incompatible = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
+    let incompatible =
+        GpuBackendCore::new(backend_draft(QueryExecutionConfig::default()).validate().expect("valid backend config"))
+            .unwrap_err();
 
     assert_eq!(incompatible.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(incompatible.fact_value("reason"), Some("device_memory_manager_options_conflict"));
@@ -117,7 +117,9 @@ fn noncanonical_pool_allocator_is_rejected_during_backend_preflight() {
     };
     DeviceMemoryManager::install(device, InstallSpec { options: installed_options, ..InstallSpec::default() }).unwrap();
 
-    let conflict = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
+    let conflict =
+        GpuBackendCore::new(backend_draft(QueryExecutionConfig::default()).validate().expect("valid backend config"))
+            .unwrap_err();
 
     assert_eq!(conflict.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(conflict.fact_value("reason"), Some("device_memory_manager_options_conflict"));
@@ -137,9 +139,11 @@ fn canonical_allocator_reuse_preserves_authoritative_installation_identity_acros
     let device = DeviceId::current().unwrap();
     assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), None);
 
-    let first = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap();
+    let first =
+        GpuBackendCore::new(backend_draft(QueryExecutionConfig::default()).validate().expect("valid backend config"))
+            .unwrap();
     let first_identity = first.identity();
-    let first_pools = first.session_capability().gpu_execution_pool_reports().unwrap();
+    let first_pools = first.session_capability().diagnostics().unwrap().execution_pools;
     let [first_pool] = first_pools.as_slice() else {
         panic!("expected one worker pool for the single configured device");
     };
@@ -168,9 +172,11 @@ fn canonical_allocator_reuse_preserves_authoritative_installation_identity_acros
     assert!(close.observation_quiescent);
     drop(first);
 
-    let second = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap();
+    let second =
+        GpuBackendCore::new(backend_draft(QueryExecutionConfig::default()).validate().expect("valid backend config"))
+            .unwrap();
     let second_identity = second.identity();
-    let second_pools = second.session_capability().gpu_execution_pool_reports().unwrap();
+    let second_pools = second.session_capability().diagnostics().unwrap().execution_pools;
     let [second_pool] = second_pools.as_slice() else {
         panic!("expected one worker pool for the single configured device");
     };
@@ -215,12 +221,15 @@ fn canonical_allocator_reuse_preserves_authoritative_installation_identity_acros
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_default_allocator_admits_a_hard_query_domain() {
-    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
-        1,
-    ))
-    .build()
+    let core = GpuBackendCore::new(
+        backend_draft_with_limits_and_queue_bounds(
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
+            1,
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
     .unwrap();
     let session = core.session_capability();
     let handle = session.admit_query().unwrap();
@@ -241,12 +250,15 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     const SECOND_QUERY_CAP_BYTES: u64 = 32 * 1024 * 1024;
 
     let device = DeviceId::current().unwrap();
-    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
-        2,
-    ))
-    .build()
+    let core = GpuBackendCore::new(
+        backend_draft_with_limits_and_queue_bounds(
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
+            2,
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
     .unwrap();
     let session = core.session_capability();
 
@@ -278,7 +290,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(first.device_budget_bytes(), FIRST_QUERY_CAP_BYTES);
     assert_eq!(second.device_budget_bytes(), SECOND_QUERY_CAP_BYTES);
 
-    let ledger_reports = session.device_ledger_reports().unwrap();
+    let ledger_reports = session.diagnostics().unwrap().ledgers;
     let [ledger] = ledger_reports.as_slice() else {
         panic!("expected one device ledger for the single configured device");
     };
@@ -358,7 +370,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     let second_job = spawn_job(Arc::clone(&second), second_context.context().runtime_observation().clone());
     timeout(Duration::from_secs(10), entered.wait()).await.expect("both same-device GPU jobs must start concurrently");
 
-    let pool_reports = session.gpu_execution_pool_reports().unwrap();
+    let pool_reports = session.diagnostics().unwrap().execution_pools;
     let [pool] = pool_reports.as_slice() else {
         panic!("expected one worker pool for the single configured device");
     };
@@ -393,12 +405,15 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     let device = DeviceId::current().unwrap();
-    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 3, max_wait: Duration::from_secs(10) },
-        2,
-    ))
-    .build()
+    let core = GpuBackendCore::new(
+        backend_draft_with_limits_and_queue_bounds(
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 3, max_wait: Duration::from_secs(10) },
+            2,
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
     .unwrap();
     let session = core.session_capability();
 
@@ -420,7 +435,7 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     assert_eq!(first.device_budget_bytes(), derived);
     assert_eq!(second.device_budget_bytes(), derived);
 
-    let ledger_reports = session.device_ledger_reports().unwrap();
+    let ledger_reports = session.diagnostics().unwrap().ledgers;
     let [ledger] = ledger_reports.as_slice() else {
         panic!("expected one device ledger for the single configured device");
     };
@@ -457,7 +472,7 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
         .await
         .expect("both default-cap GPU jobs must overlap without per-query tuning");
 
-    let pool_reports = session.gpu_execution_pool_reports().unwrap();
+    let pool_reports = session.diagnostics().unwrap().execution_pools;
     let [pool] = pool_reports.as_slice() else {
         panic!("expected one worker pool for the single configured device");
     };
@@ -484,12 +499,15 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_records() {
     let device = DeviceId::current().unwrap();
-    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
-        1,
-    ))
-    .build()
+    let core = GpuBackendCore::new(
+        backend_draft_with_limits_and_queue_bounds(
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
+            1,
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
     .unwrap();
     let cloned_core = core.clone();
     let first_session = core.session_capability();
@@ -505,15 +523,15 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     assert!(identity.resource_generation > 0);
     assert_eq!(core.device_startup_records(), cloned_core.device_startup_records());
 
-    let first_device_records = first_session.device_admission_snapshots().unwrap();
-    let second_device_records = second_session.device_admission_snapshots().unwrap();
-    assert_eq!(first_device_records, second_device_records);
-    assert_eq!(first_device_records.len(), 1);
-    assert_eq!(first_device_records[0].device_ordinal, device.ordinal());
-    assert_eq!(first_device_records[0].process_active_query_slots, 0);
+    let first_ledgers = first_session.diagnostics().unwrap().ledgers;
+    let second_ledgers = second_session.diagnostics().unwrap().ledgers;
+    assert_eq!(first_ledgers, second_ledgers);
+    assert_eq!(first_ledgers.len(), 1);
+    assert_eq!(first_ledgers[0].device_ordinal, device.ordinal());
+    assert_eq!(first_ledgers[0].active_attempts, 0);
 
-    let first_worker_pools = first_session.gpu_execution_pool_reports().unwrap();
-    let second_worker_pools = second_session.gpu_execution_pool_reports().unwrap();
+    let first_worker_pools = first_session.diagnostics().unwrap().execution_pools;
+    let second_worker_pools = second_session.diagnostics().unwrap().execution_pools;
     assert_eq!(first_worker_pools, second_worker_pools);
     assert_eq!(first_worker_pools.len(), 1);
     assert!(first_worker_pools[0].pool_id > 0);
@@ -529,8 +547,8 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let first_snapshot = first_session.admission_snapshot().unwrap();
-        let second_snapshot = second_session.admission_snapshot().unwrap();
+        let first_snapshot = first_session.diagnostics().unwrap().admission;
+        let second_snapshot = second_session.diagnostics().unwrap().admission;
         if first_snapshot.active_queries == 1 && first_snapshot.queued_queries == 1 {
             assert_eq!(second_snapshot, first_snapshot, "cloned sessions must observe one shared admission ledger");
             break;
@@ -555,7 +573,7 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = second_session.admission_snapshot().unwrap();
+        let snapshot = second_session.diagnostics().unwrap().admission;
         if snapshot.active_queries == 0 && snapshot.queued_queries == 0 {
             break;
         }

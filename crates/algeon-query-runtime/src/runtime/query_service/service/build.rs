@@ -1,4 +1,4 @@
-//! QueryService constructors and config preflight validation.
+//! QueryService construction over a validated backend config.
 
 use std::{
     collections::HashMap,
@@ -7,30 +7,29 @@ use std::{
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
+#[cfg(any(test, feature = "test-hooks"))]
+use super::super::config::{QueryExecutionConfig, QueueBounds};
 use super::{
     super::{
-        config::{QueryExecutionConfig, QueueBounds},
         controller::{AdmissionController, AdmissionDevice, AdmissionDevices},
         resources::QueryServiceResources,
     },
     QueryService, QueryServiceInner,
 };
 #[cfg(test)]
-use crate::runtime::backend_core::GpuBackendDeviceProfile;
-#[cfg(test)]
 use crate::runtime::gpu::GpuInventory;
 use crate::runtime::{
-    AlgeonGpuInventory, CacheFillByteBudget, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    AlgeonGpuInventory, CacheFillByteBudget, GpuDeviceMemoryLimit,
     allocator_correlation::AllocatorEventCorrelationIndex,
     backend_core::{
         ConstructionResourceJournal, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
-        GpuBackendControllerDraft, GpuBackendDeviceConfig,
+        ValidatedGpuBackendConfig,
     },
     backend_metrics::BackendMetricsStore,
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{DeviceRuntime, QueryServiceEpoch},
     gpu::{
-        DeviceOwnerToken, normalize_device_ordinals,
+        DeviceOwnerToken,
         registry::{
             DeviceRegistry, DeviceRegistryCapacityPolicy, DeviceRegistryConfig, DeviceRegistryInstallProfile,
             DeviceRegistryMemoryPartition, ResolvedDeviceInstallPlans,
@@ -39,18 +38,15 @@ use crate::runtime::{
     gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker},
     object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
 };
+#[cfg(test)]
+use crate::runtime::{GpuMemoryOwnership, backend_core::GpuBackendDeviceProfile};
 #[cfg(any(test, feature = "test-hooks"))]
-use crate::runtime::{backend_core::GpuBackendCoreDraft, gpu::claim_live_backend};
+use crate::runtime::{
+    backend_core::{GpuBackendConfig, GpuBackendDeviceConfig, NoopConstructionProbe},
+    gpu::claim_live_backend,
+};
 
 impl QueryService {
-    pub(crate) fn validate_controller_policy_for_backend(
-        config: &QueryExecutionConfig,
-        queue_bounds: &QueueBounds,
-        device_ordinals: &[usize],
-    ) -> Result<()> {
-        validate_controller_policy_preflight(config, queue_bounds, device_ordinals)
-    }
-
     /// Creates a service entry point over explicit devices.
     #[cfg(test)]
     pub(crate) fn new_with_device_ordinals(
@@ -78,27 +74,13 @@ impl QueryService {
         queue_bounds: QueueBounds,
         device_profiles: Vec<GpuBackendDeviceConfig>,
     ) -> Result<Self> {
-        let controller = GpuBackendControllerDraft::new(config, queue_bounds);
-        let mut draft = GpuBackendCoreDraft::new(device_profiles, controller.clone());
-        draft.normalize_installation_bounds()?;
-        draft.validate()?;
-        let device_profiles = draft.devices().to_vec();
-        let device_ordinals = device_profiles.iter().map(GpuBackendDeviceConfig::device_ordinal).collect::<Vec<_>>();
-        let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
+        let config = GpuBackendConfig::new(device_profiles, config, queue_bounds).validate()?;
+        let device_ordinals = config.device_ordinals();
         let owner_lease = claim_live_backend(&device_ordinals)?;
         let construction_journal = Arc::new(ConstructionResourceJournal::default());
         let backend_metrics = BackendMetricsStore::new(owner_lease.generation(), &device_ordinals)?;
-        let probe = TestConstructionProbe;
         let token = owner_lease.token();
-        Self::install_for_backend(
-            device_ordinals,
-            controller,
-            &token,
-            &device_profiles,
-            &probe,
-            &construction_journal,
-            &backend_metrics,
-        )
+        Self::install_for_backend(&config, &token, &NoopConstructionProbe, &construction_journal, &backend_metrics)
     }
 
     /// Installs the private runtime service under an already-acquired backend
@@ -106,46 +88,40 @@ impl QueryService {
     /// it only after destroying the returned service and every derived GPU
     /// resource.
     pub(crate) fn install_for_backend(
-        device_ordinals: Vec<usize>,
-        controller: GpuBackendControllerDraft,
+        config: &ValidatedGpuBackendConfig,
         owner: &DeviceOwnerToken<'_>,
-        device_profiles: &[GpuBackendDeviceConfig],
         probe: &dyn GpuBackendConstructionProbe,
         construction_journal: &Arc<ConstructionResourceJournal>,
         backend_metrics: &BackendMetricsStore,
     ) -> Result<Self> {
-        let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
-        let (config, queue_bounds) = controller.into_parts();
-        validate_controller_policy_preflight(&config, &queue_bounds, &device_ordinals)?;
-        let registry_config = device_registry_config(device_ordinals, device_profiles)?;
-        let resolved_plans = DeviceRegistry::resolve_install_plans(&AlgeonGpuInventory, &registry_config, Some(probe))?;
+        let registry_config = device_registry_config(config);
+        let resolved_plans = DeviceRegistry::resolve_install_plans(&AlgeonGpuInventory, &registry_config, probe)?;
         let resources = Self::install_runtime_resources(
-            &config,
+            config,
             owner,
-            device_profiles,
             probe,
             resolved_plans,
             construction_journal,
             backend_metrics,
         )?;
-        Self::build(config, queue_bounds, resources)
+        Self::build(config, resources)
     }
 
     fn install_runtime_resources(
-        config: &QueryExecutionConfig,
+        backend_config: &ValidatedGpuBackendConfig,
         owner: &DeviceOwnerToken<'_>,
-        device_profiles: &[GpuBackendDeviceConfig],
         probe: &dyn GpuBackendConstructionProbe,
         resolved_plans: ResolvedDeviceInstallPlans,
         construction_journal: &Arc<ConstructionResourceJournal>,
         backend_metrics: &BackendMetricsStore,
     ) -> Result<QueryServiceResources> {
+        let config = backend_config.execution_config();
         let devices = DeviceRegistry::install_resolved(
             resolved_plans,
             owner,
-            Some(probe),
-            Some(construction_journal),
-            Some(backend_metrics),
+            probe,
+            construction_journal,
+            backend_metrics,
             &AlgeonGpuInventory,
         )?;
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
@@ -154,10 +130,11 @@ impl QueryService {
             .map(|device| {
                 let device_ordinal = device.device().ordinal();
                 probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeWorkerPool { device_ordinal })?;
-                let worker_count = device_profiles
+                let worker_count = backend_config
+                    .validated_devices()
                     .iter()
-                    .find(|profile| profile.device_ordinal() == device_ordinal)
-                    .map(GpuBackendDeviceConfig::worker_count)
+                    .find(|device| device.config.device_ordinal() == device_ordinal)
+                    .map(|device| device.installation_bounds.worker_count)
                     .ok_or_else(|| {
                         QueryError::new(
                             QueryErrorCode::Internal,
@@ -235,15 +212,7 @@ impl QueryService {
         })
     }
 
-    fn build(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        resources: QueryServiceResources,
-    ) -> Result<Self> {
-        config.validate()?;
-        queue_bounds.validate()?;
-        SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
-
+    fn build(config: &ValidatedGpuBackendConfig, resources: QueryServiceResources) -> Result<Self> {
         let devices = AdmissionDevices::new(
             resources
                 .devices
@@ -257,8 +226,8 @@ impl QueryService {
         // that lease and drops it explicitly last.
         let service_epoch = QueryServiceEpoch::new(None);
         let inner = Arc::new(QueryServiceInner {
-            config,
-            admission: AdmissionController::new(queue_bounds, devices)?,
+            config: config.execution_config().clone(),
+            admission: AdmissionController::new(config.queue_bounds().clone(), devices)?,
             resources,
             service_epoch,
             allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
@@ -268,40 +237,25 @@ impl QueryService {
     }
 }
 
-fn device_registry_config(
-    device_ordinals: Vec<usize>,
-    device_profiles: &[GpuBackendDeviceConfig],
-) -> Result<DeviceRegistryConfig> {
-    let mut registry_config = DeviceRegistryConfig::new(device_ordinals, 1);
-    for profile in device_profiles {
+fn device_registry_config(config: &ValidatedGpuBackendConfig) -> DeviceRegistryConfig {
+    let mut registry_config = DeviceRegistryConfig::new(config.device_ordinals());
+    for device in config.validated_devices() {
+        let profile = &device.config;
+        let bounds = device.installation_bounds;
         let capacity_policy = match profile.memory_limit() {
             GpuDeviceMemoryLimit::Automatic { headroom_bytes, fallback_bytes, fraction } => {
                 DeviceRegistryCapacityPolicy::Automatic { headroom_bytes, fallback_bytes, fraction }
             },
             GpuDeviceMemoryLimit::Explicit { limit_bytes } => DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
         };
-        let memory_partition = match profile.memory_ownership() {
-            GpuMemoryOwnership::WholeDeviceExclusive => DeviceRegistryMemoryPartition::WholeDevice,
-            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes } => {
-                DeviceRegistryMemoryPartition::StaticPartition {
-                    allocation_limit_bytes: usize::try_from(allocation_limit_bytes).map_err(|_error| {
-                        QueryError::new(
-                            QueryErrorCode::InvalidPlan,
-                            "query_engine.gpu_backend_core.build",
-                            "static partition limit cannot be represented by the native allocator",
-                        )
-                        .with_fact("field", "memory_ownership.allocation_limit_bytes")
-                        .with_fact("device_ordinal", profile.device_ordinal())
-                        .with_fact("allocation_limit_bytes", allocation_limit_bytes)
-                        .with_fact("reason", "allocation_limit_out_of_range")
-                    })?,
-                }
-            },
+        let memory_partition = match device.allocation_limit_bytes {
+            None => DeviceRegistryMemoryPartition::WholeDevice,
+            Some(allocation_limit_bytes) => DeviceRegistryMemoryPartition::StaticPartition { allocation_limit_bytes },
         };
         registry_config = registry_config.with_device_profile(
             profile.device_ordinal(),
             DeviceRegistryInstallProfile {
-                stream_pool_size: profile.stream_pool_size(),
+                stream_pool_size: bounds.stream_pool_size,
                 device_capabilities: profile.device_capabilities().clone(),
                 max_active_attempts: profile.max_active_attempts(),
                 capacity_policy,
@@ -312,37 +266,14 @@ fn device_registry_config(
                 // Logical worker job-slot capacity follows the frozen
                 // A_d * (1 + S_d) stream formula; physical worker threads
                 // remain the pool's own lazily-grown count.
-                worker_job_capacity: profile.stream_pool_size(),
-                lane_count: profile.lane_count(),
+                worker_job_capacity: bounds.stream_pool_size,
+                lane_count: bounds.lane_count,
                 install_telemetry: profile.install_telemetry(),
                 memory_partition,
             },
         );
     }
-    Ok(registry_config)
-}
-
-#[cfg(any(test, feature = "test-hooks"))]
-#[derive(Debug)]
-struct TestConstructionProbe;
-
-#[cfg(any(test, feature = "test-hooks"))]
-impl GpuBackendConstructionProbe for TestConstructionProbe {
-    fn checkpoint(&self, _checkpoint: GpuBackendConstructionCheckpoint) -> Result<()> {
-        Ok(())
-    }
-}
-
-fn validate_controller_policy_preflight(
-    config: &QueryExecutionConfig,
-    queue_bounds: &QueueBounds,
-    device_ordinals: &[usize],
-) -> Result<()> {
-    config.validate()?;
-    queue_bounds.validate()?;
-    SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
-    normalize_device_ordinals(device_ordinals)?;
-    Ok(())
+    registry_config
 }
 
 #[cfg(test)]
@@ -354,10 +285,6 @@ mod construction_tests {
     struct FrozenPlanInventory(Vec<DeviceFacts>);
 
     impl GpuInventory for FrozenPlanInventory {
-        fn device_count(&self) -> Result<usize> {
-            Ok(self.0.len())
-        }
-
         fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
             self.0.get(device_ordinal).cloned().ok_or_else(|| {
                 QueryError::new(
@@ -417,11 +344,11 @@ mod construction_tests {
             install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
-        let registry_config = DeviceRegistryConfig::new(vec![0, 1], 1)
+        let registry_config = DeviceRegistryConfig::new(vec![0, 1])
             .with_device_profile(0, whole_device_profile(100, None))
             .with_device_profile(1, whole_device_profile(10, Some(20)));
         let probe = FrozenPlanProbe::default();
-        let error = DeviceRegistry::resolve_install_plans(&inventory, &registry_config, Some(&probe)).unwrap_err();
+        let error = DeviceRegistry::resolve_install_plans(&inventory, &registry_config, &probe).unwrap_err();
 
         assert_eq!(error.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
         assert!(
@@ -444,7 +371,10 @@ mod construction_tests {
             GpuMemoryOwnership::WholeDeviceExclusive,
         );
 
-        let registry = device_registry_config(vec![0], &[device]).unwrap();
+        let config = GpuBackendConfig::new(vec![device], QueryExecutionConfig::default(), QueueBounds::default())
+            .validate()
+            .unwrap();
+        let registry = device_registry_config(&config);
 
         assert_eq!(registry.profile(0).expect("backend profile").device_capabilities, capabilities);
         assert!(!registry.profile(0).expect("backend profile").install_telemetry);

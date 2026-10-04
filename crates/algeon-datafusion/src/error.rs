@@ -690,6 +690,14 @@ impl Error {
         self
     }
 
+    /// Replaces the code for a boundary that classifies a converted native
+    /// error differently from the native code mapping.
+    #[must_use]
+    pub(crate) fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
+        self
+    }
+
     /// Attaches the caller schema detail this error names, when none is
     /// attached yet.
     #[must_use]

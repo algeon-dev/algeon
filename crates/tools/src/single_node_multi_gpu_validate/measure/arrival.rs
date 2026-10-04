@@ -201,7 +201,7 @@ pub(super) async fn drive_duration_paced_concurrency(
             .await;
             round = round.saturating_add(1);
         }
-        let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
+        let queue_high_watermark = backend.diagnostics()?.admission.queue_high_watermark;
         queue_high_watermarks.push((step.step_index, queue_high_watermark as u64));
     }
     drain_with_feature_off_cugraph_capture(
@@ -346,7 +346,7 @@ pub(super) async fn drive_with_queue_observation(
                 &mut feature_off_cugraph_source_errors,
             )
             .await;
-            let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
+            let queue_high_watermark = backend.diagnostics()?.admission.queue_high_watermark;
             queue_high_watermarks.push((current_step, queue_high_watermark as u64));
             current_step = arrival.step_index;
             current_round = arrival.round;
@@ -460,7 +460,7 @@ pub(super) async fn drive_with_queue_observation(
         &mut feature_off_cugraph_source_errors,
     )
     .await;
-    let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
+    let queue_high_watermark = backend.diagnostics()?.admission.queue_high_watermark;
     queue_high_watermarks.push((current_step, queue_high_watermark as u64));
     let cancellation_barrier = finish_cancellation_barrier(cancellation_barrier, &observations).await;
     let storm_cancellations_requested = finish_storm_cancellers(storm_cancellers).await;
@@ -518,7 +518,7 @@ pub(super) async fn observe_queue_peak(
     let deadline = (Instant::now() + OBSERVATION_WINDOW).min(run_deadline);
     let mut peak = 0;
     loop {
-        let snapshot = backend.admission_snapshot()?;
+        let snapshot = backend.diagnostics()?.admission;
         peak = peak.max(snapshot.queued_queries);
         if peak >= queue_limit || Instant::now() >= deadline {
             return Ok(peak);
@@ -607,7 +607,8 @@ pub(super) async fn drive_concurrent_quarantine(
     let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
     let acknowledgement_offset_ns = elapsed_ns(started);
     let target_ledger_closed = backend
-        .device_ledger_reports()?
+        .diagnostics()?
+        .ledgers
         .into_iter()
         .find(|report| report.device_ordinal == target_ordinal)
         .is_some_and(|report| report.health == "closed");
@@ -652,7 +653,8 @@ pub(super) async fn drive_concurrent_quarantine(
     }
     drain(&mut tasks, &mut observations, &mut join_failures).await;
     let pre_existing_target_work_released = backend
-        .device_ledger_reports()?
+        .diagnostics()?
+        .ledgers
         .into_iter()
         .find(|report| report.device_ordinal == target_ordinal)
         .is_some_and(|report| report.active_attempts == 0 && report.grants.is_empty());
@@ -768,7 +770,8 @@ pub(super) async fn drive_quarantine_cycles(
             let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
             let acknowledgement_offset_ns = elapsed_ns(started);
             let target_ledger_closed = backend
-                .device_ledger_reports()?
+                .diagnostics()?
+                .ledgers
                 .into_iter()
                 .find(|report| report.device_ordinal == target_ordinal)
                 .is_some_and(|report| report.health == "closed");
@@ -817,7 +820,7 @@ pub(super) async fn drive_quarantine_cycles(
         }
     }
     drain(&mut tasks, &mut observations, &mut join_failures).await;
-    let ledgers = backend.device_ledger_reports()?;
+    let ledgers = backend.diagnostics()?.ledgers;
     for barrier in &mut barriers {
         barrier.final_cache = cache_quarantine_observation(backend, barrier.target_ordinal).ok();
         barrier.pre_existing_target_work_released = ledgers
@@ -920,7 +923,8 @@ pub(super) async fn drive_duration_paced_quarantine_cycles(
                 let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
                 let acknowledgement_offset_ns = elapsed_ns(timing.started);
                 let target_ledger_closed = backend
-                    .device_ledger_reports()?
+                    .diagnostics()?
+                    .ledgers
                     .into_iter()
                     .find(|report| report.device_ordinal == target_ordinal)
                     .is_some_and(|report| report.health == "closed");
@@ -946,7 +950,7 @@ pub(super) async fn drive_duration_paced_quarantine_cycles(
         }
     }
     drain(&mut tasks, &mut observations, &mut join_failures).await;
-    let ledgers = backend.device_ledger_reports()?;
+    let ledgers = backend.diagnostics()?.ledgers;
     for barrier in &mut barriers {
         barrier.final_cache = cache_quarantine_observation(backend, barrier.target_ordinal).ok();
         barrier.pre_existing_target_work_released = ledgers
@@ -1220,7 +1224,7 @@ pub(super) async fn wait_for_close_under_load_cohort(
     deadline: Instant,
 ) -> ToolResult<(usize, usize)> {
     loop {
-        let admission = backend.admission_snapshot()?;
+        let admission = backend.diagnostics()?.admission;
         if admission.active_queries > 0 && admission.queued_queries > 0 {
             return Ok((admission.active_queries, admission.queued_queries));
         }
@@ -1395,8 +1399,9 @@ pub(super) async fn wait_for_target_live_work(
 ) -> ToolResult<TargetLiveWorkWitness> {
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
     loop {
-        let ledgers = backend.device_ledger_reports()?;
-        let pools = backend.gpu_execution_pool_reports()?;
+        let diagnostics = backend.diagnostics()?;
+        let ledgers = diagnostics.ledgers;
+        let pools = diagnostics.execution_pools;
         let Some(ledger) = ledgers.into_iter().find(|report| report.device_ordinal == target_ordinal) else {
             return Err(format!("--quarantine-device {target_ordinal} disappeared from public ledger reports").into());
         };
@@ -1433,8 +1438,9 @@ pub(super) async fn wait_for_any_live_work(
 ) -> ToolResult<TargetLiveWorkWitness> {
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
     loop {
-        let ledgers = backend.device_ledger_reports()?;
-        let pools = backend.gpu_execution_pool_reports()?;
+        let diagnostics = backend.diagnostics()?;
+        let ledgers = diagnostics.ledgers;
+        let pools = diagnostics.execution_pools;
         for ledger in ledgers {
             let active_query_jobs = pools
                 .iter()
@@ -1464,7 +1470,7 @@ pub(super) async fn wait_for_target_release(
 ) -> ToolResult<bool> {
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
     loop {
-        let reports = backend.device_ledger_reports()?;
+        let reports = backend.diagnostics()?.ledgers;
         let Some(target) = reports.into_iter().find(|report| report.device_ordinal == target_ordinal) else {
             return Err(format!(
                 "deadline probe target ordinal {target_ordinal} disappeared from public ledger reports"

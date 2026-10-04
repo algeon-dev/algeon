@@ -98,8 +98,6 @@ pub(crate) struct LedgerSnapshot {
     pub(crate) auxiliary_worker_slots_available: usize,
     /// Worker slots committed by active attempts under the frozen profile.
     pub(crate) worker_depth: usize,
-    pub(crate) protected_slot: bool,
-    pub(crate) protected_reserve_bytes: u64,
     pub(crate) cache_evictable_resident_bytes: u64,
     pub(crate) cache_pinned_in_use_bytes: u64,
     pub(crate) health: DeviceAdmissionHealth,
@@ -174,8 +172,6 @@ pub struct DeviceLedgerReport {
     /// Cache-internal evictable accounting, reported separately from active
     /// grants and pinned cache bytes.
     pub evictable_bytes: u64,
-    pub(crate) protected_slot: bool,
-    pub(crate) protected_reserve_bytes: u64,
     pub cache_evictable_resident_bytes: u64,
     /// Resident-cache bytes temporarily pinned by an active cache lease.
     pub cache_pinned_in_use_bytes: u64,
@@ -465,36 +461,22 @@ impl DeviceLedger {
         })
     }
 
-    fn transition_observers(&self) -> Option<Arc<[LedgerTransitionObserver]>> {
-        self.inner
-            .transition_observers
-            .lock()
-            .map(|observers| Arc::clone(&observers))
-            .map_err(|_error| {
-                eprintln!("[query-engine] warning: device ledger transition-observer mutex was poisoned");
-            })
-            .ok()
+    // Registration replaces each observer list as a whole, so a guard
+    // recovered from a poisoned registry still holds a complete list.
+    fn transition_observers(&self) -> Arc<[LedgerTransitionObserver]> {
+        Arc::clone(&self.inner.transition_observers.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    fn admission_observers(&self) -> Option<Arc<[LedgerAdmissionObserver]>> {
-        self.inner
-            .admission_observers
-            .lock()
-            .map(|observers| Arc::clone(&observers))
-            .map_err(|_error| {
-                eprintln!("[query-engine] warning: device ledger admission-observer mutex was poisoned");
-            })
-            .ok()
+    fn admission_observers(&self) -> Arc<[LedgerAdmissionObserver]> {
+        Arc::clone(&self.inner.admission_observers.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Delivers `transition` to the admission observers. The caller has
     /// released the ledger state mutex.
     fn notify_admission_observers(&self, transition: &LedgerTransition) {
-        if let Some(observers) = self.admission_observers() {
-            for observer in observers.iter() {
-                if catch_unwind(AssertUnwindSafe(|| observer(transition))).is_err() {
-                    eprintln!("[query-engine] warning: device ledger admission observer panicked");
-                }
+        for observer in self.admission_observers().iter() {
+            if catch_unwind(AssertUnwindSafe(|| observer(transition))).is_err() {
+                eprintln!("[query-engine] warning: device ledger admission observer panicked");
             }
         }
     }
@@ -506,12 +488,10 @@ impl DeviceLedger {
     ) -> LedgerTransition {
         state.sequence = state.sequence.saturating_add(1);
         let transition = LedgerTransition { kind, snapshot: self.snapshot_locked(state) };
-        if let Some(observers) = self.transition_observers() {
-            for observer in observers.iter() {
-                let _delivery = LedgerTransitionObserverGuard::enter(&self.inner);
-                if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
-                    eprintln!("[query-engine] warning: device ledger transition observer panicked");
-                }
+        for observer in self.transition_observers().iter() {
+            let _delivery = LedgerTransitionObserverGuard::enter(&self.inner);
+            if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
+                eprintln!("[query-engine] warning: device ledger transition observer panicked");
             }
         }
         transition
@@ -585,8 +565,6 @@ impl DeviceLedger {
                 .aux_source_work_capacity
                 .saturating_sub(committed_auxiliary_slots),
             worker_depth: active_attempts.saturating_add(committed_auxiliary_slots),
-            protected_slot: false,
-            protected_reserve_bytes: 0,
             // Resident-cache charges share the same atomic ledger snapshot.
             cache_evictable_resident_bytes: state.evictable_bytes,
             cache_pinned_in_use_bytes: state.pinned_bytes,
@@ -633,8 +611,6 @@ impl DeviceLedger {
                 .saturating_sub(snapshot.live_grants_bytes)
                 .saturating_sub(snapshot.frozen_resident_bytes),
             evictable_bytes: state.evictable_bytes,
-            protected_slot: snapshot.protected_slot,
-            protected_reserve_bytes: snapshot.protected_reserve_bytes,
             cache_evictable_resident_bytes: snapshot.cache_evictable_resident_bytes,
             cache_pinned_in_use_bytes: snapshot.cache_pinned_in_use_bytes,
             health: snapshot.health.as_str().to_string(),
@@ -996,8 +972,10 @@ struct MemoryGrantInner {
 impl Drop for MemoryGrantInner {
     fn drop(&mut self) {
         let ledger = DeviceLedger { inner: Arc::clone(&self.ledger) };
-        let frozen_cleanup_failure = match self.frozen_domain.get_mut() {
-            Ok(Some(domain)) => match domain.usage() {
+        // The slot holds at most one domain handle, valid even when a panic
+        // poisoned its mutex; only the domain's own usage can close the device.
+        let frozen_cleanup_failure = match self.frozen_domain.get_mut().unwrap_or_else(PoisonError::into_inner) {
+            Some(domain) => match domain.usage() {
                 Ok(usage)
                     if usage.active_members == 0
                         && usage.current_allocations == 0
@@ -1016,8 +994,7 @@ impl Drop for MemoryGrantInner {
                 )),
                 Err(error) => Some(format!("frozen resident domain final usage sample failed: {error}")),
             },
-            Ok(None) => None,
-            Err(_error) => Some("frozen resident domain owner mutex was poisoned".to_string()),
+            None => None,
         };
         if let Some(reason) = frozen_cleanup_failure
             && let Err(error) = ledger.close_admission_if_open(reason)

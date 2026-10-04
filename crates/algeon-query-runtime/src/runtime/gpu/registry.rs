@@ -80,35 +80,15 @@ impl DeviceRegistryInstallProfile {
 /// Configuration used when installing a device registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceRegistryConfig {
-    /// CUDA ordinals enabled for the service. Empty means all visible devices.
+    /// CUDA ordinals enabled for the service: non-empty, unique, and
+    /// ascending, as `GpuBackendConfig::validate` leaves them.
     pub(crate) device_ordinals: Vec<usize>,
-    /// Stream-pool size installed for each enabled device.
-    pub(crate) stream_pool_size: usize,
-    /// Fixed capacity headroom subtracted from each device's total memory.
-    pub(crate) capacity_headroom_bytes: u64,
-    /// Fallback capacity used if the headroom calculation underflows.
-    pub(crate) fallback_capacity_bytes: u64,
     device_profiles: HashMap<usize, DeviceRegistryInstallProfile>,
 }
 
 impl DeviceRegistryConfig {
-    /// Creates a registry config for explicit device ordinals.
-    pub fn new(device_ordinals: Vec<usize>, stream_pool_size: usize) -> Self {
-        Self {
-            device_ordinals,
-            stream_pool_size,
-            capacity_headroom_bytes: 500 * 1024 * 1024,
-            fallback_capacity_bytes: 256 * 1024 * 1024,
-            device_profiles: HashMap::new(),
-        }
-    }
-
-    /// Sets the per-device capacity calculation parameters.
-    #[cfg(test)]
-    pub(crate) fn with_capacity_policy(mut self, headroom_bytes: u64, fallback_bytes: u64) -> Self {
-        self.capacity_headroom_bytes = headroom_bytes;
-        self.fallback_capacity_bytes = fallback_bytes;
-        self
+    pub fn new(device_ordinals: Vec<usize>) -> Self {
+        Self { device_ordinals, device_profiles: HashMap::new() }
     }
 
     pub(crate) fn with_device_profile(mut self, device_ordinal: usize, profile: DeviceRegistryInstallProfile) -> Self {
@@ -191,14 +171,13 @@ impl DeviceRegistry {
     pub(crate) fn resolve_install_plans(
         inventory: &dyn GpuInventory,
         config: &DeviceRegistryConfig,
-        probe: Option<&dyn GpuBackendConstructionProbe>,
+        probe: &dyn GpuBackendConstructionProbe,
     ) -> Result<ResolvedDeviceInstallPlans> {
-        validate_registry_config(config)?;
-        let ordinals = configured_ordinals(inventory, config)?;
+        let ordinals = config.device_ordinals.clone();
         let max_ordinal = ordinals[ordinals.len() - 1];
         let mut discovered = Vec::with_capacity(ordinals.len());
         for ordinal in &ordinals {
-            checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceDiscovery { device_ordinal: *ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeDeviceDiscovery { device_ordinal: *ordinal })?;
             let facts = inventory.facts(*ordinal)?;
             if facts.device != *ordinal {
                 return Err(QueryError::new(
@@ -222,25 +201,13 @@ impl DeviceRegistry {
             })?;
             let resource_profile =
                 resolve_resource_profile(*ordinal, profile, managed_capacity_bytes(*ordinal, &facts, profile)?)?;
-            if profile.lane_count < resource_profile.max_active_attempts {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.gpu.device_registry.capacity",
-                    "lane count must cover every active attempt",
-                )
-                .with_fact("device_ordinal", *ordinal)
-                .with_fact("field", "lane_count")
-                .with_fact("reason", "lane_count_below_active_limit")
-                .with_fact("lane_count", profile.lane_count)
-                .with_fact("max_active_attempts", resource_profile.max_active_attempts));
-            }
             discovered.push(ResolvedDeviceInstallPlan {
                 device_ordinal: *ordinal,
                 facts,
                 profile: profile.clone(),
                 resource_profile,
             });
-            checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceDiscovery { device_ordinal: *ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterDeviceDiscovery { device_ordinal: *ordinal })?;
         }
 
         Ok(ResolvedDeviceInstallPlans { plans: discovered, device_ordinals: ordinals, max_ordinal })
@@ -255,9 +222,9 @@ impl DeviceRegistry {
     pub(crate) fn install_resolved(
         resolved: ResolvedDeviceInstallPlans,
         owner: &DeviceOwnerToken<'_>,
-        probe: Option<&dyn GpuBackendConstructionProbe>,
-        construction_journal: Option<&Arc<ConstructionResourceJournal>>,
-        backend_metrics: Option<&BackendMetricsStore>,
+        probe: &dyn GpuBackendConstructionProbe,
+        construction_journal: &ConstructionResourceJournal,
+        backend_metrics: &BackendMetricsStore,
         inventory: &dyn GpuInventory,
     ) -> Result<Self> {
         let _owner_generation = owner.generation();
@@ -285,7 +252,7 @@ impl DeviceRegistry {
         let mut managed = Vec::with_capacity(discovered.len());
         for (device, discovered) in discovered {
             let ordinal = discovered.device_ordinal;
-            checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeMemoryManager { device_ordinal: ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeMemoryManager { device_ordinal: ordinal })?;
             let installation_before = DeviceMemoryManager::installation_state_for_device(device).map_err(|error| {
                 cudf_query_error(
                     "query_engine.gpu.device_registry.memory_manager",
@@ -316,9 +283,7 @@ impl DeviceRegistry {
                 DeviceMemoryFailureTracker::for_installation_state(ordinal, installation_before)?;
             let (mr_manager, memory_manager_installation) =
                 install_device_memory_manager(device, &memory_failure_tracker, requested_options)?;
-            if let Some(journal) = construction_journal {
-                journal.record_memory_manager(mr_manager.clone())?;
-            }
+            construction_journal.record_memory_manager(mr_manager.clone())?;
             let installation_generation = memory_manager_installation.installation_generation.ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::Internal,
@@ -339,7 +304,7 @@ impl DeviceRegistry {
                 memory_manager_installation,
                 engine_health_identity,
             });
-            checkpoint(probe, GpuBackendConstructionCheckpoint::AfterMemoryManager { device_ordinal: ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterMemoryManager { device_ordinal: ordinal })?;
         }
 
         // Freeze managed capacity against post-install live free bytes. No
@@ -387,7 +352,7 @@ impl DeviceRegistry {
         let mut contexts = vec![None; max_ordinal.saturating_add(1)];
         for managed in managed {
             let ordinal = managed.device.ordinal();
-            checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeStreamPool { device_ordinal: ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeStreamPool { device_ordinal: ordinal })?;
             let resource_profile = &managed.discovered.resource_profile;
             let stream_pool = ServiceStreamPool::new_with_classes(
                 managed.device,
@@ -395,18 +360,14 @@ impl DeviceRegistry {
                 resource_profile.max_active_attempts,
                 resource_profile.aux_source_work_capacity,
             )?;
-            if let Some(journal) = construction_journal {
-                journal.record_stream_pool(stream_pool.clone())?;
-            }
-            checkpoint(probe, GpuBackendConstructionCheckpoint::AfterStreamPool { device_ordinal: ordinal })?;
-            checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceContext { device_ordinal: ordinal })?;
+            construction_journal.record_stream_pool(stream_pool.clone())?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterStreamPool { device_ordinal: ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeDeviceContext { device_ordinal: ordinal })?;
             let ledger = Arc::new(DeviceLedger::new(managed.discovered.resource_profile.clone()));
-            if let Some(backend_metrics) = backend_metrics {
-                let backend_metrics = backend_metrics.clone();
-                ledger.register_transition_observer(Arc::new(move |transition| {
-                    backend_metrics.record_ledger_transition(transition);
-                }))?;
-            }
+            let ledger_metrics = backend_metrics.clone();
+            ledger.register_transition_observer(Arc::new(move |transition| {
+                ledger_metrics.record_ledger_transition(transition);
+            }))?;
             let context = DeviceContext::new(
                 managed.device,
                 stream_pool,
@@ -418,11 +379,9 @@ impl DeviceRegistry {
                 managed.discovered.facts,
                 managed.discovered.profile.max_active_attempts,
             )?;
-            if let Some(journal) = construction_journal {
-                journal.record_device_context(context.clone())?;
-            }
+            construction_journal.record_device_context(context.clone())?;
             contexts[ordinal] = Some(context);
-            checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceContext { device_ordinal: ordinal })?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterDeviceContext { device_ordinal: ordinal })?;
         }
         Ok(Self {
             contexts: contexts.into(),
@@ -796,140 +755,10 @@ fn mix_fingerprint(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn checkpoint(
-    probe: Option<&dyn GpuBackendConstructionProbe>,
-    construction_checkpoint: GpuBackendConstructionCheckpoint,
-) -> Result<()> {
-    match probe {
-        Some(probe) => probe.checkpoint(construction_checkpoint),
-        None => Ok(()),
-    }
-}
-
-fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
-    if config.stream_pool_size == 0 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.gpu.device_registry.config",
-            "device registry stream pool size must be greater than zero",
-        )
-        .with_fact("field", "stream_pool_size")
-        .with_fact("reason", "zero"));
-    }
-    if config.fallback_capacity_bytes == 0 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.gpu.device_registry.config",
-            "device registry fallback capacity must be greater than zero",
-        )
-        .with_fact("field", "fallback_capacity_bytes")
-        .with_fact("reason", "zero"));
-    }
-    for (ordinal, profile) in &config.device_profiles {
-        if profile.stream_pool_size == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.gpu.device_registry.config",
-                "per-device stream pool size must be greater than zero",
-            )
-            .with_fact("field", "device_profiles.stream_pool_size")
-            .with_fact("device_ordinal", *ordinal)
-            .with_fact("reason", "zero"));
-        }
-        if profile.max_active_attempts == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.gpu.device_registry.config",
-                "per-device active-attempt limit must be greater than zero",
-            )
-            .with_fact("field", "device_profiles.max_active_attempts")
-            .with_fact("device_ordinal", *ordinal)
-            .with_fact("reason", "zero"));
-        }
-        if profile.default_query_limit_bytes == Some(0) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.gpu.device_registry.config",
-                "per-device default query limit must be greater than zero",
-            )
-            .with_fact("field", "device_profiles.default_query_limit_bytes")
-            .with_fact("device_ordinal", *ordinal)
-            .with_fact("reason", "zero"));
-        }
-        match profile.capacity_policy {
-            DeviceRegistryCapacityPolicy::Automatic { fallback_bytes: 0, .. } => {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.gpu.device_registry.config",
-                    "per-device fallback capacity must be greater than zero",
-                )
-                .with_fact("field", "device_profiles.fallback_capacity_bytes")
-                .with_fact("device_ordinal", *ordinal)
-                .with_fact("reason", "zero"));
-            },
-            DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 0 } => {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.gpu.device_registry.config",
-                    "per-device configured memory limit must be greater than zero",
-                )
-                .with_fact("field", "device_profiles.memory_limit")
-                .with_fact("device_ordinal", *ordinal)
-                .with_fact("reason", "zero"));
-            },
-            _ => {},
-        }
-        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes(), None)
-            .validate()
-            .map_err(|error| {
-                cudf_query_error(
-                    "query_engine.gpu.device_registry.config",
-                    "invalid per-device memory manager options",
-                    error,
-                )
-                .with_fact("field", "device_profiles.device_memory_manager_options")
-                .with_fact("device_ordinal", *ordinal)
-                .with_fact("reason", "invalid_device_memory_manager_options")
-            })?;
-    }
-    Ok(())
-}
-
-fn configured_ordinals(inventory: &dyn GpuInventory, config: &DeviceRegistryConfig) -> Result<Vec<usize>> {
-    let mut ordinals = if config.device_ordinals.is_empty() {
-        let device_count = inventory.device_count()?;
-        (0..device_count).collect::<Vec<_>>()
-    } else {
-        config.device_ordinals.clone()
-    };
-    if ordinals.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.gpu.device_registry.config",
-            "device registry requires at least one CUDA device",
-        )
-        .with_fact("field", "device_ordinals")
-        .with_fact("reason", "empty"));
-    }
-    let original_len = ordinals.len();
-    ordinals.sort_unstable();
-    ordinals.dedup();
-    if !config.device_ordinals.is_empty() && ordinals.len() != original_len {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.gpu.device_registry.config",
-            "device registry ordinals must not contain duplicates",
-        )
-        .with_fact("field", "device_ordinals")
-        .with_fact("reason", "duplicate"));
-    }
-    Ok(ordinals)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::DeviceFacts;
+    use crate::runtime::{DeviceFacts, backend_core::NoopConstructionProbe};
 
     #[derive(Debug, Default)]
     struct RecordingProbe(Mutex<Vec<GpuBackendConstructionCheckpoint>>);
@@ -947,10 +776,6 @@ mod tests {
     }
 
     impl GpuInventory for FakeInventory {
-        fn device_count(&self) -> Result<usize> {
-            Ok(self.facts.len())
-        }
-
         fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
             self.facts.get(device_ordinal).cloned().ok_or_else(|| {
                 QueryError::new(
@@ -960,84 +785,6 @@ mod tests {
                 )
             })
         }
-    }
-
-    #[test]
-    fn configured_ordinals_default_to_all_inventory_devices() {
-        let inventory = FakeInventory {
-            facts: vec![
-                DeviceFacts {
-                    device: 0,
-                    model_name: None,
-                    uuid: None,
-                    physical_total_bytes: None,
-                    total_bytes: 100,
-                    free_bytes: 50,
-                    sm_count: Some(1),
-                    utilization_pct: None,
-                },
-                DeviceFacts {
-                    device: 1,
-                    model_name: None,
-                    uuid: None,
-                    physical_total_bytes: None,
-                    total_bytes: 100,
-                    free_bytes: 50,
-                    sm_count: Some(1),
-                    utilization_pct: None,
-                },
-            ],
-        };
-        let config = DeviceRegistryConfig::new(Vec::new(), 1);
-
-        assert_eq!(configured_ordinals(&inventory, &config).unwrap(), vec![0, 1]);
-    }
-
-    #[test]
-    fn registry_requires_explicit_device_profiles() {
-        assert!(DeviceRegistryConfig::new(vec![4], 7).profile(4).is_none());
-    }
-
-    #[test]
-    fn configured_ordinals_reject_duplicates() {
-        let inventory = FakeInventory {
-            facts: vec![DeviceFacts {
-                device: 0,
-                model_name: None,
-                uuid: None,
-                physical_total_bytes: None,
-                total_bytes: 100,
-                free_bytes: 50,
-                sm_count: Some(1),
-                utilization_pct: None,
-            }],
-        };
-        let config = DeviceRegistryConfig::new(vec![0, 0], 1);
-
-        let error = configured_ordinals(&inventory, &config).unwrap_err();
-
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(error.fact_value("field"), Some("device_ordinals"));
-        assert_eq!(error.fact_value("reason"), Some("duplicate"));
-    }
-
-    #[test]
-    fn configured_ordinals_preserve_explicit_values_for_checkpointed_discovery() {
-        let inventory = FakeInventory {
-            facts: vec![DeviceFacts {
-                device: 0,
-                model_name: None,
-                uuid: None,
-                physical_total_bytes: None,
-                total_bytes: 100,
-                free_bytes: 50,
-                sm_count: Some(1),
-                utilization_pct: None,
-            }],
-        };
-        let config = DeviceRegistryConfig::new(vec![usize::MAX], 1);
-
-        assert_eq!(configured_ordinals(&inventory, &config).unwrap(), vec![usize::MAX]);
     }
 
     #[test]
@@ -1084,13 +831,12 @@ mod tests {
             install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
-        let config = DeviceRegistryConfig::new(vec![0, 1], 2)
-            .with_capacity_policy(100, 200)
+        let config = DeviceRegistryConfig::new(vec![0, 1])
             .with_device_profile(0, profile.clone())
             .with_device_profile(1, DeviceRegistryInstallProfile { install_telemetry: false, ..profile });
         let probe = RecordingProbe::default();
 
-        let resolved = DeviceRegistry::resolve_install_plans(&inventory, &config, Some(&probe)).unwrap();
+        let resolved = DeviceRegistry::resolve_install_plans(&inventory, &config, &probe).unwrap();
 
         assert_eq!(resolved.device_ordinals(), &[0, 1]);
         assert_eq!(resolved.telemetry_device_ordinals(), vec![0]);
@@ -1155,10 +901,10 @@ mod tests {
         };
         let plans = DeviceRegistry::resolve_install_plans(
             &inventory,
-            &DeviceRegistryConfig::new(vec![0, 1], 4)
+            &DeviceRegistryConfig::new(vec![0, 1])
                 .with_device_profile(0, profile(None))
                 .with_device_profile(1, profile(None)),
-            None,
+            &NoopConstructionProbe,
         )
         .unwrap();
         assert_eq!(plans.plans()[0].resource_profile.managed_capacity_bytes, 800);
@@ -1173,20 +919,20 @@ mod tests {
 
         let explicit = DeviceRegistry::resolve_install_plans(
             &inventory,
-            &DeviceRegistryConfig::new(vec![0, 1], 4)
+            &DeviceRegistryConfig::new(vec![0, 1])
                 .with_device_profile(0, profile(None))
                 .with_device_profile(1, profile(Some(1_000))),
-            None,
+            &NoopConstructionProbe,
         )
         .unwrap();
         assert_eq!(explicit.plans()[1].resource_profile.default_query_limit_bytes, 1_000);
 
         let error = DeviceRegistry::resolve_install_plans(
             &inventory,
-            &DeviceRegistryConfig::new(vec![0, 1], 4)
+            &DeviceRegistryConfig::new(vec![0, 1])
                 .with_device_profile(0, profile(None))
                 .with_device_profile(1, profile(Some(2_000))),
-            None,
+            &NoopConstructionProbe,
         )
         .unwrap_err();
         assert_eq!(error.fact_value("device_ordinal"), Some("1"));

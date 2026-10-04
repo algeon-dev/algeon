@@ -69,9 +69,9 @@ use query_runtime::{
     metrics::QueryMetrics,
     observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeTerminalOutcome},
     runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, SourceSchedulerPolicy,
+        AdmittedQueryContext, ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, QueryAdmissionRequest,
+        QueryExecutionConfig, QueryHandle, QueueBounds, SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
 };
@@ -153,19 +153,6 @@ impl BackendTestPolicy {
 fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
     static BACKEND: OnceLock<(BackendTestPolicy, GpuBackendCore)> = OnceLock::new();
     let (installed_policy, backend) = BACKEND.get_or_init(|| {
-        let controller = GpuBackendControllerDraft::new(
-            QueryExecutionConfig {
-                max_source_chunk_bytes: policy.max_source_chunk_bytes,
-                max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
-                max_retry_attempts: policy.max_retry_attempts,
-                min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
-                source_scheduler_policy: policy.source_scheduler_policy,
-                statistical_aggregate_execution_mode: policy.statistical_aggregate_execution_mode,
-                planning_policy: policy.planning_policy,
-                ..QueryExecutionConfig::default()
-            },
-            QueueBounds::default(),
-        );
         let device = GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(0)
                 .with_default_query_limit_bytes(NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES)
@@ -179,9 +166,25 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                 .with_source_work_per_attempt(policy.source_work_per_attempt),
             GpuMemoryOwnership::WholeDeviceExclusive,
         );
-        let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller))
-            .build()
-            .expect("native execution suite backend");
+        let backend = GpuBackendCore::new(
+            GpuBackendConfig::new(
+                vec![device],
+                QueryExecutionConfig {
+                    max_source_chunk_bytes: policy.max_source_chunk_bytes,
+                    max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
+                    max_retry_attempts: policy.max_retry_attempts,
+                    min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
+                    source_scheduler_policy: policy.source_scheduler_policy,
+                    statistical_aggregate_execution_mode: policy.statistical_aggregate_execution_mode,
+                    planning_policy: policy.planning_policy,
+                    ..QueryExecutionConfig::default()
+                },
+                QueueBounds::default(),
+            )
+            .validate()
+            .expect("valid backend config"),
+        )
+        .expect("native execution suite backend");
         (policy, backend)
     });
     assert_eq!(

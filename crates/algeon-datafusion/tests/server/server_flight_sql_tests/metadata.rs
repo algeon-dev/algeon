@@ -416,7 +416,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     let server = tokio::spawn(async move { server.serve().await });
     let mut client = connect_with_retry(addr).await;
     let attempts_before = backend.attempt_counters_snapshot();
-    let admission_before = backend.admission_snapshot().unwrap();
+    let admission_before = backend.diagnostics().unwrap().admission;
 
     let get_tables = client
         .get_tables(CommandGetTables {
@@ -530,7 +530,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
 
     assert!(!scan_probe.scan_called(), "metadata discovery must not call the user table provider's scan method");
     assert_eq!(backend.attempt_counters_snapshot(), attempts_before, "metadata execution must not begin Algeon attempts");
-    assert_eq!(backend.admission_snapshot().unwrap(), admission_before, "metadata execution must not alter GPU admission");
+    assert_eq!(backend.diagnostics().unwrap().admission, admission_before, "metadata execution must not alter GPU admission");
 
     let metadata_stats = get_query_stats_raw(&mut client, &show_tables_query_id).await;
     assert!(metadata_stats.contains("# outcome=succeeded"), "{metadata_stats}");

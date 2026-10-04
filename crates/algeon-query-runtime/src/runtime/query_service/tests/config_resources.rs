@@ -56,8 +56,7 @@ fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error =
-        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
+    let error = config.validate().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
@@ -74,8 +73,7 @@ fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error =
-        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
+    let error = config.validate().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
@@ -90,8 +88,7 @@ fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error =
-        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
+    let error = config.validate().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
@@ -105,8 +102,7 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error =
-        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
+    let error = config.validate().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));

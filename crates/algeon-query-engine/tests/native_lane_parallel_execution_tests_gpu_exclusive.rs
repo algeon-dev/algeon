@@ -48,10 +48,9 @@ use query_runtime::{
         RuntimeTimelineEvent, RuntimeWorkerId, StreamLeaseLifecycleState,
     },
     runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
-        GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
-        resident::GpuResidentInputMap,
+        AdmittedQueryContext, ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
     },
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
@@ -66,7 +65,6 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
         min_retry_chunk_row_groups: 1,
         ..QueryExecutionConfig::default()
     };
-    let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
     // Two forks per attempt back two execution lanes; two execution workers,
     // beside the worker reserved for lifecycle jobs, let both lanes run at once
     // instead of queueing behind one worker.
@@ -77,7 +75,9 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
             .with_source_work_per_attempt(2),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller)).build()
+    GpuBackendCore::new(
+        GpuBackendConfig::new(vec![device], policy, QueueBounds::default()).validate().expect("valid backend config"),
+    )
 }
 
 fn ensure_lane_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {

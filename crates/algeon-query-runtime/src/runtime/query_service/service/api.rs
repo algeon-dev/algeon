@@ -53,7 +53,12 @@ use crate::runtime::query_service::config::QueueBounds;
 use crate::{
     attempt::{AttemptAdmission, AttemptAdmissionBinding, AttemptLifecycleError},
     observability::{AttemptId, RuntimeObservationHandle},
-    runtime::ExecutionCancellation,
+    runtime::{
+        ExecutionCancellation,
+        cache::{CacheSourceEventSnapshot, DeviceCacheReport},
+        gpu::{DeviceLedgerReport, DeviceMemoryFailureReport},
+        gpu_execution_pool::{GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
+    },
 };
 
 /// Point-in-time service admission state for bounded-queue and overload reports.
@@ -68,20 +73,23 @@ pub struct QueryServiceAdmissionSnapshot {
     /// inferred from snapshot polling, and therefore remains available after
     /// the queue drains.
     pub queue_high_watermark: usize,
-    /// Devices currently withholding one future slot and liveness bytes for
-    /// an overtake-limited waiter.
-    pub(crate) protected_devices: Vec<usize>,
 }
 
-/// Process-wide active-query slots currently held on one service device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct QueryServiceDeviceAdmissionSnapshot {
-    /// CUDA device ordinal.
-    pub device_ordinal: usize,
-    /// Slots held across every `QueryService` in this process.
-    pub process_active_query_slots: usize,
-    /// Whether this device currently protects a future slot for a waiter.
-    pub(crate) has_protection: bool,
+/// One read of a live service's state, each part taken under its owner's
+/// lock. The device ledgers are the admission authority; cache, memory
+/// failure, and execution-pool reports are diagnostic cross-checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendDiagnostics {
+    pub admission: QueryServiceAdmissionSnapshot,
+    pub ledgers: Vec<DeviceLedgerReport>,
+    /// Physical allocation-domain usage and activity of each cache-enabled
+    /// device.
+    pub caches: Vec<DeviceCacheReport>,
+    /// Bounded source-cache events from the cache owners, for correlation.
+    pub cache_source_events: Vec<CacheSourceEventSnapshot>,
+    pub memory_failures: Vec<DeviceMemoryFailureReport>,
+    pub execution_pools: Vec<GpuExecutionPoolSnapshot>,
+    pub execution_queries: GpuExecutionQuerySnapshot,
 }
 
 /// Caller-facing classification for a failed native admission or execution

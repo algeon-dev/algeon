@@ -444,9 +444,9 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     assert_eq!(first.num_rows(), 2);
     assert!(!completion.is_ready(), "the attempt cannot seal while its deferred native cursor remains live");
 
-    let admission = backend.admission_snapshot().unwrap();
+    let admission = backend.diagnostics().unwrap().admission;
     assert_eq!(admission.active_queries, 1, "the context lease must survive the first deferred host batch");
-    let live_ledgers = backend.device_ledger_reports().unwrap();
+    let live_ledgers = backend.diagnostics().unwrap().ledgers;
     let [live_ledger] = live_ledgers.as_slice() else {
         panic!("one-device fixture must expose exactly one ledger: {live_ledgers:#?}");
     };
@@ -516,8 +516,8 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
 
     timeout(Duration::from_secs(5), async {
         loop {
-            let admission = backend.admission_snapshot().unwrap();
-            let released_ledgers = backend.device_ledger_reports().unwrap();
+            let admission = backend.diagnostics().unwrap().admission;
+            let released_ledgers = backend.diagnostics().unwrap().ledgers;
             if admission.active_queries == 0
                 && released_ledgers.iter().all(|ledger| ledger.active_attempts == 0 && ledger.grants.is_empty())
             {
@@ -529,7 +529,7 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     .await
     .expect("stream EOF must release the context lease and immutable grant exactly once");
 
-    let released_ledgers = backend.device_ledger_reports().unwrap();
+    let released_ledgers = backend.diagnostics().unwrap().ledgers;
     let [released_ledger] = released_ledgers.as_slice() else {
         panic!("one-device fixture must expose exactly one ledger after cleanup: {released_ledgers:#?}");
     };
@@ -584,11 +584,11 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let primer_report = primer_completion.await;
     assert!(matches!(primer_report.outcome, RuntimeTerminalOutcome::Succeeded));
 
-    let primed_ledgers = backend.device_ledger_reports().unwrap();
+    let primed_ledgers = backend.diagnostics().unwrap().ledgers;
     let [primed_ledger] = primed_ledgers.as_slice() else {
         panic!("one-device fixture must expose one cache-backed ledger: {primed_ledgers:#?}");
     };
-    let primed_caches = backend.device_cache_reports().unwrap();
+    let primed_caches = backend.diagnostics().unwrap().caches;
     let [primed_cache] = primed_caches.as_slice() else {
         panic!("one cache-enabled device must expose one cache report: {primed_caches:#?}");
     };
@@ -613,13 +613,13 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     assert!(first.num_rows() > 0);
     assert!(!completion.is_ready(), "the deferred host cursor must still own the live attempt after its first batch");
 
-    let live_ledgers = backend.device_ledger_reports().unwrap();
+    let live_ledgers = backend.diagnostics().unwrap().ledgers;
     let [live_ledger] = live_ledgers.as_slice() else {
         panic!("one-device fixture must expose one live cache-backed ledger: {live_ledgers:#?}");
     };
     assert_eq!(live_ledger.active_attempts, 1);
     assert_eq!(live_ledger.grants.len(), 1);
-    let live_caches = backend.device_cache_reports().unwrap();
+    let live_caches = backend.diagnostics().unwrap().caches;
     let [live_cache] = live_caches.as_slice() else {
         panic!("one cache-enabled device must expose one live cache report: {live_caches:#?}");
     };
@@ -658,7 +658,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     assert_eq!(evidence.cache_evictable_resident_bytes.value, Some(live_ledger.cache_evictable_resident_bytes));
     assert_eq!(evidence.cache_pinned_in_use_bytes.value, Some(0));
 
-    let released_caches = backend.device_cache_reports().unwrap();
+    let released_caches = backend.diagnostics().unwrap().caches;
     let [released_cache] = released_caches.as_slice() else {
         panic!("one cache-enabled device must retain one report after attempt cleanup: {released_caches:#?}");
     };
@@ -737,13 +737,13 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     assert_eq!(plan_metric_usize(plan.as_ref(), "admission_wait_time_observed"), 1);
     assert_eq!(plan_metric_usize(plan.as_ref(), "query_grant_bytes_observed"), 1);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             sleep(Duration::from_millis(1)).await;
         }
     })
     .await
     .expect("ordered query-service cleanup should release admission");
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.diagnostics().unwrap().admission.active_queries, 0);
 
     fs::remove_dir_all(dir).ok();
 }
@@ -924,7 +924,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
     drop_session_context_on_blocking_thread(ctx).await;
     timeout(Duration::from_secs(5), async {
         loop {
-            let reports = backend.device_ledger_reports().unwrap();
+            let reports = backend.diagnostics().unwrap().ledgers;
             if reports.iter().all(|report| report.active_attempts == 0 && report.grants.is_empty()) {
                 break;
             }
@@ -933,7 +933,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
     })
     .await
     .expect("graph execution must release the attempt and immutable grant");
-    let ledgers = backend.device_ledger_reports().unwrap();
+    let ledgers = backend.diagnostics().unwrap().ledgers;
     let [ledger] = ledgers.as_slice() else {
         panic!("one-device fixture must expose exactly one ledger after rejection: {ledgers:#?}");
     };
@@ -2694,7 +2694,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     find_composed_exec(plan.as_ref()).expect("shared graph Top-K must use one composed execution");
     let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
     let first = stream.next().await.expect("ranked metadata enrichment must produce a batch").unwrap();
-    let active = backend.device_ledger_reports().unwrap();
+    let active = backend.diagnostics().unwrap().ledgers;
     assert_eq!(active.iter().map(|report| report.grants.len()).sum::<usize>(), 1);
     let mut batches = vec![first];
     while let Some(batch) = stream.next().await {

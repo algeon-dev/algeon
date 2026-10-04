@@ -187,19 +187,21 @@ pub(super) fn sample_once(
     retain_terminal_sample: bool,
 ) {
     let observation_started = Instant::now();
-    // Graph-model calibration compares a logical claim against device telemetry. The public
-    // accessors are individually coherent but not one global transaction, so
-    // bracket telemetry with two ledger reads. A row whose ledger sequence
-    // changed cannot supply the "same-sample" claim and is retained only for
-    // non-calibration utilization/drift evidence.
-    let ledgers = backend.device_ledger_reports().unwrap_or_default();
+    // Graph-model calibration compares a logical claim against device telemetry. A diagnostics
+    // read and a telemetry sample are not one transaction, so bracket telemetry
+    // with two diagnostics reads. A row whose ledger sequence changed cannot
+    // supply the "same-sample" claim and is retained only for non-calibration
+    // utilization/drift evidence.
+    let ledgers = backend.diagnostics().map(|diagnostics| diagnostics.ledgers).unwrap_or_default();
     let telemetry = backend.device_telemetry_snapshots().unwrap_or_default();
-    let ledgers_after_telemetry = backend.device_ledger_reports().unwrap_or_default();
-    let cache_reports = backend.device_cache_reports().unwrap_or_default();
-    let pools = backend.gpu_execution_pool_reports().unwrap_or_default();
-    let failures = backend.device_memory_failure_reports().unwrap_or_default();
+    let after_telemetry = backend.diagnostics().ok();
+    let admission = after_telemetry.as_ref().map(|diagnostics| diagnostics.admission.clone());
+    let (ledgers_after_telemetry, cache_reports, pools, failures) = after_telemetry
+        .map(|diagnostics| {
+            (diagnostics.ledgers, diagnostics.caches, diagnostics.execution_pools, diagnostics.memory_failures)
+        })
+        .unwrap_or_default();
     let cugraph_bfs_singleflight = cugraph_bfs_singleflight_snapshot(backend);
-    let admission = backend.admission_snapshot().ok();
     let backend_metrics = backend.backend_metrics_snapshot();
     let completed_attempts = BackendAttemptDisposition::ALL
         .into_iter()
