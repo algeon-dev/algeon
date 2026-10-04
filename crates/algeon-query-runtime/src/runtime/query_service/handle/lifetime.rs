@@ -164,14 +164,6 @@ impl QueryHandleLifetime {
         self.admitted_device_requirements.get(&ordinal)
     }
 
-    #[cfg(test)]
-    #[doc(hidden)]
-    pub(in crate::runtime::query_service) fn admitted_capability_evidence_for_test(
-        &self,
-    ) -> Option<Arc<AttemptRequirement>> {
-        self.admitted_plan_identities.current()
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "service construction inputs are distinct admission and ownership values"
@@ -188,14 +180,10 @@ impl QueryHandleLifetime {
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
         let device_ordinal = envelope.device_ordinal();
-        let attempt_auxiliary_capacity = service
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.devices.resource_profile(device_ordinal))
-            .map_or_else(
-                || service.config.source_scheduler_policy.max_source_reads_in_flight().max(1),
-                |profile| profile.source_work_per_attempt,
-            );
+        let attempt_auxiliary_capacity = service.admission.devices.ledger(device_ordinal).map_or_else(
+            |_| service.config.source_scheduler_policy.max_source_reads_in_flight().max(1),
+            |ledger| ledger.profile().source_work_per_attempt,
+        );
         let attempt_auxiliary_slots = AttemptAuxiliarySlots::new(device_ordinal, attempt_auxiliary_capacity);
         let service_epoch_user = service.service_epoch.retain_existing_user();
         let lifetime = Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
@@ -628,8 +616,8 @@ impl QueryHandleLifetime {
                 .as_ref()
                 .expect("query handle release retains its service until cleanup completion")
                 .resources
-                .as_ref()
-                .and_then(|resources| resources.gpu_execution_pool_for_device(self.device_ordinal).ok())
+                .gpu_execution_pool_for_device(self.device_ordinal)
+                .ok()
         } else {
             None
         };

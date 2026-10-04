@@ -22,7 +22,7 @@ fn query_service_reports_overload_when_queue_is_full() {
     assert_eq!(error.status(), QueryErrorStatus::Temporary);
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
     assert_eq!(
-        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
+        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, &service.controller.queue_bounds),
         QueryAdmissionOutcome::Capacity {
             queued_queries: Some(1),
             queue_capacity: Some(1),
@@ -68,7 +68,7 @@ fn query_service_admission_snapshot_retains_queue_high_watermark_after_drain() {
     let saturated = service.admission_snapshot().unwrap();
     assert_eq!(saturated.queued_queries, QUEUE_LIMIT);
     assert_eq!(saturated.queue_high_watermark, QUEUE_LIMIT);
-    assert!(saturated.queue_high_watermark <= service.service.queue_bounds().max_waiters);
+    assert!(saturated.queue_high_watermark <= service.controller.queue_bounds.max_waiters);
 
     let overflow = service.enqueue_admission().unwrap_err();
     assert_eq!(overflow.code(), QueryErrorCode::ServiceOverloaded);
@@ -85,7 +85,7 @@ fn query_service_admission_snapshot_retains_queue_high_watermark_after_drain() {
     let drained = service.admission_snapshot().unwrap();
     assert_eq!(drained.queued_queries, 0);
     assert_eq!(drained.queue_high_watermark, QUEUE_LIMIT);
-    assert!(drained.queue_high_watermark <= service.service.queue_bounds().max_waiters);
+    assert!(drained.queue_high_watermark <= service.controller.queue_bounds.max_waiters);
 
     drop(active);
 }
@@ -260,9 +260,7 @@ fn blocking_admission_returns_its_cancelled_terminal_result_after_queue_sweep() 
 fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let capacity_bytes = 12 * 1024 * 1024;
     let max_active_attempts_per_device = 4;
-    let service = AdmissionTestController::new_with_ledger(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = AdmissionTestController::new_with_ledger(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         test_ledger(capacity_bytes, max_active_attempts_per_device, Default::default()),
     )
     .unwrap();
@@ -279,9 +277,7 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
 }
 #[test]
 fn query_service_uses_fixed_default_query_caps() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         4,
@@ -313,9 +309,7 @@ fn query_service_uses_fixed_default_query_caps() {
 fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
     // Two explicit caps whose sum exceeds capacity serialize until the first
     // immutable grant returns to the ledger.
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
@@ -343,16 +337,14 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
 }
 #[test]
 fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
     );
     let active =
         service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(150)).unwrap();
-    let retained_grant = active.memory_grant().unwrap();
+    let retained_grant = active.memory_grant();
     drop(active);
     assert_eq!(first_memory_governor_report(&service).live_grants_bytes, 150);
 
@@ -375,9 +367,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
 fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
     // Two explicit caps whose sum exceeds capacity keep the second waiter
     // selected but memory-blocked until its deadline.
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
         250,
         1,
         2,
@@ -395,7 +385,7 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
     assert_eq!(error.fact_value("queued_queries"), Some("0"), "the expired waiter is not a queue member");
     assert_eq!(
-        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
+        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, &service.controller.queue_bounds),
         QueryAdmissionOutcome::Capacity {
             queued_queries: Some(0),
             queue_capacity: Some(8),
@@ -406,9 +396,7 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 
 #[test]
 fn a_queue_timeout_ends_only_its_own_waiter_and_reports_the_members_left() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         1,
         1,
@@ -435,9 +423,7 @@ fn a_queue_timeout_ends_only_its_own_waiter_and_reports_the_members_left() {
 
 #[test]
 fn a_max_wait_past_the_clock_range_sets_no_queue_deadline() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::MAX },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::MAX },
         100,
         1,
         1,
@@ -459,7 +445,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     )
     .expect("two-device runtime-backed service");
     service
-        .close_device_admission_for_test(0, "selected-device-timeout-test")
+        .inner.admission.close_device_admission_for_test(0, "selected-device-timeout-test")
         .expect("ordinal zero closes while ordinal one remains eligible");
     let active = service.admit_query().expect("ordinal one admits the active attempt");
     assert_eq!(active.device_ordinal(), 1);
@@ -467,11 +453,11 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
     let entries = DeviceAdmissionEntries::from([(0, requirement()), (1, requirement())]);
     {
-        let mut state = service.inner.admission.lock().expect("admission state");
+        let mut state = service.inner.admission.state.lock().expect("admission state");
         state
             .queued
             .iter_mut()
-            .find(|request| request.admission_request_id == waiter.admission_request_id)
+            .find(|request| request.admission_request_id == waiter.waiter.admission_request_id)
             .expect("queued request")
             .device_entries = entries;
     }
@@ -479,7 +465,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     // Keep the queued request's service deadline in the future so the sweep
     // retains it, while the waiter deadline drives the selected-but-blocked
     // timeout branch below.
-    waiter.deadline = Some(Instant::now());
+    waiter.waiter.deadline = Some(Instant::now());
     let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
 
     // This service is backed by the real installed devices, so the grant size
@@ -499,9 +485,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 
 #[test]
 fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         300,
         10,
         2,
@@ -525,16 +509,14 @@ fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
 
 #[test]
 fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,
     );
     let active =
         service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(60)).unwrap();
-    let grant = active.memory_grant().unwrap();
+    let grant = active.memory_grant();
     let mut waiter =
         service.enqueue_admission_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(60)).unwrap();
 
@@ -551,16 +533,14 @@ fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
 
 #[test]
 fn frozen_resident_release_revalidates_and_wakes_a_capacity_waiter() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,
     );
     let resident_owner =
         service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(50)).unwrap();
-    let resident_grant = resident_owner.memory_grant().unwrap();
+    let resident_grant = resident_owner.memory_grant();
     resident_grant.freeze_resident(30).unwrap();
     drop(resident_owner);
     let active =
@@ -591,9 +571,7 @@ fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
 }
 #[test]
 fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10) },
         100,
         1,
         1,
@@ -634,9 +612,7 @@ fn query_service_close_wakes_waiting_admission() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admission_activity() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         64 * 1024 * 1024,
         1024,
         1,
@@ -646,7 +622,7 @@ async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admis
     let queued = tokio::spawn(async move { queued_service.admit_async().await });
     wait_for_queued_len(&service, 1);
 
-    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only service ledger");
+    let ledger = Arc::clone(service.controller.devices.ledger(0).expect("fixture ledger"));
     ledger.close_admission_for_unknown_isolation("injected").unwrap();
 
     let error = time::timeout(Duration::from_secs(2), queued)
@@ -661,7 +637,7 @@ async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admis
 #[test]
 fn device_local_closure_is_not_backend_unhealthy_whatever_its_text_says() {
     let service = test_service(1, 8);
-    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only service ledger");
+    let ledger = Arc::clone(service.controller.devices.ledger(0).expect("fixture ledger"));
     // Diagnostic text that once encoded the isolation scope decides nothing.
     ledger.close_admission("unknown-isolation backend failure: device-local text").unwrap();
 
@@ -729,16 +705,15 @@ fn full_queue_rejects_before_owner_resolution_or_lifecycle_ticket() {
     let service = test_service(1, 1);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let queued = service.enqueue_admission().expect("one real waiter fills the queue");
-    service.reset_pending_preflight_resolver_calls();
-    let lifecycle_before = service.service.inner.admission.lock().expect("admission state").lifecycle.snapshot();
+    let lifecycle_before = service.lifecycle_snapshot();
 
-    let error = service.admit_query().expect_err("queue-full admission must reject locally");
+    let error = service
+        .begin_submission(QueryAdmissionRequest::test_attempt())
+        .expect_err("queue-full admission must reject before it can resolve device entries");
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
     assert_eq!(error.fact_value("queued_queries"), Some("1"));
     assert_eq!(error.fact_value("pending_preflight"), Some("0"));
-    assert_eq!(service.pending_preflight_resolver_calls(), 0, "queue-full work does not enter owner preflight");
-    let lifecycle_after = service.service.inner.admission.lock().expect("admission state").lifecycle.snapshot();
-    assert_eq!(lifecycle_after, lifecycle_before, "queue-full rejection creates no provisional lifecycle ticket");
+    assert_eq!(service.lifecycle_snapshot(), lifecycle_before, "queue-full rejection creates no provisional lifecycle ticket");
 
     drop(queued);
     drop(active);
@@ -749,10 +724,7 @@ fn queued_and_pending_reservations_share_one_bound() {
     let service = test_service(1, 2);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let queued = service.enqueue_admission().expect("first waiter enters the queue");
-    let pause = service.pause_pending_preflight();
-    let pending_service = service.clone();
-    let pending = std::thread::spawn(move || pending_service.admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let pending = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("second request reserves a pending slot");
 
     assert_eq!(service.queued_len(), 1);
     assert_eq!(service.pending_preflight_len(), 1);
@@ -761,49 +733,58 @@ fn queued_and_pending_reservations_share_one_bound() {
     assert_eq!(error.fact_value("queued_queries"), Some("1"));
     assert_eq!(error.fact_value("pending_preflight"), Some("1"));
 
-    pause.release();
+    let mut converted = service.finish_submission(pending).expect("the pending request enters the queue");
+    assert_eq!(service.pending_preflight_len(), 0);
     drop(queued);
     drop(active);
-    pending.join().expect("pending submission thread joins").expect("pending request eventually admits");
-    assert_eq!(service.pending_preflight_len(), 0);
+    assert!(converted.try_admit().expect("released capacity admits the converted waiter").is_some());
 }
 
 #[test]
 fn pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
     let service = test_service(1, 2);
-    let active = service.admit_query().expect("first admission occupies the only slot");
-    let pause = service.pause_pending_preflight();
-    let older_service = service.clone();
-    let older = std::thread::spawn(move || older_service.admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let older = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("older request reserves a pending slot");
 
     let mut younger = service.enqueue_admission().expect("younger request enters the queue");
     let younger_id = younger.admission_request_id();
-    assert!(younger.try_admit().expect("younger waiter remains queued").is_none());
+    assert!(
+        younger.try_admit().expect("younger waiter remains queued").is_none(),
+        "free capacity does not let younger work pass an older pending request"
+    );
     assert_eq!(service.pending_preflight_len(), 1);
     assert_eq!(service.queued_len(), 1);
 
-    pause.release();
-    wait_for_pending_preflight_len(&service, 0);
-    wait_for_exact_queued_len(&service, 2);
-    let state = service.service.inner.admission.lock().expect("admission state");
+    let mut older = service.finish_submission(older).expect("older request enters the queue");
+    assert_eq!(service.pending_preflight_len(), 0);
+    let state = service.controller.state.lock().expect("admission state");
+    assert_eq!(state.queued.len(), 2);
     assert_eq!(state.queued[1].admission_request_id, younger_id);
     assert!(state.queued[0].submission_seq < state.queued[1].submission_seq);
     drop(state);
 
-    drop(younger);
-    drop(active);
-    older.join().expect("older submission thread joins").expect("older pending request eventually admits");
+    let admitted = older.try_admit().expect("older waiter places").expect("the older request admits first");
+    assert!(younger.try_admit().expect("younger waiter remains queued").is_none());
+    drop(admitted);
 }
 
 #[test]
 fn owner_resolution_failure_releases_pending_reservation() {
     let service = test_service(1, 1);
-    service.fail_next_pending_preflight();
+    let submission = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("submission reserves a pending slot");
+    assert_eq!(service.pending_preflight_len(), 1);
 
-    let error = service.admit_query().expect_err("injected owner preflight failure is returned");
-    assert_eq!(error.fact_value("reason"), Some("injected_pending_preflight_failure"));
-    assert_eq!(service.pending_preflight_len(), 0, "owner preflight failure releases its reservation exactly once");
+    let error = service
+        .finish_submission_with(submission, |_ordinal| {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedOperator,
+                "query_engine.test.entry_resolution",
+                "injected device entry resolution failure",
+            )
+            .with_fact("reason", "injected_entry_resolution_failure"))
+        })
+        .expect_err("the entry resolution failure is returned");
+    assert_eq!(error.fact_value("reason"), Some("injected_entry_resolution_failure"));
+    assert_eq!(service.pending_preflight_len(), 0, "entry resolution failure releases its reservation exactly once");
     assert_eq!(service.queued_len(), 0);
 }
 
@@ -811,46 +792,31 @@ fn owner_resolution_failure_releases_pending_reservation() {
 fn cancellation_and_deadline_release_pending_reservations() {
     let service = test_service(1, 2);
     let cancellation = ExecutionCancellation::new();
-    let pause = service.pause_pending_preflight();
-    let cancellation_service = service.clone();
-    let cancellation_token = cancellation.clone();
-    let cancelled = std::thread::spawn(move || {
-        cancellation_service
-            .admit_query_with_request(
-                QueryAdmissionRequest::test_attempt().with_execution_cancellation(cancellation_token),
-            )
-    });
-    pause.wait_until_entered(Duration::from_secs(1));
+    let cancelled = service
+        .begin_submission(QueryAdmissionRequest::test_attempt().with_execution_cancellation(cancellation.clone()))
+        .expect("the request reserves a pending slot");
     cancellation.cancel();
-    pause.release();
-    let error = cancelled.join().expect("cancelled submission thread joins").expect_err("cancellation wins conversion");
+    let error = service.finish_submission(cancelled).expect_err("cancellation wins conversion");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(service.pending_preflight_len(), 0);
 
     let deadline = Instant::now() + Duration::from_millis(20);
-    let deadline_pause = service.pause_pending_preflight();
-    let deadline_service = service.clone();
-    let deadline_thread = std::thread::spawn(move || {
-        deadline_service.admit_query_with_request(QueryAdmissionRequest::test_attempt().with_queue_deadline(deadline))
-    });
-    deadline_pause.wait_until_entered(Duration::from_secs(1));
+    let expiring = service
+        .begin_submission(QueryAdmissionRequest::test_attempt().with_queue_deadline(deadline))
+        .expect("the request reserves a pending slot before its deadline");
     while Instant::now() < deadline {
         std::thread::yield_now();
     }
-    deadline_pause.release();
-    let error =
-        deadline_thread.join().expect("deadline submission thread joins").expect_err("queue deadline wins conversion");
+    let error = service.finish_submission(expiring).expect_err("queue deadline wins conversion");
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
     assert_eq!(service.pending_preflight_len(), 0);
 
-    service.reset_pending_preflight_resolver_calls();
     let error = service
-        .admit_query_with_request(
+        .begin_submission(
             QueryAdmissionRequest::test_attempt().with_queue_deadline(Instant::now() - Duration::from_millis(1)),
         )
-        .expect_err("an already-expired queue deadline rejects before owner preflight");
+        .expect_err("an already-expired queue deadline rejects before reserving a pending slot");
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-    assert_eq!(service.pending_preflight_resolver_calls(), 0);
     assert_eq!(service.pending_preflight_len(), 0);
 }
 
@@ -859,8 +825,8 @@ fn pending_guard_releases_during_panic_unwind() {
     let service = test_service(1, 1);
     let panic_service = service.clone();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let mut state = panic_service.service.lock_admission().expect("admission state");
-        let pending = panic_service.service.reserve_pending_preflight_locked(&mut state).expect("slot available");
+        let mut state = panic_service.controller.lock_admission().expect("admission state");
+        let pending = panic_service.controller.reserve_pending_preflight_locked(&mut state).expect("slot available");
         drop(state);
         assert_eq!(panic_service.pending_preflight_len(), 1);
         let _ = &pending;
@@ -876,8 +842,8 @@ async fn pending_guard_releases_when_task_is_dropped() {
     let task_service = service.clone();
     let task = tokio::spawn(async move {
         let pending = {
-            let mut state = task_service.service.lock_admission().expect("admission state");
-            task_service.service.reserve_pending_preflight_locked(&mut state).expect("slot available")
+            let mut state = task_service.controller.lock_admission().expect("admission state");
+            task_service.controller.reserve_pending_preflight_locked(&mut state).expect("slot available")
         };
         std::future::pending::<()>().await;
         drop(pending);
@@ -891,10 +857,7 @@ async fn pending_guard_releases_when_task_is_dropped() {
 #[test]
 fn close_waits_for_pending_owner_resolution_release() {
     let service = test_service(1, 1);
-    let pause = service.pause_pending_preflight();
-    let pending_service = service.clone();
-    let pending = std::thread::spawn(move || pending_service.admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
+    let pending = service.begin_submission(QueryAdmissionRequest::test_attempt()).expect("the request reserves a pending slot");
 
     let close_service = service.clone();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -907,13 +870,12 @@ fn close_waits_for_pending_owner_resolution_release() {
         std::thread::yield_now();
     }
     assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
-    pause.release();
+
+    let error = service.finish_submission(pending).expect_err("closed service rejects pending conversion");
+    assert_eq!(error.fact_value("reason"), Some("admission_closed"));
     assert!(receiver.recv_timeout(Duration::from_secs(2)).expect("close result arrives").is_ok());
     close.join().expect("close thread joins");
     assert_eq!(service.pending_preflight_len(), 0);
-    let error =
-        pending.join().expect("pending submission joins").expect_err("closed service rejects pending conversion");
-    assert_eq!(error.fact_value("reason"), Some("admission_closed"));
 }
 
 /// Waiter revalidation excludes closed devices from the impossible-cap
@@ -922,14 +884,12 @@ fn close_waits_for_pending_owner_resolution_release() {
 /// reported as a budget rejection.
 #[test]
 fn closed_devices_leave_the_impossible_cap_decision_to_the_fleet_health_error() {
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+    let service = admission_test_service_with_profile(QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         2,
     );
-    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only ledger");
+    let ledger = Arc::clone(service.controller.devices.ledger(0).expect("fixture ledger"));
     ledger.close_admission("test closes the only compatible device").expect("device closes");
 
     let error = service

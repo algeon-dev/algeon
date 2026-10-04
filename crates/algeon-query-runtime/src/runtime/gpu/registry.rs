@@ -14,10 +14,7 @@ use cudf::{
     DeviceMemoryManagerInstallationStatus, InstallSpec,
     runtime::{DeviceHealthStatus, device_health_snapshot},
 };
-use query_planning::{
-    admission::ExecutionCapability,
-    error::{QueryError, QueryErrorCode, Result},
-};
+use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
@@ -468,21 +465,9 @@ impl DeviceRegistry {
         &self.telemetry_device_ordinals
     }
 
-    /// Number of installed device contexts.
+    /// The resource profile frozen when `device_ordinal` was installed.
     pub(crate) fn resource_profile(&self, device_ordinal: usize) -> Option<&DeviceResourceProfile> {
         self.resource_profiles.iter().find(|profile| profile.device_ordinal == device_ordinal)
-    }
-
-    /// Whether one installed device can execute every immutable capability
-    /// requirement of an attempt. This reads only the profile frozen during
-    /// installation; it never consults live CUDA state.
-    pub(crate) fn supports_capabilities(&self, device_ordinal: usize, requirements: &[ExecutionCapability]) -> bool {
-        self.resource_profile(device_ordinal)
-            .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.device_ordinals.len()
     }
 }
 

@@ -114,7 +114,7 @@ impl QueryHandleReportCommit {
         // event before the seal so the sealed report retains it. The
         // mechanical capacity release still happens only after the seal.
         if let Some(service) = self.service.as_ref() {
-            let queue_depth = service.admission.lock().map(|state| state.queued.len()).unwrap_or_else(|error| {
+            let queue_depth = service.admission.state.lock().map(|state| state.queued.len()).unwrap_or_else(|error| {
                 eprintln!("[query-engine] warning: failed to read poisoned admission queue depth");
                 error.into_inner().queued.len()
             });
@@ -384,13 +384,9 @@ impl QueryHandleReportCommit {
                 let Some(service) = self.service.as_ref() else {
                     return false;
                 };
-                let Some(resources) = service.resources.as_ref() else {
+                let Ok(ledger) = service.admission.devices.ledger(self.device_ordinal) else {
                     return false;
                 };
-                let Ok(device) = resources.devices.context_by_ordinal(self.device_ordinal) else {
-                    return false;
-                };
-                let ledger = device.ledger();
                 if let Err(error) = ledger.close_admission(reason.clone()) {
                     eprintln!(
                         "[query-engine] warning: failed to close device admission during release commit: {error}"
@@ -404,12 +400,12 @@ impl QueryHandleReportCommit {
                     );
                     return false;
                 }
-                service.notify_admission_available();
+                service.admission.notify_admission_available();
                 true
             },
             CapacityCommitDisposition::BackendUnhealthy { reason } => {
                 if let Some(service) = self.service.as_ref() {
-                    service.close_unknown_isolation_admission(reason);
+                    service.admission.close_unknown_isolation_admission(reason);
                 }
                 true
             },
@@ -444,44 +440,22 @@ impl QueryHandleReportCommit {
             return AttemptAlternateDeviceEligibility::Unavailable;
         };
         for ordinal in self.compatible_devices.iter().copied().filter(|ordinal| *ordinal != self.device_ordinal) {
-            match &service.resources {
-                Some(resources) => {
-                    let Ok(device) = resources.devices.context_by_ordinal(ordinal) else {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
-                    // The ledger is the scheduler's health authority, but it
-                    // must first fold any sibling-owned persistent CUDA fault
-                    // into that authority before advice calls an alternate
-                    // currently healthy.
-                    if device.synchronize_native_admission_health().is_err() {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    }
-                    let ledger = device.ledger();
-                    if !self.admitted_device_requirements.contains_key(&ordinal) {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    }
-                    let can_ever_fit =
-                        ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
-                    if can_ever_fit && matches!(ledger.health(), Ok(DeviceAdmissionHealth::Open)) {
-                        return AttemptAlternateDeviceEligibility::Eligible;
-                    }
-                },
-                None => {
-                    let Some(ledger) = service.fallback_device_ledger.as_ref() else {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
-                    if ledger.device_ordinal() != ordinal {
-                        return AttemptAlternateDeviceEligibility::NoEligibleAlternate;
-                    }
-                    if !self.admitted_device_requirements.contains_key(&ordinal) {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    }
-                    let can_ever_fit =
-                        ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
-                    if can_ever_fit && matches!(ledger.health(), Ok(DeviceAdmissionHealth::Open)) {
-                        return AttemptAlternateDeviceEligibility::Eligible;
-                    }
-                },
+            // The ledger is the scheduler's health authority, but it must
+            // first fold any sibling-owned persistent CUDA fault into that
+            // authority before advice calls an alternate currently healthy.
+            if service.admission.devices.synchronize_native_health(ordinal).is_err() {
+                return AttemptAlternateDeviceEligibility::Unavailable;
+            }
+            let Ok(ledger) = service.admission.devices.ledger(ordinal) else {
+                return AttemptAlternateDeviceEligibility::Unavailable;
+            };
+            if !self.admitted_device_requirements.contains_key(&ordinal) {
+                return AttemptAlternateDeviceEligibility::Unavailable;
+            }
+            let can_ever_fit =
+                ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
+            if can_ever_fit && matches!(ledger.health(), Ok(DeviceAdmissionHealth::Open)) {
+                return AttemptAlternateDeviceEligibility::Eligible;
             }
         }
         AttemptAlternateDeviceEligibility::NoEligibleAlternate
@@ -524,18 +498,15 @@ impl QueryHandleReportCommit {
         let Some(service) = self.service.as_ref() else {
             return Some(evidence);
         };
-        let Some(resources) = service.resources.as_ref() else {
+        let Ok(ledger) = service.admission.devices.ledger(self.device_ordinal) else {
             return Some(evidence);
         };
-        let Ok(device) = resources.devices.context_by_ordinal(self.device_ordinal) else {
-            return Some(evidence);
-        };
-        let profile = device.ledger().profile();
+        let profile = ledger.profile();
         evidence.configured_limit_bytes = AttemptEvidenceField::attempt_exact(profile.configured_limit_bytes);
         evidence.headroom_bytes = AttemptEvidenceField::attempt_exact(profile.headroom_bytes);
         evidence.backend_reserve_bytes = AttemptEvidenceField::attempt_exact(profile.backend_reserve_bytes);
         evidence.managed_capacity_bytes = AttemptEvidenceField::attempt_exact(profile.managed_capacity_bytes);
-        if let (Some(sampled_ns), Ok(snapshot)) = (device_sample_ns, device.ledger().snapshot()) {
+        if let (Some(sampled_ns), Ok(snapshot)) = (device_sample_ns, ledger.snapshot()) {
             evidence.ledger_sequence = AttemptEvidenceField::device_snapshot(snapshot.sequence);
             evidence.ledger_sample_ns = AttemptEvidenceField::device_snapshot(sampled_ns);
             evidence.live_grants_bytes = AttemptEvidenceField::device_snapshot(snapshot.live_grants_bytes);
@@ -622,75 +593,5 @@ impl QueryHandleReportCommit {
             discard_admitted_domain(&service.allocator_event_correlation, binding);
             None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-    use crate::{
-        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
-        observability::{AttemptCapacityDisposition, AttemptDisposition, RuntimeObservationConfig},
-        runtime::{
-            BackendLifecycle, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile, gpu::DeviceLedger,
-        },
-    };
-
-    /// An attempt-bound admission whose caller never records admission facts
-    /// still publishes exactly one report after cleanup, with released
-    /// capacity and every ledger open: publication records the facts itself.
-    #[test]
-    fn admitted_attempt_publishes_its_report_without_caller_admission_facts() {
-        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
-            device_ordinal: 0,
-            configured_limit_bytes: 64 * 1024 * 1024,
-            headroom_bytes: 0,
-            backend_reserve_bytes: 0,
-            default_query_limit_bytes: 64 * 1024 * 1024,
-            max_active_attempts: 1,
-            source_work_per_attempt: 1,
-            stream_pool_size: 2,
-            worker_job_capacity: 2,
-            device_capabilities: DeviceCapabilities::default(),
-            cache_cap_bytes: 0,
-        })
-        .expect("test ledger profile must resolve");
-        let service = QueryService::new_for_admission_tests(
-            QueryExecutionConfig::default(),
-            QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(500) },
-            DeviceLedger::new(profile),
-        )
-        .expect("admission test service");
-        let backend_lifecycle = BackendLifecycle::new();
-        let attempt = AttemptOwner::begin(
-            BeginAttemptRequest {
-                observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
-                ..BeginAttemptRequest::default()
-            },
-            backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-            Arc::new(AttemptBackendCounters::default()),
-            None,
-        );
-        attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
-        let completion = attempt.completion.completion();
-        let handle = service
-            .admit_query_with_request(QueryAdmissionRequest::new(attempt.owner.admission_binding()))
-            .expect("attempt-bound admission");
-        attempt.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
-        drop(handle);
-
-        let report = completion.wait_timeout(Duration::from_secs(10)).expect("the claim publishes after cleanup");
-        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
-        assert!(report.admission.is_some(), "publication recorded the admission fact");
-        let health = service
-            .inner
-            .fallback_device_ledger
-            .as_ref()
-            .expect("fallback ledger")
-            .health()
-            .expect("ledger health readable");
-        assert!(matches!(health, DeviceAdmissionHealth::Open), "{health:?}");
     }
 }

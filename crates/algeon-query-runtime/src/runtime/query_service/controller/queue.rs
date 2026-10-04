@@ -4,16 +4,6 @@
 //! runnable waiter wins on each compatible device; a blocked waiter does not
 //! idle unrelated devices needed only by later work.
 
-#[cfg(test)]
-use std::sync;
-#[cfg(test)]
-use std::sync::OnceLock;
-#[cfg(test)]
-use std::sync::mpsc::Receiver;
-#[cfg(test)]
-use std::sync::mpsc::SyncSender;
-#[cfg(test)]
-use std::sync::{Mutex, Weak};
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{Arc, MutexGuard, atomic::Ordering},
@@ -25,10 +15,6 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
 };
 
-#[cfg(test)]
-use super::QueryServiceInner;
-#[cfg(test)]
-use super::TestPauseHandle;
 use super::{
     super::{
         admission::{
@@ -36,36 +22,31 @@ use super::{
             admission_cancellation_or_deadline_error, finish_expired_queued_requests, finish_removed_request_cancelled,
             finish_removed_request_error, remove_queued_request, service_closed_error, service_overloaded_error,
         },
-        admission_rejection,
-        device_waiters::notify_shared_device_admission_available,
-        record_admission_lifecycle,
+        admission_rejection, record_admission_lifecycle,
     },
-    QueryService,
+    AdmissionController,
 };
 use crate::{
     observability::{AdmissionLifecycleState, AdmissionRequestId, AttemptFaultIsolation, RuntimeTerminalOutcome},
     runtime::{
         DeviceLedger,
         deadline::{DeadlineMutexLockError, mutex_lock_until},
-        gpu::{
-            DeviceAdmissionHealth,
-            placement::{PlacementCandidate, preferred_placement_candidate},
-        },
+        gpu::DeviceAdmissionHealth,
     },
 };
 
-impl QueryService {
+impl AdmissionController {
     pub(in crate::runtime::query_service) fn reserve_pending_preflight_locked(
-        &self,
+        self: &Arc<Self>,
         state: &mut AdmissionState,
     ) -> Option<PendingPreflightReservation> {
-        if state.queued.len() + state.pending_preflight.len() >= self.inner.queue_bounds.max_waiters {
+        if state.queued.len() + state.pending_preflight.len() >= self.queue_bounds.max_waiters {
             return None;
         }
-        let submission_seq = self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed);
+        let submission_seq = self.next_submission_seq.fetch_add(1, Ordering::Relaxed);
         let inserted = state.pending_preflight.insert(submission_seq);
         debug_assert!(inserted, "pending preflight submission sequences must be unique");
-        Some(PendingPreflightReservation::new(Arc::downgrade(&self.inner), submission_seq))
+        Some(PendingPreflightReservation::new(Arc::downgrade(self), submission_seq))
     }
 
     pub(in crate::runtime::query_service) fn pending_preflight_min(&self, state: &AdmissionState) -> Option<u64> {
@@ -90,24 +71,12 @@ impl QueryService {
         &self,
         required_capabilities: &[ExecutionCapability],
     ) -> Result<Vec<usize>> {
-        let mut devices = match &self.inner.resources {
-            Some(resources) => resources
-                .devices
-                .device_ordinals()
-                .iter()
-                .copied()
-                .filter(|ordinal| resources.devices.supports_capabilities(*ordinal, required_capabilities))
-                .collect(),
-            None => self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .filter(|ledger| ledger.profile().device_capabilities.supports_all(required_capabilities))
-                .map(|ledger| vec![ledger.device_ordinal()])
-                .unwrap_or_default(),
-        };
-        devices.sort_unstable();
-        devices.dedup();
+        let devices = self
+            .devices
+            .ledgers()
+            .map(|ledger| ledger.device_ordinal())
+            .filter(|ordinal| self.devices.supports_capabilities(*ordinal, required_capabilities))
+            .collect();
         Ok(devices)
     }
 
@@ -120,21 +89,11 @@ impl QueryService {
         if let Some(requirement) = attempt_requirement {
             return Ok(requirement);
         }
-        let restricted_device_count = match &self.inner.resources {
-            Some(resources) => resources
-                .devices
-                .contexts()
-                .filter(|context| {
-                    context.ledger().profile().device_capabilities.requires_explicit_attempt_requirement()
-                })
-                .count(),
-            None => self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .is_some_and(|ledger| ledger.profile().device_capabilities.requires_explicit_attempt_requirement())
-                .into(),
-        };
+        let restricted_device_count = self
+            .devices
+            .ledgers()
+            .filter(|ledger| ledger.profile().device_capabilities.requires_explicit_attempt_requirement())
+            .count();
         if restricted_device_count == 0 {
             return Ok(AttemptRequirement::empty());
         }
@@ -155,24 +114,7 @@ impl QueryService {
         device_ordinal: usize,
         required_capabilities: &[ExecutionCapability],
     ) -> bool {
-        match &self.inner.resources {
-            Some(resources) => resources.devices.supports_capabilities(device_ordinal, required_capabilities),
-            None if self.default_device_ordinal() == Some(device_ordinal) => self
-                .inner
-                .fallback_device_ledger
-                .as_ref()
-                .is_some_and(|ledger| ledger.profile().device_capabilities.supports_all(required_capabilities)),
-            None => false,
-        }
-    }
-
-    /// Returns whether an ordinal can accept a queued placement right now.
-    ///
-    /// The device ledger is the sole scheduler health authority. Native CUDA
-    /// samples are diagnostics and cannot race ledger admission decisions.
-    fn is_device_admission_healthy(&self, device_ordinal: usize) -> Result<bool> {
-        let ledger = self.ledger_for_ordinal(device_ordinal)?;
-        Ok(matches!(ledger.health()?, DeviceAdmissionHealth::Open))
+        self.devices.supports_capabilities(device_ordinal, required_capabilities)
     }
 
     /// Returns a terminal health error only when every capability-compatible
@@ -201,13 +143,8 @@ impl QueryService {
         }
 
         if let Some((device_ordinal, detail, generation)) = first_closed_ledger {
-            let code = if self.inner.resources.is_some() {
-                QueryErrorCode::CudfPersistentFailure
-            } else {
-                QueryErrorCode::ServiceOverloaded
-            };
             let mut error = QueryError::new(
-                code,
+                QueryErrorCode::CudfPersistentFailure,
                 "query_engine.query_service.admission",
                 "every compatible device has closed admission",
             )
@@ -238,10 +175,7 @@ impl QueryService {
         )
         .with_fact("reason", "required_device_capability_unavailable")
         .with_fact("required_capabilities", capability_labels(required_capabilities))
-        .with_fact(
-            "configured_device_count",
-            self.inner.resources.as_ref().map_or(1, |resources| resources.devices.len()),
-        )
+        .with_fact("configured_device_count", self.devices.len())
         .with_fact("compatible_device_count", 0)
     }
 
@@ -292,23 +226,7 @@ impl QueryService {
     }
 
     pub(in crate::runtime::query_service) fn ledger_for_ordinal(&self, ordinal: usize) -> Result<Arc<DeviceLedger>> {
-        match &self.inner.resources {
-            Some(resources) => Ok(Arc::clone(resources.devices.context_by_ordinal(ordinal)?.ledger())),
-            None if self.default_device_ordinal() == Some(ordinal) => {
-                self.inner.fallback_device_ledger.clone().map(Arc::new).ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        "query_engine.query_service.queue",
-                        "synthetic ledger missing",
-                    )
-                })
-            },
-            None => Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.query_service.queue",
-                "unknown compatible device",
-            )),
-        }
+        self.devices.ledger(ordinal).map(Arc::clone)
     }
 
     /// The device-state rejection of `request`, if a ledger transition since
@@ -318,7 +236,7 @@ impl QueryService {
         &self,
         request: &mut AdmissionRequest,
     ) -> Option<QueryError> {
-        let generation = self.inner.queue_revalidation_generation.load(Ordering::Acquire);
+        let generation = self.queue_revalidation_generation.load(Ordering::Acquire);
         if request.validated_generation == Some(generation) {
             return None;
         }
@@ -364,13 +282,13 @@ impl QueryService {
     ) -> Option<AdmissionRequest> {
         let removed = self.remove_queued_request_without_admission_locked(state, admission_request_id);
         if removed.is_some() {
-            self.inner.notify_admission_available();
+            self.notify_admission_available();
         }
         removed
     }
 
     pub(in crate::runtime::query_service) fn lock_admission(&self) -> Result<MutexGuard<'_, AdmissionState>> {
-        self.inner.admission.lock().map_err(|_error| admission_mutex_poisoned_error())
+        self.state.lock().map_err(|_error| admission_mutex_poisoned_error())
     }
 
     /// Removes and terminalizes one queued request after recovering a poisoned
@@ -401,7 +319,7 @@ impl QueryService {
     }
 
     pub(in crate::runtime::query_service) fn admission_is_closed(&self, state: &AdmissionState) -> bool {
-        !self.inner.admission_open.load(Ordering::Acquire) || state.closed
+        !self.admission_open.load(Ordering::Acquire) || state.closed
     }
 
     /// Terminal admission rejection for service shutdown. Persistent device
@@ -417,12 +335,12 @@ impl QueryService {
         None
     }
 
-    pub(in crate::runtime::query_service::service) fn lock_admission_until(
+    pub(in crate::runtime::query_service) fn lock_admission_until(
         &self,
         deadline: Instant,
         operation: &'static str,
     ) -> Result<MutexGuard<'_, AdmissionState>> {
-        match mutex_lock_until(&self.inner.admission, deadline) {
+        match mutex_lock_until(&self.state, deadline) {
             Ok(state) => Ok(state),
             Err(DeadlineMutexLockError::Poisoned) => self.lock_admission(),
             Err(DeadlineMutexLockError::TimedOut) => {
@@ -435,13 +353,9 @@ impl QueryService {
         &self,
         state: &mut AdmissionState,
     ) -> QueueSweep {
-        let transitioned_device_ordinals = match self.reconcile_native_admission_health() {
-            Ok(transitioned_device_ordinals) => transitioned_device_ordinals,
-            Err(error) => {
-                eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
-                Vec::new()
-            },
-        };
+        if let Err(error) = self.reconcile_native_admission_health() {
+            eprintln!("[query-engine] warning: native admission-health reconciliation failed: {error}");
+        }
         // Terminal intent has a strict precedence. A caller that cancelled or
         // expired while queued must be removed before a concurrent health
         // transition must not replace that terminal result with a
@@ -471,7 +385,7 @@ impl QueryService {
                 let disposition = request.terminal.record(service_overloaded_error(
                     "queue_wait_elapsed",
                     members,
-                    self.inner.queue_bounds.max_waiters,
+                    self.queue_bounds.max_waiters,
                 ));
                 (request, disposition)
             })
@@ -493,7 +407,7 @@ impl QueryService {
         }
         state.replace_queued_requests(retained);
         if !expired.is_empty() {
-            self.inner.notify_admission_available();
+            self.notify_admission_available();
             for (request, _) in &expired {
                 record_admission_lifecycle(
                     &request.observation,
@@ -506,7 +420,7 @@ impl QueryService {
             }
         }
         if !cancelled.is_empty() {
-            self.inner.notify_admission_available();
+            self.notify_admission_available();
             for request in &cancelled {
                 record_admission_lifecycle(
                     &request.observation,
@@ -527,7 +441,7 @@ impl QueryService {
             }
         }
         if !terminated.is_empty() {
-            self.inner.notify_admission_available();
+            self.notify_admission_available();
         }
         let mut terminated_requests = Vec::with_capacity(terminated.len());
         for (request, error) in terminated {
@@ -535,14 +449,7 @@ impl QueryService {
             let disposition = request.terminal.record(error);
             terminated_requests.push((request, disposition, rejection));
         }
-        QueueSweep {
-            expired,
-            cancelled,
-            terminated: terminated_requests,
-            transitioned_device_ordinals,
-            #[cfg(test)]
-            finish_pause: take_queue_sweep_finish_pause(self),
-        }
+        QueueSweep { expired, cancelled, terminated: terminated_requests }
     }
 
     /// Selects the oldest runnable waiter and its best eligible device.
@@ -581,49 +488,15 @@ impl QueryService {
         request: &AdmissionRequest,
         excluded_devices: &BTreeSet<usize>,
     ) -> Result<Option<usize>> {
-        if let Some(resources) = &self.inner.resources {
-            let candidates = self.placement_candidates_for_entries(
-                resources,
-                &request.device_entries,
-                request.compatible_devices.iter().copied().filter(|ordinal| !excluded_devices.contains(ordinal)),
-                request.requested_query_cap_bytes,
-            )?;
-            return Ok(candidates
-                .into_iter()
-                .find(|candidate| candidate.can_admit_now)
-                .map(|candidate| candidate.candidate.ordinal));
-        }
-
-        let mut candidates = Vec::new();
-        for ordinal in request.compatible_devices.iter().copied().filter(|ordinal| !excluded_devices.contains(ordinal))
-        {
-            let ledger = self.ledger_for_ordinal(ordinal)?;
-            if !self.is_device_admission_healthy(ordinal)? {
-                continue;
-            }
-            request.requirement_for_device(ordinal)?;
-            let snapshot = ledger.snapshot()?;
-            if !matches!(snapshot.health, DeviceAdmissionHealth::Open) {
-                continue;
-            }
-            let Some(query_cap_bytes) = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes) else {
-                continue;
-            };
-            candidates.push(PlacementCandidate {
-                ordinal,
-                query_cap_bytes,
-                spare_capacity_bytes: snapshot
-                    .query_share_bytes
-                    .saturating_sub(snapshot.frozen_resident_bytes)
-                    .saturating_sub(snapshot.live_grants_bytes)
-                    .saturating_sub(query_cap_bytes),
-                active_attempts: snapshot.active_attempts,
-                live_grants_bytes: snapshot.live_grants_bytes,
-                worker_depth: snapshot.worker_depth,
-                stream_slots_available: snapshot.stream_slots_available(),
-            });
-        }
-        Ok(preferred_placement_candidate(candidates).map(|candidate| candidate.ordinal))
+        let candidates = self.placement_candidates_for_entries(
+            &request.device_entries,
+            request.compatible_devices.iter().copied().filter(|ordinal| !excluded_devices.contains(ordinal)),
+            request.requested_query_cap_bytes,
+        )?;
+        Ok(candidates
+            .into_iter()
+            .find(|candidate| candidate.can_admit_now)
+            .map(|candidate| candidate.candidate.ordinal))
     }
 
     /// When no waiter is runnable, the oldest waiter still drives the
@@ -649,26 +522,16 @@ impl QueryService {
         if first.admission_request_id != admission_request_id {
             return Ok(None);
         }
-        if let Some(resources) = &self.inner.resources {
-            // Preserve the same registry ranking as normal queue/direct
-            // placement.  Unlike ordinary selection the fallback deliberately
-            // drives the best healthy candidate even if it is saturated, so
-            // the resulting wait retains the memory-grant timeout taxonomy.
-            let candidates = self.placement_candidates_for_entries(
-                resources,
-                &first.device_entries,
-                first.compatible_devices.iter().copied(),
-                first.requested_query_cap_bytes,
-            )?;
-            return Ok(candidates.into_iter().next().map(|candidate| (position, candidate.candidate.ordinal)));
-        }
-        for device in first.compatible_devices.iter().copied() {
-            first.requirement_for_device(device)?;
-            if self.is_device_admission_healthy(device)? {
-                return Ok(Some((position, device)));
-            }
-        }
-        Ok(None)
+        // Same ranking as normal queue and direct placement. Unlike ordinary
+        // selection the fallback deliberately drives the best healthy
+        // candidate even if it is saturated, so the resulting wait retains the
+        // memory-grant timeout taxonomy.
+        let candidates = self.placement_candidates_for_entries(
+            &first.device_entries,
+            first.compatible_devices.iter().copied(),
+            first.requested_query_cap_bytes,
+        )?;
+        Ok(candidates.into_iter().next().map(|candidate| (position, candidate.candidate.ordinal)))
     }
 
     /// Reports the device the waiter was placed on but could not obtain a
@@ -685,7 +548,7 @@ impl QueryService {
         queued_queries: usize,
     ) -> QueryError {
         let mut error =
-            service_overloaded_error("memory_grant_wait_timeout", queued_queries, self.inner.queue_bounds.max_waiters)
+            service_overloaded_error("memory_grant_wait_timeout", queued_queries, self.queue_bounds.max_waiters)
                 .with_fact("requested_query_cap_bytes", requested_query_cap_bytes.unwrap_or_default());
         if let Ok(snapshot) = self.ledger_for_ordinal(device_ordinal).and_then(|ledger| ledger.snapshot()) {
             let ordinal = snapshot.device_ordinal;
@@ -708,7 +571,7 @@ pub(super) fn admission_mutex_poisoned_error() -> QueryError {
     .with_fact("reason", "admission_mutex_poisoned")
 }
 
-pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout(
+pub(in crate::runtime::query_service) fn query_service_shutdown_timeout(
     operation: &'static str,
     state: Option<&AdmissionState>,
     deadline_stage: &'static str,
@@ -735,82 +598,6 @@ pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout
     }
 }
 
-/// Test-only rendezvous immediately before an external queue sweep completes
-/// its removed requests. This forces the handoff race without timing sleeps.
-#[cfg(test)]
-#[derive(Debug)]
-struct QueueSweepFinishPause {
-    entered: SyncSender<()>,
-    release: Mutex<Receiver<()>>,
-}
-
-#[cfg(test)]
-impl QueueSweepFinishPause {
-    fn wait(&self) {
-        self.entered.send(()).expect("queue sweep finish pause receiver remains live");
-        self.release
-            .lock()
-            .unwrap_or_else(sync::PoisonError::into_inner)
-            .recv()
-            .expect("queue sweep finish pause is released");
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct QueueSweepFinishPauseRegistration {
-    service: Weak<QueryServiceInner>,
-    pause: Arc<QueueSweepFinishPause>,
-}
-
-#[cfg(test)]
-static QUEUE_SWEEP_FINISH_PAUSE: OnceLock<Mutex<Vec<QueueSweepFinishPauseRegistration>>> = sync::OnceLock::new();
-
-#[cfg(test)]
-fn queue_sweep_finish_pause_registry() -> &'static Mutex<Vec<QueueSweepFinishPauseRegistration>> {
-    QUEUE_SWEEP_FINISH_PAUSE.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-#[cfg(test)]
-fn take_queue_sweep_finish_pause(service: &QueryService) -> Option<Arc<QueueSweepFinishPause>> {
-    let mut registration = queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
-    registration.retain(|registered| registered.service.upgrade().is_some());
-    registration
-        .iter()
-        .position(|registered| registered.service.upgrade().is_some_and(|target| Arc::ptr_eq(&target, &service.inner)))
-        .map(|position| registration.remove(position).pause)
-}
-
-#[cfg(test)]
-impl QueryService {
-    /// Pauses the next sweep from this service after it has removed requests
-    /// and recorded their terminal errors, but before completion delivery.
-    pub(in crate::runtime::query_service) fn pause_next_queue_sweep_finish_for_test(&self) -> TestPauseHandle {
-        let (entered_sender, entered_receiver) = sync::mpsc::sync_channel(1);
-        let (release_sender, release_receiver) = sync::mpsc::sync_channel(1);
-        let pause = Arc::new(QueueSweepFinishPause { entered: entered_sender, release: Mutex::new(release_receiver) });
-        let service = Arc::downgrade(&self.inner);
-        let mut registration = queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
-        registration.retain(|registered| registered.service.upgrade().is_some());
-        assert!(
-            !registration.iter().any(|registered| registered.service.ptr_eq(&service)),
-            "only one queue sweep finish pause may be armed for a service at a time"
-        );
-        registration
-            .push(QueueSweepFinishPauseRegistration { service: Weak::clone(&service), pause: Arc::clone(&pause) });
-        TestPauseHandle::new("queue sweep finish", entered_receiver, release_sender).with_drop_cleanup(move || {
-            let mut registration =
-                queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
-            if let Some(position) = registration
-                .iter()
-                .position(|registered| registered.service.ptr_eq(&service) && Arc::ptr_eq(&registered.pause, &pause))
-            {
-                registration.remove(position);
-            }
-        })
-    }
-}
-
 /// Removed waiters from one admission sweep. Terminal completion runs after
 /// the admission guard is released.
 #[derive(Debug, Default)]
@@ -823,27 +610,15 @@ pub(in crate::runtime::query_service) struct QueueSweep {
     /// error consumption cannot suppress either terminal side effect.
     pub(in crate::runtime::query_service) terminated:
         Vec<(AdmissionRequest, RuntimeTerminalOutcome, AdmissionLifecycleState)>,
-    /// Native faults folded into scheduler ledgers during this sweep. Shared
-    /// waiters are notified only after the caller releases its admission guard.
-    transitioned_device_ordinals: Vec<usize>,
-    #[cfg(test)]
-    finish_pause: Option<Arc<QueueSweepFinishPause>>,
 }
 
 impl QueueSweep {
     pub(in crate::runtime::query_service) fn is_empty(&self) -> bool {
-        self.expired.is_empty()
-            && self.cancelled.is_empty()
-            && self.terminated.is_empty()
-            && self.transitioned_device_ordinals.is_empty()
+        self.expired.is_empty() && self.cancelled.is_empty() && self.terminated.is_empty()
     }
 
     /// Terminalizes every removed waiter without holding the admission guard.
-    pub(in crate::runtime::query_service) fn finish(mut self) {
-        #[cfg(test)]
-        if let Some(finish_pause) = &self.finish_pause {
-            finish_pause.wait();
-        }
+    pub(in crate::runtime::query_service) fn finish(self) {
         finish_expired_queued_requests(self.expired);
         for request in self.cancelled {
             finish_removed_request_cancelled(Some(request));
@@ -852,11 +627,6 @@ impl QueueSweep {
             record_admission_lifecycle(&request.observation, request.admission_request_id, rejection, 0, None, None);
             let primary_failure = request.terminal.take_primary_failure();
             request.completion.finish_terminal_disposition(disposition, primary_failure);
-        }
-        self.transitioned_device_ordinals.sort_unstable();
-        self.transitioned_device_ordinals.dedup();
-        for device_ordinal in self.transitioned_device_ordinals {
-            notify_shared_device_admission_available(device_ordinal);
         }
     }
 }

@@ -1,25 +1,20 @@
-//! Admission entry points. Each enqueues one [`QueryAdmissionWaiter`] and
-//! drives it to an admitted handle or a structured rejection.
+//! Admission entry points. Each submits one request to the admission
+//! controller and drives its waiter to an admitted handle or a structured
+//! rejection.
+
+use std::sync::Arc;
 
 use query_planning::error::Result;
-use tokio::time;
 
-use super::{
-    super::{
-        super::{
-            admission::{AdmissionRequest, QueryAdmissionWaiter, QueuedAdmissionTerminal},
-            admission_rejection,
-            handle::QueryHandle,
-            record_admission_lifecycle,
-        },
-        QueryService,
-        api::QueryAdmissionRequest,
-    },
-    PreparedSubmission,
-};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::query_service::admission::QueryAdmissionWaiter;
 use crate::runtime::{
     backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
     backend_lifecycle::ObservationPermit,
+    query_service::{
+        handle::QueryHandle,
+        service::{QueryService, api::QueryAdmissionRequest, transaction::AdmissionTransactionProbe},
+    },
 };
 
 impl QueryService {
@@ -32,7 +27,18 @@ impl QueryService {
     /// is admitted or rejected.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
-        self.enqueue_admission_with_request_and_permits(request, None, None, None)?.admit_blocking()
+        self.enqueue_admission_with_request_and_permits(request, None, None, None, None)?.admit_blocking()
+    }
+
+    /// Admits a query on the calling thread with a fault-injection probe over
+    /// its admission transaction.
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn admit_query_with_probe(
+        &self,
+        request: QueryAdmissionRequest,
+        probe: Arc<AdmissionTransactionProbe>,
+    ) -> Result<QueryHandle> {
+        self.enqueue_admission_with_request_and_permits(request, None, None, None, Some(probe))?.admit_blocking()
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -48,6 +54,7 @@ impl QueryService {
             Some(observation_permit),
             Some(gpu_resource_permit),
             Some(completion_dispatcher),
+            None,
         )?
         .admit_blocking()
     }
@@ -70,7 +77,18 @@ impl QueryService {
     /// Admits a query asynchronously with consolidated request-scoped admission metadata.
     #[cfg(test)]
     pub(crate) async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
-        self.admit_async_with_request_and_permits(request, None, None, None).await
+        self.admit_async_with_request_and_permits(request, None, None, None, None).await
+    }
+
+    /// Admits a query asynchronously with a fault-injection probe over its
+    /// admission transaction.
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) async fn admit_async_with_probe(
+        &self,
+        request: QueryAdmissionRequest,
+        probe: Arc<AdmissionTransactionProbe>,
+    ) -> Result<QueryHandle> {
+        self.admit_async_with_request_and_permits(request, None, None, None, Some(probe)).await
     }
 
     pub(crate) async fn admit_async_with_backend_permits(
@@ -85,6 +103,7 @@ impl QueryService {
             Some(observation_permit),
             Some(gpu_resource_permit),
             Some(completion_dispatcher),
+            None,
         )
         .await
     }
@@ -95,36 +114,20 @@ impl QueryService {
         observation_permit: Option<ObservationPermit>,
         gpu_resource_permit: Option<GpuResourcePermit>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
+        probe: Option<Arc<AdmissionTransactionProbe>>,
     ) -> Result<QueryHandle> {
-        let mut waiter = self.enqueue_admission_with_request_and_permits(
-            request,
-            observation_permit,
-            gpu_resource_permit,
-            completion_dispatcher,
-        )?;
-        loop {
-            let notified = self.inner.admission_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if let Some(handle) = waiter.try_admit_async().await? {
-                return Ok(handle);
-            }
-            // `try_admit` reports cancellation and the queue deadline; each
-            // of them, like a ledger transition, ends this wait.
-            let wake = async {
-                tokio::select! {
-                    () = &mut notified => {},
-                    () = waiter.execution_cancellation.cancelled_or_expired() => {},
-                }
-            };
-            match waiter.remaining_wait() {
-                Some(remaining_wait) if remaining_wait.is_zero() => continue,
-                Some(remaining_wait) => {
-                    let _ = time::timeout(remaining_wait, wake).await;
-                },
-                None => wake.await,
-            }
-        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        let (request, test_attempt) = request.split_test_attempt();
+        let mut waiter =
+            self.inner.admission.enqueue(request, observation_permit, gpu_resource_permit, completion_dispatcher)?;
+        // A caller that stops waiting drops the placed admission: its ledger
+        // grant and lifecycle ticket roll back, and the completion recovers
+        // the attempt's terminal outcome.
+        let placed = waiter.place_async().await?;
+        let handle = self.commit_placed_admission_async(placed, probe).await?;
+        #[cfg(any(test, feature = "test-hooks"))]
+        handle.own_test_attempt(test_attempt);
+        Ok(handle)
     }
 
     /// Enqueues a query admission request with consolidated request-scoped metadata.
@@ -133,7 +136,7 @@ impl QueryService {
         &self,
         request: QueryAdmissionRequest,
     ) -> Result<QueryAdmissionWaiter> {
-        self.enqueue_admission_with_request_and_permits(request, None, None, None)
+        self.enqueue_admission_with_request_and_permits(request, None, None, None, None)
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -149,112 +152,22 @@ impl QueryService {
             Some(observation_permit),
             Some(gpu_resource_permit),
             Some(completion_dispatcher),
+            None,
         )
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     fn enqueue_admission_with_request_and_permits(
         &self,
         request: QueryAdmissionRequest,
         observation_permit: Option<ObservationPermit>,
         gpu_resource_permit: Option<GpuResourcePermit>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
+        probe: Option<Arc<AdmissionTransactionProbe>>,
     ) -> Result<QueryAdmissionWaiter> {
-        #[cfg(any(test, feature = "test-hooks"))]
-        let (request, test_attempt) = {
-            let mut request = request;
-            let test_attempt = request.test_attempt.take();
-            (request, test_attempt)
-        };
-        let prepared =
-            self.prepare_submission(request, observation_permit, gpu_resource_permit, completion_dispatcher)?;
-        let PreparedSubmission {
-            queue_deadline,
-            requested_query_cap_bytes,
-            requested_at,
-            execution_cancellation,
-            submitted_plan_capability_evidence,
-            observation,
-            attempt_id,
-            admission_request_id,
-            completion,
-            requirement,
-            required_capabilities,
-            candidate_ordinals,
-        } = prepared;
-        let deadline = self.inner.queue_bounds.wait_deadline(requested_at, queue_deadline);
-        let pending = match self.reserve_pending_preflight_for_request(
-            &observation,
-            admission_request_id,
-            &execution_cancellation,
-            deadline,
-        ) {
-            Ok(pending) => pending,
-            Err(error) => {
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
-        let submission_seq = pending.submission_seq();
-
-        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
-            submitted_plan_capability_evidence.as_ref(),
-            &requirement,
-            &candidate_ordinals,
-        ) {
-            Ok(entries) => entries,
-            Err(error) => {
-                record_admission_lifecycle(
-                    &observation,
-                    admission_request_id,
-                    admission_rejection(&error),
-                    0,
-                    None,
-                    None,
-                );
-                pending.release();
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
-        if let Err(error) =
-            self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
-        {
-            record_admission_lifecycle(&observation, admission_request_id, admission_rejection(&error), 0, None, None);
-            pending.release();
-            completion.finish_error(&error);
-            return Err(error);
-        }
-
-        let request = AdmissionRequest {
-            admission_request_id,
-            observation: observation.clone(),
-            attempt_id,
-            completion,
-            submitted_plan_capability_evidence,
-            device_entries,
-            submission_seq,
-            compatible_devices,
-            requested_query_cap_bytes,
-            deadline,
-            execution_cancellation: execution_cancellation.clone(),
-            terminal: QueuedAdmissionTerminal::default(),
-            validated_generation: None,
-        };
-        let terminal = request.terminal.clone();
-        {
-            let _state = self.convert_pending_preflight_to_waiter(request, pending)?;
-        }
-        Ok(QueryAdmissionWaiter {
-            service: self.clone(),
-            admission_request_id,
-            observation,
-            requested_at,
-            deadline,
-            execution_cancellation,
-            terminal,
-            queued: true,
-            #[cfg(any(test, feature = "test-hooks"))]
-            test_attempt,
-        })
+        let (request, test_attempt) = request.split_test_attempt();
+        let waiter =
+            self.inner.admission.enqueue(request, observation_permit, gpu_resource_permit, completion_dispatcher)?;
+        Ok(QueryAdmissionWaiter { service: self.clone(), waiter, test_attempt, probe })
     }
 }

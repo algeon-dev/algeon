@@ -25,6 +25,8 @@ use std::{
 use futures::FutureExt;
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
+#[cfg(any(test, feature = "test-hooks"))]
+use tokio::runtime::EnterGuard;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::{ExecutionCancellation, context::QueryServiceResourceEpoch};
@@ -226,6 +228,13 @@ pub(crate) struct GpuExecutionPool {
 }
 
 impl GpuExecutionPool {
+    /// Enters this pool's Tokio runtime, so a future polled on a blocking
+    /// thread can register its timers with that runtime.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn enter_runtime(&self) -> EnterGuard<'_> {
+        self.inner.handle.enter()
+    }
+
     /// Creates a pool with an independent query-concurrency tracker.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {

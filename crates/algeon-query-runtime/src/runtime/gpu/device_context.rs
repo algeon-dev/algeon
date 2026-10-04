@@ -8,13 +8,10 @@ use cudf::runtime::{
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
-    DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, MemoryGrant,
+    DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
     registry::EngineDeviceHealthIdentity,
 };
-use crate::{
-    observability::{AdmissionRequestId, AttemptId},
-    runtime::{ServiceStreamPool, gpu::lanes::DeviceLanePermits},
-};
+use crate::runtime::{ServiceStreamPool, gpu::lanes::DeviceLanePermits};
 
 /// Service runtime state for one CUDA device ordinal.
 #[derive(Debug, Clone)]
@@ -237,33 +234,30 @@ impl DeviceContext {
         close_admission_for_fault(&self.inner.ledger, device_health_snapshot(self.inner.device))
     }
 
-    /// Attempts one immutable grant admission against this device's ledger.
-    ///
-    /// The ledger transaction owns both the active-attempt count and the
-    /// grant bytes; there is no separate slot to acquire.
-    pub(crate) fn try_admit_attempt(
-        &self,
-        waiter_id: AdmissionRequestId,
-        attempt_id: AttemptId,
-        requested_query_cap_bytes: Option<u64>,
-    ) -> Result<Option<MemoryGrant>> {
-        if self.synchronize_native_admission_health()? {
-            return Ok(None);
-        }
-        self.inner.ledger.try_admit_for_attempt(waiter_id, attempt_id, requested_query_cap_bytes)
+    /// The closure reason of a persistent native fault on this device, read
+    /// from the sibling runtime's process-lifetime fault state. It captures
+    /// only the device identity.
+    pub(crate) fn native_fault_probe(&self) -> impl Fn() -> Option<String> + Send + Sync + 'static {
+        let device = self.inner.device;
+        move || persistent_fault_reason(device_health_snapshot(device))
     }
 }
 
 /// Closes the device's admission when `health` reports a persistent fault;
 /// returns whether this call closed it.
 fn close_admission_for_fault(ledger: &DeviceLedger, health: DeviceHealthSnapshot) -> Result<bool> {
-    if health.status() != DeviceHealthStatus::Unhealthy {
-        return Ok(false);
-    }
-    ledger.close_admission_if_open(format!(
-        "persistent CUDA fault on device {} (fault_count={}, first_fault={:?})",
-        health.device().ordinal(),
-        health.fault_count(),
-        health.first_fault()
-    ))
+    persistent_fault_reason(health).map_or(Ok(false), |reason| ledger.close_admission_if_open(reason))
+}
+
+/// The admission closure reason for a device whose health reports a
+/// persistent fault.
+fn persistent_fault_reason(health: DeviceHealthSnapshot) -> Option<String> {
+    (health.status() == DeviceHealthStatus::Unhealthy).then(|| {
+        format!(
+            "persistent CUDA fault on device {} (fault_count={}, first_fault={:?})",
+            health.device().ordinal(),
+            health.fault_count(),
+            health.first_fault()
+        )
+    })
 }

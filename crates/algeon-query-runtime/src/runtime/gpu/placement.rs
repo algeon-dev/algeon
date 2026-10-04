@@ -14,7 +14,7 @@ use query_planning::{
 
 #[cfg(test)]
 use super::DeviceResourceEnvelope;
-use super::{DeviceRegistry, DeviceResourceProfile};
+use super::{DeviceAdmissionHealth, DeviceLedger, DeviceResourceProfile};
 
 /// Internal placement input derived from planner-owned capability evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,16 +125,6 @@ pub(crate) fn compare_placement_candidates(
         .then_with(|| left.ordinal.cmp(&right.ordinal))
 }
 
-/// Selects the single best candidate with the documented placement order.
-///
-/// Both direct placement and queue admission call this helper so that a
-/// queue waiter cannot silently diverge from normal device ranking.
-pub(crate) fn preferred_placement_candidate(
-    candidates: impl IntoIterator<Item = PlacementCandidate>,
-) -> Option<PlacementCandidate> {
-    candidates.into_iter().min_by(compare_placement_candidates)
-}
-
 #[cfg(test)]
 pub(crate) fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>, query_cap_bytes: u64) -> Vec<usize> {
     for candidate in &mut candidates {
@@ -144,92 +134,72 @@ pub(crate) fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>,
     candidates.into_iter().map(|candidate| candidate.ordinal).collect()
 }
 
-/// Captures candidate ranking evidence from one ledger snapshot per ordinal.
+/// Captures one ledger's ranking evidence from one atomic snapshot.
 ///
-/// Queue selection passes a protected ordinal when its finite-overtake
-/// reservation is eligible for replacement; direct placement passes `None`.
-/// The reservation is still consumed only by the ledger's admission
-/// transaction, preserving protection's ledger-local atomicity.
-pub(crate) fn snapshot_placement_candidates(
-    registry: &DeviceRegistry,
+/// Returns `None` when the ledger cannot serve the request at all: its
+/// profile lacks a required capability or its admission is closed. A
+/// saturated open ledger stays a candidate so placement can distinguish a
+/// transiently busy device from one that can never fit the required floor.
+pub(crate) fn placement_candidate_snapshot(
+    ledger: &DeviceLedger,
     request: &PlacementRequest,
-    ordinals: impl IntoIterator<Item = usize>,
-    _protected_ordinal: Option<usize>,
-) -> Result<Vec<PlacementCandidateSnapshot>> {
-    // Every healthy device participates so the placement loop can distinguish
-    // transiently busy devices (capacity fits, equation not yet satisfied)
-    // from devices that can never fit the required floor.
-    let mut candidates = Vec::with_capacity(registry.len());
-    for ordinal in ordinals {
-        let context = registry.context_by_ordinal(ordinal)?;
-        if !profile_supports_placement_request(
-            registry.resource_profile(context.device().ordinal()),
-            &request.required_capabilities,
-        ) {
-            continue;
-        }
-        let snapshot = context.ledger().snapshot()?;
-        if !matches!(snapshot.health, super::DeviceAdmissionHealth::Open) {
-            continue;
-        }
-        let query_cap_bytes = request.requested_query_cap_bytes.unwrap_or_else(|| {
-            snapshot
-                .default_query_limit_bytes
-                .min(snapshot.query_share_bytes.saturating_sub(snapshot.frozen_resident_bytes))
-        });
-        let can_ever_fit_query_cap = snapshot.can_ever_fit_query_cap(request.requested_query_cap_bytes);
-        let admitted_cap = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes);
-        let spare_capacity_bytes = admitted_cap.map_or(0, |cap| {
-            snapshot
-                .query_share_bytes
-                .saturating_sub(snapshot.frozen_resident_bytes)
-                .saturating_sub(snapshot.live_grants_bytes)
-                .saturating_sub(cap)
-        });
-        candidates.push(PlacementCandidateSnapshot {
-            candidate: PlacementCandidate {
-                ordinal: context.device().ordinal(),
-                query_cap_bytes,
-                spare_capacity_bytes,
-                active_attempts: snapshot.active_attempts,
-                live_grants_bytes: snapshot.live_grants_bytes,
-                worker_depth: snapshot.worker_depth,
-                stream_slots_available: snapshot.stream_slots_available(),
-            },
-            can_admit_now: admitted_cap.is_some(),
-            can_ever_fit_query_cap,
-        });
+) -> Result<Option<PlacementCandidateSnapshot>> {
+    if !profile_supports_placement_request(ledger.profile(), &request.required_capabilities) {
+        return Ok(None);
     }
-    Ok(candidates)
+    let snapshot = ledger.snapshot()?;
+    if !matches!(snapshot.health, DeviceAdmissionHealth::Open) {
+        return Ok(None);
+    }
+    let query_cap_bytes = request.requested_query_cap_bytes.unwrap_or_else(|| {
+        snapshot
+            .default_query_limit_bytes
+            .min(snapshot.query_share_bytes.saturating_sub(snapshot.frozen_resident_bytes))
+    });
+    let can_ever_fit_query_cap = snapshot.can_ever_fit_query_cap(request.requested_query_cap_bytes);
+    let admitted_cap = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes);
+    let spare_capacity_bytes = admitted_cap.map_or(0, |cap| {
+        snapshot
+            .query_share_bytes
+            .saturating_sub(snapshot.frozen_resident_bytes)
+            .saturating_sub(snapshot.live_grants_bytes)
+            .saturating_sub(cap)
+    });
+    Ok(Some(PlacementCandidateSnapshot {
+        candidate: PlacementCandidate {
+            ordinal: ledger.device_ordinal(),
+            query_cap_bytes,
+            spare_capacity_bytes,
+            active_attempts: snapshot.active_attempts,
+            live_grants_bytes: snapshot.live_grants_bytes,
+            worker_depth: snapshot.worker_depth,
+            stream_slots_available: snapshot.stream_slots_available(),
+        },
+        can_admit_now: admitted_cap.is_some(),
+        can_ever_fit_query_cap,
+    }))
 }
 
-/// Produces the stable direct-placement order from the same snapshots that
-/// queue selection uses.  Runnable candidates are tried first; saturated but
-/// otherwise valid candidates remain ordered for permanent-capacity analysis.
-pub(crate) fn ordered_placement_candidate_snapshots(
-    registry: &DeviceRegistry,
-    request: &PlacementRequest,
-    ordinals: impl IntoIterator<Item = usize>,
-    protected_ordinal: Option<usize>,
-) -> Result<Vec<PlacementCandidateSnapshot>> {
-    let mut candidates = snapshot_placement_candidates(registry, request, ordinals, protected_ordinal)?;
-    candidates.sort_by(|left, right| {
-        right
-            .can_admit_now
-            .cmp(&left.can_admit_now)
-            .then_with(|| compare_placement_candidates(&left.candidate, &right.candidate))
-    });
-    Ok(candidates)
+/// The stable placement order: candidates that can admit now come first,
+/// then the documented ranking of [`compare_placement_candidates`].
+pub(crate) fn compare_placement_candidate_snapshots(
+    left: &PlacementCandidateSnapshot,
+    right: &PlacementCandidateSnapshot,
+) -> std::cmp::Ordering {
+    right
+        .can_admit_now
+        .cmp(&left.can_admit_now)
+        .then_with(|| compare_placement_candidates(&left.candidate, &right.candidate))
 }
 
 /// Applies the immutable capability gate before a candidate can be observed
 /// by the ledger ranking. Keeping this predicate separate makes it explicit
 /// that no capacity or load signal may resurrect an incapable device.
 fn profile_supports_placement_request(
-    profile: Option<&DeviceResourceProfile>,
+    profile: &DeviceResourceProfile,
     required_capabilities: &[ExecutionCapability],
 ) -> bool {
-    profile.is_some_and(|profile| profile.device_capabilities.supports_all(required_capabilities))
+    profile.device_capabilities.supports_all(required_capabilities)
 }
 
 #[cfg(test)]
@@ -283,14 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_candidate_selection_uses_the_same_stream_tie_break_for_queue_admission() {
-        let selected = preferred_placement_candidate([candidate(7, 100, 1, 50, 2, 3), candidate(4, 100, 1, 50, 2, 4)])
-            .expect("candidates are present");
-
-        assert_eq!(selected.ordinal, 4);
-    }
-
-    #[test]
     fn capability_gate_excludes_incapable_profiles_before_placement_ranking() {
         let requirement = ExecutionCapability::new("test_operator");
         let incapable = /*OK*/DeviceResourceProfile::resolve(DeviceResourceEnvelope {
@@ -322,7 +284,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!profile_supports_placement_request(Some(&incapable), std::slice::from_ref(&requirement)));
-        assert!(profile_supports_placement_request(Some(&capable), &[requirement]));
+        assert!(!profile_supports_placement_request(&incapable, std::slice::from_ref(&requirement)));
+        assert!(profile_supports_placement_request(&capable, &[requirement]));
     }
 }

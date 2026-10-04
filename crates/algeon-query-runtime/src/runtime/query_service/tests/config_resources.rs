@@ -1,9 +1,7 @@
 #[test]
 fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
     let device_safety = DeviceSafetyTestScope::install([]);
-    let config = QueryExecutionConfig::default();
     let service = AdmissionTestController::new_with_ledger(
-        config,
         QueueBounds::default(),
         test_ledger_for_ordinal(2, 64 * 1024 * 1024, 1, Default::default()),
     )
@@ -33,7 +31,8 @@ fn query_service_handle_exposes_configured_execution_policies() {
         source_chunk_planning_options,
         ..QueryExecutionConfig::default()
     };
-    let service = AdmissionTestController::new(config, QueueBounds::default()).unwrap();
+    let service = runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(1)])
+        .unwrap();
 
     let handle = service.admit_query().unwrap();
 
@@ -43,6 +42,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
     assert_eq!(handle.planning_policy(), planning_policy);
     assert_eq!(handle.aggregate_strategy_execution_options(), aggregate_strategy_execution_options);
     assert_eq!(handle.source_chunk_planning_options(), source_chunk_planning_options);
+    handle.end_test_attempt();
 }
 #[test]
 fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
@@ -56,7 +56,8 @@ fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error = AdmissionTestController::new(config, QueueBounds::default()).unwrap_err();
+    let error =
+        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
@@ -73,7 +74,8 @@ fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error = AdmissionTestController::new(config, QueueBounds::default()).unwrap_err();
+    let error =
+        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
@@ -88,7 +90,8 @@ fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error = AdmissionTestController::new(config, QueueBounds::default()).unwrap_err();
+    let error =
+        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
@@ -102,7 +105,8 @@ fn query_service_rejects_invalid_source_chunk_planning_policy() {
         ..QueryExecutionConfig::default()
     };
 
-    let error = AdmissionTestController::new(config, QueueBounds::default()).unwrap_err();
+    let error =
+        QueryService::validate_controller_policy_for_backend(&config, &QueueBounds::default(), &[0]).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
@@ -152,12 +156,8 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     assert_eq!(carried(other_admitted_context.context()), 0, "each attempt keeps its own cache-fill events");
 }
 #[test]
-fn admission_only_query_service_honors_per_device_active_attempt_limit() {
-    let service = AdmissionTestController::new(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30) },
-    )
-    .unwrap();
+fn controller_honors_per_device_active_attempt_limit() {
+    let service = AdmissionTestController::new(QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30) }).unwrap();
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
 

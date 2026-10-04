@@ -12,11 +12,6 @@
 //! stream → lane → grant), preserves the primary error, and restores every
 //! admission counter exactly. Fault injection via
 //! [`AdmissionTransactionProbe`] proves both properties at every step.
-//!
-//! Services constructed without runtime resources (admission-only tests and
-//! tools) admit ledger-only envelopes: the grant with no physical components.
-//! Every attempt admitted against a real device always carries the complete
-//! physical envelope.
 
 #[cfg(test)]
 use std::sync::mpsc;
@@ -428,14 +423,14 @@ struct AdmissionTeardown {
 
 impl AdmissionTeardown {
     fn new(
-        physical: Option<EnvelopePhysical>,
-        lane_permit: Option<DeviceLanePermit>,
+        physical: EnvelopePhysical,
+        lane_permit: DeviceLanePermit,
         memory_grant: MemoryGrant,
         lifecycle_ticket: Option<AdmissionTicket>,
     ) -> Self {
         Self {
-            physical,
-            terminal: Some(AdmissionTerminalTeardown::new(lane_permit, memory_grant, None, lifecycle_ticket)),
+            physical: Some(physical),
+            terminal: Some(AdmissionTerminalTeardown::new(Some(lane_permit), memory_grant, None, lifecycle_ticket)),
         }
     }
 
@@ -481,7 +476,7 @@ impl std::fmt::Debug for AdmissionEnvelope {
             .debug_struct("AdmissionEnvelope")
             .field("device_ordinal", &self.device_ordinal)
             .field("grant_id", &self.teardown.terminal().memory_grant().grant_id())
-            .field("ledger_only", &self.teardown.physical.is_none())
+            .field("holds_gpu_resources", &self.teardown.physical.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -543,7 +538,7 @@ fn defer_rollback_capacity_release(
             // Notify only after the typed terminal sequence has dropped: its
             // lifecycle ticket is the final stage, making this the precise
             // quiescence edge.
-            service_for_notification.notify_admission_available();
+            service_for_notification.admission.notify_admission_available();
         },
     );
     if !installed {
@@ -660,22 +655,7 @@ impl AdmissionEnvelope {
             memory_grant: Some(memory_grant),
         };
         check_admission_boundary(cancellation)?;
-        let Some(resources) = service.resources.as_ref() else {
-            // Admission-only service: the ledger grant is the entire envelope.
-            check_admission_boundary(cancellation)?;
-            return Ok(Self {
-                service: Arc::clone(&builder.service),
-                device_ordinal,
-                teardown: AdmissionTeardown::new(
-                    None,
-                    None,
-                    builder.memory_grant.take().expect("grant present"),
-                    builder.lifecycle_ticket.take(),
-                ),
-                allocator_domain_attempt: None,
-                rollback_cleanup_started: false,
-            });
-        };
+        let resources = &service.resources;
         let device = resources.devices.context_by_ordinal(device_ordinal)?;
         let grant_ref = builder.memory_grant.as_ref().expect("grant present during envelope build");
 
@@ -752,13 +732,13 @@ impl AdmissionEnvelope {
             service: Arc::clone(&builder.service),
             device_ordinal,
             teardown: AdmissionTeardown::new(
-                Some(EnvelopePhysical {
+                EnvelopePhysical {
                     worker_scope,
                     root_member: Mutex::new(builder.root_member.take()),
                     domain: builder.domain.take().expect("domain present"),
                     root_stream: Mutex::new(builder.root_stream.take()),
-                }),
-                builder.lane_permit.take(),
+                },
+                builder.lane_permit.take().expect("lane present"),
                 builder.memory_grant.take().expect("grant present"),
                 builder.lifecycle_ticket.take(),
             ),
@@ -845,18 +825,19 @@ impl AdmissionEnvelope {
         self.teardown.terminal_mut().retain_gpu_resource_permit(gpu_resource_permit);
     }
 
-    /// The attempt allocation domain. Always present for device-backed
-    /// admissions; `None` only on ledger-only envelopes.
+    /// The attempt allocation domain, until the unconsumed GPU-bound
+    /// components are released.
     pub(crate) fn domain(&self) -> Option<&AttemptAllocationDomain> {
         self.teardown.physical.as_ref().map(|physical| &physical.domain)
     }
 
-    /// Device worker scope identity evidence for device-backed admissions.
+    /// Device worker scope identity evidence, until the unconsumed GPU-bound
+    /// components are released.
     pub(crate) fn worker_scope(&self) -> Option<DeviceWorkerScope> {
         self.teardown.physical.as_ref().map(|physical| physical.worker_scope)
     }
 
-    /// Attempt lane index for device-backed admissions.
+    /// Attempt lane index while the terminal teardown is retained.
     pub(crate) fn lane_index(&self) -> Option<usize> {
         self.teardown.terminal().lane_index()
     }
@@ -873,9 +854,13 @@ impl AdmissionEnvelope {
     pub(crate) fn take_root_binding(&self) -> Result<RootStreamBinding> {
         let operation = "query_engine.query_service.admission_transaction";
         let physical = self.teardown.physical.as_ref().ok_or_else(|| {
-            QueryError::new(QueryErrorCode::Internal, operation, "ledger-only admission envelope has no root binding")
-                .with_fact("device_ordinal", self.device_ordinal)
-                .with_fact("reason", "ledger_only_envelope")
+            QueryError::new(
+                QueryErrorCode::Internal,
+                operation,
+                "admission envelope already released its GPU-bound components",
+            )
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "envelope_physical_released")
         })?;
         let stream_lease = physical
             .root_stream

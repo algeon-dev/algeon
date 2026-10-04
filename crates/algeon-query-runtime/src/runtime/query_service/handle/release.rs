@@ -346,8 +346,7 @@ impl QueryHandleRelease {
         // Finished handles retain only projections and the service reference.
         // The envelope already released the admission resources and its final
         // lifecycle fence before this notification can publish quiescence.
-        notify_shared_device_admission_available(self.device_ordinal);
-        service.notify_admission_available();
+        service.admission.notify_admission_available();
         drop_recovering(Some(service), "query service");
         self.internal_cleanup_finished = true;
     }
