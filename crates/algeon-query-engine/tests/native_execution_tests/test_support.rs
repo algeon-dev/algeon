@@ -216,7 +216,7 @@ pub(super) fn wait_for_ledger_release(policy: BackendTestPolicy) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let reports =
-            suite_backend_with_policy(policy).session_capability().device_ledger_reports().expect("ledger reports");
+            suite_backend_with_policy(policy).session_capability().diagnostics().expect("ledger reports").ledgers;
         let report = reports.iter().find(|report| report.device_ordinal == 0).expect("device 0 ledger");
         if report.active_attempts == 0 && report.grants.is_empty() && report.live_grants_bytes == 0 {
             return;

@@ -437,7 +437,7 @@ async fn relational_composition_and_cuvs_share_one_admission() {
     assert!(metrics.admission_sequence.is_some(), "both GPU function occurrences must share admission");
     assert_eq!(result[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 0);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })
@@ -455,7 +455,7 @@ async fn dropping_result_stream_releases_admission_and_plan_can_run_again() {
     assert!(stream.next().await.transpose().unwrap().is_some());
     drop(stream);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })
@@ -463,7 +463,7 @@ async fn dropping_result_stream_releases_admission_and_plan_can_run_again() {
     .unwrap();
     assert_eq!(collect(physical, ctx.task_ctx()).await.unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 8);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })

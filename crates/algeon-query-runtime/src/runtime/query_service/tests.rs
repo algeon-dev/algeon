@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc, Barrier, Weak,
+        Arc, Barrier, PoisonError, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},

@@ -13,7 +13,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 use std::{
@@ -68,7 +68,6 @@ use crate::{
 /// unavailable and as the upper bound when detection succeeds.
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
-const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Returns the default service stream pool size for a CUDA device.
@@ -234,7 +233,7 @@ impl ServiceStreamPool {
             closed: AtomicBool::new(false),
             process_exit_started: AtomicBool::new(false),
         });
-        cleanup_supervisor.register_process_exit(Arc::downgrade(&inner));
+        cleanup_supervisor.attach_pool(Arc::downgrade(&inner));
         Ok(Self { inner })
     }
 
@@ -347,8 +346,7 @@ impl ServiceStreamPool {
             if remaining.is_zero() {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, 0));
             }
-            let wait = remaining.min(STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL);
-            let (next, timeout) = self.inner.state_changed.wait_timeout(state, wait).map_err(|_error| {
+            let (next, timeout) = self.inner.state_changed.wait_timeout(state, remaining).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -441,8 +439,7 @@ impl ServiceStreamPool {
             if remaining.is_zero() {
                 return Err(stream_pool_cleanup_timeout(operation, self, &state, expected_leased_runtimes));
             }
-            let wait = remaining.min(STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL);
-            let (next, _timeout) = self.inner.state_changed.wait_timeout(state, wait).map_err(|_error| {
+            let (next, _timeout) = self.inner.state_changed.wait_timeout(state, remaining).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -1229,6 +1226,8 @@ pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use cudf::{
         runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
         testing::device_safety::DeviceSafetyTestScope,

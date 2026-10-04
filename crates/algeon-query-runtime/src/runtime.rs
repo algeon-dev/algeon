@@ -42,9 +42,10 @@ pub use attempt_domain::AttemptStreamProviderRoute;
 #[cfg(feature = "qualification")]
 pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
-    GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+    GpuBackendCloseSnapshot, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
     GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuBackendDeviceStartupRecord, GpuBackendSession,
-    GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership, probe_device_capacity,
+    GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership, ValidatedGpuBackendConfig,
+    probe_device_capacity,
 };
 pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -89,8 +90,8 @@ pub use query_service::DeviceQuarantineInjection;
 #[doc(hidden)]
 pub use query_service::QueryService;
 pub use query_service::{
-    AdmittedQueryContext, QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
-    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    AdmittedQueryContext, BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig,
+    QueryHandle, QueryServiceAdmissionSnapshot, QueueBounds,
 };
 #[doc(hidden)]
 pub use reservation::RetryFacts;

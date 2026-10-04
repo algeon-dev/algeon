@@ -169,7 +169,7 @@ impl TwoDeviceServer {
     async fn wait_for_admission(&self, active: usize, queued: usize) {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let snapshot = self.backend.admission_snapshot().expect("admission snapshot");
+            let snapshot = self.backend.diagnostics().expect("admission snapshot").admission;
             if snapshot.active_queries == active && snapshot.queued_queries == queued {
                 return;
             }
@@ -202,7 +202,7 @@ async fn each_attempt_occupies_one_gpu_and_the_second_query_uses_the_other_devic
 
     // Each device ledger owns its own placement, so per-device active counts
     // are what prove the two attempts did not share a GPU.
-    let reports = server.backend.device_ledger_reports().expect("ledger reports");
+    let reports = server.backend.diagnostics().expect("ledger reports").ledgers;
     assert_eq!(reports.len(), 2);
     for report in &reports {
         assert_eq!(report.active_attempts, 1, "device {} holds exactly one attempt", report.device_ordinal);
@@ -250,7 +250,7 @@ async fn a_waiting_flight_query_runs_on_whichever_eligible_device_frees_first() 
 
     // The retained holder still pins its own device, so the waiter can only
     // have run on the one that was freed.
-    let reports = server.backend.device_ledger_reports().expect("ledger reports");
+    let reports = server.backend.diagnostics().expect("ledger reports").ledgers;
     let busy = reports.iter().filter(|report| report.active_attempts == 1).count();
     assert_eq!(busy, 1, "exactly the retained holder's device stays busy: {reports:?}");
     for report in &reports {

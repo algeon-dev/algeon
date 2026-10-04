@@ -86,9 +86,10 @@ async fn plan_pipeline(State(state): State<AppState>, Path(name): Path<String>) 
 }
 
 async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let snapshot = state.backend.admission_snapshot().map_err(AppError::from_adapter)?;
-    let device_ledgers = state.backend.device_ledger_reports().map_err(AppError::from_adapter)?;
-    let memory_failures = state.backend.device_memory_failure_reports().map_err(AppError::from_adapter)?;
+    let diagnostics = state.backend.diagnostics().map_err(AppError::from_adapter)?;
+    let snapshot = diagnostics.admission;
+    let device_ledgers = diagnostics.ledgers;
+    let memory_failures = diagnostics.memory_failures;
     Ok(Json(json!({
         "admission": {
             "active_queries": snapshot.active_queries,

@@ -63,9 +63,9 @@ use query_runtime::{
     metrics::QueryMetrics,
     observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeObservationHandle},
     runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
+        AdmittedQueryContext, ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, QueryAdmissionRequest,
+        QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
     },
 };
 
@@ -136,7 +136,6 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
         min_retry_chunk_row_groups: 1,
         ..QueryExecutionConfig::default()
     };
-    let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
     // One backend owns the suite; each exact-plan context acquires its own handle.
     // The suite runs one query at a time while allowing four source work
     // lanes within that attempt.
@@ -147,7 +146,9 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(5, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller)).build()
+    GpuBackendCore::new(
+        GpuBackendConfig::new(vec![device], policy, QueueBounds::default()).validate().expect("valid backend config"),
+    )
 }
 
 fn ensure_suite_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {

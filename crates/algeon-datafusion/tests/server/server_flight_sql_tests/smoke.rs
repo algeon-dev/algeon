@@ -180,7 +180,7 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
         "GetFlightInfo begins the sole invocation attempt before any GPU admission"
     );
     wait_for_empty_gpu_ledger(&backend).await;
-    let snapshot = backend.admission_snapshot().unwrap();
+    let snapshot = backend.diagnostics().unwrap().admission;
     assert_eq!(snapshot.active_queries, 0, "GetFlightInfo must not occupy GPU admission: {snapshot:?}");
     assert_eq!(snapshot.queued_queries, 0, "GetFlightInfo must not queue GPU admission: {snapshot:?}");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
@@ -188,7 +188,7 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
     // Drain any async GPU pool cleanup path before reading counters so a pure
     // DataFusion-baseline statement cannot race with unrelated pool bookkeeping.
     wait_for_empty_gpu_ledger(&backend).await;
-    let snapshot = backend.admission_snapshot().unwrap();
+    let snapshot = backend.diagnostics().unwrap().admission;
     assert_eq!(snapshot.active_queries, 0, "DoGet DataFusion baseline must not occupy GPU admission: {snapshot:?}");
     assert_eq!(snapshot.queued_queries, 0, "DoGet DataFusion baseline must not queue GPU admission: {snapshot:?}");
 
@@ -237,7 +237,7 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     let flight_info =
         client.execute("select src from shared_edges order by src limit 1".to_string(), None).await.unwrap();
     assert_eq!(
-        backend.admission_snapshot().unwrap().active_queries,
+        backend.diagnostics().unwrap().admission.active_queries,
         0,
         "GetFlightInfo must not acquire GPU admission before DoGet"
     );
@@ -253,7 +253,7 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
         .expect("holder should plan");
     holder_stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
     let holder = (holder_attempt, holder_stream);
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.diagnostics().unwrap().admission.active_queries, 1);
 
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let flight_query =
@@ -340,14 +340,10 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
             second.memory_manager_installation.installation_generation
         );
     }
+    assert_eq!(first_backend.diagnostics().unwrap().ledgers, second_backend.diagnostics().unwrap().ledgers);
     assert_eq!(
-        first_backend.device_admission_snapshots().unwrap(),
-        second_backend.device_admission_snapshots().unwrap()
-    );
-    assert_eq!(first_backend.device_ledger_reports().unwrap(), second_backend.device_ledger_reports().unwrap());
-    assert_eq!(
-        first_backend.device_memory_failure_reports().unwrap(),
-        second_backend.device_memory_failure_reports().unwrap()
+        first_backend.diagnostics().unwrap().memory_failures,
+        second_backend.diagnostics().unwrap().memory_failures
     );
     let first_telemetry = first_backend.device_telemetry_snapshots().unwrap();
     let second_telemetry = second_backend.device_telemetry_snapshots().unwrap();
@@ -361,8 +357,8 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         assert_eq!(first.nvml_status, second.nvml_status);
     }
 
-    let first_worker_pools = first_backend.gpu_execution_pool_reports().unwrap();
-    let second_worker_pools = second_backend.gpu_execution_pool_reports().unwrap();
+    let first_worker_pools = first_backend.diagnostics().unwrap().execution_pools;
+    let second_worker_pools = second_backend.diagnostics().unwrap().execution_pools;
     assert_eq!(first_worker_pools, second_worker_pools);
     assert_eq!(first_worker_pools.len(), 1);
     assert!(first_worker_pools[0].pool_id > 0);
@@ -392,8 +388,8 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         .expect("holder should plan");
     holder_stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
     let holder = (holder_attempt, holder_stream);
-    assert_eq!(first_backend.admission_snapshot().unwrap().active_queries, 1);
-    assert_eq!(second_backend.admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(first_backend.diagnostics().unwrap().admission.active_queries, 1);
+    assert_eq!(second_backend.diagnostics().unwrap().admission.active_queries, 1);
 
     let first_query = tokio::spawn(async move {
         let frame = first_session.sql("select src from first_edges order by src limit 1").await.unwrap();
@@ -405,8 +401,8 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     });
     wait_for_shared_ledger_queue(&backend, 2).await;
     assert_eq!(
-        first_backend.admission_snapshot().unwrap(),
-        second_backend.admission_snapshot().unwrap(),
+        first_backend.diagnostics().unwrap().admission,
+        second_backend.diagnostics().unwrap().admission,
         "both installed sessions must observe one query-service queue and ledger"
     );
 
@@ -422,8 +418,8 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     wait_for_empty_gpu_ledger(&backend).await;
 
     assert_eq!(
-        first_backend.gpu_execution_pool_reports().unwrap(),
-        second_backend.gpu_execution_pool_reports().unwrap()
+        first_backend.diagnostics().unwrap().execution_pools,
+        second_backend.diagnostics().unwrap().execution_pools
     );
     drop(first_backend);
     drop(second_backend);

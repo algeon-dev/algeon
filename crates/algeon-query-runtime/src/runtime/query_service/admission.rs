@@ -168,14 +168,9 @@ impl AdmissionLifecycleTracker {
     }
 
     fn transition(&self, id: u64, expected: AdmissionTicketPhase, next: AdmissionTicketPhase) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.query_service.admission.lifecycle",
-                "admission lifecycle tracker mutex was poisoned",
-            )
-            .with_fact("reason", "lifecycle_tracker_poisoned")
-        })?;
+        // Each phase change is one map write, so a recovered guard holds
+        // complete phases; the checks below still reject a conflicting one.
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(current) = state.tickets.get_mut(&id) else {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
@@ -201,14 +196,9 @@ impl AdmissionLifecycleTracker {
     }
 
     fn finish_cleanup(&self, id: u64) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.query_service.admission.lifecycle",
-                "admission lifecycle tracker mutex was poisoned",
-            )
-            .with_fact("reason", "lifecycle_tracker_poisoned")
-        })?;
+        // Each phase change is one map write, so a recovered guard holds
+        // complete phases; the checks below still reject a conflicting one.
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match state.tickets.get(&id).copied() {
             Some(actual) if actual.is_cleanup() => {
                 state.tickets.remove(&id);
@@ -916,8 +906,8 @@ impl AdmissionWaiter {
             },
         };
         // A step ends only this request. Other waiters' cancellation and
-        // expiry are removed by their own steps or by submission and snapshot
-        // sweeps; until then they are not queue members and claim no device.
+        // expiry are removed by their own steps or by submission sweeps;
+        // until then they are not queue members and claim no device.
         // A sweep that ran since the check above may have recorded this
         // request's terminal result before dropping its completion payload.
         if let Some(error) = self.terminal.take() {
@@ -1247,10 +1237,10 @@ impl Drop for AdmissionWaiter {
             },
             Err(error) => {
                 self.queued = false;
-                let error = self
-                    .controller
+                // The recovery records this request's rejection and finishes
+                // its completion with the poison error.
+                self.controller
                     .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id);
-                eprintln!("[query-engine] warning: recovered queued query service admission request after {error}");
                 return;
             },
         };
@@ -1368,6 +1358,23 @@ mod tests {
         },
         runtime::BackendLifecycle,
     };
+
+    #[test]
+    fn a_ticket_leaves_a_poisoned_lifecycle_tracker() {
+        let tracker = AdmissionLifecycleTracker::default();
+        let ticket = tracker.begin_provisional(Weak::new());
+        let poisoner = tracker.clone();
+        std::thread::spawn(move || {
+            let _state = poisoner.state.lock().unwrap();
+            panic!("poison the lifecycle tracker");
+        })
+        .join()
+        .expect_err("the poisoning thread panics while holding the tracker");
+
+        drop(ticket);
+
+        assert!(tracker.is_quiescent(), "the dropped ticket leaves the lifecycle drain fence");
+    }
 
     #[test]
     fn dropping_provisional_admission_ticket_restores_quiescence() {

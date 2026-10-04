@@ -176,7 +176,6 @@ pub enum AttemptFailureFactValue {
     AdmissionQueueFull,
     QueueWaitElapsed,
     MemoryGrantWaitTimeout,
-    ProtectedWaiterNoRunnableDevice,
     RequiredFloorExceedsDeviceCapacity,
     /// The requested query cap does not fit any eligible device once resident
     /// ownership is deducted. Retrying the same request cannot succeed.
@@ -448,9 +447,6 @@ impl AttemptFailureSummary {
             Some("admission_queue_full") => Some(AttemptFailureFactValue::AdmissionQueueFull),
             Some("queue_wait_elapsed") => Some(AttemptFailureFactValue::QueueWaitElapsed),
             Some("memory_grant_wait_timeout") => Some(AttemptFailureFactValue::MemoryGrantWaitTimeout),
-            Some("protected_waiter_no_runnable_device") => {
-                Some(AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice)
-            },
             Some("required_floor_exceeds_device_capacity") | Some("impossible_requirement") => {
                 Some(AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity)
             },
@@ -897,8 +893,6 @@ pub struct AttemptResourceEvidence {
     pub(crate) managed_capacity_bytes: AttemptEvidenceField<u64>,
     pub(crate) live_grants_bytes: AttemptEvidenceField<u64>,
     pub(crate) resident_owner_bytes: AttemptEvidenceField<u64>,
-    pub(crate) protected_slot: AttemptEvidenceField<bool>,
-    pub(crate) protected_reserve_bytes: AttemptEvidenceField<u64>,
     pub cache_evictable_resident_bytes: AttemptEvidenceField<u64>,
     pub cache_pinned_in_use_bytes: AttemptEvidenceField<u64>,
     pub(crate) active_attempt_count: AttemptEvidenceField<u64>,
@@ -924,8 +918,6 @@ impl AttemptResourceEvidence {
             managed_capacity_bytes: AttemptEvidenceField::unavailable(),
             live_grants_bytes: AttemptEvidenceField::unavailable(),
             resident_owner_bytes: AttemptEvidenceField::unavailable(),
-            protected_slot: AttemptEvidenceField::unavailable(),
-            protected_reserve_bytes: AttemptEvidenceField::unavailable(),
             cache_evictable_resident_bytes: AttemptEvidenceField::unavailable(),
             cache_pinned_in_use_bytes: AttemptEvidenceField::unavailable(),
             active_attempt_count: AttemptEvidenceField::unavailable(),
@@ -1295,7 +1287,6 @@ fn is_queue_overload(failure: &AttemptFailureSummary) -> bool {
                     AttemptFailureFactValue::AdmissionQueueFull
                         | AttemptFailureFactValue::QueueWaitElapsed
                         | AttemptFailureFactValue::MemoryGrantWaitTimeout
-                        | AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice
                 )
         })
 }

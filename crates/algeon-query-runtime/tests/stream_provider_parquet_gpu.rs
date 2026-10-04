@@ -129,8 +129,8 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
     drop(first);
     drop(second);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).unwrap();
-    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
-    let reports = service.device_ledger_reports().unwrap();
+    assert_eq!(service.diagnostics().unwrap().admission.active_queries, 0);
+    let reports = service.diagnostics().unwrap().ledgers;
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].active_attempts, 0);
     assert_eq!(reports[0].live_grants_bytes, 0);

@@ -276,6 +276,57 @@ fn transition_snapshots_expose_budget_to_resident_boundary() {
 }
 
 #[test]
+fn grant_release_notifies_observers_after_their_registries_are_poisoned() {
+    let ledger = DeviceLedger::new(profile(1_000, 800, 2));
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let observed_transitions = Arc::clone(&transitions);
+    ledger
+        .register_transition_observer(Arc::new(move |transition| {
+            observed_transitions.lock().expect("transition log").push(transition.kind);
+        }))
+        .unwrap();
+    let admissions = Arc::new(Mutex::new(Vec::new()));
+    let observed_admissions = Arc::clone(&admissions);
+    ledger
+        .register_admission_observer(Arc::new(move |transition| {
+            observed_admissions.lock().expect("admission log").push(transition.kind);
+        }))
+        .unwrap();
+    let grant = ledger.try_admit(request(1), Some(400)).unwrap().expect("grant admits");
+
+    let poisoner = ledger.clone();
+    std::thread::spawn(move || {
+        let _transition_observers = poisoner.inner.transition_observers.lock().unwrap();
+        let _admission_observers = poisoner.inner.admission_observers.lock().unwrap();
+        panic!("poison both observer registries");
+    })
+    .join()
+    .expect_err("the poisoning thread panics while holding both registries");
+
+    drop(grant);
+    assert!(transitions.lock().unwrap().contains(&LedgerTransitionKind::GrantReleased));
+    assert!(admissions.lock().unwrap().contains(&LedgerTransitionKind::GrantReleased));
+    assert_eq!(ledger.snapshot().unwrap().live_grants_bytes, 0);
+}
+
+#[test]
+fn grant_drop_with_a_poisoned_frozen_domain_slot_keeps_the_device_open() {
+    let ledger = DeviceLedger::new(profile(1_000, 800, 2));
+    let grant = ledger.try_admit(request(1), Some(400)).unwrap().expect("grant admits");
+    let poisoner = grant.clone();
+    std::thread::spawn(move || {
+        let _slot = poisoner.inner.frozen_domain.lock().unwrap();
+        panic!("poison the empty frozen-domain slot");
+    })
+    .join()
+    .expect_err("the poisoning thread panics while holding the slot");
+
+    drop(grant);
+    assert_eq!(ledger.health().unwrap(), DeviceAdmissionHealth::Open);
+    assert_eq!(ledger.snapshot().unwrap().live_grants_bytes, 0);
+}
+
+#[test]
 fn grant_release_completes_after_the_ledger_lock_is_poisoned() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 2));
     let released_live_bytes = Arc::new(Mutex::new(Vec::new()));

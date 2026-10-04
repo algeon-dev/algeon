@@ -158,7 +158,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     assert_eq!(producer_report.capacity_disposition, observability::AttemptCapacityDisposition::FrozenResident);
     let freeze_deadline = Instant::now() + Duration::from_secs(10);
     let frozen = loop {
-        let snapshot = service.device_ledger_reports().unwrap().remove(0);
+        let snapshot = service.diagnostics().unwrap().ledgers.remove(0);
         if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
             break snapshot;
         }
@@ -219,10 +219,10 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         );
     }
 
-    assert!(service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes > 0);
+    assert!(service.diagnostics().unwrap().ledgers.remove(0).frozen_resident_bytes > 0);
     drop(inputs);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes != 0 {
+    while service.diagnostics().unwrap().ledgers.remove(0).frozen_resident_bytes != 0 {
         assert!(Instant::now() < deadline, "resident charge releases after final owner");
         thread::yield_now();
     }
@@ -289,7 +289,7 @@ fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
     drop(producer);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = service.device_ledger_reports().unwrap().remove(0);
+        let snapshot = service.diagnostics().unwrap().ledgers.remove(0);
         if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
             break;
         }
@@ -314,14 +314,14 @@ fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
         drop(attempt);
     }
     let deadline = Instant::now() + Duration::from_secs(10);
-    while service.device_ledger_reports().unwrap().remove(0).active_attempts != 0 {
+    while service.diagnostics().unwrap().ledgers.remove(0).active_attempts != 0 {
         assert!(Instant::now() < deadline, "the reader and holder attempts end");
         thread::yield_now();
     }
 
     reset_event_observation_for_test();
     drop(inputs);
-    assert_eq!(service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes, 0);
+    assert_eq!(service.diagnostics().unwrap().ledgers.remove(0).frozen_resident_bytes, 0);
     assert_eq!(
         event_synchronize_count_for_test(),
         2,
@@ -518,7 +518,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let mut inputs = runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), input);
     let result = execute_plan(context, &plan, Some(&inputs)).expect("cache-enabled PageRank execution");
-    let ledger_report = service.device_ledger_reports().expect("ledger report").remove(0);
+    let ledger_report = service.diagnostics().expect("ledger report").ledgers.remove(0);
     assert!(ledger_report.cache_evictable_resident_bytes > 0, "the parked graph remains ledger-owned after execution");
     assert_eq!(ledger_report.cache_pinned_in_use_bytes, 0, "the graph checkout releases its pin after execution");
     assert!(ledger_report.cache_evictable_resident_bytes <= CACHE_CAP_BYTES);
@@ -551,7 +551,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         "all cache evidence fields retain the ledger snapshot sequence"
     );
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains cache entries");
-    let drained_report = service.device_ledger_reports().expect("drained ledger report").remove(0);
+    let drained_report = service.diagnostics().expect("drained ledger report").ledgers.remove(0);
     assert_eq!(drained_report.cache_evictable_resident_bytes, 0);
     assert_eq!(drained_report.cache_pinned_in_use_bytes, 0);
 }
@@ -618,7 +618,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     .expect("valid edge batch");
 
     let cache_evictable_bytes =
-        || service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes;
+        || service.diagnostics().expect("ledger report").ledgers.remove(0).cache_evictable_resident_bytes;
 
     // Cold execution parks the graph; the attempt domain covers only the edge
     // upload and the output copy because the build runs in the cache domain.
@@ -716,8 +716,8 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     let bfs_edges = cycle_chord_edge_batch(&edge_schema, VERTEX_COUNT, VERTEX_COUNT / 3 + 1);
 
     let cache_evictable_bytes =
-        || service.device_ledger_reports().expect("ledger report").remove(0).cache_evictable_resident_bytes;
-    let live_grants = || service.device_ledger_reports().expect("ledger report").remove(0).grants.len();
+        || service.diagnostics().expect("ledger report").ledgers.remove(0).cache_evictable_resident_bytes;
+    let live_grants = || service.diagnostics().expect("ledger report").ledgers.remove(0).grants.len();
 
     // Sequential baselines park both graphs and fix the expected outputs.
     let (pagerank_baseline, _, _) =
@@ -1030,7 +1030,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     // frozen charge becomes visible strictly after the sealed report.
     let deadline = Instant::now() + Duration::from_secs(10);
     let snapshot = loop {
-        let snapshot = service.device_ledger_reports().unwrap().remove(0);
+        let snapshot = service.diagnostics().unwrap().ledgers.remove(0);
         if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
             break snapshot;
         }

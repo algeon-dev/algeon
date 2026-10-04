@@ -1183,7 +1183,7 @@ async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
         prepared.native_execution_config.query_admission_ticket().is_some(),
         "the graph ticket must be minted only after staged exact rows are available"
     );
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
     drop(staged);
     assert_eq!(runtime.memory_pool.reserved(), 0, "dropping staged host ownership must release its reservation");
 }
@@ -1239,7 +1239,7 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
         staged.host_evidence.input_staging_peak_bytes() + staged.host_evidence.output_limit_bytes(),
         "host evidence must carry one checked aggregate peak for overlapping input and output reservations",
     );
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
     drop(staged);
     assert_eq!(runtime.memory_pool.reserved(), 0, "staged edge and predicate ownership must be released together");
 }
@@ -1306,7 +1306,7 @@ async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission
         .expect_err("host staging must fail before an admission ticket or query is acquired");
     let algeon = error.find_algeon_error().expect("host staging cap failure remains structured");
     assert_eq!(algeon.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
     assert_eq!(runtime.memory_pool.reserved(), 0, "failed staging must release all host ownership");
 }
 

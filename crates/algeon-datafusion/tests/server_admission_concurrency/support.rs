@@ -181,7 +181,7 @@ impl ConcurrencyServer {
     pub(crate) async fn wait_for_admission(&self, active: usize, queued: usize) {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let snapshot = self.backend.admission_snapshot().expect("admission snapshot");
+            let snapshot = self.backend.diagnostics().expect("admission snapshot").admission;
             if snapshot.active_queries == active && snapshot.queued_queries == queued {
                 return;
             }

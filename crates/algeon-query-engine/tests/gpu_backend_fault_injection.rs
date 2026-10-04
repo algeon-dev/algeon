@@ -1,9 +1,8 @@
 use std::time::{Duration, Instant};
 
 use query_runtime::runtime::{
-    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-    GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-    QueryExecutionConfig, QueueBounds,
+    GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
+    GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig, QueueBounds,
 };
 
 const DEVICE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
@@ -30,18 +29,21 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
         "non-qualifying physical fault-injection validation requires at least two CUDA devices; found {available_devices}"
     );
 
-    let controller = GpuBackendControllerDraft::new(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
-    );
-    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0), device(1)], controller))
-        .build()
-        .expect("two-device backend builds");
+    let core = GpuBackendCore::new(
+        GpuBackendConfig::new(
+            vec![device(0), device(1)],
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
+    .expect("two-device backend builds");
 
     let session = core.session_capability();
     let pre_ack = session.admit_query().expect("target device admits work before controlled quarantine");
     assert_eq!(pre_ack.device_ordinal(), 0, "the deterministic first placement supplies the live target grant");
-    let reports = session.device_ledger_reports().expect("ledger reports remain public");
+    let reports = session.diagnostics().expect("ledger reports remain public").ledgers;
     let target_before = reports.iter().find(|report| report.device_ordinal == 0).expect("target ledger is present");
     assert_eq!(target_before.active_attempts, 1);
     assert_eq!(target_before.grants.len(), 1, "the pre-ack target grant remains live across the barrier");
@@ -55,7 +57,7 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
     assert_eq!(repeated.device_health_generation(), 1);
     assert!(!repeated.newly_quarantined());
 
-    let reports = session.device_ledger_reports().expect("ledger reports remain public");
+    let reports = session.diagnostics().expect("ledger reports remain public").ledgers;
     assert_eq!(
         reports.iter().find(|report| report.device_ordinal == 0).map(|report| report.health.as_str()),
         Some("closed")
@@ -79,7 +81,7 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
 
     let release_deadline = Instant::now() + Duration::from_secs(10);
     let target_after = loop {
-        let released = session.device_ledger_reports().expect("released target ledger is observable");
+        let released = session.diagnostics().expect("released target ledger is observable").ledgers;
         let target_after = released.iter().find(|report| report.device_ordinal == 0).expect("target ledger is present");
         if target_after.active_attempts == 0 && target_after.grants.is_empty() {
             break target_after.clone();

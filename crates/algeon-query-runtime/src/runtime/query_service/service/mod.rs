@@ -27,9 +27,7 @@ pub(in crate::runtime::query_service) use api::AdmissionObservation;
 pub use api::DeviceQuarantineInjection;
 #[cfg(test)]
 pub(crate) use api::QueryAdmissionOutcome;
-pub use api::{
-    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
-};
+pub use api::{BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot};
 
 /// Service-level entry point for native query admission.
 #[derive(Clone, Debug)]

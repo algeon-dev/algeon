@@ -337,7 +337,7 @@ fn close_drains_queued_completion_from_a_poisoned_admission_guard() {
 }
 
 #[test]
-fn close_and_wait_drains_queued_completion_from_a_poisoned_admission_guard() {
+fn close_and_wait_quiesces_after_admission_poison() {
     let service = test_service(1, 8);
     let attempt = observed_attempt("poisoned-close-and-wait-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
@@ -346,12 +346,10 @@ fn close_and_wait_drains_queued_completion_from_a_poisoned_admission_guard() {
         .expect("admission enqueues");
 
     service.poison_admission();
-    let error = service
+    service
         .close_and_wait_for_quiescence(Duration::from_secs(1))
-        .expect_err("poisoned admission remains a structured close-and-wait failure");
+        .expect("the queue, preflight set, and lifecycle tickets stay valid after poison, so the drain quiesces");
 
-    assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.fact_value("reason"), Some("admission_mutex_poisoned"));
     assert_eq!(service.queued_len_recovering_poison(), 0, "close-and-wait drains queued completion despite poison");
     assert!(matches!(&wait_for_sealed_observation(&observation).footer().terminal, Some(RuntimeTerminalOutcome::Cancelled)));
     drop(waiter);
@@ -404,14 +402,39 @@ fn query_service_observes_deterministic_queued_timeout_once() {
     drop(active);
 }
 
-/// A reporter can remove and terminalize a waiter before its observation next polls.
+/// An admission snapshot only reads: an expired waiter is no longer counted
+/// as queued, but the reader does not finish its request. The waiter's own
+/// step does.
+#[test]
+fn admission_snapshot_leaves_an_expired_waiter_to_its_own_step() {
+    let service = test_service(1, 8);
+    let active = service.admit_query().expect("first query occupies the only slot");
+    let attempt = observed_attempt("snapshot-read-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let observation = attempt.observation_for_test();
+    let mut waiter = service
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
+        .expect("second query queues");
+    service.expire_waiter(&mut waiter);
+
+    let snapshot = service.admission_snapshot().expect("admission snapshot");
+    assert_eq!(snapshot.queued_queries, 0, "an expired waiter is not a queue member");
+    assert_eq!(service.queued_len(), 1, "the snapshot leaves the expired request in place");
+    assert!(observation.sealed_snapshot().is_none(), "the snapshot does not finish the expired request");
+
+    let error = waiter.try_admit().expect_err("the waiter's own step reports its timeout");
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(service.queued_len(), 0);
+    drop(active);
+}
+
+/// A submission sweep can remove and terminalize a waiter before its observation next polls.
 /// The waiter is allowed to take its structured error first, but that handoff
 /// must not turn the owned completion payload into a dropped terminal outcome.
 #[test]
-fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
+fn sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let attempt = observed_attempt("snapshot-swept-timeout-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("swept-timeout-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let mut waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -454,7 +477,7 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
 /// The queue sweep must carry the borrowed native summary through the
 /// attempt-owned completion even after the waiter has taken its rich error.
 #[test]
-fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout() {
+fn sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
     let attempt_lifecycle = BackendLifecycle::new();
@@ -513,17 +536,17 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
 /// Health rejection carries both a waiter error and a rejection lifecycle.
 /// Both must survive the same handoff race as a timeout.
 #[test]
-fn snapshot_sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
+fn sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let attempt = observed_attempt("snapshot-swept-health-rejection-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt("swept-health-rejection-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let mut waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("second query queues");
     let admission_request_id = waiter.admission_request_id();
     service
-        .close_device_admission_for_test(0, "snapshot-sweep-health-rejection")
+        .close_device_admission_for_test(0, "sweep-health-rejection")
         .expect("close the waiter's only compatible device");
 
     let mut state = service.controller.lock_admission().expect("admission state");

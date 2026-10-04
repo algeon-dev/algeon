@@ -223,7 +223,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     stop_flag.store(true, Ordering::SeqCst);
     let _ = sampler_handle.join();
 
-    let effective_active_max = backend.gpu_execution_query_report().unwrap().peak_active_query_jobs;
+    let effective_active_max = backend.diagnostics().unwrap().execution_queries.peak_active_query_jobs;
     let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
     let samples = samples.lock().unwrap();
     write_outputs(

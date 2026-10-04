@@ -1141,7 +1141,7 @@ async fn internal_attempt_holds_its_grant_until_the_root_stream_ends() {
         let mut stream = execute_stream(plan, ctx.task_ctx()).unwrap();
         stream.next().await.expect("the drained rows are emitted").expect("the first batch succeeds");
         assert_eq!(
-            backend.admission_snapshot().unwrap().active_queries,
+            backend.diagnostics().unwrap().admission.active_queries,
             1,
             "the native fragment ended, but the root stream still holds the attempt's grant"
         );

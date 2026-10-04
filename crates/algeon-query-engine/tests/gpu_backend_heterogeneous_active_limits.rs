@@ -4,9 +4,9 @@ use std::{
 };
 
 use query_runtime::runtime::{
-    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-    GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-    QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,
+    GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
+    GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig,
+    QueueBounds,
 };
 
 const DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -23,10 +23,6 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     assert!(device_count >= 2, "heterogeneous backend coverage requires at least two CUDA devices");
     let _guard = live_backend_test_guard();
 
-    let controller = GpuBackendControllerDraft::new(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250) },
-    );
     // Each device carries an explicit per-device cap here so the two devices
     // can use different parallelism targets in one backend. Without an
     // explicit cap the install derives `floor((M - K) / N)` from the
@@ -47,9 +43,16 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
             GpuMemoryOwnership::WholeDeviceExclusive,
         )
     };
-    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0, 2), device(1, 1)], controller))
-        .build()
-        .unwrap();
+    let core = GpuBackendCore::new(
+        GpuBackendConfig::new(
+            vec![device(0, 2), device(1, 1)],
+            QueryExecutionConfig::default(),
+            QueueBounds::default(),
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
+    .unwrap();
     let session = core.session_capability();
 
     let first = session.admit_query_with_request(QueryAdmissionRequest::test_attempt()).expect("first query admits");
@@ -68,8 +71,8 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         "the device-1 cap remains one instead of inheriting device 0's cap of two",
     );
 
-    let snapshots = session.device_admission_snapshots().unwrap();
-    assert_eq!(snapshots.iter().map(|snapshot| snapshot.process_active_query_slots).collect::<Vec<_>>(), vec![2, 1]);
+    let ledgers = session.diagnostics().unwrap().ledgers;
+    assert_eq!(ledgers.iter().map(|ledger| ledger.active_attempts).collect::<Vec<_>>(), vec![2, 1]);
 
     first.end_test_attempt();
     second.end_test_attempt();
@@ -85,7 +88,6 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
     let _guard = live_backend_test_guard();
 
     const DEVICE_ONE_LIMIT_BYTES: u64 = 2 * DEVICE_CAPACITY_BYTES;
-    let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let device = |device_ordinal, limit_bytes, max_active_attempts| {
         GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(device_ordinal)
@@ -100,11 +102,15 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
             GpuMemoryOwnership::WholeDeviceExclusive,
         )
     };
-    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
-        vec![device(0, DEVICE_CAPACITY_BYTES, 2), device(1, DEVICE_ONE_LIMIT_BYTES, 1)],
-        controller,
-    ))
-    .build()
+    let core = GpuBackendCore::new(
+        GpuBackendConfig::new(
+            vec![device(0, DEVICE_CAPACITY_BYTES, 2), device(1, DEVICE_ONE_LIMIT_BYTES, 1)],
+            QueryExecutionConfig::default(),
+            QueueBounds::default(),
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
     .unwrap();
 
     let records = core.device_startup_records();

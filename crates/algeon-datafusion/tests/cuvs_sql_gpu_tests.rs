@@ -386,7 +386,7 @@ async fn functions_only_keeps_native_supported_sql_on_cpu_without_gpu_activity()
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert_eq!(arrow_host_export_call_count_for_test(), 0);
-    let admission = backend.admission_snapshot().expect("post-query admission snapshot");
+    let admission = backend.diagnostics().expect("post-query admission snapshot").admission;
     assert_eq!(admission.active_queries, 0);
     let device = backend.backend_metrics_snapshot().device(0).expect("device metrics");
     assert_eq!(device.admission.active_attempts, 0);
@@ -634,25 +634,25 @@ async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_agai
     assert!(stream.next().await.transpose().unwrap().is_some());
     drop(stream);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })
     .await
     .expect("dropping the stream must release query admission");
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.diagnostics().unwrap().admission.active_queries, 0);
 
     let batches =
         collect(plan, ctx.task_ctx()).await.expect("the same physical plan must start a fresh invocation round");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
     timeout(Duration::from_secs(5), async {
-        while backend.admission_snapshot().unwrap().active_queries != 0 {
+        while backend.diagnostics().unwrap().admission.active_queries != 0 {
             yield_now().await;
         }
     })
     .await
     .expect("completed reuse must release query admission");
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.diagnostics().unwrap().admission.active_queries, 0);
     close_cuvs_test_backend(backend, ctx);
 }
 

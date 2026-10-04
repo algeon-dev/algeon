@@ -263,7 +263,7 @@ async fn fragments_bound_after_the_claim_join_its_grant() {
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&second_plan)));
 
     let context = ticket.acquire_context(Arc::new(TaskContext::default())).await.expect("the combined evidence admits");
-    let admitted = backend.backend().admission_snapshot().unwrap();
+    let admitted = backend.backend().diagnostics().unwrap().admission;
     ticket
         .bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
         .expect("evidence the claim covers binds nothing new");
@@ -272,7 +272,7 @@ async fn fragments_bound_after_the_claim_join_its_grant() {
         .bind_fragment_evidence([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
         .expect("a fragment planned after the claim joins its grant");
     assert_eq!(
-        backend.backend().admission_snapshot().unwrap(),
+        backend.backend().diagnostics().unwrap().admission,
         admitted,
         "joining the grant changes neither the queue nor the ledger"
     );
@@ -298,7 +298,7 @@ async fn fragments_bound_after_the_claim_join_its_grant() {
         .context()
         .validate_admitted_plan_capabilities(&fourth_plan)
         .expect("the joined fragment may execute");
-    assert_eq!(backend.backend().admission_snapshot().unwrap(), admitted);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission, admitted);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -323,11 +323,11 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
     let facts = context.admission_facts();
     assert!(facts.admission_sequence > 0);
     assert!(facts.query_grant_bytes > 0);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
 
     drop(context);
     assert_eq!(
-        backend.backend().admission_snapshot().unwrap().active_queries,
+        backend.backend().diagnostics().unwrap().admission.active_queries,
         1,
         "the grant belongs to the attempt, not to the context"
     );
@@ -338,7 +338,7 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
             .await
             .expect("ending the attempt must eventually return the real ledger grant")
             .expect("released capacity must admit the next attempt");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
     drop(next_context);
 }
 
@@ -354,7 +354,7 @@ async fn admission_ticket_propagates_attempt_cancellation_to_admission() {
         .expect_err("cancelled admission must not acquire a real handle");
 
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -368,7 +368,7 @@ async fn a_failed_admission_is_the_outcome_every_later_fragment_gets() {
         .await
         .expect_err("cancelled admission must fail before publishing a handle");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
 
     {
         let admission = ticket.admission.lock().expect("ticket admission mutex");
@@ -385,7 +385,7 @@ async fn a_failed_admission_is_the_outcome_every_later_fragment_gets() {
         (error.code(), error.operation(), error.message(), error.facts()),
         "a later fragment gets the admission's own error, not a second claim's"
     );
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 0);
 }
 
 /// Fragments waiting while another fragment claims the attempt's admission
@@ -431,7 +431,7 @@ async fn concurrent_fragments_share_the_one_admission_outcome() {
         (claiming.code(), claiming.operation(), claiming.message(), claiming.facts()),
         "the waiting fragment gets the same typed error instead of claiming again"
     );
-    let snapshot = backend.backend().admission_snapshot().unwrap();
+    let snapshot = backend.backend().diagnostics().unwrap().admission;
     assert_eq!(snapshot.active_queries, 1, "only the holder owns a grant");
     assert_eq!(snapshot.queued_queries, 0);
     assert_eq!(snapshot.queue_high_watermark, 1, "the attempt queued one admission request");
@@ -462,11 +462,11 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_e
         .await
         .expect_err("a cancelled secondary context must not consume another context lease");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
 
     drop(first_context);
     assert_eq!(
-        backend.backend().admission_snapshot().unwrap().active_queries,
+        backend.backend().diagnostics().unwrap().admission.active_queries,
         1,
         "a cancelled attempt keeps its grant until its outcome is committed"
     );
@@ -477,7 +477,7 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_e
             .await
             .expect("the grant must be returned once the attempt ends")
             .expect("released capacity must admit a replacement attempt");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
     drop(replacement);
 }
 
@@ -497,7 +497,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_
         .acquire_context(Arc::new(TaskContext::default()))
         .await
         .expect("the holder must consume the device-local admission slot");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(backend.backend().diagnostics().unwrap().admission.active_queries, 1);
 
     let deadline = Instant::now() + Duration::from_millis(100);
     let (_waiter_attempt, waiter) = attempt_ticket_with_options_for_test(
@@ -511,7 +511,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_
         .expect_err("deadline expiry must reject the waiter");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
-    let snapshot = backend.backend().admission_snapshot().unwrap();
+    let snapshot = backend.backend().diagnostics().unwrap().admission;
     assert_eq!(snapshot.active_queries, 1, "the holder still owns the only grant");
     assert_eq!(snapshot.queued_queries, 0, "a cancelled waiter must be removed from the queue");
     {
@@ -558,12 +558,12 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));
     assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
     assert_eq!(
-        backend.backend().admission_snapshot().unwrap().active_queries,
+        backend.backend().diagnostics().unwrap().admission.active_queries,
         0,
         "rejection must precede grant mutation"
     );
     assert_eq!(
-        backend.backend().admission_snapshot().unwrap().queued_queries,
+        backend.backend().diagnostics().unwrap().admission.queued_queries,
         0,
         "rejection must not become a capacity waiter"
     );

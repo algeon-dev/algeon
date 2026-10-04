@@ -54,9 +54,7 @@ pub(crate) use service::QueryAdmissionOutcome;
 #[doc(hidden)]
 pub use service::QueryService;
 use service::QueryServiceInner;
-pub use service::{
-    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
-};
+pub use service::{BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryServiceDrainPhase {

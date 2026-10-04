@@ -159,7 +159,7 @@ async fn lost_connection_releases_attempt(listen_mode: ListenMode) {
     // pings while the application leaves its result stream unread.
     proxy.wait_for(TransportEvent::Ping, Duration::from_secs(45)).await;
     proxy.wait_for(TransportEvent::PingAcknowledged, Duration::from_secs(5)).await;
-    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("ledger report").ledgers.remove(0);
     assert_eq!(report.active_attempts, 1, "an acknowledging consumer keeps its backpressured attempt live");
     assert_eq!(report.live_grants_bytes, QUERY_CAP_BYTES);
 
@@ -186,7 +186,7 @@ async fn lost_connection_releases_attempt(listen_mode: ListenMode) {
     assert!(stats.contains("# attempt_capacity_disposition=released\n"), "{stats}");
     assert_eq!(stats.lines().filter(|line| line.starts_with("# attempt_id=")).count(), 1, "{stats}");
     server.wait_for_admission(0, 0).await;
-    let report = server.backend.device_ledger_reports().expect("released ledger report").remove(0);
+    let report = server.backend.diagnostics().expect("released ledger report").ledgers.remove(0);
     assert!(report.grants.is_empty(), "{report:?}");
     assert_eq!(report.live_grants_bytes, 0);
     assert_eq!(report.available_bytes, MANAGED_CAPACITY_BYTES);

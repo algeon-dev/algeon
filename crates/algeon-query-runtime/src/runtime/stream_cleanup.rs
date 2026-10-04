@@ -4,7 +4,7 @@ use std::{
     any::Any,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, OnceLock, PoisonError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -245,6 +245,9 @@ pub(super) struct StreamCleanupSupervisor {
     pub(super) join: Mutex<Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>,
     pub(super) join_disposition: AtomicU64,
     pub(super) process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
+    /// The owning pool, whose close and quiescence waiters wake when this
+    /// supervisor commits its terminal state.
+    pool: OnceLock<Weak<ServiceStreamPoolInner>>,
 }
 
 pub(super) enum StreamCleanupEnqueueError {
@@ -334,6 +337,7 @@ impl StreamCleanupSupervisor {
             join: Mutex::new(None),
             join_disposition: AtomicU64::new(STREAM_CLEANUP_SUPERVISOR_NOT_JOINED),
             process_exit_registration: Mutex::new(None),
+            pool: OnceLock::new(),
         });
         let thread_control = Arc::clone(&supervisor.control);
         let thread_probe = probe.clone();
@@ -365,7 +369,11 @@ impl StreamCleanupSupervisor {
         Ok(supervisor)
     }
 
-    pub(super) fn register_process_exit(self: &Arc<Self>, inner: Weak<ServiceStreamPoolInner>) {
+    /// Binds the supervisor to its pool: the pool's waiters wake on terminal
+    /// commitment, and the process-exit hook can close the pool before
+    /// joining this worker.
+    pub(super) fn attach_pool(self: &Arc<Self>, inner: Weak<ServiceStreamPoolInner>) {
+        let _ = self.pool.set(Weak::clone(&inner));
         let shutdown: Arc<dyn ProcessExitShutdown> =
             Arc::new(ProcessExitStreamPool { inner, supervisor: Arc::clone(self) });
         let registration = register_cuda_process_exit_shutdown(shutdown);
@@ -557,7 +565,18 @@ impl StreamCleanupSupervisor {
         state.joiner_active = false;
         self.control.changed.notify_all();
         drop(state);
+        self.notify_pool_waiters();
         self.terminal_result(operation, &terminal)
+    }
+
+    /// Wakes the pool's close and quiescence waiters, which check the terminal
+    /// state while holding the pool mutex; taking that mutex first keeps the
+    /// wakeup from landing between such a check and its wait.
+    fn notify_pool_waiters(&self) {
+        if let Some(pool) = self.pool.get().and_then(Weak::upgrade) {
+            let _state = pool.state.lock().unwrap_or_else(PoisonError::into_inner);
+            pool.state_changed.notify_all();
+        }
     }
 
     fn join_worker_until(

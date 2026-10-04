@@ -7,7 +7,7 @@
 
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use query_planning::error::QueryError;
@@ -21,8 +21,8 @@ pub use query_runtime::runtime::{
     DeviceCapabilities, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryOwnership,
 };
 use query_runtime::runtime::{
-    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, QueryExecutionConfig,
-    QueueBounds, probe_device_capacity,
+    GpuBackendConfig, GpuBackendCore, GpuBackendSession, QueryExecutionConfig, QueueBounds, ValidatedGpuBackendConfig,
+    probe_device_capacity,
 };
 /// Canonical device profile bound to an explicit process-scoped GPU memory
 /// ownership promise.
@@ -42,10 +42,8 @@ use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
     observability::{
-        BackendMetricsSnapshot, CacheSourceEventSnapshot, DeviceCacheReport, DeviceLedgerReport,
-        DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot, GpuBackendDeviceStartupRecord,
-        GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
-        QueryServiceDeviceAdmissionSnapshot,
+        BackendDiagnostics, BackendMetricsSnapshot, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot,
+        GpuBackendDeviceStartupRecord,
     },
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     s3_storage::install_s3_storage,
@@ -259,74 +257,17 @@ impl AlgeonGpuBackend {
         self.session.backend_metrics_snapshot()
     }
 
-    pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        self.session.admission_snapshot().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.admission_snapshot",
-                "failed to read backend admission snapshot",
-                error,
-            )
+    /// Reads the backend's admission, ledger, cache, memory-failure, and
+    /// execution-pool reports once. The ledgers are the admission authority;
+    /// the other reports are diagnostic cross-checks.
+    pub fn diagnostics(&self) -> Result<BackendDiagnostics> {
+        self.session.diagnostics().map_err(|error| {
+            Error::from_native("algeon_datafusion.backend.diagnostics", "failed to read backend diagnostics", error)
         })
     }
 
     pub fn queue_policy(&self) -> &AlgeonGpuQueuePolicy {
         &self.queue_policy
-    }
-
-    pub fn device_admission_snapshots(&self) -> Result<Vec<QueryServiceDeviceAdmissionSnapshot>> {
-        self.session.device_admission_snapshots().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_admission_snapshots",
-                "failed to read per-device admission snapshots",
-                error,
-            )
-        })
-    }
-
-    /// Returns the admission source of truth; telemetry is diagnostic only.
-    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
-        self.session.device_ledger_reports().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_ledger_reports",
-                "failed to read device ledger reports",
-                error,
-            )
-        })
-    }
-
-    /// Returns the physical resident-cache allocation-domain observations.
-    /// They are diagnostic cross-checks; admission stays owned by the ledger.
-    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
-        self.session.device_cache_reports().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_cache_reports",
-                "failed to read device cache reports",
-                error,
-            )
-        })
-    }
-
-    /// Returns bounded source-cache events from the cache owners themselves.
-    /// These observations support correlation diagnostics; the ledger remains
-    /// the sole admission and residency authority.
-    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
-        self.session.device_cache_source_event_snapshots().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_cache_source_event_snapshots",
-                "failed to read device cache source events",
-                error,
-            )
-        })
-    }
-
-    pub fn device_memory_failure_reports(&self) -> Result<Vec<DeviceMemoryFailureReport>> {
-        self.session.device_memory_failure_reports().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_memory_failure_reports",
-                "failed to read device memory failure reports",
-                error,
-            )
-        })
     }
 
     /// Returns diagnostic CUDA/NVML samples, never admission state.
@@ -335,26 +276,6 @@ impl AlgeonGpuBackend {
             Error::from_native(
                 "algeon_datafusion.backend.device_telemetry_snapshots",
                 "failed to read device telemetry snapshots",
-                error,
-            )
-        })
-    }
-
-    pub fn gpu_execution_pool_reports(&self) -> Result<Vec<GpuExecutionPoolSnapshot>> {
-        self.session.gpu_execution_pool_reports().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.gpu_execution_pool_reports",
-                "failed to read GPU execution pool reports",
-                error,
-            )
-        })
-    }
-
-    pub fn gpu_execution_query_report(&self) -> Result<GpuExecutionQuerySnapshot> {
-        self.session.gpu_execution_query_report().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.gpu_execution_query_report",
-                "failed to read GPU execution query report",
                 error,
             )
         })
@@ -405,22 +326,23 @@ impl AlgeonGpuBackend {
         queue_policy: AlgeonGpuQueuePolicy,
         attempt_completion_queue_capacity: Option<usize>,
     ) -> Result<Self> {
-        let validated = validated_backend_construction(optimizer_config, configured_devices, queue_policy)?;
-        let draft = match attempt_completion_queue_capacity {
-            Some(capacity) => validated.core_draft.with_attempt_completion_queue_capacity(capacity),
-            None => validated.core_draft,
-        };
-        let core = GpuBackendCore::builder(draft).build().map_err(|error| {
+        let validated = validated_backend_construction(
+            optimizer_config,
+            configured_devices,
+            queue_policy,
+            attempt_completion_queue_capacity,
+        )?;
+        let devices = validated.core_config.devices().cloned().collect();
+        let core = GpuBackendCore::new(validated.core_config).map_err(|error| {
             backend_core_build_error("failed to initialize ownership-enforcing GPU backend core", error)
         })?;
         let session = core.session_capability();
-        let max_device_total_memory_bytes = session.max_device_total_memory_bytes().map_err(|error| {
-            Error::from_native(
-                "algeon_datafusion.backend.device_projection",
-                "failed to read backend device facts",
-                error,
-            )
-        })?;
+        let max_device_total_memory_bytes = core
+            .device_startup_records()
+            .iter()
+            .map(|record| record.facts.total_bytes)
+            .max()
+            .expect("a published backend has a startup record for each validated device");
         // Keep this as the unadmitted planning template. Every execution
         // context is instead materialized from the device selected by the
         // per-device ledger and its immutable grant.
@@ -430,13 +352,7 @@ impl AlgeonGpuBackend {
             .clone()
             .with_query_admission_source(QueryAdmissionSource::new(session.clone(), max_device_total_memory_bytes));
         let optimizer_config = validated.optimizer_config.with_native_execution_config(execution_config);
-        Ok(AlgeonGpuBackend {
-            core,
-            session,
-            optimizer_config,
-            devices: validated.devices,
-            queue_policy: validated.queue_policy,
-        })
+        Ok(AlgeonGpuBackend { core, session, optimizer_config, devices, queue_policy: validated.queue_policy })
     }
 }
 
@@ -472,33 +388,27 @@ fn install_backend_optimizer_config(
 #[derive(Debug)]
 struct ValidatedBackendConstruction {
     optimizer_config: AlgeonNativeOptimizerConfig,
-    devices: Vec<AlgeonGpuDeviceConfig>,
     queue_policy: AlgeonGpuQueuePolicy,
-    core_draft: GpuBackendCoreDraft,
+    core_config: ValidatedGpuBackendConfig,
 }
 
 fn validated_backend_construction(
     optimizer_config: AlgeonNativeOptimizerConfig,
     configured_devices: Vec<AlgeonGpuDeviceConfig>,
     queue_policy: AlgeonGpuQueuePolicy,
+    attempt_completion_queue_capacity: Option<usize>,
 ) -> Result<ValidatedBackendConstruction> {
-    let devices = resolve_device_configs(configured_devices)?;
-    validate_queue_policy(&queue_policy)?;
-    let execution_config = optimizer_config.native_execution_config().clone();
-    let service_config = backend_query_execution_config(&execution_config);
-    let queue_bounds = backend_queue_bounds(&queue_policy);
-    let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
-    let mut core_draft = GpuBackendCoreDraft::new(devices.clone(), controller);
-    // Mirror `build()`: derive unset installation bounds from the profile
-    // before validating, otherwise a default profile with more than one
-    // active slot fails its own dry run on constructor placeholders.
-    core_draft.normalize_installation_bounds().map_err(|error| {
+    let service_config = backend_query_execution_config(optimizer_config.native_execution_config());
+    let mut core_config =
+        GpuBackendConfig::new(configured_devices, service_config, backend_queue_bounds(&queue_policy));
+    if let Some(capacity) = attempt_completion_queue_capacity {
+        core_config = core_config.with_attempt_completion_queue_capacity(capacity);
+    }
+    let core_config = core_config.validate().map_err(|error| {
         backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
+            .with_code(ErrorCode::InvalidRequest)
     })?;
-    core_draft.validate().map_err(|error| {
-        backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
-    })?;
-    Ok(ValidatedBackendConstruction { optimizer_config, devices, queue_policy, core_draft })
+    Ok(ValidatedBackendConstruction { optimizer_config, queue_policy, core_config })
 }
 
 /// Test fixture for paths that genuinely execute an installed GPU backend. The
@@ -663,33 +573,14 @@ impl AlgeonGpuBackendBuilder {
     /// `build()` time; combine with [`AlgeonGpuBackend::probe_device_capacity`]
     /// to cover those before building.
     pub fn validate(self) -> Result<()> {
-        validated_backend_construction(self.optimizer_config, self.devices, self.queue_policy)?;
+        validated_backend_construction(
+            self.optimizer_config,
+            self.devices,
+            self.queue_policy,
+            self.attempt_completion_queue_capacity,
+        )?;
         Ok(())
     }
-}
-
-fn resolve_device_configs(configured_devices: Vec<AlgeonGpuDeviceConfig>) -> Result<Vec<AlgeonGpuDeviceConfig>> {
-    if configured_devices.is_empty() {
-        return Err(invalid_backend_config(
-            "devices",
-            "backend construction requires at least one explicit ordinal-keyed device declaration",
-        )
-        .with_fact("reason", "missing_devices"));
-    }
-
-    let mut by_ordinal = BTreeMap::new();
-    for device in configured_devices {
-        let device_ordinal = device.device_ordinal();
-        if by_ordinal.insert(device_ordinal, device).is_some() {
-            return Err(invalid_backend_config(
-                "devices",
-                "must contain exactly one configured declaration for each device ordinal",
-            )
-            .with_fact("reason", "duplicate_device")
-            .with_fact("device_ordinal", device_ordinal));
-        }
-    }
-    Ok(by_ordinal.into_values().collect())
 }
 
 fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig) -> QueryExecutionConfig {
@@ -717,25 +608,6 @@ fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig
 
 fn backend_queue_bounds(queue_policy: &AlgeonGpuQueuePolicy) -> QueueBounds {
     QueueBounds { max_waiters: queue_policy.max_queued_attempts, max_wait: queue_policy.max_queue_wait }
-}
-
-fn validate_queue_policy(policy: &AlgeonGpuQueuePolicy) -> Result<()> {
-    validate_positive_usize("max_queued_attempts", policy.max_queued_attempts)?;
-    if policy.max_queue_wait.is_zero() {
-        return Err(invalid_backend_config("max_queue_wait", "must be greater than zero"));
-    }
-    Ok(())
-}
-
-fn validate_positive_usize(field: &'static str, value: usize) -> Result<()> {
-    if value == 0 {
-        return Err(invalid_backend_config(field, "must be greater than zero"));
-    }
-    Ok(())
-}
-
-fn invalid_backend_config(field: &'static str, message: impl Into<String>) -> Error {
-    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.backend.config", message).with_fact("field", field)
 }
 
 #[cfg(test)]

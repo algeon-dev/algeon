@@ -386,7 +386,8 @@ async fn measure(
         .collect::<Vec<_>>();
 
     let device_health = backend
-        .device_ledger_reports()
+        .diagnostics()
+        .map(|diagnostics| diagnostics.ledgers)
         .map(|reports| {
             reports
                 .into_iter()

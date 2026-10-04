@@ -101,16 +101,19 @@ fn collect(
 ) -> Vec<DeviceSample> {
     let offset_ms = origin.elapsed().as_nanos() as f64 / 1_000_000.0;
     let (active_queries, queued_queries) = backend
-        .admission_snapshot()
+        .diagnostics()
+        .map(|diagnostics| diagnostics.admission)
         .map(|snapshot| (snapshot.active_queries, snapshot.queued_queries))
         .unwrap_or_default();
     let (host_rss_bytes, host_rss_peak_bytes) = host_memory_bytes();
     let ledger = backend
-        .device_ledger_reports()
+        .diagnostics()
+        .map(|diagnostics| diagnostics.ledgers)
         .map(|reports| reports.into_iter().map(|report| (report.device_ordinal, report)).collect::<BTreeMap<_, _>>())
         .unwrap_or_default();
     let failures = backend
-        .device_memory_failure_reports()
+        .diagnostics()
+        .map(|diagnostics| diagnostics.memory_failures)
         .map(|reports| reports.into_iter().map(|report| (report.device_ordinal, report)).collect::<BTreeMap<_, _>>())
         .unwrap_or_default();
     device_ordinals

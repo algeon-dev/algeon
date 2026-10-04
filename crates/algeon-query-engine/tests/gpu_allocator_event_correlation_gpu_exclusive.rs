@@ -16,7 +16,7 @@ use query_runtime::{
         AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
     },
     runtime::{
-        AdmittedQueryContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        AdmittedQueryContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
         GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuExecutionJobKind,
         GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
@@ -35,10 +35,6 @@ struct AdmittedAttempt {
 }
 
 fn test_backend(device: DeviceId) -> GpuBackendCore {
-    let controller = GpuBackendControllerDraft::new(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
-    );
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(device.ordinal())
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: STATIC_PARTITION_BYTES })
@@ -48,9 +44,16 @@ fn test_backend(device: DeviceId) -> GpuBackendCore {
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 3, 2)),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: STATIC_PARTITION_BYTES },
     );
-    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller))
-        .build()
-        .expect("two-attempt physical allocator-correlation backend builds")
+    GpuBackendCore::new(
+        GpuBackendConfig::new(
+            vec![device],
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
+        )
+        .validate()
+        .expect("valid backend config"),
+    )
+    .expect("two-attempt physical allocator-correlation backend builds")
 }
 
 fn admit_attempt(core: &GpuBackendCore) -> AdmittedAttempt {
@@ -119,7 +122,7 @@ fn assert_exact_physical_event(report: &QueryAttemptReport, requested_bytes: usi
 fn wait_for_device_release(core: &GpuBackendCore, device: DeviceId) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let reports = core.session_capability().device_ledger_reports().expect("device ledger remains observable");
+        let reports = core.session_capability().diagnostics().expect("device ledger remains observable").ledgers;
         let report = reports
             .iter()
             .find(|report| report.device_ordinal == device.ordinal())

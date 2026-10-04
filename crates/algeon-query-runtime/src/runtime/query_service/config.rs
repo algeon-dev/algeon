@@ -9,7 +9,9 @@ use query_planning::{
     policy::PlanningPolicy,
 };
 
-use crate::runtime::{LakehouseCacheFillConfig, SourceSchedulerPolicy, SourceStorageProfile};
+use crate::runtime::{
+    LakehouseCacheFillConfig, SourceSchedulerPolicy, SourceStorageProfile, object_store::SourceObjectStoreRegistry,
+};
 
 /// Bounded admission-queue policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +44,7 @@ impl QueueBounds {
         }
     }
 
-    pub(super) fn validate(&self) -> Result<()> {
+    pub(in crate::runtime) fn validate(&self) -> Result<()> {
         validate_nonzero_config_field("queue_bounds.max_waiters", self.max_waiters == 0)?;
         validate_nonzero_config_field("queue_bounds.max_wait", self.max_wait.is_zero())
     }
@@ -86,7 +88,7 @@ pub struct QueryExecutionConfig {
 }
 
 impl QueryExecutionConfig {
-    pub(super) fn validate(&self) -> Result<()> {
+    pub(in crate::runtime) fn validate(&self) -> Result<()> {
         self.lakehouse_cache_fill.validate()?;
         self.source_scheduler_policy.validate()?;
         self.planning_policy.validate()?;
@@ -96,7 +98,7 @@ impl QueryExecutionConfig {
         validate_nonzero_config_field("max_row_groups_per_chunk", self.max_row_groups_per_chunk == 0)?;
         validate_nonzero_config_field("max_retry_attempts", self.max_retry_attempts == 0)?;
         validate_nonzero_config_field("min_retry_chunk_row_groups", self.min_retry_chunk_row_groups == 0)?;
-        Ok(())
+        SourceObjectStoreRegistry::validate_profiles(&self.source_storage_profiles)
     }
 
     pub(in crate::runtime) fn memory_policy_for_admitted_query(&self, device_budget_bytes: u64) -> MemoryControlPolicy {

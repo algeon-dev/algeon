@@ -33,9 +33,12 @@ use crate::{
     runtime::{
         ExecutionCancellation, GpuExecutionJobKind,
         gpu_execution_pool::GpuExecutionJobClass,
-        query_service::service::transaction::{
-            AdmissionEnvelope, AdmissionTransactionProbe, check_publication_cancellation,
-            pause_after_rollback_accounting,
+        query_service::{
+            controller::admission_mutex_poisoned_error,
+            service::transaction::{
+                AdmissionEnvelope, AdmissionTransactionProbe, check_publication_cancellation,
+                pause_after_rollback_accounting,
+            },
         },
     },
 };
@@ -198,10 +201,19 @@ impl QueryService {
         publication: AdmissionPublication,
         probe: &Option<Arc<AdmissionTransactionProbe>>,
     ) -> Result<QueryHandle> {
-        let state = self.inner.admission.state.lock().unwrap_or_else(|error| {
-            eprintln!("[query-engine] warning: recovering poisoned admission state during admission commit");
-            error.into_inner()
+        // Registration reads the domain's allocator-event watermark through
+        // cuDF and takes the correlation index lock, so it runs before the
+        // admission mutex. A rejected envelope discards it when dropped.
+        let envelope = envelope.map(|mut envelope| {
+            envelope.register_allocator_domain_attempt(publication.attempt_id);
+            envelope
         });
+        // A poisoned admission state refuses publication: the envelope rolls
+        // back through the same branch as a closed service.
+        let (state, admission_poisoned) = match self.inner.admission.state.lock() {
+            Ok(state) => (state, false),
+            Err(error) => (error.into_inner(), true),
+        };
         let envelope = match envelope {
             Ok(envelope) => envelope,
             Err(primary) => {
@@ -214,7 +226,7 @@ impl QueryService {
                 ));
             },
         };
-        self.publish_admission_envelope(state, envelope, publication, probe)
+        self.publish_admission_envelope(state, admission_poisoned, envelope, publication, probe)
     }
 
     fn finish_rejected_envelope(
@@ -274,6 +286,7 @@ impl QueryService {
     fn publish_admission_envelope(
         &self,
         mut state: MutexGuard<'_, AdmissionState>,
+        admission_poisoned: bool,
         mut envelope: AdmissionEnvelope,
         publication: AdmissionPublication,
         probe: &Option<Arc<AdmissionTransactionProbe>>,
@@ -291,7 +304,6 @@ impl QueryService {
             admission_wait_fact,
         } = publication;
         let admitted_capability_evidence = submitted_plan_capability_evidence;
-        envelope.register_allocator_domain_attempt(attempt_id);
         if let Err(error) = check_publication_cancellation(&execution_cancellation, probe.as_deref()) {
             envelope.preaccount_rollback_cleanup(&mut state);
             record_admission_lifecycle(
@@ -318,7 +330,12 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        if let Some(error) = self.inner.admission.admission_terminal_rejection(&state) {
+        let rejection = if admission_poisoned {
+            Some(admission_mutex_poisoned_error())
+        } else {
+            self.inner.admission.admission_terminal_rejection(&state)
+        };
+        if let Some(error) = rejection {
             envelope.preaccount_rollback_cleanup(&mut state);
             record_admission_lifecycle(
                 &observation,

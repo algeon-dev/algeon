@@ -2,7 +2,6 @@
   "fields": {
     "active_queries": "number",
     "queue_high_watermark": "number",
-    "protected_devices": { "items": ["number"], "length": 2, "type": "array" },
     "queued_queries": "number"
   },
   "type": "object"

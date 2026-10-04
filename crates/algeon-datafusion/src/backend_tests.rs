@@ -38,35 +38,13 @@ fn bounded_backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder
 }
 
 fn validated(builder: AlgeonGpuBackendBuilder) -> Result<super::ValidatedBackendConstruction> {
-    let AlgeonGpuBackendBuilder { optimizer_config, devices, queue_policy, .. } = builder;
-    super::validated_backend_construction(optimizer_config, devices, queue_policy)
+    let AlgeonGpuBackendBuilder { optimizer_config, devices, queue_policy, attempt_completion_queue_capacity, .. } =
+        builder;
+    super::validated_backend_construction(optimizer_config, devices, queue_policy, attempt_completion_queue_capacity)
 }
 
-#[test]
-fn backend_rejects_empty_devices_declaration() {
-    let missing = validated(AlgeonGpuBackend::builder().devices([])).unwrap_err();
-    assert_eq!(missing.code(), ErrorCode::InvalidRequest);
-    assert_eq!(missing.fact_value("field"), Some("devices"));
-    assert_eq!(missing.fact_value("reason"), Some("missing_devices"));
-}
-
-#[test]
-fn backend_rejects_duplicate_devices_declaration() {
-    let duplicate = validated(AlgeonGpuBackend::builder().devices([
-        AlgeonGpuDeviceConfig::new(
-            AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
-            GpuMemoryOwnership::WholeDeviceExclusive,
-        ),
-        AlgeonGpuDeviceConfig::new(
-            AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
-            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1 },
-        ),
-    ]))
-    .unwrap_err();
-    assert_eq!(duplicate.code(), ErrorCode::InvalidRequest);
-    assert_eq!(duplicate.fact_value("field"), Some("devices"));
-    assert_eq!(duplicate.fact_value("reason"), Some("duplicate_device"));
-    assert_eq!(duplicate.fact_value("device_ordinal"), Some("0"));
+fn validated_devices(backend: &super::ValidatedBackendConstruction) -> Vec<AlgeonGpuDeviceConfig> {
+    backend.core_config.devices().cloned().collect()
 }
 
 #[test]
@@ -87,18 +65,18 @@ fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
         ),
     ];
     let backend = validated(AlgeonGpuBackend::builder().devices(devices.clone())).unwrap();
-    assert_eq!(backend.devices, devices);
-    assert_eq!(backend.devices[0].memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
+    assert_eq!(validated_devices(&backend), devices);
+    assert_eq!(validated_devices(&backend)[0].memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
     assert_eq!(
-        backend.devices[1].memory_ownership(),
+        validated_devices(&backend)[1].memory_ownership(),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 }
     );
     assert_eq!(
-        backend.devices[0].profile().installation_bounds(),
+        validated_devices(&backend)[0].profile().installation_bounds(),
         Some(AlgeonGpuDeviceInstallationBounds::new(4, 3, 2))
     );
     assert_eq!(
-        backend.devices[1].profile().installation_bounds(),
+        validated_devices(&backend)[1].profile().installation_bounds(),
         Some(AlgeonGpuDeviceInstallationBounds::new(2, 2, 1))
     );
 }
@@ -137,10 +115,10 @@ fn backend_validation_projection_keeps_device_configs_independent() {
     .unwrap();
 
     assert_eq!(backend.queue_policy.max_queued_attempts(), 8);
-    assert_eq!(backend.devices, devices);
+    assert_eq!(validated_devices(&backend), devices);
     // Validation preserves the configured envelopes but does not resolve a
     // runtime query limit or manufacture a grant.
-    assert_eq!(backend.devices[0].profile().default_query_limit_bytes(), Some(512));
+    assert_eq!(validated_devices(&backend)[0].profile().default_query_limit_bytes(), Some(512));
     assert_eq!(
         backend.optimizer_config.native_execution_config().source_chunking(),
         SourceChunking::try_new(1024, 1, 3, 1).expect("valid source chunking")
@@ -151,7 +129,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
 fn backend_queue_policy_defaults_to_canonical_bounds() {
     let backend = validated(bounded_backend_builder(&[0, 1])).unwrap();
     assert_eq!(backend.queue_policy, AlgeonGpuQueuePolicy::default());
-    assert!(backend.devices.iter().all(|device| device.profile().max_active_attempts() == 2));
+    assert!(validated_devices(&backend).iter().all(|device| device.profile().max_active_attempts() == 2));
 }
 
 #[test]
@@ -198,7 +176,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
     assert_eq!(first.default_query_limit_bytes(), Some(512));
     assert_eq!(first.source_work_per_attempt(), 2);
     assert_eq!(first.max_active_attempts(), 2);
-    assert_eq!((first.stream_pool_size(), first.worker_count(), first.lane_count()), (6, 3, 2));
+    assert_eq!(first.profile().installation_bounds(), Some(AlgeonGpuDeviceInstallationBounds::new(6, 3, 2)));
     assert_eq!(first.profile().device_capabilities(), &capabilities);
 
     assert_eq!(second.device_ordinal(), 3);
@@ -207,7 +185,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
     assert_eq!(second.default_query_limit_bytes(), Some(1024));
     assert_eq!(second.source_work_per_attempt(), 1);
     assert_eq!(second.max_active_attempts(), 1);
-    assert_eq!((second.stream_pool_size(), second.worker_count(), second.lane_count()), (2, 2, 1));
+    assert_eq!(second.profile().installation_bounds(), Some(AlgeonGpuDeviceInstallationBounds::new(2, 2, 1)));
     assert_eq!(second.memory_ownership(), GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
     assert_ne!(first.profile().device_capabilities(), second.profile().device_capabilities());
 }
@@ -240,7 +218,7 @@ fn backend_validation_preserves_explicit_query_limit_on_each_device_profile() {
             .devices([device]),
     )
     .unwrap();
-    assert_eq!(backend.devices[0].profile().default_query_limit_bytes(), Some(60));
+    assert_eq!(validated_devices(&backend)[0].profile().default_query_limit_bytes(), Some(60));
 }
 
 #[test]
@@ -453,7 +431,9 @@ fn backend_builder_validate_accepts_consistent_declaration_without_gpu_resources
 #[test]
 fn backend_builder_validate_rejects_empty_devices() {
     let error = AlgeonGpuBackend::builder().devices([]).validate().expect_err("dry-run must reject empty devices");
-    assert_eq!(error.fact_value("reason"), Some("missing_devices"));
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.fact_value("field"), Some("device_ordinals"));
+    assert_eq!(error.fact_value("reason"), Some("empty"));
 }
 
 #[test]

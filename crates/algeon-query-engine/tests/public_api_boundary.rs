@@ -34,9 +34,9 @@ use query_runtime::runtime::GpuBackendFaultInjector;
 use query_runtime::{
     observability::RuntimeObservationHandle,
     runtime::{
-        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease,
-        GpuMemoryOwnership, QueryExecutionConfig, QueryHandle, QueueBounds,
+        AdmittedQueryContext, ExecutionContext, GpuBackendConfig, GpuBackendCore, GpuBackendDeviceConfig,
+        GpuBackendDeviceProfile, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease, GpuMemoryOwnership,
+        QueryExecutionConfig, QueryHandle, QueueBounds, ValidatedGpuBackendConfig,
     },
 };
 
@@ -87,16 +87,15 @@ fn query_executor(handle: &QueryHandle) -> Result<GpuExecutorLease> {
 
 #[test]
 fn supported_core_session_path_compiles() {
-    // `GpuBackendCoreDraft`/`GpuBackendControllerDraft` and `GpuBackendCore::builder`
-    // are pure in-memory construction (no cudf
-    // FFI, no device/NVML probe; verified by reading their bodies), so this
-    // runs safely in the CPU lane exactly as the trybuild `pass` fixture did.
-    let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
-    let draft = GpuBackendCoreDraft::new(
+    // Naming the construction functions touches no cudf FFI and no
+    // device or NVML probe, so this runs in the CPU lane.
+    let _validate: fn(GpuBackendConfig) -> Result<ValidatedGpuBackendConfig> = GpuBackendConfig::validate;
+    let _construct: fn(ValidatedGpuBackendConfig) -> Result<GpuBackendCore> = GpuBackendCore::new;
+    let _config = GpuBackendConfig::new(
         vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
-        controller,
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
     );
-    let _builder = GpuBackendCore::builder(draft);
     let _supported_session_factory: fn(&GpuBackendCore) -> GpuBackendSession = use_session;
     #[cfg(feature = "qualification")]
     let _supported_fault_injector_factory: fn(&GpuBackendCore) -> GpuBackendFaultInjector = use_fault_injector;

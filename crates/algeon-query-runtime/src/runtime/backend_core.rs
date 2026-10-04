@@ -3,7 +3,7 @@
 use std::{
     fmt,
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex, OnceLock, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -23,15 +23,15 @@ use super::DeviceQuarantineInjection;
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
-    CacheSourceEventSnapshot, DeviceCacheReport, DeviceCapabilities, DeviceFacts, DeviceLedgerReport,
-    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot,
-    GpuExecutionQuerySnapshot, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService,
-    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    BackendDiagnostics, DeviceCapabilities, DeviceFacts, DeviceResourceProfile, DeviceTelemetrySnapshot,
+    QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
     },
-    backend_metrics::{BackendAttemptDurations, BackendMetricsSnapshot, BackendMetricsStore},
+    backend_metrics::{
+        BACKEND_METRIC_DEVICE_CAPACITY, BackendAttemptDurations, BackendMetricsSnapshot, BackendMetricsStore,
+    },
     gpu::{AlgeonGpuInventory, GpuInventory, LiveBackendLease, claim_live_backend, normalize_device_ordinals},
     gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
     observation_completion::ObservationCompletionExecutor,
@@ -425,10 +425,6 @@ impl GpuBackendDeviceProfile {
 pub struct GpuBackendDeviceConfig {
     profile: GpuBackendDeviceProfile,
     memory_ownership: GpuMemoryOwnership,
-    stream_pool_size: usize,
-    worker_count: usize,
-    lane_count: usize,
-    installation_bounds_set: bool,
 }
 
 impl GpuBackendDeviceConfig {
@@ -456,11 +452,7 @@ impl GpuBackendDeviceConfig {
     }
 
     pub fn new(profile: GpuBackendDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
-        let (stream_pool_size, worker_count, lane_count, installation_bounds_set) = match profile.installation_bounds {
-            Some(bounds) => (bounds.stream_pool_size, bounds.worker_count, bounds.lane_count, true),
-            None => (1, 1, 1, false),
-        };
-        Self { profile, memory_ownership, stream_pool_size, worker_count, lane_count, installation_bounds_set }
+        Self { profile, memory_ownership }
     }
 
     pub fn profile(&self) -> &GpuBackendDeviceProfile {
@@ -504,39 +496,95 @@ impl GpuBackendDeviceConfig {
         self.profile.max_active_attempts
     }
 
-    pub fn stream_pool_size(&self) -> usize {
-        self.stream_pool_size
-    }
-
-    pub fn worker_count(&self) -> usize {
-        self.worker_count
-    }
-
-    pub fn lane_count(&self) -> usize {
-        self.lane_count
-    }
-
     pub fn install_telemetry(&self) -> bool {
         self.profile.install_telemetry
     }
 }
 
-/// Pure, resource-independent policy for the bounded controller.
+/// Backend construction input: the device set, the execution and queue policy,
+/// and the optional attempt completion queue.
 ///
-/// Resource-derived fields in the supplied policy are deliberately cleared.
-/// The engine resolves them from immutable post-claim device plans; root
-/// code cannot feed an ordinal-zero or common-minimum capacity back into
-/// construction.
+/// [`Self::validate`] is the only way to obtain the
+/// [`ValidatedGpuBackendConfig`] that [`GpuBackendCore::new`] accepts, so
+/// every declaration rule runs once, before the process owner is claimed.
 #[derive(Debug, Clone)]
-pub struct GpuBackendControllerDraft {
+pub struct GpuBackendConfig {
+    devices: Vec<GpuBackendDeviceConfig>,
     execution_config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
+    attempt_completion_queue_capacity: Option<usize>,
 }
 
-impl GpuBackendControllerDraft {
-    /// Creates a controller draft from independent execution and queue policy.
-    pub fn new(execution_config: QueryExecutionConfig, queue_bounds: QueueBounds) -> Self {
-        Self { execution_config, queue_bounds }
+impl GpuBackendConfig {
+    pub fn new(
+        devices: Vec<GpuBackendDeviceConfig>,
+        execution_config: QueryExecutionConfig,
+        queue_bounds: QueueBounds,
+    ) -> Self {
+        Self { devices, execution_config, queue_bounds, attempt_completion_queue_capacity: None }
+    }
+
+    pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
+        self.attempt_completion_queue_capacity = Some(capacity);
+        self
+    }
+
+    /// Resolves each device's installation bounds and checks every device,
+    /// execution, and queue rule. Devices are ordered by ordinal.
+    pub fn validate(self) -> Result<ValidatedGpuBackendConfig> {
+        let Self { mut devices, execution_config, queue_bounds, attempt_completion_queue_capacity } = self;
+        let ordinals = devices.iter().map(GpuBackendDeviceConfig::device_ordinal).collect::<Vec<_>>();
+        normalize_device_ordinals(&ordinals)?;
+        devices.sort_by_key(GpuBackendDeviceConfig::device_ordinal);
+        if let Some(device) = devices.iter().find(|device| device.device_ordinal() >= BACKEND_METRIC_DEVICE_CAPACITY) {
+            return Err(invalid_device_config(
+                device.device_ordinal(),
+                "device_ordinal",
+                "exceeds the fixed backend metrics device capacity",
+            )
+            .with_fact("device_capacity", BACKEND_METRIC_DEVICE_CAPACITY)
+            .with_fact("reason", "backend_metrics_device_ordinal_out_of_range"));
+        }
+        let devices = devices.into_iter().map(validate_device).collect::<Result<Vec<_>>>()?;
+        let derived = devices.iter().try_fold(0usize, |sum, device| {
+            sum.checked_add(device.config.profile.max_active_attempts).ok_or_else(|| {
+                invalid_config("max_active_attempts", "derived global maximum overflowed")
+                    .with_fact("reason", "derived_global_max_overflow")
+            })
+        })?;
+        if derived == 0 {
+            return Err(invalid_config("max_active_attempts", "derived global maximum must be positive")
+                .with_fact("reason", "zero"));
+        }
+        execution_config.validate()?;
+        queue_bounds.validate()?;
+        Ok(ValidatedGpuBackendConfig { devices, execution_config, queue_bounds, attempt_completion_queue_capacity })
+    }
+}
+
+/// A [`GpuBackendConfig`] whose rules have all passed, with installation
+/// bounds resolved and devices ordered by ordinal. It is the only input
+/// [`GpuBackendCore::new`] accepts.
+#[derive(Debug, Clone)]
+pub struct ValidatedGpuBackendConfig {
+    devices: Vec<ValidatedGpuBackendDevice>,
+    execution_config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
+    attempt_completion_queue_capacity: Option<usize>,
+}
+
+impl ValidatedGpuBackendConfig {
+    /// The validated device configs, ordered by ordinal.
+    pub fn devices(&self) -> impl ExactSizeIterator<Item = &GpuBackendDeviceConfig> + '_ {
+        self.devices.iter().map(|device| &device.config)
+    }
+
+    pub(crate) fn validated_devices(&self) -> &[ValidatedGpuBackendDevice] {
+        &self.devices
+    }
+
+    pub(crate) fn device_ordinals(&self) -> Vec<usize> {
+        self.devices().map(GpuBackendDeviceConfig::device_ordinal).collect()
     }
 
     pub(crate) fn execution_config(&self) -> &QueryExecutionConfig {
@@ -546,109 +594,58 @@ impl GpuBackendControllerDraft {
     pub(crate) fn queue_bounds(&self) -> &QueueBounds {
         &self.queue_bounds
     }
-
-    pub(crate) fn into_parts(self) -> (QueryExecutionConfig, QueueBounds) {
-        (self.execution_config, self.queue_bounds)
-    }
 }
 
-/// Complete pure backend construction draft.
-///
-/// The fields stay private so validation cannot be bypassed with a struct
-/// literal. Automatic values and device-local resource profiles remain unresolved until the
-/// engine owns the complete device set and has frozen every device fact.
+/// One validated device: its config, the installation bounds it is built
+/// with, and its static partition in the native allocation-size type.
 #[derive(Debug, Clone)]
-pub struct GpuBackendCoreDraft {
-    devices: Vec<GpuBackendDeviceConfig>,
-    controller: GpuBackendControllerDraft,
-    attempt_completion_queue_capacity: Option<usize>,
+pub(crate) struct ValidatedGpuBackendDevice {
+    pub(crate) config: GpuBackendDeviceConfig,
+    pub(crate) installation_bounds: GpuBackendDeviceInstallationBounds,
+    pub(crate) allocation_limit_bytes: Option<usize>,
 }
 
-impl GpuBackendCoreDraft {
-    pub fn new(devices: Vec<GpuBackendDeviceConfig>, controller: GpuBackendControllerDraft) -> Self {
-        Self { devices, controller, attempt_completion_queue_capacity: None }
-    }
-
-    pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
-        self.attempt_completion_queue_capacity = Some(capacity);
-        self
-    }
-
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn devices(&self) -> &[GpuBackendDeviceConfig] {
-        &self.devices
-    }
-
-    pub(crate) fn derived_global_max_active_attempts(&self) -> Result<usize> {
-        self.devices.iter().try_fold(0usize, |sum, device| {
-            sum.checked_add(device.profile.max_active_attempts).ok_or_else(|| {
-                invalid_config("max_active_attempts", "derived global maximum overflowed")
-                    .with_fact("reason", "derived_global_max_overflow")
-            })
-        })
-    }
-
-    /// Resolves derived installation bounds before validation.
-    ///
-    /// Devices without explicit installation bounds take
-    /// [`GpuBackendDeviceProfile::derived_installation_bounds`]; explicit
-    /// bounds are validated against it instead.
-    #[doc(hidden)]
-    pub fn normalize_installation_bounds(&mut self) -> Result<()> {
-        for device in &mut self.devices {
-            let derived = device.profile.derived_installation_bounds()?;
-            if device.installation_bounds_set {
-                if device.stream_pool_size < derived.stream_pool_size {
-                    return Err(invalid_device_config(
-                        device.profile.device_ordinal,
-                        "stream_pool_size",
-                        "must cover root and auxiliary source work for every active attempt",
-                    )
-                    .with_fact("reason", "stream_pool_below_required_formula")
-                    .with_fact("stream_pool_size", device.stream_pool_size)
-                    .with_fact("required_slot_capacity", derived.stream_pool_size)
-                    .with_fact("max_active_attempts", device.profile.max_active_attempts)
-                    .with_fact("source_work_per_attempt", device.profile.source_work_per_attempt));
-                }
-            } else {
-                device.stream_pool_size = derived.stream_pool_size;
-                device.lane_count = derived.lane_count;
-                device.worker_count = derived.worker_count;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        let ordinals = self.devices.iter().map(|device| device.profile.device_ordinal).collect::<Vec<_>>();
-        normalize_device_ordinals(&ordinals)?;
-        for device in &self.devices {
-            validate_device_config(device)?;
-        }
-        let derived = self.derived_global_max_active_attempts()?;
-        if derived == 0 {
-            return Err(invalid_config("max_active_attempts", "derived global maximum must be positive")
-                .with_fact("reason", "zero"));
-        }
-        validate_controller_draft(&self.controller, &ordinals)
-    }
+fn validate_device(config: GpuBackendDeviceConfig) -> Result<ValidatedGpuBackendDevice> {
+    let installation_bounds = resolve_installation_bounds(&config.profile)?;
+    let allocation_limit_bytes = validate_device_config(&config, installation_bounds)?;
+    Ok(ValidatedGpuBackendDevice { config, installation_bounds, allocation_limit_bytes })
 }
 
-fn validate_controller_draft(controller: &GpuBackendControllerDraft, ordinals: &[usize]) -> Result<()> {
-    QueryService::validate_controller_policy_for_backend(
-        controller.execution_config(),
-        controller.queue_bounds(),
-        ordinals,
-    )
+/// A profile without explicit installation bounds takes
+/// [`GpuBackendDeviceProfile::derived_installation_bounds`]; explicit bounds
+/// must cover its stream slots.
+fn resolve_installation_bounds(profile: &GpuBackendDeviceProfile) -> Result<GpuBackendDeviceInstallationBounds> {
+    let derived = profile.derived_installation_bounds()?;
+    let Some(explicit) = profile.installation_bounds else {
+        return Ok(derived);
+    };
+    if explicit.stream_pool_size < derived.stream_pool_size {
+        return Err(invalid_device_config(
+            profile.device_ordinal,
+            "stream_pool_size",
+            "must cover root and auxiliary source work for every active attempt",
+        )
+        .with_fact("reason", "stream_pool_below_required_formula")
+        .with_fact("stream_pool_size", explicit.stream_pool_size)
+        .with_fact("required_slot_capacity", derived.stream_pool_size)
+        .with_fact("max_active_attempts", profile.max_active_attempts)
+        .with_fact("source_work_per_attempt", profile.source_work_per_attempt));
+    }
+    Ok(explicit)
 }
 
-fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
+/// Checks one device's rules and returns its static partition in the native
+/// allocation-size type.
+fn validate_device_config(
+    device: &GpuBackendDeviceConfig,
+    bounds: GpuBackendDeviceInstallationBounds,
+) -> Result<Option<usize>> {
     for (field, value) in [
         ("max_active_attempts", device.profile.max_active_attempts),
         ("source_work_per_attempt", device.profile.source_work_per_attempt),
-        ("stream_pool_size", device.stream_pool_size),
-        ("worker_count", device.worker_count),
-        ("lane_count", device.lane_count),
+        ("stream_pool_size", bounds.stream_pool_size),
+        ("worker_count", bounds.worker_count),
+        ("lane_count", bounds.lane_count),
     ] {
         if value == 0 {
             return Err(invalid_device_config(device.profile.device_ordinal, field, "must be greater than zero")
@@ -666,18 +663,18 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     // Every active attempt's query execution runs outside the reserved
     // lifecycle workers.
     let required_workers = device.profile.max_active_attempts.saturating_add(RESERVED_LIFECYCLE_WORKERS);
-    if device.worker_count < required_workers {
+    if bounds.worker_count < required_workers {
         return Err(invalid_device_config(
             device.profile.device_ordinal,
             "worker_count",
             "must cover every configured active query slot plus the reserved lifecycle worker",
         )
         .with_fact("reason", "worker_count_below_active_limit_and_lifecycle_reserve")
-        .with_fact("installation_bound", device.worker_count)
+        .with_fact("installation_bound", bounds.worker_count)
         .with_fact("max_active_attempts", device.profile.max_active_attempts)
         .with_fact("reserved_lifecycle_workers", RESERVED_LIFECYCLE_WORKERS));
     }
-    for (field, value) in [("stream_pool_size", device.stream_pool_size), ("lane_count", device.lane_count)] {
+    for (field, value) in [("stream_pool_size", bounds.stream_pool_size), ("lane_count", bounds.lane_count)] {
         if value < device.profile.max_active_attempts {
             return Err(invalid_device_config(
                 device.profile.device_ordinal,
@@ -766,7 +763,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
             .with_fact("device_ordinal", device.profile.device_ordinal)
             .with_fact("reason", "invalid_device_memory_manager_options")
     })?;
-    Ok(())
+    Ok(allocation_limit_bytes)
 }
 
 fn native_allocation_limit_bytes(device: &GpuBackendDeviceConfig) -> Result<Option<usize>> {
@@ -823,7 +820,7 @@ pub(crate) trait GpuBackendConstructionProbe: Send + Sync + fmt::Debug {
 }
 
 #[derive(Debug)]
-struct NoopConstructionProbe;
+pub(crate) struct NoopConstructionProbe;
 
 impl GpuBackendConstructionProbe for NoopConstructionProbe {
     fn checkpoint(&self, _checkpoint: GpuBackendConstructionCheckpoint) -> Result<()> {
@@ -831,58 +828,25 @@ impl GpuBackendConstructionProbe for NoopConstructionProbe {
     }
 }
 
-#[cfg(test)]
-trait ObservationCompletionExecutorFactory: Send + Sync + fmt::Debug {
-    fn spawn(&self) -> Result<ObservationCompletionExecutor>;
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct DefaultObservationCompletionExecutorFactory;
-
-#[cfg(test)]
-impl ObservationCompletionExecutorFactory for DefaultObservationCompletionExecutorFactory {
-    fn spawn(&self) -> Result<ObservationCompletionExecutor> {
-        ObservationCompletionExecutor::spawn()
-    }
-}
-
-/// Builder for the one public GPU backend construction seam.
-#[derive(Debug)]
-pub struct GpuBackendCoreBuilder {
-    draft: GpuBackendCoreDraft,
-    probe: Arc<dyn GpuBackendConstructionProbe>,
-    #[cfg(test)]
-    observation_completion_executor_factory: Arc<dyn ObservationCompletionExecutorFactory>,
-}
-
-impl GpuBackendCoreBuilder {
-    #[cfg(test)]
-    pub(crate) fn with_construction_probe(mut self, probe: Arc<dyn GpuBackendConstructionProbe>) -> Self {
-        self.probe = probe;
-        self
+impl GpuBackendCore {
+    /// Claims the process owner of the configured devices, installs their
+    /// GPU resources, and publishes the backend.
+    pub fn new(config: ValidatedGpuBackendConfig) -> Result<Self> {
+        Self::construct(
+            config,
+            &NoopConstructionProbe,
+            Arc::new(ConstructionResourceJournal::default()),
+            ObservationCompletionExecutor::spawn,
+        )
     }
 
-    #[cfg(test)]
-    fn with_observation_completion_executor_factory(
-        mut self,
-        factory: Arc<dyn ObservationCompletionExecutorFactory>,
-    ) -> Self {
-        self.observation_completion_executor_factory = factory;
-        self
-    }
-
-    pub fn build(self) -> Result<GpuBackendCore> {
-        self.build_with_construction_journal(Arc::new(ConstructionResourceJournal::default()))
-    }
-
-    fn build_with_construction_journal(mut self, journal: Arc<ConstructionResourceJournal>) -> Result<GpuBackendCore> {
-        self.draft.normalize_installation_bounds()?;
-        self.draft.validate()?;
-        #[cfg(test)]
-        let observation_completion_executor_factory = Arc::clone(&self.observation_completion_executor_factory);
-        let GpuBackendCoreDraft { devices, controller, attempt_completion_queue_capacity } = self.draft;
-        let ordinals = devices.iter().map(|device| device.device_ordinal()).collect::<Vec<_>>();
+    fn construct(
+        config: ValidatedGpuBackendConfig,
+        probe: &dyn GpuBackendConstructionProbe,
+        journal: Arc<ConstructionResourceJournal>,
+        spawn_completion_executor: impl FnOnce() -> Result<ObservationCompletionExecutor>,
+    ) -> Result<Self> {
+        let ordinals = config.device_ordinals();
         let generation_id = next_backend_identity();
         let backend_metrics = BackendMetricsStore::new(generation_id, &ordinals)?;
         let owner_lease = claim_live_backend(&ordinals)?;
@@ -900,38 +864,22 @@ impl GpuBackendCoreBuilder {
             identity: next_backend_identity(),
             lifecycle: BackendLifecycle::new(),
             attempt_counters: Arc::new(AttemptBackendCounters::default()),
-            attempt_completion_queue: attempt_completion_queue_capacity
+            attempt_completion_queue: config
+                .attempt_completion_queue_capacity
                 .and_then(AttemptCompletionQueue::new)
                 .map(Arc::new),
             backend_metrics: backend_metrics.clone(),
-            completion_executor: {
-                #[cfg(test)]
-                {
-                    observation_completion_executor_factory.spawn()?
-                }
-                #[cfg(not(test))]
-                {
-                    ObservationCompletionExecutor::spawn()?
-                }
-            },
+            completion_executor: spawn_completion_executor()?,
         });
 
-        self.probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeCleanupWorker)?;
+        probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeCleanupWorker)?;
         let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core))?;
         let mut rollback = ConstructionRollback::new(Arc::clone(&coordinator));
 
         let build_result = (|| {
-            self.probe.checkpoint(GpuBackendConstructionCheckpoint::AfterCleanupWorker)?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterCleanupWorker)?;
             let token = generation.owner_lease.token();
-            let service = QueryService::install_for_backend(
-                ordinals,
-                controller,
-                &token,
-                &devices,
-                self.probe.as_ref(),
-                &journal,
-                &backend_metrics,
-            )?;
+            let service = QueryService::install_for_backend(&config, &token, probe, &journal, &backend_metrics)?;
             generation.service.set(service).map_err(|_service| {
                 QueryError::new(
                     QueryErrorCode::Internal,
@@ -949,6 +897,7 @@ impl GpuBackendCoreBuilder {
             let service =
                 generation.service().expect("resource service is available immediately after successful installation");
 
+            let devices = config.validated_devices();
             let observed = service.backend_device_startup_facts();
             let worker_pools = service.gpu_execution_pool_reports();
             if observed.len() != devices.len() || worker_pools.len() != devices.len() {
@@ -963,7 +912,8 @@ impl GpuBackendCoreBuilder {
                 .with_fact("worker_pool_count", worker_pools.len()));
             }
             let mut startup_records = Vec::with_capacity(devices.len());
-            for profile in &devices {
+            for device in devices {
+                let profile = &device.config;
                 let (facts, capacity_bytes, installation, health_identity, resource_profile) = observed
                     .iter()
                     .find(|(facts, _, _, _, _)| facts.device == profile.device_ordinal())
@@ -989,7 +939,7 @@ impl GpuBackendCoreBuilder {
                         .with_fact("reason", "device_worker_pool_missing")
                         .with_fact("device_ordinal", profile.device_ordinal())
                     })?;
-                if worker_pool.worker_count != profile.worker_count {
+                if worker_pool.worker_count != device.installation_bounds.worker_count {
                     return Err(QueryError::new(
                         QueryErrorCode::Internal,
                         BUILD_OPERATION,
@@ -997,10 +947,10 @@ impl GpuBackendCoreBuilder {
                     )
                     .with_fact("reason", "device_worker_pool_mismatch")
                     .with_fact("device_ordinal", profile.device_ordinal())
-                    .with_fact("profile_worker_count", profile.worker_count)
+                    .with_fact("profile_worker_count", device.installation_bounds.worker_count)
                     .with_fact("installed_worker_count", worker_pool.worker_count));
                 }
-                let allocation_limit_bytes = native_allocation_limit_bytes(profile)?;
+                let allocation_limit_bytes = device.allocation_limit_bytes;
                 let installed_allocation_limit =
                     installation.effective_options.map(|options| options.allocation_limit_bytes);
                 if installed_allocation_limit != Some(allocation_limit_bytes) {
@@ -1026,9 +976,9 @@ impl GpuBackendCoreBuilder {
                     memory_limit: profile.memory_limit(),
                     backend_reserve_bytes: profile.backend_reserve_bytes(),
                     max_active_attempts: profile.max_active_attempts(),
-                    stream_pool_size: profile.stream_pool_size,
+                    stream_pool_size: device.installation_bounds.stream_pool_size,
                     worker_count: worker_pool.worker_count,
-                    lane_count: profile.lane_count(),
+                    lane_count: device.installation_bounds.lane_count,
                     install_telemetry: profile.install_telemetry(),
                     memory_manager_installation: installation,
                     device_health_generation: health_identity.device_health_generation,
@@ -1036,7 +986,7 @@ impl GpuBackendCoreBuilder {
                 });
             }
 
-            self.probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeStartupRecords)?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeStartupRecords)?;
             let startup_records: Arc<[GpuBackendDeviceStartupRecord]> = startup_records.into();
             journal.record_startup_records(Arc::clone(&startup_records))?;
             generation.startup_records.set(Arc::clone(&startup_records)).map_err(|_records| {
@@ -1047,13 +997,13 @@ impl GpuBackendCoreBuilder {
                 )
                 .with_fact("reason", "duplicate_startup_record_install")
             })?;
-            self.probe.checkpoint(GpuBackendConstructionCheckpoint::AfterStartupRecords)?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::AfterStartupRecords)?;
             let close_on_last = Arc::clone(&coordinator);
             let public_handles = PublicHandleTracker::new(move || {
                 close_on_last.signal();
             });
             let public_handle = public_handles.acquire().expect("new public-handle tracker accepts its first lease");
-            self.probe.checkpoint(GpuBackendConstructionCheckpoint::Published)?;
+            probe.checkpoint(GpuBackendConstructionCheckpoint::Published)?;
             Ok(GpuBackendCore {
                 resource_core,
                 observation_core,
@@ -1159,15 +1109,6 @@ impl Clone for GpuBackendCore {
 }
 
 impl GpuBackendCore {
-    pub fn builder(draft: GpuBackendCoreDraft) -> GpuBackendCoreBuilder {
-        GpuBackendCoreBuilder {
-            draft,
-            probe: Arc::new(NoopConstructionProbe),
-            #[cfg(test)]
-            observation_completion_executor_factory: Arc::new(DefaultObservationCompletionExecutorFactory),
-        }
-    }
-
     pub fn session_capability(&self) -> GpuBackendSession {
         GpuBackendSession {
             resource_core: Arc::downgrade(&self.resource_core),
@@ -1343,54 +1284,18 @@ impl GpuBackendSession {
         service.admit_async_with_backend_permits(request, observation, resource, completion_dispatcher).await
     }
 
-    pub fn max_device_total_memory_bytes(&self) -> Result<u64> {
-        self.with_service(|service| Ok(service.max_device_total_memory_bytes()))
-    }
-
     pub fn same_backend(&self, other: &Self) -> bool {
         self.identities == other.identities
     }
 
-    pub fn config(&self) -> Result<QueryExecutionConfig> {
-        self.with_service(|service| Ok(service.config().clone()))
-    }
-
-    pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
-        self.with_service(QueryService::admission_snapshot)
-    }
-
-    pub fn device_admission_snapshots(&self) -> Result<Vec<QueryServiceDeviceAdmissionSnapshot>> {
-        self.with_service(|service| Ok(service.device_admission_snapshots()))
-    }
-
-    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
-        self.with_service(QueryService::device_ledger_reports)
-    }
-
-    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
-        self.with_service(QueryService::device_cache_reports)
-    }
-
-    /// Returns bounded owner-emitted source-cache observations for diagnostic
-    /// correlation with public attempt reports.
-    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
-        self.with_service(QueryService::device_cache_source_event_snapshots)
-    }
-
-    pub fn device_memory_failure_reports(&self) -> Result<Vec<DeviceMemoryFailureReport>> {
-        self.with_service(|service| Ok(service.device_memory_failure_reports()))
+    /// Reads every service report once. Like every service read, it fails
+    /// with `backend_closing` once close begins.
+    pub fn diagnostics(&self) -> Result<BackendDiagnostics> {
+        self.with_service(QueryService::diagnostics)
     }
 
     pub fn device_telemetry_snapshots(&self) -> Result<Vec<DeviceTelemetrySnapshot>> {
         self.with_service(|service| Ok(service.device_telemetry_snapshots()))
-    }
-
-    pub fn gpu_execution_pool_reports(&self) -> Result<Vec<GpuExecutionPoolSnapshot>> {
-        self.with_service(|service| Ok(service.gpu_execution_pool_reports()))
-    }
-
-    pub fn gpu_execution_query_report(&self) -> Result<GpuExecutionQuerySnapshot> {
-        self.with_service(|service| Ok(service.gpu_execution_query_report()))
     }
 
     fn with_service<T>(&self, operation: impl FnOnce(&QueryService) -> Result<T>) -> Result<T> {
@@ -1530,7 +1435,9 @@ impl ConstructionResourceJournal {
     }
 
     pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
-        let entries = self.entries.lock().map_err(|_| construction_journal_poisoned())?;
+        // Recording is one append, so a recovered guard holds every resource
+        // recorded before a panic; each still needs its rollback.
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         let mut first_deadline = None;
         let mut first_permanent = None;
         for entry in entries.iter().rev() {
@@ -1628,7 +1535,7 @@ mod tests {
                     return Err(format!("backend close was not quiescent: {close:?}"));
                 }
                 let replacement =
-                    GpuBackendCore::builder(one_device_backend_draft(0)).build().map_err(|error| error.to_string())?;
+                    GpuBackendCore::new(one_device_backend_config(0)).map_err(|error| error.to_string())?;
                 let replacement_close =
                     replacement.close_and_wait(Duration::from_secs(10)).map_err(|error| error.to_string())?;
                 if !replacement_close.gpu_resource_quiescent || !replacement_close.observation_quiescent {
@@ -1690,6 +1597,23 @@ mod tests {
     }
 
     #[test]
+    fn close_recovers_a_poisoned_generation_slot() {
+        let backend = inert_backend_for_observation_delivery_test();
+        let resource_core = Arc::clone(&backend.resource_core);
+        thread::spawn(move || {
+            let _generation = resource_core.generation.lock().unwrap();
+            panic!("poison the resource generation slot");
+        })
+        .join()
+        .expect_err("the poisoning thread panics while holding the generation slot");
+
+        let close = backend.close_and_wait(Duration::from_secs(2)).expect("close recovers the generation slot");
+
+        assert!(close.gpu_resource_quiescent);
+        assert!(close.observation_quiescent);
+    }
+
+    #[test]
     fn close_and_wait_reclaims_the_backend_cleanup_worker() {
         let backend = inert_backend_for_observation_delivery_test();
         let coordinator = Arc::clone(&backend.coordinator);
@@ -1733,8 +1657,7 @@ mod tests {
         const TEST_NAME: &str = "runtime::backend_core::tests::process_exit_with_live_admitted_handle_does_not_hang";
 
         if std::env::var_os(CHILD_ENV).is_some() {
-            let backend =
-                GpuBackendCore::builder(one_device_backend_draft(0)).build().expect("child process builds a backend");
+            let backend = GpuBackendCore::new(one_device_backend_config(0)).expect("child process builds a backend");
             let session = backend.session_capability();
             let _live_handle = session.admit_query().expect("child process retains one admitted handle");
             // This intentionally skips every stack destructor. The registered
@@ -1813,16 +1736,6 @@ mod tests {
             .collect())
     }
 
-    #[derive(Debug, Default)]
-    struct CountingProbe(std::sync::atomic::AtomicUsize);
-
-    impl GpuBackendConstructionProbe for CountingProbe {
-        fn checkpoint(&self, _checkpoint: GpuBackendConstructionCheckpoint) -> Result<()> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
-    }
-
     #[derive(Debug)]
     struct FailingProbe(GpuBackendConstructionCheckpoint);
     impl GpuBackendConstructionProbe for FailingProbe {
@@ -1836,17 +1749,6 @@ mod tests {
                 .with_fact("reason", "injected_construction_failure"));
             }
             Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    struct FailingObservationCompletionExecutorFactory {
-        failing_lane: ObservationCompletionWorkerLane,
-    }
-
-    impl ObservationCompletionExecutorFactory for FailingObservationCompletionExecutorFactory {
-        fn spawn(&self) -> Result<ObservationCompletionExecutor> {
-            ObservationCompletionExecutor::spawn_with_lane_failure_for_test(self.failing_lane)
         }
     }
 
@@ -1921,18 +1823,19 @@ mod tests {
         }
     }
 
-    fn controller(policy: QueryExecutionConfig) -> GpuBackendControllerDraft {
-        GpuBackendControllerDraft::new(policy, QueueBounds::default())
+    fn backend_config(devices: Vec<GpuBackendDeviceConfig>) -> GpuBackendConfig {
+        GpuBackendConfig::new(devices, QueryExecutionConfig::default(), QueueBounds::default())
     }
 
-    fn one_device_backend_draft(device_ordinal: usize) -> GpuBackendCoreDraft {
-        GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(device_ordinal),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        )
+    fn one_device_backend(device_ordinal: usize) -> GpuBackendConfig {
+        backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(device_ordinal),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )])
+    }
+
+    fn one_device_backend_config(device_ordinal: usize) -> ValidatedGpuBackendConfig {
+        one_device_backend(device_ordinal).validate().expect("one-device backend config validates")
     }
 
     fn wait_for_live_owner_release(device_ordinal: usize) {
@@ -1955,13 +1858,10 @@ mod tests {
 
     #[test]
     fn pure_config_rejects_invalid_device_profiles_before_construction() {
-        let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(0).with_max_active_attempts(0),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        );
+        let config = backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0).with_max_active_attempts(0),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )]);
         let error = config.validate().unwrap_err();
         assert_eq!(error.fact_value("field"), Some("max_active_attempts"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
@@ -1969,13 +1869,10 @@ mod tests {
 
     #[test]
     fn pure_config_rejects_explicit_zero_default_query_limit_before_construction() {
-        let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(0).with_default_query_limit_bytes(0),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        );
+        let config = backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0).with_default_query_limit_bytes(0),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )]);
 
         let error = config.validate().unwrap_err();
 
@@ -1994,13 +1891,13 @@ mod tests {
         {
             let published = Arc::new(PublishedCheckpointProbe::default());
 
-            let error = GpuBackendCore::builder(one_device_backend_draft(device_ordinal))
-                .with_construction_probe(Arc::clone(&published) as _)
-                .with_observation_completion_executor_factory(Arc::new(FailingObservationCompletionExecutorFactory {
-                    failing_lane,
-                }))
-                .build()
-                .unwrap_err();
+            let error = GpuBackendCore::construct(
+                one_device_backend_config(device_ordinal),
+                published.as_ref(),
+                Arc::default(),
+                || ObservationCompletionExecutor::spawn_with_lane_failure_for_test(failing_lane),
+            )
+            .unwrap_err();
 
             assert_eq!(error.fact_value("reason"), Some("observation_completion_worker_spawn_failed"));
             assert_eq!(error.fact_value("worker_lane"), Some(failing_lane.as_str()));
@@ -2010,51 +1907,30 @@ mod tests {
     }
 
     #[test]
-    fn invalid_config_records_no_construction_probe_activity() {
-        let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(0).with_backend_reserve_bytes(256 * 1024 * 1024),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        );
-        let probe = Arc::new(CountingProbe::default());
+    fn pure_config_rejects_a_reserve_that_exhausts_the_fallback_capacity() {
+        let config = backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0).with_backend_reserve_bytes(256 * 1024 * 1024),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )]);
 
-        let error =
-            GpuBackendCore::builder(config).with_construction_probe(Arc::clone(&probe) as _).build().unwrap_err();
+        let error = config.validate().unwrap_err();
 
         assert_eq!(error.fact_value("reason"), Some("reserve_exhausts_fallback"));
-        assert_eq!(probe.0.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn derived_global_limit_is_checked_and_defaults_to_two_per_device() {
-        let config = GpuBackendCoreDraft::new(
-            vec![
-                GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive),
-                GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(1), GpuMemoryOwnership::WholeDeviceExclusive),
-            ],
-            controller(QueryExecutionConfig::default()),
-        );
-        assert_eq!(config.derived_global_max_active_attempts().unwrap(), 4);
     }
 
     #[test]
     fn automatic_installation_bounds_cover_every_active_attempt() {
-        let mut draft = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(0).with_max_active_attempts(2),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        );
+        let config = backend_config(vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0).with_max_active_attempts(2),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )])
+        .validate()
+        .expect("derived multi-attempt installation profile validates");
 
-        draft.normalize_installation_bounds().expect("automatic bounds derive");
-        let device = draft.devices().first().expect("one device profile");
-        assert_eq!(device.lane_count(), 2);
-        assert_eq!(device.worker_count(), 3);
-        assert!(device.stream_pool_size() >= 2);
-        draft.validate().expect("derived multi-attempt installation profile validates");
+        let bounds = config.validated_devices()[0].installation_bounds;
+        assert_eq!(bounds.lane_count, 2);
+        assert_eq!(bounds.worker_count, 3);
+        assert!(bounds.stream_pool_size >= 2);
     }
 
     #[test]
@@ -2063,25 +1939,25 @@ mod tests {
             source_scheduler_policy: SourceSchedulerPolicy::new(7),
             ..QueryExecutionConfig::default()
         };
-        let mut draft = GpuBackendCoreDraft::new(
+        let config = GpuBackendConfig::new(
             vec![GpuBackendDeviceConfig::new(
                 GpuBackendDeviceProfile::new(0).with_max_active_attempts(2),
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
-            controller(execution),
-        );
+            execution,
+            QueueBounds::default(),
+        )
+        .validate()
+        .expect("device-local default remains valid");
 
-        draft.normalize_installation_bounds().expect("automatic bounds derive");
-
-        let device = draft.devices().first().expect("one device profile");
-        assert_eq!(device.source_work_per_attempt(), 1);
-        assert_eq!(device.stream_pool_size(), 4);
-        draft.validate().expect("device-local default remains valid");
+        let device = &config.validated_devices()[0];
+        assert_eq!(device.config.source_work_per_attempt(), 1);
+        assert_eq!(device.installation_bounds.stream_pool_size, 4);
     }
 
     fn assert_query_activity_allows_close_and_replacement_after_release(acquire_context: bool) {
         let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
         let lifecycle = backend.observation_core.lifecycle.clone();
         let observed_active_gpu_permits = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let (completion, completed) = mpsc::sync_channel(1);
@@ -2128,7 +2004,7 @@ mod tests {
     #[test]
     fn backend_observation_quiescence_waits_for_detached_seal_observers() {
         let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
         let attempt = AttemptOwner::native_for_test();
         let binding = attempt.admission_binding();
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -2169,17 +2045,17 @@ mod tests {
     #[test]
     fn reentrant_activity_close_does_not_block_later_query_stream_cleanup() {
         let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(
+        let backend = GpuBackendCore::new(
+            backend_config(vec![GpuBackendDeviceConfig::new(
                 GpuBackendDeviceProfile::new(0)
                     .with_default_query_limit_bytes(256 * 1024 * 1024)
                     .with_max_active_attempts(2)
                     .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 3, 2)),
                 GpuMemoryOwnership::WholeDeviceExclusive,
-            )],
-            controller(QueryExecutionConfig::default()),
-        ))
-        .build()
+            )])
+            .validate()
+            .expect("explicit-bounds backend config validates"),
+        )
         .unwrap();
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
@@ -2224,12 +2100,13 @@ mod tests {
         // The probe stops before device installation; keep the ordinal inside
         // the backend metrics store's frozen device-label domain.
         let ordinal = BACKEND_METRIC_DEVICE_CAPACITY - 1;
-        let config = one_device_backend_draft(ordinal);
-
-        let error = GpuBackendCore::builder(config)
-            .with_construction_probe(Arc::new(FailingProbe(GpuBackendConstructionCheckpoint::AfterCleanupWorker)))
-            .build()
-            .unwrap_err();
+        let error = GpuBackendCore::construct(
+            one_device_backend_config(ordinal),
+            &FailingProbe(GpuBackendConstructionCheckpoint::AfterCleanupWorker),
+            Arc::default(),
+            ObservationCompletionExecutor::spawn,
+        )
+        .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("injected_construction_failure"));
         assert!(matches!(error.fact_value("rollback_cleanup"), Some("quiescent" | "transferred")));
 
@@ -2263,10 +2140,13 @@ mod tests {
                 expected_resources,
                 inspected: AtomicU8::new(0),
             });
-            let error = GpuBackendCore::builder(one_device_backend_draft(0))
-                .with_construction_probe(Arc::clone(&probe) as _)
-                .build_with_construction_journal(journal)
-                .unwrap_err();
+            let error = GpuBackendCore::construct(
+                one_device_backend_config(0),
+                probe.as_ref(),
+                journal,
+                ObservationCompletionExecutor::spawn,
+            )
+            .unwrap_err();
 
             assert_eq!(error.fact_value("reason"), Some("injected_construction_failure"), "{checkpoint:?}");
             assert_eq!(probe.inspected.load(Ordering::Acquire), 1, "{checkpoint:?}");
@@ -2400,7 +2280,7 @@ mod tests {
     #[test]
     fn begin_attempt_after_close_is_rejected_without_creating_an_attempt() {
         let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
         let session = backend.session_capability();
         assert!(backend.close());
         let before = session.attempt_counters_snapshot();
@@ -2415,7 +2295,7 @@ mod tests {
     #[test]
     fn begin_attempt_winning_the_close_gate_is_counted_until_report_ready() {
         let _owner_test = live_backend_test_lock();
-        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let backend = GpuBackendCore::new(one_device_backend_config(0)).unwrap();
         let session = backend.session_capability();
         let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
         assert_eq!(session.attempt_counters_snapshot().attempts_begun, 1);
@@ -2519,8 +2399,8 @@ mod tests {
     #[test]
     fn abandoned_attempt_reports_land_in_the_bounded_completion_queue() {
         let _owner_test = live_backend_test_lock();
-        let draft = one_device_backend_draft(0).with_attempt_completion_queue_capacity(2);
-        let backend = GpuBackendCore::builder(draft).build().unwrap();
+        let config = one_device_backend(0).with_attempt_completion_queue_capacity(2).validate().unwrap();
+        let backend = GpuBackendCore::new(config).unwrap();
         let session = backend.session_capability();
 
         let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
