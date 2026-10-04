@@ -1,12 +1,14 @@
 use arrow::datatypes::DataType as ArrowDataType;
-use cudf::ops::materialization::{
-    MaterializedColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES as CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES,
-    STRING_OFFSET_BYTES_CONSERVATIVE as CUDF_STRING_OFFSET_BYTES_CONSERVATIVE, table_upper_bound_preflight,
+use cudf::{
+    interop::arrow_host::cudf_dtype_from_arrow_type,
+    ops::materialization::{
+        MaterializedColumnUpperBoundInput,
+        PER_COLUMN_ALIGNMENT_PADDING_BYTES as CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES,
+        STRING_OFFSET_BYTES_CONSERVATIVE as CUDF_STRING_OFFSET_BYTES_CONSERVATIVE, table_upper_bound_preflight,
+    },
 };
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use query_runtime::native_error::cudf_query_error;
-
-use crate::datatypes::cudf_dtype_from_arrow_type;
 
 pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = CUDF_STRING_OFFSET_BYTES_CONSERVATIVE as u64;
 pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES as u64;
@@ -102,30 +104,4 @@ pub fn partial_aggregate_upper_bound_bytes(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn owner_preflight_preserves_materialized_string_bound() {
-        let rows = 109_914_910;
-        let total_payload = 4_706_637_611;
-        let bound = join_output_upper_bound_bytes(
-            rows,
-            &[JoinOutputColumnUpperBoundInput {
-                data_type: ArrowDataType::Utf8,
-                input_max_string_length_bytes: None,
-                input_total_string_bytes: Some(total_payload),
-            }],
-        )
-        .unwrap()
-        .expect("a string column with payload evidence has a bound");
-        let null_mask = rows.div_ceil(8).div_ceil(64) * 64;
-        assert_eq!(
-            bound,
-            total_payload
-                + (rows + 1) * STRING_OFFSET_BYTES_CONSERVATIVE
-                + null_mask
-                + PER_COLUMN_ALIGNMENT_PADDING_BYTES
-        );
-    }
-}
+mod tests;

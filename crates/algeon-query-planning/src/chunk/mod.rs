@@ -29,8 +29,6 @@ pub mod row_group;
 #[doc(hidden)]
 pub mod scan_limit;
 
-#[doc(hidden)]
-pub use decimal::object_store_decimal_reader_predicate_requires_footer_contract;
 pub use memory::SourceTaskMemoryModel;
 pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan};
 pub use planner::{

@@ -93,16 +93,11 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     let bfs = bfs_plan(Arc::clone(&edge_schema));
     let mut producer_evidence = admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
     producer_evidence.attest_cugraph_graph_execution_scope(&pagerank);
-    let lifecycle = runtime::BackendLifecycle::new();
-    let counters = Arc::new(attempt::AttemptBackendCounters::default());
-    let observed = attempt::AttemptOwner::begin(
+    let observed = attempt::AttemptOwner::begin_for_test(
         attempt::BeginAttemptRequest {
             observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
             ..attempt::BeginAttemptRequest::default()
         },
-        lifecycle.try_begin_observation().expect("observation permit"),
-        counters,
-        None,
     );
     let producer_owner = observed.owner;
     let producer_completion = observed.completion.completion();
@@ -134,7 +129,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         .memory_grant()
         .expect("producer grant access")
         .expect("producer grant")
-        .retain_resident_owner(resident_bytes)
+        .retain_resident_owner_for_test(resident_bytes)
         .expect("resident edges fit the producer cap");
     let resident = runtime::resident::GpuResultHandle::new_with_resident_owner(
         producer_context.context(),
@@ -272,7 +267,7 @@ fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
         .memory_grant()
         .expect("producer grant access")
         .expect("producer grant")
-        .retain_resident_owner(edges.device_allocated_size_bytes().expect("resident edge bytes"))
+        .retain_resident_owner_for_test(edges.device_allocated_size_bytes().expect("resident edge bytes"))
         .expect("resident edges fit the producer cap");
     let resident = runtime::resident::GpuResultHandle::new_with_resident_owner(
         producer_context.context(),
@@ -469,16 +464,11 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let plan = pagerank_plan(Arc::clone(&edge_schema));
     let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     evidence.attest_cugraph_graph_execution_scope(&plan);
-    let backend_lifecycle = runtime::BackendLifecycle::new();
-    let counters = Arc::new(attempt::AttemptBackendCounters::default());
-    let observed_attempt = attempt::AttemptOwner::begin(
+    let observed_attempt = attempt::AttemptOwner::begin_for_test(
         attempt::BeginAttemptRequest {
             observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
             ..attempt::BeginAttemptRequest::default()
         },
-        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        Arc::clone(&counters),
-        None,
     );
     let attempt_owner = observed_attempt.owner;
     let completion = observed_attempt.completion.completion();
@@ -811,16 +801,11 @@ fn execute_pagerank_attempt(
 ) -> error::Result<(RecordBatch, u64, Option<u64>)> {
     let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
     evidence.attest_cugraph_graph_execution_scope(plan);
-    let backend_lifecycle = runtime::BackendLifecycle::new();
-    let counters = Arc::new(attempt::AttemptBackendCounters::default());
-    let observed_attempt = attempt::AttemptOwner::begin(
+    let observed_attempt = attempt::AttemptOwner::begin_for_test(
         attempt::BeginAttemptRequest {
             observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
             ..attempt::BeginAttemptRequest::default()
         },
-        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        Arc::clone(&counters),
-        None,
     );
     let attempt_owner = observed_attempt.owner;
     let completion = observed_attempt.completion.completion();
@@ -982,16 +967,11 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let scan = builder.add_source(source::SourceNode::LocalParquet(source));
     let plan = builder.finish_gpu_resident(scan).unwrap();
 
-    let lifecycle = runtime::BackendLifecycle::new();
-    let counters = Arc::new(attempt::AttemptBackendCounters::default());
-    let observed = attempt::AttemptOwner::begin(
+    let observed = attempt::AttemptOwner::begin_for_test(
         attempt::BeginAttemptRequest {
             observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
             ..attempt::BeginAttemptRequest::default()
         },
-        lifecycle.try_begin_observation().expect("observation permit"),
-        counters,
-        None,
     );
     let attempt_owner = observed.owner;
     let completion = observed.completion.completion();

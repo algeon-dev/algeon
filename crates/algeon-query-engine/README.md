@@ -39,10 +39,10 @@ process. Do not use broad `cargo test -p query-engine --all-features`,
 package-level validation.
 
 ```bash
-cargo nt -E 'binary_id(query-engine::native_contract_tests)'
-cargo nt -E 'binary_id(query-engine::public_api_boundary)'
-cargo nt -E 'package(query-engine) & kind(lib)'
-cargo nt -E 'binary_id(query-engine::gpu_allocator_event_correlation_gpu_exclusive)'
+cargo nt -E 'binary_id(algeon-query-engine::native_contract_tests)'
+cargo nt -E 'binary_id(algeon-query-engine::public_api_boundary)'
+cargo nt -E 'package(algeon-query-engine) & kind(lib)'
+cargo nt -E 'binary_id(algeon-query-engine::gpu_allocator_event_correlation_gpu_exclusive)'
 bash scripts/check_all.sh
 ```
 

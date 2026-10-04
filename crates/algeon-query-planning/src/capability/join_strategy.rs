@@ -7,7 +7,6 @@ use crate::{
 
 /// The executor a join node runs, named once for planning, reports, and the
 /// engine.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinStrategy {
     /// Prebuild and retain a hash-table artifact because the build side is
@@ -50,7 +49,6 @@ impl JoinStrategy {
 
 /// A chosen join strategy, with the size evidence behind it when sizes
 /// decided the choice.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinStrategyChoice {
     strategy: JoinStrategy,
@@ -77,7 +75,6 @@ impl JoinStrategyChoice {
 
 /// The size facts and thresholds a keyed strategy choice read, and why each
 /// alternative lost.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinStrategyEvidence {
     strategy: JoinStrategy,

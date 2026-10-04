@@ -31,13 +31,12 @@ mod runtime_observability_integration_tests;
 
 pub mod chunk;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
-pub mod datatypes;
+pub(crate) mod datatypes;
 /// Local-filesystem implementation of the planning dimension-pruning resolver contract.
 pub mod dimension_pruning;
 pub mod exec;
 /// Backend materialized-output sizing, applying the component's formula.
-#[doc(hidden)]
-pub mod materialization_sizing;
+pub(crate) mod materialization_sizing;
 /// Native error projection: cuDF from the runtime boundary, cuVS from here.
 pub mod native_error;
 #[doc(hidden)]

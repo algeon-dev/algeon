@@ -328,11 +328,6 @@ impl BackendQueryContext {
         self.admit_evidence(evidence)
     }
 
-    fn admit_plan_for_compiled_executor_test(&self, plan: &QueryPlan) -> QueryEngineResult<AdmittedPlanContext> {
-        let evidence = capability_evidence_for_fixture_plan(plan)?;
-        self.admit_evidence(evidence)
-    }
-
     fn admit_evidence(&self, evidence: AttemptCapabilityEvidence) -> QueryEngineResult<AdmittedPlanContext> {
         self.admit_evidence_with_observation(evidence, None)
     }

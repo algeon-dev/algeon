@@ -1,10 +1,3 @@
-use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver,
-    exec::{
-        ExecutionMetrics, QueryExecutionRequest, admit_query_plan, execute_query_plan as engine_execute_query_plan,
-    },
-    rapids_backend::rapids_analysis_context,
-};
 use query_planning::{
     admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     error::QueryErrorCode,
@@ -16,17 +9,17 @@ use query_runtime::{
 };
 
 use super::*;
-
-// `cudf::Runtime` explicitly implements Send and Sync: it re-enters its
-// device at each FFI boundary. Clippy cannot see that cross-crate unsafe impl.
-#[expect(clippy::arc_with_non_send_sync, reason = "cudf::Runtime explicitly implements Send and Sync")]
-fn shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
-    Arc::new(runtime)
-}
+use crate::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    exec::{
+        ExecutionMetrics, QueryExecutionRequest, admit_query_plan, execute_query_plan as engine_execute_query_plan,
+    },
+    rapids_backend::rapids_analysis_context,
+};
 
 #[test]
 fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-root-hash-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -87,7 +80,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 
 #[test]
 fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-source");
     let path = dir.join("shared.parquet");
     write_self_join_parquet(&path);
@@ -149,7 +142,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
 
 #[test]
 fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-aggregate-join-input");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -207,7 +200,7 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
     // Join → Sort → Limit → Filter is decided by the Limit/Unary task contracts,
     // not by the retired post-limit projection allowlist: the filter stays above
     // the limit and still executes natively with the same rows.
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-sort-limit-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -277,7 +270,7 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
 
 #[test]
 fn execute_query_plan_runs_independent_union_branches_through_unified_admission() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
     let left_batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
@@ -333,7 +326,7 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     // ORDER BY right_value DESC LIMIT 1 OFFSET 1 over the join keeps (2, 200):
     // the fused top-k applies skip+fetch, and the limit pass-through drops the
     // marker without applying it again.
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-sort-limit-offset");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -398,7 +391,7 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
 
 #[test]
 fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-aggregate-join-input-stream");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -481,7 +474,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
 
 #[test]
 fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggregate() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-source-aggregate");
     let fact_path = dir.join("fact.parquet");
     let dim_path = dir.join("dim.parquet");
@@ -583,7 +576,7 @@ fn source_row_groups_read(plan: &QueryPlan, metrics: &QueryMetrics, path: &Path)
 
 #[test]
 fn compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-shared-filtered-source");
     let dimension_path = dir.join("dimension.parquet");
     let fact_paths = [dir.join("fact_a.parquet"), dir.join("fact_b.parquet")];
@@ -616,7 +609,7 @@ fn compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once() {
 
 #[test]
 fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let runtime = shared_runtime(runtime);
     write_nonlinear_topk_contract_parquets();
 
@@ -665,7 +658,7 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
 
 #[test]
 fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -690,7 +683,7 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
 
 #[test]
 fn observed_compiled_root_join_records_registered_tasks_without_reservation_events() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-observed-compiled-root");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -754,7 +747,7 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
 
 #[test]
 fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-keyless-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -790,7 +783,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
 
 #[test]
 fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-unary-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -819,7 +812,7 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
 
 #[test]
 fn execute_query_plan_routes_aggregate_sort_limit_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-fallback");
     let path = dir.join("input.parquet");
     let source_schema = write_source_unary_parquet(&path);
@@ -841,7 +834,7 @@ fn execute_query_plan_routes_aggregate_sort_limit_through_compiled_pipeline() {
 
 #[test]
 fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-gpu-sink");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -991,7 +984,7 @@ fn single_sink_output_pipeline(
 
 #[test]
 fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-single-join-aggregate");
     let customers_path = dir.join("customers.parquet");
     let orders_path = dir.join("orders.parquet");
@@ -1023,7 +1016,7 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
 
 #[test]
 fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_reservations() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-string-group-aggregate");
     let customers_path = dir.join("customers.parquet");
     let orders_path = dir.join("orders.parquet");
@@ -1076,7 +1069,7 @@ fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics)
 
 #[test]
 fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-root-sort-limit");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -1108,7 +1101,7 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
 
 #[test]
 fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-single-join-post-root");
     let customers_path = dir.join("customers.parquet");
     let orders_path = dir.join("orders.parquet");
@@ -1138,7 +1131,7 @@ fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeli
 
 #[test]
 fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-multi-join");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -1170,7 +1163,7 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
 
 #[test]
 fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-stream");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -1229,7 +1222,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
 
 #[test]
 fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-leaf-stream");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -1304,7 +1297,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
 
 #[test]
 fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-residual-left-build-stream");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -1377,7 +1370,7 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
 
 #[test]
 fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-host-sink-diagnostics");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");

@@ -28,7 +28,6 @@ pub struct AttemptAllocationDomain {
 /// Field order is load-bearing: unregister the native route before detaching
 /// its domain members or releasing the CUDA stream owners.
 #[derive(Debug)]
-#[doc(hidden)]
 pub struct AttemptStreamProviderRoute {
     registration: cudf::AttemptStreamProviderRegistration,
     _member_leases: Vec<cudf::StreamReservationLease>,
@@ -54,12 +53,14 @@ impl AttemptStreamProviderRoute {
     /// Process-unique identity of the fork reserved for this route's parent
     /// stream. No alias can ever be served it, so it is disjoint from every
     /// fork a work lease holds.
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn reserved_root_fork_identity(&self) -> usize {
         self._fork_streams.last().expect("a registered route owns at least a reserved root fork").identity()
     }
 
     /// Process-unique identity of auxiliary fork `index` of this route.
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn auxiliary_fork_identity(&self, index: usize) -> Option<usize> {
         (index < self.lane_capacity()).then(|| self._fork_streams[index].identity())

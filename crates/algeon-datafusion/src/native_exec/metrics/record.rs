@@ -1491,7 +1491,7 @@ mod tests {
 
     fn calibration_row(index: usize, algorithm: GraphAlgorithm) -> GraphMeasuredPeakRow {
         let mut row = GraphMeasuredPeakRow::pending(None, format!("n{index}"), index, algorithm);
-        row.record_execution_state(GraphClaimExecutionState::AlgorithmStarted);
+        row.record_execution_state_for_test(GraphClaimExecutionState::AlgorithmStarted);
         row.record_measured_peak(Some(512 + index as u64), GraphMeasuredPeakProvenance::CacheScopeHighWater);
         row
     }

@@ -2,14 +2,6 @@ use std::{sync::Condvar, time::Duration};
 
 use ::cudf::testing::device_copy;
 use arrow::array::{BooleanArray, Int64Array, StringArray};
-use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver,
-    exec::{
-        CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
-        run_resident_lane_borrow,
-    },
-    rapids_backend::rapids_analysis_context,
-};
 use query_planning::{
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
@@ -17,18 +9,19 @@ use query_planning::{
 };
 
 use super::*;
-
-// `cudf::Runtime` explicitly implements Send and Sync: it re-enters its
-// device at each FFI boundary. Clippy cannot see that cross-crate unsafe impl.
-#[expect(clippy::arc_with_non_send_sync, reason = "cudf::Runtime explicitly implements Send and Sync")]
-fn lane_shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
-    Arc::new(runtime)
-}
+use crate::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    exec::{
+        ExecutionMetrics,
+        bounded::compiled::{LaneDispatchSupport, run_resident_lane_borrow},
+    },
+    rapids_backend::rapids_analysis_context,
+};
 
 /// The admitted host pipeline returns every Parquet branch row through the serial scheduler.
 #[test]
 fn serial_compiled_executes_parquet_union_branches_on_production_path() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-parquet-union");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -80,7 +73,7 @@ fn serial_compiled_executes_parquet_union_branches_on_production_path() {
         "the trailing limit stays in the compiled pipeline"
     );
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("admitted union plan acquires a context");
     let result = execute_query_plan(&test_context, &plan).expect("lane-dispatched union plan should execute");
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -104,7 +97,7 @@ fn fixture_local_parquet_source(path: &Path, schema: &Arc<Schema>) -> NativeLoca
 
 #[test]
 fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-parquet-aggregate");
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
@@ -189,7 +182,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
 
     assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Aggregate).count(), 1);
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     {
         let host_context = runtime.acquire_context_for_plan(&host_plan).expect("host aggregate acquires a context");
         let result = execute_query_plan(&host_context, &host_plan).expect("host aggregate executes serially");
@@ -402,7 +395,7 @@ fn aggregate_lane_value(index: u64) -> i64 {
 
 #[test]
 fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sum-overflow");
     let path = dir.join("input.parquet");
     let input_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
@@ -445,7 +438,7 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     let admission = decision.admission().expect("overflow aggregate uses compiled admission");
     let pipeline = admission.pipeline().clone();
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("overflow aggregate acquires context");
     let route = test_context.attempt_stream_provider_route().expect("overflow aggregate has a fork route");
     assert!(route.lane_capacity() >= 4);
@@ -552,7 +545,7 @@ fn compiled_join_probe_batches_scale_without_rebuilding() {
             )
             .unwrap();
         let plan = builder.finish_with_host_sink(join).unwrap();
-        let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
+        let runtime = shared_runtime(suite_backend::Runtime::new().expect("join scaling runtime"));
         let context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
         let result = execute_query_plan(&context, &plan).expect("join scaling executes");
         let batch = result.output().as_host_arrow().expect("join scaling materializes").clone();
@@ -743,7 +736,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         2,
         "two joins build separately"
     );
-    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("chained join runtime"));
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("chained join runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("chained join context");
     let run = || {
         let metrics = ExecutionMetrics::detached("chained-hash-parallel");
@@ -899,7 +892,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     .expect("partitioned chain admission should not error");
     let admission = decision.admission().expect("partitioned chain uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("partitioned chain runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("partitioned chain context");
     let run = || {
         let metrics = ExecutionMetrics::detached("chained-partitioned-parallel");
@@ -992,7 +985,7 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
     ]));
 
     fn execute_pair(plan: &QueryPlan) -> (RecordBatch, RecordBatch) {
-        let runtime = lane_shared_runtime(cudf::Runtime::new().expect("parity runtime"));
+        let runtime = shared_runtime(suite_backend::Runtime::new().expect("parity runtime"));
         let host = {
             let context = runtime.acquire_context_for_plan(plan).expect("host parity context");
             let result = execute_query_plan(&context, plan).expect("host join executes");
@@ -1236,7 +1229,7 @@ fn serial_compiled_join_preserves_dynamic_filter_pruning() {
     .expect("pruning admission should not error");
     let admission = decision.admission().expect("pruning shape uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("pruning runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("pruning context");
     let run = || {
         let metrics = ExecutionMetrics::detached("join-lane-pruning");
@@ -1269,7 +1262,7 @@ fn serial_compiled_join_preserves_dynamic_filter_pruning() {
 /// Its chunk lanes stay alive through output adoption onto the root runtime.
 #[test]
 fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-resident-join-lanes");
     let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let probe_schema =
@@ -1327,7 +1320,7 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     )
     .expect("resident admission should not error");
     assert!(decision.admission().is_some(), "resident join uses compiled admission");
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("resident join acquires a context");
     let result = execute_query_plan(&test_context, &plan).expect("resident join lanes should execute");
     let QueryOutput::GpuResident(handle) = result.output() else {
@@ -1350,7 +1343,7 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
 /// adoption would copy the whole output device-to-device into the root runtime.
 #[test]
 fn resident_aggregate_without_lanes_skips_root_adoption_copy() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-resident-aggregate-no-lanes");
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
@@ -1381,7 +1374,7 @@ fn resident_aggregate_without_lanes_skips_root_adoption_copy() {
         .unwrap();
     let plan = builder.finish_gpu_resident(aggregate).unwrap();
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("resident aggregate acquires a context");
     // Hold every auxiliary permit so the run obtains no lane.
     let mut held = Vec::new();
@@ -1422,7 +1415,7 @@ fn sort_lane_nullable_source(path: &Path, keys: &[Option<i32>], values: &[Option
 /// Resident top-k candidate lanes preserve the host serial result, including null ordering.
 #[test]
 fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sort-topk");
     let schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
@@ -1464,7 +1457,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
         "sort/limit fuses into a stream-capable top-k"
     );
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("sort/top-k plan acquires a context");
     let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
     let arrivals = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
@@ -1543,7 +1536,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
 /// Resident top-k borrowing preserves the host serial offset and mixed-direction ordering.
 #[test]
 fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-sort-offset");
     let keys: Vec<Option<i32>> =
         vec![Some(3), Some(1), Some(2), None, Some(2), Some(3), Some(1), None, Some(0), Some(2)];
@@ -1573,7 +1566,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let admission = decision.admission().expect("offset sort uses compiled admission");
     let pipeline = admission.pipeline().clone();
 
-    let runtime = lane_shared_runtime(runtime);
+    let runtime = shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("offset sort acquires a context");
     let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
     let run = |requested_lanes: Option<usize>| {

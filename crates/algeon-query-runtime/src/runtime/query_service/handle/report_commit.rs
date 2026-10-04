@@ -55,7 +55,7 @@ pub(super) struct QueryHandleReportCommit {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
     pub(super) device_ordinal: usize,
-    pub(super) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    pub(super) admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
     pub(super) compatible_devices: Vec<usize>,
     pub(super) domain: Option<AttemptAllocationDomain>,
     pub(super) memory_grant: Option<MemoryGrant>,

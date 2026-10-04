@@ -24,7 +24,7 @@ use crate::{
 
 /// Stable identifier for a dynamic-filter route inside one native plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DynamicFilterId(#[doc(hidden)] pub usize);
+pub struct DynamicFilterId(pub(crate) usize);
 
 impl DynamicFilterId {
     pub const fn new(index: usize) -> Self {

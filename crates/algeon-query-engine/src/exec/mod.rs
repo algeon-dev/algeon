@@ -5,7 +5,7 @@
 //! [`ExecutionContext`].
 //! GPU-resident input lookup is by plan-local names supplied in
 //! [`GpuResidentInputMap`]. Metrics are owned by the returned
-//! [`output::QueryExecutionResult`] so callers can record them after choosing host or
+//! [`output::QueryExecutionOutcome`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
 use std::{
@@ -51,17 +51,8 @@ mod source;
 mod util;
 mod vector_algorithm;
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use bounded::pipeline::{
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledTaskExecutor, LaneDispatchSupport, run_resident_lane_borrow,
-};
+use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
 use edge_normalize::execute_edge_normalize;
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use execution_metrics::ExecutionMetrics;
-#[cfg(not(feature = "test-hooks"))]
 pub(crate) use execution_metrics::ExecutionMetrics;
 #[cfg(not(feature = "cuml"))]
 use ml_algorithm::ml_algorithm_execution_unavailable;
@@ -93,8 +84,10 @@ use query_planning::{
     validate_query_plan,
     validation::*,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use query_runtime::metrics::QueryMetrics;
 use query_runtime::{
-    metrics::{QueryMetrics, SourceReadRuntimeMetrics},
+    metrics::SourceReadRuntimeMetrics,
     native_error::cudf_query_error,
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
@@ -134,7 +127,7 @@ use crate::{
         plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
         plan_source_chunk_batches_with_row_cap,
     },
-    datatypes::{cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
+    datatypes::timestamp_unit_to_cudf_resolution,
     native_error::{cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure},
     prepared::*,
     rapids_backend::rapids_analysis_context,
@@ -362,6 +355,8 @@ fn execute_query_plan_output(
 ///
 /// The handle outlives its plan execution, so this reports into the caller's
 /// detached metrics value rather than an execution's metrics owner.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
 pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();
     let output = handle.to_host_record_batch()?;

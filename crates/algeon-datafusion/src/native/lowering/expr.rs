@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -12,7 +13,6 @@ use datafusion::{
         },
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::{
     expr::{
         BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,

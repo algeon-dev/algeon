@@ -11,7 +11,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability, capability_labels},
+    admission::{AttemptCapabilityEvidence, ExecutionCapability, capability_labels},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -80,8 +80,8 @@ impl AdmissionController {
     /// capability requirement to pass through an exact device profile as an empty set.
     pub(in crate::runtime::query_service) fn resolve_attempt_requirement_for_submission(
         &self,
-        attempt_requirement: Option<AttemptRequirement>,
-    ) -> Result<AttemptRequirement> {
+        attempt_requirement: Option<AttemptCapabilityEvidence>,
+    ) -> Result<AttemptCapabilityEvidence> {
         if let Some(requirement) = attempt_requirement {
             return Ok(requirement);
         }
@@ -91,7 +91,7 @@ impl AdmissionController {
             .filter(|ledger| ledger.profile().device_capabilities.requires_explicit_attempt_requirement())
             .count();
         if restricted_device_count == 0 {
-            return Ok(AttemptRequirement::empty());
+            return Ok(AttemptCapabilityEvidence::empty());
         }
         Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

@@ -1,8 +1,7 @@
-use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::capability::{Reason, RejectionOwner};
 
-use super::*;
-use crate::projection_outputs;
+use super::{projection_outputs, *};
+use crate::rapids_backend::rapids_analysis_context;
 
 mod fixture_local_parquet_source {
     use super::*;
@@ -34,6 +33,11 @@ mod fixture_local_parquet_source {
 }
 
 use fixture_local_parquet_source as LocalParquetSource;
+pub(super) use incremental_merge_fixture::incremental_partitioned_merge_builder;
+
+// Shared with the black-box budgeting cases in `tests/`.
+#[path = "../../../../../tests/native_execution_tests/bounded_budgeting/incremental_merge_fixture.rs"]
+mod incremental_merge_fixture;
 
 // Plan fixtures are grouped by admitted shape and included at this module
 // level so existing `use fixtures_plans::*` consumers keep working.

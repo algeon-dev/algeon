@@ -23,12 +23,10 @@ pub mod backend;
 pub mod capability;
 pub mod chunk;
 pub mod contract_report;
-#[doc(hidden)]
 pub mod correlation;
 pub mod datatypes;
 pub mod dynamic_filter;
 pub mod error;
-#[doc(hidden)]
 pub mod execution_contracts;
 pub mod expr;
 #[doc(hidden)]

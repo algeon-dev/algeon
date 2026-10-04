@@ -15,13 +15,13 @@ use arrow::{
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use cudf::{DataType as CudfDataType, TypeId};
+use cudf::{
+    DataType as CudfDataType, TypeId,
+    interop::arrow_host::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
+};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use query_engine::{
-    chunk::{
-        SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
-    },
-    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
+use query_engine::chunk::{
+    SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
 };
 use query_planning::{
     capability::{
@@ -125,8 +125,6 @@ fn execution_cancellation_default_is_independent_of_other_instances() {
 mod attempt_lifecycle;
 #[path = "native_contract_tests/bounded_join_admission.rs"]
 pub(crate) mod bounded_join_admission;
-#[path = "native_contract_tests/bounded_join_sizing.rs"]
-mod bounded_join_sizing;
 #[path = "native_contract_tests/capability_first_pipeline_admission.rs"]
 mod capability_first_pipeline_admission;
 #[path = "native_contract_tests/dependency_direction.rs"]
@@ -139,8 +137,6 @@ mod graph_algorithm;
 mod ml_algorithm;
 #[path = "native_contract_tests/optimizer_contracts.rs"]
 mod optimizer_contracts;
-#[path = "native_contract_tests/partial_aggregate_sizing.rs"]
-mod partial_aggregate_sizing;
 #[path = "native_contract_tests/plan_contracts.rs"]
 mod plan_contracts;
 #[path = "native_contract_tests/plan_validation.rs"]

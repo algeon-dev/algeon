@@ -31,7 +31,6 @@ pub use api::{BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, Que
 
 /// Service-level entry point for native query admission.
 #[derive(Clone, Debug)]
-#[doc(hidden)]
 pub struct QueryService {
     pub(in crate::runtime::query_service) inner: Arc<QueryServiceInner>,
 }

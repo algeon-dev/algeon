@@ -15,7 +15,6 @@ use crate::{
 /// One GPU UDTF occurrence in a DataFusion-owned execution graph. Every
 /// occurrence materializes host Arrow for a DataFusion consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct AttemptExecutionOccurrence {
     occurrence_id: String,
     producer_identity: String,
@@ -72,7 +71,6 @@ impl AttemptExecutionOccurrence {
 
 /// Topologically ordered GPU occurrences for one DataFusion invocation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct AttemptExecutionManifest {
     occurrences: Vec<AttemptExecutionOccurrence>,
 }
@@ -178,7 +176,6 @@ impl AttemptExecutionManifest {
 
 /// One producer occurrence bound to an admitted consumer scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct AttemptProducerOccurrence {
     occurrence_id: String,
     execution_scope_fingerprint: PlanFingerprint,
@@ -231,7 +228,6 @@ impl AttemptProducerOccurrence {
 
 /// Immutable scope and output-schema identity for one admitted plan fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct AttemptExecutionScope {
     execution_scope_fingerprint: PlanFingerprint,
     output_schema_fingerprint: SchemaFingerprint,

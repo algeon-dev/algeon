@@ -4,7 +4,6 @@ use std::time::Duration;
 
 /// Structured outcome for an asynchronous lakehouse cache fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
 pub enum LakehouseCacheFillOutcome {
     /// The complete object was written to the local lakehouse cache.
     Completed,
@@ -18,7 +17,6 @@ pub enum LakehouseCacheFillOutcome {
 
 /// Error facts captured for a failed asynchronous lakehouse cache fill.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct LakehouseCacheFillErrorEvent {
     #[doc(hidden)]
     pub code: String,
@@ -32,7 +30,6 @@ pub struct LakehouseCacheFillErrorEvent {
 
 /// Structured asynchronous lakehouse cache fill event.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct LakehouseCacheFillEvent {
     #[doc(hidden)]
     pub outcome: LakehouseCacheFillOutcome,

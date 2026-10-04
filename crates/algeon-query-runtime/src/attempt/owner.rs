@@ -620,8 +620,7 @@ impl AttemptCore {
 }
 
 impl AttemptOwner {
-    #[doc(hidden)]
-    pub fn begin(
+    pub(crate) fn begin(
         request: BeginAttemptRequest,
         permit: ObservationPermit,
         counters: Arc<AttemptBackendCounters>,
@@ -686,16 +685,24 @@ impl AttemptOwner {
         }
     }
 
+    /// A fresh attempt observed outside any backend, for tests that admit
+    /// without a planning frontend.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn begin_for_test(request: BeginAttemptRequest) -> AttemptBegin {
+        Self::begin(
+            request,
+            BackendLifecycle::new().try_begin_observation().expect("a new backend lifecycle admits observation"),
+            Arc::new(AttemptBackendCounters::default()),
+            None,
+        )
+    }
+
     /// A fresh attempt classified as native and observed outside any backend,
     /// for tests that admit without a planning frontend.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn native_for_test() -> Self {
-        let begin = Self::begin(
-            BeginAttemptRequest::default(),
-            BackendLifecycle::new().try_begin_observation().expect("a new backend lifecycle admits observation"),
-            Arc::new(AttemptBackendCounters::default()),
-            None,
-        );
+        let begin = Self::begin_for_test(BeginAttemptRequest::default());
         begin.owner.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
         begin.owner
     }

@@ -6,7 +6,10 @@ use std::sync::{
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use arrow::datatypes::DataType;
-use cudf::{DenseMatrixLayout, Exec, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId};
+use cudf::{
+    DenseMatrixLayout, Exec, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId,
+    interop::arrow_host::cudf_dtype_from_arrow_type,
+};
 use cuml::{
     ClusterSelectionMethod, CumlResources, DeviceMatrix, ForestInferenceModel, ForestOutput, ForestOutputKind,
     ForestPrecision, HdbscanFit, HdbscanParams, LogisticRegressionModel, LogisticRegressionParams, OwnedFloat32Matrix,
@@ -33,7 +36,6 @@ use query_runtime::{
 
 use super::assembly::{assemble_components, assemble_ml_output};
 use crate::{
-    datatypes::cudf_dtype_from_arrow_type,
     exec::{
         GpuDataFrame,
         dense_relation::{
@@ -1086,14 +1088,12 @@ static FOREST_AFTER_IMPORT_HOOK: Mutex<Option<fn(&ExecutionContext)>> = Mutex::n
 
 /// Overrides the per-batch element bound of forest prediction; `None` restores it.
 #[cfg(feature = "test-hooks")]
-#[doc(hidden)]
 pub fn set_forest_batch_element_limit_for_tests(limit: Option<usize>) {
     FOREST_BATCH_ELEMENT_LIMIT.store(limit.unwrap_or(0), Ordering::SeqCst);
 }
 
 /// Runs `hook` after forest import and before the first prediction batch.
 #[cfg(feature = "test-hooks")]
-#[doc(hidden)]
 pub fn set_forest_after_import_hook_for_tests(hook: Option<fn(&ExecutionContext)>) {
     *FOREST_AFTER_IMPORT_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
 }

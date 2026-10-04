@@ -72,8 +72,7 @@ pub struct JoinSpec {
     /// Only a lowering path that established at most one match per bounded
     /// row for the join keys sets this. Generic joins leave it absent and
     /// retain the conservative Cartesian upper bound.
-    #[doc(hidden)]
-    pub at_most_one_match_side: Option<JoinSide>,
+    pub(crate) at_most_one_match_side: Option<JoinSide>,
     /// Frontend estimate of this join's whole output.
     ///
     /// Advisory only: build-side selection may consult it among executable

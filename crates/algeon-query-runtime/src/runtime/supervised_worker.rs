@@ -34,7 +34,6 @@ use crate::{
 };
 
 /// Terminal outcome of one supervised worker join.
-#[doc(hidden)]
 pub enum SupervisedWorkerJoin<T> {
     /// The worker finished and delivered its output.
     Completed(T),
@@ -56,7 +55,6 @@ pub enum SupervisedWorkerJoin<T> {
 /// the only submission entry, and it atomically performs registration, spawn,
 /// and handle ownership for exactly one worker, so a second submission can
 /// never overwrite a not-yet-joined handle.
-#[doc(hidden)]
 pub struct SupervisedWorker<T> {
     supervisor: Arc<SupervisedWorkerSupervisor<T>>,
 }

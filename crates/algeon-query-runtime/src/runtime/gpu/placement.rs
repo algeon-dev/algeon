@@ -8,7 +8,7 @@
 //! only reads the resulting ledger state.
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability},
+    admission::{AttemptCapabilityEvidence, ExecutionCapability},
     error::Result,
 };
 
@@ -24,7 +24,7 @@ pub(crate) struct PlacementRequest {
     /// default against the same resident snapshot used for admission.
     pub(crate) requested_query_cap_bytes: Option<u64>,
     /// Device-independent requirement resolved once per candidate ledger.
-    pub(crate) attempt_requirement: Option<AttemptRequirement>,
+    pub(crate) attempt_requirement: Option<AttemptCapabilityEvidence>,
     /// Device capabilities that must be present before this request can enter
     /// capacity ranking. These are a safety predicate, not a placement hint.
     pub(crate) required_capabilities: Vec<ExecutionCapability>,
@@ -41,7 +41,7 @@ impl PlacementRequest {
     }
 
     /// Retains capability evidence for device executability filtering.
-    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptCapabilityEvidence) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }

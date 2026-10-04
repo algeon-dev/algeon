@@ -263,7 +263,7 @@ impl RuntimeObservationOwner {
     ///
     /// The first non-success outcome remains authoritative, so later cleanup or
     /// cancellation cannot reclassify an already structured native failure.
-    pub fn record_terminal_outcome(&self, outcome: RuntimeTerminalOutcome) {
+    pub(crate) fn record_terminal_outcome(&self, outcome: RuntimeTerminalOutcome) {
         let mut lifecycle = self.lock_lifecycle();
         if let RuntimeObservationOwnerLifecycleState::Open { pending_outcome, .. } = &mut *lifecycle {
             *pending_outcome = Some(match pending_outcome.take() {

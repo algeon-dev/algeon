@@ -422,7 +422,6 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
 /// The wire label is the native code's label and `Debug` prints the native
 /// code's name, so wrapping changes no report value.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[doc(hidden)]
 pub enum AttemptFailureCode {
     Query(QueryErrorCode),
     BackendClosing,

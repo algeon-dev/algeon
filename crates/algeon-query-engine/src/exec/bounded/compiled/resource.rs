@@ -6,7 +6,6 @@ use crate::exec::bounded::{
 };
 
 /// GPU-resident payload stored in the compiled scheduler resource table.
-#[doc(hidden)]
 pub struct CompiledGpuResource {
     pub(super) payload: CompiledGpuResourcePayload,
 }

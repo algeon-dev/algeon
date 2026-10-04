@@ -4,8 +4,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::JoinStrategy,
-    capability::{JoinForm, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
+    capability::{JoinForm, JoinStrategy, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
     expr::{ColumnQualifier, ColumnRef},
 };
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};

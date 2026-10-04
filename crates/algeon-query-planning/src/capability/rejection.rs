@@ -461,7 +461,7 @@ impl Rejection {
         self.reason.category()
     }
 
-    pub const fn contract_scope(&self) -> CapabilityScope {
+    pub(crate) const fn contract_scope(&self) -> CapabilityScope {
         self.owner.scope()
     }
 

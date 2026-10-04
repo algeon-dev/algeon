@@ -1,13 +1,5 @@
 pub mod query_engine
 pub mod query_engine::chunk
-pub struct query_engine::chunk::SourceMetadataCache
-impl query_engine::chunk::SourceMetadataCache
-pub fn query_engine::chunk::SourceMetadataCache::cached_footer_count(&self) -> usize
-pub fn query_engine::chunk::plan_local_parquet_source_chunks(query_planning::plan::core::NodeId, &query_planning::source::parquet::LocalParquetSource, query_planning::chunk::policy::SourceChunkPlanningPolicy) -> query_planning::error::Result<query_planning::chunk::model::SourceChunkPlan>
-pub fn query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache(query_planning::plan::core::NodeId, &query_planning::source::parquet::LocalParquetSource, query_planning::chunk::policy::SourceChunkPlanningPolicy, &mut query_engine::chunk::SourceMetadataCache) -> query_planning::error::Result<query_planning::chunk::model::SourceChunkPlan>
-pub mod query_engine::datatypes
-pub use query_engine::datatypes::cudf_dtype_from_arrow_type
-pub use query_engine::datatypes::is_supported_arrow_type
 pub mod query_engine::dimension_pruning
 pub struct query_engine::dimension_pruning::LocalDimensionPruningResolver
 impl query_planning::optimizer::dimension_pruning::resolver::LocalParquetPruningResolver for query_engine::dimension_pruning::LocalDimensionPruningResolver
@@ -21,9 +13,6 @@ pub mod query_engine::exec::output
 pub enum query_engine::exec::output::QueryOutput
 pub query_engine::exec::output::QueryOutput::GpuResident(query_runtime::runtime::resident::GpuResultHandle)
 pub query_engine::exec::output::QueryOutput::HostArrow(arrow_array::record_batch::RecordBatch)
-impl query_engine::exec::output::QueryOutput
-pub fn query_engine::exec::output::QueryOutput::as_gpu_resident(&self) -> core::option::Option<&query_runtime::runtime::resident::GpuResultHandle>
-pub fn query_engine::exec::output::QueryOutput::as_host_arrow(&self) -> core::option::Option<&arrow_array::record_batch::RecordBatch>
 pub struct query_engine::exec::output::PlanMetrics
 impl query_engine::exec::output::PlanMetrics
 pub fn query_engine::exec::output::PlanMetrics::bind(&query_runtime::runtime::context::ExecutionContext, &str) -> Self
@@ -34,23 +23,15 @@ pub struct query_engine::exec::output::QueryExecutionOutcome
 impl query_engine::exec::output::QueryExecutionOutcome
 pub fn query_engine::exec::output::QueryExecutionOutcome::into_parts(self) -> (core::result::Result<query_engine::exec::output::QueryOutput, query_planning::error::QueryError>, query_engine::exec::output::PlanMetrics, core::option::Option<query_runtime::observability::recorder::SealedRuntimeObservationSnapshot>)
 pub const fn query_engine::exec::output::QueryExecutionOutcome::metrics(&self) -> &query_engine::exec::output::PlanMetrics
-pub struct query_engine::exec::output::QueryExecutionResult
-impl query_engine::exec::output::QueryExecutionResult
-pub fn query_engine::exec::output::QueryExecutionResult::into_parts(self) -> (query_engine::exec::output::QueryOutput, query_runtime::metrics::QueryMetrics)
-pub fn query_engine::exec::output::QueryExecutionResult::metrics(&self) -> &query_runtime::metrics::QueryMetrics
-pub fn query_engine::exec::output::QueryExecutionResult::new(query_engine::exec::output::QueryOutput, query_runtime::metrics::QueryMetrics) -> Self
-pub fn query_engine::exec::output::QueryExecutionResult::output(&self) -> &query_engine::exec::output::QueryOutput
 pub struct query_engine::exec::QueryExecutionRequest<'a>
 impl<'a> query_engine::exec::QueryExecutionRequest<'a>
 pub const fn query_engine::exec::QueryExecutionRequest<'a>::admitted(&'a query_planning::admission::bounded::AdmittedPlan) -> Self
 pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a query_runtime::runtime::resident::GpuResidentInputMap) -> Self
 pub fn query_engine::exec::admit_query_plan(&query_planning::plan::core::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::policy::PlanningPolicy) -> query_planning::error::Result<alloc::sync::Arc<query_planning::admission::bounded::AdmittedPlan>>
 pub fn query_engine::exec::execute_query_plan(&query_runtime::runtime::context::ExecutionContext, query_engine::exec::QueryExecutionRequest<'_>) -> query_engine::exec::output::QueryExecutionOutcome
-pub fn query_engine::exec::materialize_gpu_result_to_host(query_runtime::runtime::resident::GpuResultHandle, &mut query_runtime::metrics::QueryMetrics) -> query_planning::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn query_engine::exec::preflight_query_plan(&query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
 pub mod query_engine::native_error
 pub fn query_engine::native_error::cuml_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cuml::error::Error) -> query_planning::error::QueryError
-pub fn query_engine::native_error::query_error_code_for_cuml_error(&cuml::error::Error) -> query_planning::error::QueryErrorCode
 pub mod query_engine::rapids_backend
 pub struct query_engine::rapids_backend::RapidsBackend
 impl query_planning::backend::BackendCapabilities for query_engine::rapids_backend::RapidsBackend

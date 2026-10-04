@@ -138,7 +138,7 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     /// Immutable admission inputs retained only until the post-cleanup report
     /// commit can determine whether a quarantined device has a truthful
     /// alternate retry target. They never drive a second placement.
-    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+    admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
     compatible_devices: Vec<usize>,
     pub(super) query_epoch: QueryResourceEpoch,
     root_context_setup: RootContextSetupCoordinator,
@@ -160,7 +160,7 @@ impl QueryHandleLifetime {
     pub(in crate::runtime::query_service) fn admitted_device_requirement_for_test(
         &self,
         ordinal: usize,
-    ) -> Option<&AttemptRequirement> {
+    ) -> Option<&AttemptCapabilityEvidence> {
         self.admitted_device_requirements.get(&ordinal)
     }
 
@@ -175,8 +175,8 @@ impl QueryHandleLifetime {
         attempt_id: AttemptId,
         completion: QueryCompletion,
         envelope: AdmissionEnvelope,
-        admitted_capability_evidence: Option<AttemptRequirement>,
-        admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
+        admitted_capability_evidence: Option<AttemptCapabilityEvidence>,
+        admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
         let device_ordinal = envelope.device_ordinal();

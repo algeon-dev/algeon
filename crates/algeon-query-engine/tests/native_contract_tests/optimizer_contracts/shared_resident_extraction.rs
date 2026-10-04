@@ -48,7 +48,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     ).unwrap();
     let plan = builder.finish_with_host_sink_schema(outer, output).unwrap();
     let considered_count = plan.node_count();
-    let routed = plan.clone().with_dynamic_filter_routes(vec![DynamicFilterRoute::new(
+    let routed = plan.clone().with_dynamic_filter_routes_for_test(vec![DynamicFilterRoute::new(
         DynamicFilterId::new(0),
         DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id: join },
         DynamicFilterConsumer::LocalParquetSource { source_node_id: source },

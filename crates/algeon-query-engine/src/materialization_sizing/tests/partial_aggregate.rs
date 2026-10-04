@@ -1,5 +1,6 @@
 use arrow::datatypes::{DataType as ArrowDataType, Fields, TimeUnit};
-use query_engine::materialization_sizing::{
+
+use crate::materialization_sizing::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };

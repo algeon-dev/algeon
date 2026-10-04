@@ -909,7 +909,6 @@ pub struct MemoryGrant {
 
 /// Shared grant retention held by GPU-resident outputs.
 #[derive(Clone)]
-#[doc(hidden)]
 pub struct ResidentOwnerLease {
     inner: Arc<ResidentOwnerLeaseInner>,
     // Keep-alive set on the lease a reader holds; the reader's completion is
@@ -1337,13 +1336,19 @@ impl MemoryGrant {
     }
 
     /// Records and retains a newly published resident owner.
-    #[doc(hidden)]
-    pub fn retain_resident_owner(&self, bytes: u64) -> Result<Option<ResidentOwnerLease>> {
+    pub(crate) fn retain_resident_owner(&self, bytes: u64) -> Result<Option<ResidentOwnerLease>> {
         if bytes == 0 {
             return Ok(None);
         }
         self.add_resident_owner_bytes(bytes)?;
         Ok(Some(self.new_resident_owner_lease(bytes)?))
+    }
+
+    /// Records and retains a resident owner the test publishes itself.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn retain_resident_owner_for_test(&self, bytes: u64) -> Result<Option<ResidentOwnerLease>> {
+        self.retain_resident_owner(bytes)
     }
 
     fn new_resident_owner_lease(&self, bytes: u64) -> Result<ResidentOwnerLease> {

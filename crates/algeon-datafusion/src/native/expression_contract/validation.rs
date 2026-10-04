@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
+use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     logical_expr::{Operator, binary::BinaryTypeCoercer},
@@ -12,7 +13,6 @@ use datafusion::{
         },
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
 use query_planning::{
     datatypes::is_timestamp_with_timezone,
     expr::DatePart as NativeDatePart,

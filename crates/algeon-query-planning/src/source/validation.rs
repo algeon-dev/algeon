@@ -11,7 +11,6 @@ mod local_parquet;
 pub use local_parquet::validate_local_parquet_source;
 
 /// Validate the structural contract of an in-memory literal-batch source.
-#[doc(hidden)]
 pub fn validate_literal_batch_source(source: &LiteralBatchSource, ctx: AnalysisContext<'_>) -> Result<()> {
     if source.batches.is_empty() {
         return Err(QueryError::new(

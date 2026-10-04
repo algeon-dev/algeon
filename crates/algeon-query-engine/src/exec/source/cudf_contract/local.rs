@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     chunk::{
-        SourceMetadataCache, footer_verified_object_store_reader_decimal_types,
+        footer_verified_object_store_reader_decimal_types,
         footer_verified_object_store_reader_decimal_types_with_supplied_cache,
         object_store_decimal_reader_predicate_requires_footer_contract, source_file_for_chunk,
     },
@@ -27,6 +27,7 @@ use crate::{
         predicate::{lower_source_reader_batch_predicate, lower_source_reader_predicate},
         *,
     },
+    source_chunk::SourceMetadataCache,
 };
 
 pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(

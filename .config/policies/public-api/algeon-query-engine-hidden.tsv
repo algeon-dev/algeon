@@ -1,53 +1,31 @@
 # Per-symbol allowlist for algeon-query-engine's `#[doc(hidden)] pub` surface.
 # `cargo public-api` omits hidden items, so scripts/ci/check_public_api_hidden.py
-# checks this ledger against the source instead of a snapshot. Module rows cover
-# unattributed children inside that module. Every attributed hidden symbol has
-# its own row: methods as `Type::method`, trait impl methods as
+# checks this ledger against the source instead of a snapshot. Every hidden
+# symbol has its own row: methods as `Type::method`, trait impl methods as
 # `<Type as Trait>::method`, fields as `Type.field`, and `pub use` leaves by the
-# name they introduce. `feature` is derived from the item's cfg; `cross-crate`
-# means it needs none of the seam features. `consumer` lists the workspace crates
-# that reach the item from outside this crate's src: `prod` is library or server
-# code, `tools` is bench, tools, examples, and workloads code, `tests` is
-# integration tests and cfg(test) code. The item counts as used when a path names
-# it or a value of its type crosses the crate boundary.
+# name they introduce. A test-hooks or bench-support module row also covers its
+# unattributed children. `feature` is derived from the item's cfg; `cross-crate`
+# means it needs none of the seam features. `consumer` is what
+# scripts/ci/check_public_api_consumers.py measures, as
+# `prod: …; tools: …; tests: …`: `prod` is library and server code, `tools` is
+# bench, examples, tools, and workloads code, and `tests` is test targets,
+# cfg(test) code, and code that compiles only with test-hooks. A symbol no crate
+# names records `exposed-by: <public symbols>` that reach it through a signature
+# or struct-update construction.
 symbol	feature	owner	consumer	removal_condition
-query_engine::exec::CompiledGpuResource	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::CompiledGpuTaskExecutor	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::CompiledPipelineScheduler	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::CompiledPipelineState	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::CompiledTaskExecutor	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::ExecutionMetrics	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::LaneDispatchSupport	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::LaneDispatchSupport	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::executor::CompiledGpuTaskExecutor	cross-crate	query-engine exec::bounded::compiled::executor	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::lanes::LaneDispatchSupport	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::lanes::run_resident_lane_borrow	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::resource::CompiledGpuResource	cross-crate	query-engine exec::bounded::compiled::resource	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::run_resident_lane_borrow	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::scheduler::CompiledPipelineScheduler	cross-crate	query-engine exec::bounded::compiled::scheduler	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::scheduler::CompiledTaskExecutor	cross-crate	query-engine exec::bounded::compiled::scheduler	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::state::CompiledPipelineState	cross-crate	query-engine exec::bounded::compiled::state	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::CompiledGpuResource	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::CompiledGpuTaskExecutor	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::CompiledPipelineScheduler	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::CompiledPipelineState	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::CompiledTaskExecutor	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::LaneDispatchSupport	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::run_resident_lane_borrow	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::execution_metrics::ExecutionMetrics	cross-crate	query-engine exec::execution_metrics	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::ml_algorithm::enabled::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec::ml_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::ml_algorithm::enabled::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec::ml_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::ml_algorithm::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec::ml_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::ml_algorithm::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec::ml_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::run_resident_lane_borrow	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::sanitize_cache_component	cross-crate	query-engine exec	prod: algeon-datafusion	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-query_engine::exec::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::chunk::SourceMetadataCache	test-hooks	query-engine chunk	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::chunk::plan_local_parquet_source_chunks	test-hooks	query-engine chunk	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache	test-hooks	query-engine chunk	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::materialize_gpu_result_to_host	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::output::QueryExecutionResult	test-hooks	query-engine exec::output	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::output::QueryOutput::as_gpu_resident	test-hooks	query-engine exec::output::QueryOutput	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::output::QueryOutput::as_host_arrow	test-hooks	query-engine exec::output::QueryOutput	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::sanitize_cache_component	cross-crate	query-engine exec	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+query_engine::exec::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
+query_engine::exec::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	delete once no test or tool names it
 query_engine::exec::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
-query_engine::exec::vector_algorithm::enabled::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec::vector_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::vector_algorithm::enabled::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec::vector_algorithm::enabled	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
-query_engine::exec::vector_algorithm::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec::vector_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::vector_algorithm::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec::vector_algorithm	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
-query_engine::materialization_sizing	cross-crate	query-engine crate root	tests: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-query_engine::object_store_error	cross-crate	query-engine crate root	prod: algeon-datafusion	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
+query_engine::object_store_error	cross-crate	query-engine crate root	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+query_engine::object_store_error::object_store_error_detail	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+query_engine::object_store_error::object_store_error_kind	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it
+query_engine::object_store_error::query_error_code_for_object_store_error	cross-crate	query-engine object_store_error	prod: algeon-datafusion	narrow to pub(crate) once no other workspace crate names it

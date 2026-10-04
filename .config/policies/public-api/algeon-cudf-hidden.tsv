@@ -1,16 +1,18 @@
 # Per-symbol allowlist for algeon-cudf's `#[doc(hidden)] pub` surface.
 # `cargo public-api` omits hidden items, so scripts/ci/check_public_api_hidden.py
-# checks this ledger against the source instead of a snapshot. Module rows cover
-# unattributed children inside that module. Every attributed hidden symbol has
-# its own row: methods as `Type::method`, trait impl methods as
+# checks this ledger against the source instead of a snapshot. Every hidden
+# symbol has its own row: methods as `Type::method`, trait impl methods as
 # `<Type as Trait>::method`, fields as `Type.field`, and `pub use` leaves by the
-# name they introduce. `feature` is derived from the item's cfg; `cross-crate`
-# means it needs none of the seam features. `consumer` lists the workspace crates
-# that reach the item from outside this crate's src: `prod` is library or server
-# code, `tools` is bench, tools, examples, and workloads code, `tests` is
-# integration tests and cfg(test) code. The item counts as used when a path names
-# it or a value of its type crosses the crate boundary.
+# name they introduce. A test-hooks or bench-support module row also covers its
+# unattributed children. `feature` is derived from the item's cfg; `cross-crate`
+# means it needs none of the seam features. `consumer` is what
+# scripts/ci/check_public_api_consumers.py measures, as
+# `prod: …; tools: …; tests: …`: `prod` is library and server code, `tools` is
+# bench, examples, tools, and workloads code, and `tests` is test targets,
+# cfg(test) code, and code that compiles only with test-hooks. A symbol no crate
+# names records `exposed-by: <public symbols>` that reach it through a signature
+# or struct-update construction.
 symbol	feature	owner	consumer	removal_condition
-cudf::interop::arrow_host::estimate::estimate_record_batches_import_required_budget_bytes	cross-crate	cudf interop::arrow_host::estimate	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-cudf::runtime::event::CudaEvent::synchronize_for_teardown	cross-crate	cudf runtime::event	prod: algeon-query-runtime	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-cudf::testing	test-hooks	cudf crate root	tools: tools; tests: algeon-cudf, algeon-cugraph, algeon-cuml, algeon-cuvs, algeon-datafusion, algeon-query-engine, algeon-query-runtime, tools	cudf execution-surface plan P1 keeps it under test-hooks; deletable once the tools cuGraph oracle and component integration tests stop using cudf::testing
+cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes	cross-crate	cudf interop::arrow_host::estimate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+cudf::runtime::event::CudaEvent::synchronize_for_teardown	cross-crate	cudf runtime::event	prod: algeon-query-runtime	narrow to pub(crate) once no other workspace crate names it
+cudf::testing	test-hooks	cudf crate root	tools: tools; tests: algeon-cudf, algeon-cugraph, algeon-cuml, algeon-cuvs, algeon-datafusion, algeon-query-engine, algeon-query-runtime	delete once no test or tool names it

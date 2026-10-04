@@ -1,3 +1,4 @@
+#[cfg(any(test, feature = "test-hooks"))]
 pub use local_parquet_plan::{plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache};
 pub(crate) use local_parquet_plan::{
     plan_local_parquet_source_chunks_with_execution_context,

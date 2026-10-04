@@ -417,19 +417,6 @@ impl RuntimeObservationHandle {
         inner.lock_state().sealed_snapshot.clone()
     }
 
-    /// Returns whether both handles refer to the same recorder session.
-    ///
-    /// Disabled handles have no recorder identity and therefore never compare
-    /// as the same session. This is intended for ownership handoff boundaries
-    /// that must reject two independently-created sessions for one external
-    /// query instead of silently replacing the first.
-    pub fn is_same_session(&self, other: &Self) -> bool {
-        match (self.trace_inner(), other.trace_inner()) {
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            (None, _) | (_, None) => false,
-        }
-    }
-
     /// Folds one source-read fact into a plan execution's exact totals.
     ///
     /// This runs whether or not trace capture is enabled, and before any

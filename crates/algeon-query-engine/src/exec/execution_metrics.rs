@@ -4,18 +4,18 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 use query_planning::correlation::QueryId;
-#[cfg(feature = "test-hooks")]
+#[cfg(test)]
 use query_planning::error::Result;
 use query_planning::plan::NodeId;
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 use query_runtime::metrics::QueryMetrics;
 use query_runtime::observability::{MetricsRecorder, PlanExecutionId, RuntimeObservationHandle};
-#[cfg(feature = "test-hooks")]
+#[cfg(test)]
 use query_runtime::{observability::RuntimeExecutionObservationScope, runtime::ExecutionContext};
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 use crate::exec::output::PlanMetrics;
 
 /// Where one plan execution reports metrics, plus the evidence the engine
@@ -24,7 +24,6 @@ use crate::exec::output::PlanMetrics;
 /// Metrics go to the plan execution's observation owner, which may retain only
 /// part of the detail. Evidence that steers execution is kept here, typed, so
 /// no decision depends on what the owner retained.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct ExecutionMetrics {
     recorder: MetricsRecorder,
@@ -60,7 +59,7 @@ impl ExecutionMetrics {
 
     /// A plan execution with a private metrics owner, for callers that drive
     /// engine stages without a query.
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(test)]
     pub fn detached(label: &str) -> Self {
         Self::bind(&RuntimeObservationHandle::disabled(), PlanExecutionId::new(label), label, None)
     }
@@ -68,7 +67,7 @@ impl ExecutionMetrics {
     /// `context` scoped to this plan execution, so work that reports through
     /// the context reaches the same owner. For callers that drive engine
     /// stages without [`crate::exec::execute_query_plan`].
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     pub fn scope_context(&self, context: &ExecutionContext) -> Result<ExecutionContext> {
         context.with_runtime_execution_scope(RuntimeExecutionObservationScope::for_metrics(
             context.runtime_observation().clone(),
@@ -77,7 +76,7 @@ impl ExecutionMetrics {
     }
 
     /// The owner's current metrics as a detached value.
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(test)]
     pub fn snapshot(&self) -> QueryMetrics {
         PlanMetrics::new(self.recorder.clone(), QueryId::default(), None).snapshot()
     }

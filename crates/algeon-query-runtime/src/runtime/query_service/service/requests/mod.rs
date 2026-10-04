@@ -9,7 +9,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::AttemptCapabilityEvidence,
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -81,8 +81,8 @@ struct AdmissionPublication {
     observation: RuntimeObservationHandle,
     attempt_id: AttemptId,
     completion: QueryCompletion,
-    admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
-    submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    admitted_device_requirements: BTreeMap<usize, AttemptCapabilityEvidence>,
+    submitted_plan_capability_evidence: Option<AttemptCapabilityEvidence>,
     admitted_compatible_devices: Vec<usize>,
     admission_request_id: AdmissionRequestId,
     admission_wait: Duration,

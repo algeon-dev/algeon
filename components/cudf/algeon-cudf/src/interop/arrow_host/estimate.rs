@@ -27,7 +27,6 @@ pub fn estimate_list_import_device_memory_bytes(arrays: &[ArrayRef]) -> Result<u
 
 /// Returns the aligned-live-byte budget required to import same-schema Arrow
 /// record batches into one cudf dataframe.
-#[doc(hidden)]
 pub fn estimate_record_batches_import_required_budget_bytes(batches: &[RecordBatch]) -> Result<usize> {
     let operation = "arrow_host::estimate_record_batches_import_required_budget_bytes";
     let Some(first_batch) = batches.first() else {

@@ -917,7 +917,7 @@ fn dynamic_filter_control_cycle_plan() -> QueryPlan {
         )
         .unwrap();
     let plan = builder.finish_with_host_sink(root).unwrap();
-    plan.with_dynamic_filter_routes(vec![DynamicFilterRoute::new(
+    plan.with_dynamic_filter_routes_for_test(vec![DynamicFilterRoute::new(
         DynamicFilterId::new(0),
         DynamicFilterProducer::HashJoinBuild {
             join_node_id: root,

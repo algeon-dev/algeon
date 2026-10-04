@@ -329,7 +329,6 @@ impl QueryNode {
 /// later plan matches only when it differs in nothing else. Facts the admitted
 /// plan already knew stay part of the identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
 pub struct DeferredGraphExecutionScopeIdentity {
     execution_fingerprint: PlanFingerprint,
     source_fact_slots: Vec<DeferredGraphSourceFactSlots>,

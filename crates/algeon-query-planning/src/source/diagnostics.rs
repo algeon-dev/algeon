@@ -186,13 +186,11 @@ impl SourceDiagnostics {
     }
 }
 
-#[doc(hidden)]
 pub fn redacted_path_diagnostic(path: &Path) -> String {
     let path = path.display().to_string();
     redacted_location_diagnostic(path.as_str()).unwrap_or(path)
 }
 
-#[doc(hidden)]
 pub fn parquet_source_path_fact(location: &ParquetSourceLocation, path: &Path) -> String {
     if location.is_local_path() { redacted_path_diagnostic(path) } else { location.diagnostic_location() }
 }
@@ -201,17 +199,14 @@ pub(crate) fn parquet_source_stable_id_fact(location: &ParquetSourceLocation, st
     location.diagnostic_stable_id(stable_id)
 }
 
-#[doc(hidden)]
 pub fn parquet_file_path_fact(file: &LocalParquetFile) -> String {
     parquet_source_path_fact(&file.location, &file.path)
 }
 
-#[doc(hidden)]
 pub fn parquet_file_stable_id_fact(file: &LocalParquetFile) -> String {
     parquet_source_stable_id_fact(&file.location, file.stable_id.as_str())
 }
 
-#[doc(hidden)]
 pub fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
     file.row_group_bytes
         .as_ref()
@@ -227,7 +222,6 @@ pub(crate) fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
     redacted_location_diagnostic(stable_id).unwrap_or_else(|| stable_id.to_string())
 }
 
-#[doc(hidden)]
 pub fn redacted_object_store_path_diagnostic(path: &str) -> String {
     format!("object_store_path:fnv64:{:016x}", fnv1a64(path.as_bytes()))
 }

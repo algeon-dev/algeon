@@ -607,56 +607,6 @@ pub(crate) fn skewed_string_key_expected_sums(rows: usize) -> (i64, i64) {
     (0..rows).fold((0i64, 0i64), |(f, o), row| if row % 97 == 0 { (f + row as i64, o) } else { (f, o + row as i64) })
 }
 
-/// Uncompressed row groups whose `key` is unique across the whole file, so
-/// every partial aggregate keeps all of its input rows and merging never
-/// shrinks the retained state: the shape of a high-cardinality group by.
-/// `d` is a constant join key so a one-row dimension keeps every row.
-pub(crate) fn write_unique_key_row_grouped_parquet(
-    path: &Path,
-    row_groups: usize,
-    rows_per_row_group: usize,
-) -> Arc<Schema> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int64, false),
-        Field::new("value", DataType::Int64, false),
-        Field::new("d", DataType::Int64, false),
-    ]));
-    let rows = row_groups * rows_per_row_group;
-    let keys = (0..rows).map(|row| row as i64).collect::<Vec<_>>();
-    let values = (0..rows).map(|row| (row % 7) as i64).collect::<Vec<_>>();
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(keys)),
-            Arc::new(Int64Array::from(values)),
-            Arc::new(Int64Array::from(vec![0i64; rows])),
-        ],
-    )
-    .unwrap();
-    let props = WriterProperties::builder()
-        .set_compression(Compression::UNCOMPRESSED)
-        .set_dictionary_enabled(false)
-        .set_max_row_group_row_count(Some(rows_per_row_group))
-        .build();
-    let file = File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
-    schema
-}
-
-/// One-row dimension whose `d` matches every row of
-/// [`write_unique_key_row_grouped_parquet`].
-pub(crate) fn write_single_row_dimension_parquet(path: &Path) -> Arc<Schema> {
-    let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![0i64]))]).unwrap();
-    let file = File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
-    schema
-}
-
 /// Uncompressed row groups whose string key has two values in the first half
 /// of the file and a distinct value per row in the second half, so an early
 /// low-cardinality observation stops being representative later.

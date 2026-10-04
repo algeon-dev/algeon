@@ -7,12 +7,6 @@ use query_runtime::{
 };
 
 use super::compiled::execute_compiled_pipeline;
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use super::compiled::{
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledTaskExecutor, LaneDispatchSupport, run_resident_lane_borrow,
-};
 use crate::exec::{ExecutionMetrics, output::QueryOutput};
 
 pub(in crate::exec) fn execute_bounded_pipeline(

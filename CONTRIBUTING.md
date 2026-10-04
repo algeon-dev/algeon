@@ -327,7 +327,8 @@ bash scripts/check_all.sh
   `target/check-all/latest/summary.tsv`.
 - `.config/nextest.toml` is the sole source of test-lane admission: CPU tests
   are opt-in by a `_cpu` target suffix or a listed binary, `_gpu_exclusive`
-  targets run alone and last, and every other test runs in the `gpu` group.
+  targets and tests under a `gpu_exclusive` module run alone and last, and
+  every other test runs in the `gpu` group.
 - Do not add external-service E2E tests to default Cargo test targets; run them
   explicitly via `cargo run -p tools --all-features` or fixture scripts under
   `fixture/`.

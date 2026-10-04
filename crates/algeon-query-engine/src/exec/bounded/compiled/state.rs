@@ -10,7 +10,6 @@ use query_planning::{
 const OPERATION: &str = "query_engine.exec.bounded.compiled.state";
 
 /// Mutable execution state for one compiled pipeline run.
-#[doc(hidden)]
 #[derive(Debug)]
 pub struct CompiledPipelineState<T> {
     completed_tasks: BTreeSet<PipelineTaskId>,
@@ -98,7 +97,7 @@ impl<T> CompiledPipelineState<T> {
         self.completed_tasks.len()
     }
 
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     pub fn execution_order(&self) -> &[PipelineTaskId] {
         &self.execution_order
     }
@@ -111,7 +110,7 @@ impl<T> CompiledPipelineState<T> {
         self.resources.get(&resource).is_some_and(|slot| slot.state.is_live())
     }
 
-    #[cfg(feature = "test-hooks")]
+    #[cfg(test)]
     pub fn is_resource_released(&self, resource: ResidentResourceId) -> bool {
         self.resources.get(&resource).is_some_and(|slot| slot.state.is_released())
     }

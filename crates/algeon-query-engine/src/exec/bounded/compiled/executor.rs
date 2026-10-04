@@ -56,7 +56,6 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
 }
 
 /// Compiled task interpreter for bounded GPU work.
-#[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) execution: BoundedExecutionAttempt<'a>,
     pub(super) aggregate_dispatch: Option<super::lanes::AggregateLaneDispatch>,

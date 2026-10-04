@@ -1,12 +1,12 @@
 use std::time::Instant;
 
-use cudf::ScalarValue;
+use cudf::{ScalarValue, interop::arrow_host::cudf_dtype_from_arrow_type};
 
 use super::{
     DataFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame, LiteralValue, LocalParquetSource, QueryError,
     QueryErrorCode, Result, cudf_query_error,
 };
-use crate::datatypes::{UnrepresentableLiteral, cudf_dtype_from_arrow_type, cudf_scalar_value};
+use crate::datatypes::{UnrepresentableLiteral, cudf_scalar_value};
 
 pub(super) fn inject_partition_columns(
     context: &ExecutionContext,

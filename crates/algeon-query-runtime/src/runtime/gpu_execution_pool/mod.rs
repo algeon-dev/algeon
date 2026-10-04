@@ -45,10 +45,8 @@ use job::{
     QueryCounters, current_pool_id, current_worker_index, decrement, increment_with_peak, job_cancelled_error,
     job_join_panic_error, job_panic_error, run_counted_job, run_counted_job_scoped, validate_worker_count,
 };
-pub use lease::GpuExecutorLease;
-#[doc(hidden)]
-pub use lease::PoolBlockingWork;
 use lease::{BlockingCompletionNotify, BlockingWorkOutcome};
+pub use lease::{GpuExecutorLease, PoolBlockingWork};
 use supervisor::RuntimeSupervisor;
 #[cfg(test)]
 use supervisor::{SUPERVISOR_JOINED, SUPERVISOR_NOT_JOINED};

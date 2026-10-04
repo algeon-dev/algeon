@@ -217,7 +217,6 @@ fn validate_grant_retention(input_name: &str, input: &GpuResultHandle, grant: &M
 ///
 /// This type exposes plan recording and terminal completion without exposing
 /// the observation owner stored by the execution context.
-#[doc(hidden)]
 #[derive(Debug)]
 pub struct RuntimeExecutionObservationLifecycle {
     inner: RuntimeExecutionObservationLifecycleInner,

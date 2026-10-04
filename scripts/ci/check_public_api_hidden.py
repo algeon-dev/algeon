@@ -37,6 +37,24 @@ site, as a non-public item, or as test-only; an attribute in any other position
 cannot bypass the ledger. A file that no `mod` declaration reaches fails when it
 contains a hidden attribute.
 
+A public item that compiles only with `test-hooks` must be `#[doc(hidden)]`,
+so every test seam a consumer can name has a row; items inside a hidden module
+are covered by the module row.
+
+A hidden cross-crate module lists every public child separately: each one
+carries its own `#[doc(hidden)]` or is narrowed, so no row stands in for
+children nobody recorded.
+
+A row whose symbol no crate names records `exposed-by: <symbols>`; each
+symbol must resolve in the crate, a member through its type.
+
+Each row names one public path. A module-level hidden item fails when some
+enclosing module is not `pub mod`, because no consumer can name that path; the
+attribute belongs on the `pub use` that publishes it. Two hidden symbols that
+resolve to one definition (an item and its re-export, or two re-exports) fail
+until one path remains. Members (fields, variants, methods) record under their
+type's defining module.
+
 Usage:
   python3 scripts/ci/check_public_api_hidden.py SRC_DIR ROOT_MODULE LEDGER
 
@@ -50,6 +68,7 @@ import csv
 import itertools
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -88,6 +107,7 @@ class Token(NamedTuple):
     kind: str
     text: str
     line: int
+    pos: int
 
 
 def tokenize(text: str, path: Path) -> list[Token]:
@@ -115,7 +135,7 @@ def tokenize(text: str, path: Path) -> list[Token]:
                 raise ScanError(f"{path}:{line}: unterminated raw string")
             end = close_at + len(terminator)
         if kind not in {"ws", "line_comment", "block_open"}:
-            tokens.append(Token(kind, text[pos:end], line))
+            tokens.append(Token(kind, text[pos:end], line, pos))
         line += text.count("\n", pos, end)
         pos = end
     return tokens
@@ -277,6 +297,11 @@ class Attrs:
 class Site(NamedTuple):
     path: Path
     line: int
+    # Offset in `path` where an outer attribute can precede the item.
+    pos: int
+    module: tuple[str, ...]
+    # The path a `pub use` names, resolved against `module`; None for a definition.
+    source: tuple[str, ...] | None = None
 
 
 def compact(tokens: list[Token]) -> str:
@@ -352,11 +377,11 @@ def impl_owner(header: list[Token]) -> tuple[str, bool]:
     return f"<{type_name(body[split + 1:])} as {trait_name(body[:split])}>", True
 
 
-def use_leaves(tokens: list[Token], start: int, end: int) -> list[str]:
-    """Return the names a `use` tree brings in; globs come back as `*(path)`."""
+def use_bindings(tokens: list[Token], start: int, end: int) -> list[tuple[str, tuple[str, ...]]]:
+    """Return `(name, source path)` for each binding a `use` tree introduces; a glob's name is `*`."""
 
-    def tree(index: int, prefix: list[str]) -> tuple[list[str], int]:
-        leaves: list[str] = []
+    def tree(index: int, prefix: list[str]) -> tuple[list[tuple[str, tuple[str, ...]]], int]:
+        bindings: list[tuple[str, tuple[str, ...]]] = []
         segments = list(prefix)
         while index < end:
             token = tokens[index]
@@ -364,26 +389,26 @@ def use_leaves(tokens: list[Token], start: int, end: int) -> list[str]:
                 index += 1
                 while tokens[index].text != "}":
                     sub, index = tree(index, segments)
-                    leaves += sub
+                    bindings += sub
                     if tokens[index].text == ",":
                         index += 1
-                return leaves, index + 1
+                return bindings, index + 1
             if token.text == "*":
-                return [f"*({'::'.join(segments)})"], index + 1
+                return [("*", tuple(segments))], index + 1
             if token.text == "as":
-                return [tokens[index + 1].text], index + 2
+                source = segments[:-1] if segments[-1] == "self" else segments
+                return [(tokens[index + 1].text, tuple(source))], index + 2
             if token.text in {",", "}"}:
                 break
             if token.kind == "ident":
                 segments.append(token.text)
             index += 1
-        leaf = segments[-1]
-        if leaf == "self":
-            leaf = segments[-2]
-        return [leaf], index
+        if segments[-1] == "self":
+            segments.pop()
+        return [(segments[-1], tuple(segments))], index
 
-    leaves, _ = tree(start, [])
-    return leaves
+    bindings, _ = tree(start, [])
+    return bindings
 
 
 class Item(NamedTuple):
@@ -461,6 +486,26 @@ class CrateScanner:
         self.sites: dict[tuple[str, str], list[Site]] = {}
         self.visited: set[Path] = set()
         self.classified: set[tuple[Path, int]] = set()
+        # Modules every ancestor of which is declared `pub mod`.
+        self.public_modules: set[tuple[str, ...]] = {(root,)}
+        # Module-level hidden items whose own path no consumer can name.
+        self.unnameable: list[tuple[str, Site]] = []
+        # Modules carrying `#[doc(hidden)]`; their row covers unattributed children.
+        self.hidden_modules: set[tuple[str, ...]] = set()
+        # Public test-hooks items without `#[doc(hidden)]`, as
+        # (symbol, module, owner type, path, line); main keeps the reachable ones.
+        self.seam_candidates: list[tuple[str, tuple[str, ...], str | None, Path, int]] = []
+        # Uncovered `pub use` bindings in public modules: (module, name, source).
+        # A hidden `pub use` has its own row and a hidden module's row covers
+        # its re-exports, so neither publishes a seam without a row.
+        self.public_reexports: list[tuple[tuple[str, ...], str, tuple[str, ...]]] = []
+        # Hidden types; their row covers their members.
+        self.hidden_types: set[tuple[tuple[str, ...], str]] = set()
+        # Public module-level children per module: (name, hidden, path, line,
+        # source path for a `pub use`, else None).
+        self.public_children: dict[
+            tuple[str, ...], list[tuple[str, bool, Path, int, tuple[str, ...] | None]]
+        ] = defaultdict(list)
 
     def scan(self) -> dict[tuple[str, str], list[Site]]:
         lib = self.src / "lib.rs"
@@ -514,10 +559,23 @@ class CrateScanner:
             if tokens[index].text == "doc" and tokens[index + 1].text == "(" and tokens[index + 2].text == "hidden":
                 self.classified.add((path, index))
 
-    def record(self, path: Path, scope: Scope, name: str, feature: str, line: int) -> None:
+    def record(
+        self,
+        path: Path,
+        scope: Scope,
+        name: str,
+        feature: str,
+        line: int,
+        pos: int,
+        source: tuple[str, ...] | None = None,
+    ) -> None:
         prefix = "::".join([*scope.module, *([scope.owner] if scope.owner else [])])
         separator = "." if scope.kind == "fields" else "::"
-        self.sites.setdefault((f"{prefix}{separator}{name}", feature), []).append(Site(path, line))
+        symbol = f"{prefix}{separator}{name}"
+        site = Site(path, line, pos, scope.module, source)
+        self.sites.setdefault((symbol, feature), []).append(site)
+        if scope.kind == "mod" and scope.module not in self.public_modules:
+            self.unnameable.append((symbol, site))
 
     def parse_items(self, path: Path, tokens: list[Token], index: int, end: int, scope: Scope) -> None:
         while index < end:
@@ -530,6 +588,7 @@ class CrateScanner:
                 scope = replace(scope, cfgs=scope.cfgs + tuple(attrs.inner_cfgs))
             if index >= end:
                 break
+            pos = tokens[index].pos
             visibility = None
             if tokens[index].text == "pub":
                 index += 1
@@ -538,7 +597,7 @@ class CrateScanner:
                     visibility = "restricted"
                     index = group_end(tokens, index)
             item = read_item(path, tokens, index, end)
-            self.parse_item(path, tokens, scope, attrs, visibility, item, start, tokens[index].line)
+            self.parse_item(path, tokens, scope, attrs, visibility, item, start, tokens[index].line, pos)
             index = item.stop
 
     def parse_item(
@@ -551,9 +610,41 @@ class CrateScanner:
         item: Item,
         start: int,
         line: int,
+        pos: int,
     ) -> None:
         cfgs = scope.cfgs + tuple(attrs.cfgs)
         feature = derive_feature(cfgs)
+        if scope.kind == "mod" and visibility == "pub" and feature is not None and item.kind not in {"impl", "skip"}:
+            bindings = use_bindings(tokens, *item.header) if item.kind == "use" else [(item.name, None)]
+            for name, source in bindings:
+                self.public_children[scope.module].append((name, bool(attrs.hidden_at), path, line, source))
+        under_hidden = any(scope.module[:depth] in self.hidden_modules for depth in range(1, len(scope.module) + 1))
+        if attrs.hidden_at and item.kind in {"struct", "enum", "union", "trait", "type"}:
+            self.hidden_types.add((scope.module, item.name))
+        if (
+            scope.kind == "mod"
+            and visibility == "pub"
+            and item.kind == "use"
+            and scope.module in self.public_modules
+            and not attrs.hidden_at
+            and not under_hidden
+        ):
+            for name, source in use_bindings(tokens, *item.header):
+                self.public_reexports.append((scope.module, name, source))
+        if (
+            feature == "test-hooks"
+            and not attrs.hidden_at
+            and not under_hidden
+            and (scope.module, scope.owner) not in self.hidden_types
+            and scope.kind in {"mod", "impl"}
+            and not scope.trait_impl
+            and visibility == "pub"
+            # A module is a namespace; its public children are checked one by one.
+            and item.kind not in {"impl", "skip", "use", "mod"}
+        ):
+            owner = f"::{scope.owner}" if scope.owner else ""
+            symbol = f"{'::'.join(scope.module)}{owner}::{item.name}"
+            self.seam_candidates.append((symbol, scope.module, scope.owner, path, line))
         if feature is None:
             self.mark_classified(path, tokens, start, item.stop)
             if item.kind == "mod" and item.body is None:
@@ -572,10 +663,11 @@ class CrateScanner:
             self.classified.update((path, at) for at in attrs.hidden_at)
             if visibility == "pub" or (member and visibility is None):
                 if item.kind == "use":
-                    for leaf in use_leaves(tokens, *item.header):
-                        self.record(path, scope, leaf, feature, line)
+                    for name, source in use_bindings(tokens, *item.header):
+                        leaf = f"*({'::'.join(source)})" if name == "*" else name
+                        self.record(path, scope, leaf, feature, line, pos, source)
                 else:
-                    self.record(path, scope, item.name, feature, line)
+                    self.record(path, scope, item.name, feature, line, pos)
 
         if item.kind in {"struct", "enum", "union"} and item.body is not None:
             start, stop = item.body
@@ -584,6 +676,10 @@ class CrateScanner:
                 owner = Scope("variants" if kind == "enum" else "fields", scope.module, cfgs, scope.child_dir, item.name)
                 self.parse_members(path, tokens, owner, start, stop, kind, visibility == "pub")
         if item.kind == "mod":
+            if attrs.hidden_at:
+                self.hidden_modules.add((*scope.module, item.name))
+            if visibility == "pub" and scope.module in self.public_modules:
+                self.public_modules.add((*scope.module, item.name))
             if item.body is None:
                 file = self.mod_file(path, tokens, scope, attrs, item, start)
                 child_dir = file.parent if file.name == "mod.rs" or attrs.path else file.parent / file.stem
@@ -608,6 +704,7 @@ class CrateScanner:
         while index < end:
             position += 1
             attrs, index = self.parse_attrs(path, tokens, index, end)
+            pos = tokens[index].pos if index < end else -1
             visibility = None
             if not is_enum and index < end and tokens[index].text == "pub":
                 visibility = "pub"
@@ -626,7 +723,7 @@ class CrateScanner:
                 continue
             self.classified.update((path, at) for at in attrs.hidden_at)
             if feature is not None and public and (is_enum or visibility == "pub"):
-                self.record(path, scope, name, feature, line)
+                self.record(path, scope, name, feature, line, pos)
 
     def mod_file(
         self, path: Path, tokens: list[Token], scope: Scope, attrs: Attrs, item: Item, start: int, required: bool = True
@@ -650,8 +747,129 @@ class CrateScanner:
         return file
 
 
+class DefinitionIndex(CrateScanner):
+    """Hidden sites plus every module-level name, so a re-export resolves to its definition."""
+
+    def __init__(self, src: Path, root: str) -> None:
+        super().__init__(src, root)
+        self.modules: set[tuple[str, ...]] = {(root,)}
+        self.definitions: dict[tuple[str, ...], dict[str, list[tuple[Path, int]]]] = defaultdict(dict)
+        self.uses: dict[tuple[str, ...], dict[str, list[tuple[str, ...]]]] = defaultdict(dict)
+        self.globs: dict[tuple[str, ...], list[tuple[str, ...]]] = defaultdict(list)
+
+    def parse_item(
+        self,
+        path: Path,
+        tokens: list[Token],
+        scope: Scope,
+        attrs: Attrs,
+        visibility: str | None,
+        item: Item,
+        start: int,
+        line: int,
+        pos: int,
+    ) -> None:
+        if scope.kind == "mod" and derive_feature(scope.cfgs + tuple(attrs.cfgs)) is not None:
+            module = scope.module
+            if item.kind == "use":
+                for name, source in use_bindings(tokens, *item.header):
+                    if name == "*":
+                        self.globs[module].append(source)
+                    else:
+                        self.uses[module].setdefault(name, []).append(source)
+            elif item.name is not None and item.kind not in {"impl", "skip"}:
+                self.definitions[module].setdefault(item.name, []).append((path, pos))
+                if item.kind == "mod":
+                    self.modules.add((*module, item.name))
+        super().parse_item(path, tokens, scope, attrs, visibility, item, start, line, pos)
+
+    def resolve(self, module: tuple[str, ...], source: tuple[str, ...], seen: frozenset = frozenset()):
+        """Definition sites a path names from `module`, or None when it leaves the crate."""
+        key = (module, source)
+        if key in seen:
+            return None
+        seen = seen | {key}
+        base, rest = self.anchor(module, source)
+        if base is None or not rest:
+            return None
+        for segment in rest[:-1]:
+            base = self.child_module(base, segment, seen)
+            if base is None:
+                return None
+        return self.lookup(base, rest[-1], seen)
+
+    def anchor(self, module: tuple[str, ...], source: tuple[str, ...]):
+        first, rest = source[0], list(source[1:])
+        if first == "crate":
+            return (self.root,), rest
+        if first in {"self", "super"}:
+            base = module if first == "self" else module[:-1]
+            while rest and rest[0] == "super":
+                base, rest = base[:-1], rest[1:]
+            return base, rest
+        names = self.definitions[module].keys() | self.uses[module].keys()
+        return (module, list(source)) if first in names else (None, [])
+
+    def child_module(self, module: tuple[str, ...], name: str, seen: frozenset):
+        if (*module, name) in self.modules:
+            return (*module, name)
+        for source in self.uses[module].get(name, []):
+            base, rest = self.anchor(module, source)
+            for segment in rest if base is not None else []:
+                base = self.child_module(base, segment, seen)
+                if base is None:
+                    break
+            if base is not None:
+                return base
+        return None
+
+    def lookup(self, module: tuple[str, ...], name: str, seen: frozenset):
+        if name in self.definitions[module]:
+            return self.definitions[module][name]
+        for source in self.uses[module].get(name, []):
+            found = self.resolve(module, source, seen)
+            if found:
+                return found
+        for source in self.globs[module]:
+            found = self.resolve(module, (*source, name), seen)
+            if found:
+                return found
+        return None
+
+
 def fail(message: str) -> None:
     print(f"ERROR: hidden public API policy: {message}", file=sys.stderr)
+
+
+CONSUMER_KINDS = ("prod", "tools", "tests", "exposed-by")
+# A test-hooks item serves tests and developer tools, and a bench-support item
+# serves bench and tools binaries; a production consumer of either would ship
+# the seam.
+FEATURE_BARRED_CONSUMERS = {"test-hooks": frozenset({"prod"}), "bench-support": frozenset({"prod"})}
+# Plans live in the untracked docs/plan directory, so a condition that cites one
+# cannot be checked from the repository.
+PLAN_REFERENCE = re.compile(r"(?i)docs/plan|\bplan\s+P\d|\bP\d+\b|\b(?:step|stage)\s+\d")
+
+
+def parse_consumers(value: str) -> dict[str, tuple[str, ...]]:
+    """Parse `prod: a, b; tools: c; tests: d; exposed-by: <symbol>`.
+
+    Clauses appear in that order, each at most once, with sorted unique
+    names. `prod`, `tools`, and `tests` list workspace packages; `exposed-by`
+    lists public symbols whose signatures reach a symbol no package names.
+    """
+    clauses: dict[str, tuple[str, ...]] = {}
+    for clause in value.split("; "):
+        kind, separator, names = clause.partition(": ")
+        if not separator or kind not in CONSUMER_KINDS:
+            raise ValueError(f"clause {clause!r} is not `<{'|'.join(CONSUMER_KINDS)}>: <names>`")
+        if clauses and CONSUMER_KINDS.index(kind) <= CONSUMER_KINDS.index(next(reversed(clauses))):
+            raise ValueError(f"clause {kind!r} is out of order or repeated")
+        listed = tuple(names.split(", "))
+        if not all(listed) or list(listed) != sorted(set(listed)):
+            raise ValueError(f"{kind} names must be non-empty, sorted, and unique")
+        clauses[kind] = listed
+    return clauses
 
 
 def read_ledger(ledger_path: Path) -> dict[tuple[str, str], dict[str, str]] | None:
@@ -674,6 +892,19 @@ def read_ledger(ledger_path: Path) -> dict[tuple[str, str], dict[str, str]] | No
         if (symbol, feature) in ledger:
             fail(f"{ledger_path}:{line_number} duplicates {(symbol, feature)}")
             ok = False
+        try:
+            consumers = parse_consumers(row["consumer"])
+        except ValueError as error:
+            fail(f"{ledger_path}:{line_number} consumer {row['consumer']!r}: {error}")
+            ok = False
+        else:
+            barred = FEATURE_BARRED_CONSUMERS.get(feature, ()) & consumers.keys()
+            if barred:
+                fail(f"{ledger_path}:{line_number} {feature} item cannot have {', '.join(sorted(barred))} consumers")
+                ok = False
+        if PLAN_REFERENCE.search(row["removal_condition"]):
+            fail(f"{ledger_path}:{line_number} removal_condition cites a plan document; state the condition itself")
+            ok = False
         ledger[(symbol, feature)] = row
     return ledger if ok else None
 
@@ -689,13 +920,53 @@ def main(argv: list[str]) -> int:
     ledger = read_ledger(ledger_path)
     if ledger is None:
         return 1
+    index = DefinitionIndex(src, root)
     try:
-        sites = CrateScanner(src, root).scan()
+        sites = index.scan()
     except ScanError as error:
         fail(str(error))
         return 1
 
     status = 0
+    reexported = {
+        target
+        for module, name, source in index.public_reexports
+        if name != "*"
+        for target in index.resolve(module, source) or []
+    }
+    for symbol, module, owner, path, line in index.seam_candidates:
+        name = owner or symbol.rsplit("::", 1)[-1]
+        definitions = index.definitions[module].get(name, [])
+        if module in index.public_modules or any(definition in reexported for definition in definitions):
+            fail(f"{path}:{line}: {symbol} compiles only with test-hooks but has no #[doc(hidden)] row")
+            status = 1
+    for symbol, site in index.unnameable:
+        fail(
+            f"{site.path}:{site.line}: {symbol} is hidden on a path no consumer can name; "
+            "put #[doc(hidden)] on the public re-export instead"
+        )
+        status = 1
+    paths: dict[tuple[Path, int], list[str]] = defaultdict(list)
+    for (symbol, _), where in sites.items():
+        site = where[0]
+        targets = [(site.path, site.pos)] if site.source is None else index.resolve(site.module, site.source) or []
+        for target in targets:
+            paths[target].append(symbol)
+    for symbols in paths.values():
+        if len(symbols) > 1:
+            fail(f"{' and '.join(sorted(symbols))} are hidden public paths to one definition; keep one")
+            status = 1
+    for (symbol, feature), _ in sorted(sites.items()):
+        module = tuple(symbol.split("::"))
+        if feature != CROSS_CRATE or module not in index.modules:
+            continue
+        for name, hidden, path, line, _ in index.public_children[module]:
+            if not hidden:
+                fail(
+                    f"{path}:{line}: {symbol}::{name} is a public child of a hidden cross-crate module without "
+                    "its own row; hide it or narrow it"
+                )
+                status = 1
     for (symbol, feature), where in sorted(sites.items()):
         if feature not in ALLOWED_FEATURES:
             fail(f"{symbol} resolves to unapproved feature contract {feature!r}")
@@ -704,6 +975,15 @@ def main(argv: list[str]) -> int:
             places = ", ".join(f"{site.path}:{site.line}" for site in where)
             fail(f"{symbol} [{feature}] is recorded at several sites ({places}); the symbol is ambiguous")
             status = 1
+    for (symbol, _), row in sorted(ledger.items()):
+        for exposer in parse_consumers(row["consumer"]).get("exposed-by", ()):
+            segments = exposer.replace(".", "::").split("::")
+            path = ("crate", *segments[1:])
+            # `Type::member` resolves through its type; members are not indexed.
+            names_item = index.resolve((root,), path) or (len(path) > 2 and index.resolve((root,), path[:-1]))
+            if segments[0] != root or not names_item:
+                fail(f"{symbol} is exposed-by {exposer}, which names nothing in the crate")
+                status = 1
     for symbol, feature in sorted(sites):
         if (symbol, feature) not in ledger:
             fail(f"unlisted hidden symbol {symbol} [{feature}] has no ledger entry")

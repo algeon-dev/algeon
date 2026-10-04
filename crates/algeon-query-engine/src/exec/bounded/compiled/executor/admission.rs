@@ -1,8 +1,7 @@
 use query_planning::{
-    admission::{JoinStrategy, JoinStrategyChoice},
     capability::{
-        JoinStrategyEvidence, KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions,
-        keyed_hash_join_build_is_large, keyed_hash_join_strategy_input_facts_for_plan,
+        JoinStrategy, JoinStrategyChoice, JoinStrategyEvidence, KeyedHashJoinStrategyInputFacts,
+        KeyedHashJoinStrategyOptions, keyed_hash_join_build_is_large, keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
     },
     error::Result,

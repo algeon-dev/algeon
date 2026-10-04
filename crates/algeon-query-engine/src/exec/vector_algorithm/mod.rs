@@ -15,5 +15,4 @@ pub(in crate::exec) use disabled::vector_algorithm_execution_unavailable;
 #[cfg(feature = "cuvs")]
 pub(in crate::exec) use enabled::{execute_vector_algorithm, validate_vector_algorithm_execution};
 #[cfg(all(feature = "cuvs", feature = "test-hooks"))]
-#[doc(hidden)]
 pub use enabled::{set_vector_after_index_build_hook_for_tests, set_vector_pool_coverage_hook_for_tests};

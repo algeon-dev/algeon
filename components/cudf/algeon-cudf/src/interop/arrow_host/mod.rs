@@ -37,7 +37,9 @@ pub(crate) mod testing_hooks;
 
 pub use batch::{dataframe_from_record_batch, dataframe_from_record_batches};
 pub(crate) use estimate::estimate_arrow_host_record_batch_memory_bytes;
-pub use estimate::{estimate_list_import_device_memory_bytes, estimate_record_batches_import_required_budget_bytes};
+pub use estimate::estimate_list_import_device_memory_bytes;
+#[doc(hidden)]
+pub use estimate::estimate_record_batches_import_required_budget_bytes;
 #[cfg(any(test, feature = "test-hooks"))]
 use export::{map_numeric_to_arrow_error, map_record_batch_error};
 pub use import::all_null_list_series;

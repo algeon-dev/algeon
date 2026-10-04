@@ -8,7 +8,6 @@
 //! where their semantics are unsupported.
 
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
-pub use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, is_supported_arrow_type};
 use cudf::{ScalarValue, TimestampResolution};
 pub(crate) use query_planning::datatypes::{
     arrow_decimal_scale_to_cudf_scale, arrow_fixed_width_byte_size, is_arrow_fixed_width,

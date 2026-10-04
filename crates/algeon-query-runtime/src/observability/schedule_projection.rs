@@ -102,8 +102,8 @@ pub struct AttemptComposedScheduleProjection {
 }
 
 impl AttemptComposedScheduleProjection {
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn for_test(device_ordinal: usize, grant_id: u64, grant_bytes: u64) -> Self {
+    #[cfg(test)]
+    pub(crate) fn for_test(device_ordinal: usize, grant_id: u64, grant_bytes: u64) -> Self {
         let mut projection = Self {
             schema: COMPOSED_SCHEDULE_PROJECTION_SCHEMA.to_owned(),
             attempt_id: AttemptId::mint(),

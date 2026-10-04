@@ -7,7 +7,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability},
+    admission::{AttemptCapabilityEvidence, ExecutionCapability},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -39,12 +39,12 @@ struct PreparedSubmission {
     requested_query_cap_bytes: Option<u64>,
     requested_at: Instant,
     execution_cancellation: ExecutionCancellation,
-    submitted_plan_capability_evidence: Option<AttemptRequirement>,
+    submitted_plan_capability_evidence: Option<AttemptCapabilityEvidence>,
     observation: RuntimeObservationHandle,
     attempt_id: AttemptId,
     admission_request_id: AdmissionRequestId,
     completion: QueryCompletion,
-    requirement: AttemptRequirement,
+    requirement: AttemptCapabilityEvidence,
     required_capabilities: Vec<ExecutionCapability>,
     candidate_ordinals: Vec<usize>,
 }
@@ -125,7 +125,7 @@ impl AdmissionController {
         resolve: F,
     ) -> Result<AdmissionWaiter>
     where
-        F: FnMut(usize) -> Result<AttemptRequirement>,
+        F: FnMut(usize) -> Result<AttemptCapabilityEvidence>,
     {
         let PendingSubmission { prepared, deadline, pending } = submission;
         let PreparedSubmission {
@@ -210,7 +210,7 @@ impl AdmissionController {
         mut resolve: F,
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)>
     where
-        F: FnMut(usize) -> Result<AttemptRequirement>,
+        F: FnMut(usize) -> Result<AttemptCapabilityEvidence>,
     {
         let mut entries = DeviceAdmissionEntries::new();
         let mut first_rejection = None;
