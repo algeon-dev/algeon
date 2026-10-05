@@ -92,6 +92,10 @@ for source and session setup, and [Graph Inputs and Construction](./graph-option
 for vertex-ID contracts, directedness, vertex renumbering, and edge
 normalization.
 
+The [GPU table functions design](../design/gpu-table-functions.mdx#from-cudf-columns-to-a-cugraph-result)
+traces cuDF edge ownership, cuGraph completion and the return to native SQL
+operators. It distinguishes device copies from host materialization.
+
 ## UDTFs
 
 Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by

@@ -1,8 +1,3 @@
-:global(.theme-doc-markdown):has(.hero) > p,
-:global(.theme-doc-markdown):has(.hero) > ul {
-  max-width: 78ch;
-}
-
 :global(article):has(.hero) > :global(.theme-doc-breadcrumbs) {
   display: none;
 }
@@ -156,10 +151,6 @@
 :global(.theme-doc-markdown):has(.hero) > :global(.alert--warning) {
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
-}
-
-:global(.theme-doc-markdown):has(.hero) > :global(.alert--warning) p {
-  max-width: 86ch;
 }
 
 :global([data-theme='dark']) :global(.theme-doc-markdown):has(.hero) > :global(.alert--warning) {

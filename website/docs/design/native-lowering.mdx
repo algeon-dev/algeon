@@ -1,226 +1,249 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 slug: /design/native-lowering
-description: "How a completed DataFusion physical plan becomes native QueryPlan IR, keeps its CPU baseline, and crosses into GPU execution."
+title: From SQL to a GPU plan
+description: "Translate a DataFusion physical plan into GPU work while preserving SQL results, ordering and partition contracts."
 ---
 
-# Native Lowering & Final Plans
+import {PlanTranslation, PlanSelection} from '@site/src/components/design/GuideDiagrams';
 
-Native lowering converts a completed DataFusion `ExecutionPlan` tree into the
-query engine's `QueryPlan` IR. When the converted plan wins final selection,
-it replaces the original plan with a wrapper node that executes the
-`QueryPlan` on the native engine instead.
+# From SQL to a GPU plan
 
-It runs after DataFusion physical planning has finished, so it translates
-decisions DataFusion already made (aggregate mode, join shape, scan pushdown,
-partitioning, output order) rather than replanning them. The two plan models
-differ in one important way: `ExecutionPlan` is an open trait, so DataFusion
-can produce any operator shape, while `QueryPlan` is a closed,
-DataFusion-free set of nodes owned by the engine. Lowering handles only the
-shapes it can map exactly and declines the rest with a structured reason
-(step 1).
+A physical plan describes executable operations and the data exchanged between
+them. DataFusion's standard operators run on the CPU and often split input
+across partitions. Algeon's adapter translates supported parts of the completed
+plan into native IR, then replaces them with a GPU execution wrapper.
 
-To DataFusion, all of this is ordinary machinery: three `PhysicalOptimizerRule`s
-and, when selection succeeds, an `ExecutionPlan` wrapper node in the completed
-plan.
+## Walk through a grouped aggregate {/* #translate-the-work */}
 
-The planning path is:
+Consider `orders` registered from local Parquet files, with `customer_id`
+stored as `Int32`, `amount` as `Int64` cents and `status` as UTF-8 strings:
 
-~~~text
-DataFusion ExecutionPlan
-  -> normalize and validate the completed physical shape
-  -> lower one supported candidate to QueryPlan
-  -> optimize IR, apply cost selection, and check execution capability
-  -> AlgeonNativeExec
-  -> capability evidence and, when needed, a QueryAdmissionTicket
-~~~
+```sql
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+WHERE status = 'paid'
+GROUP BY customer_id;
+```
 
-Runtime admission and device-memory accounting begin later. See
-[Admission & Memory Governance](./admission.mdx).
+<PlanTranslation />
 
-## Session wiring
+The example shows a distributed aggregate shape with a separate row filter.
+Select an operator to see its native representation and the observation fields
+that explain its execution. The view omits batching and scan-repartition
+wrappers. File layout, statistics and session options can also change the
+physical tree, including the placement of predicates. The diagram illustrates
+the contracts in the linked source below and contains no runtime measurements.
 
-The backend's `AlgeonGpuExecutionMode` controls relational selection.
-`NativePreferred` (the default) enables it and permits DataFusion CPU execution;
-`NativeRequired` enables it and rejects a completed plan containing DataFusion
-CPU operators. `FunctionsOnly` disables relational rewrites while retaining
-explicit cuGraph/cuVS execution and the same backend admission authority. See
-[Choose an execution mode](../integration/datafusion-session.mdx#choose-an-execution-mode)
-for configuration and CPU/GPU composition limits.
+<details>
+<summary>Compare the physical tree, native IR and final DataFusion wrapper</summary>
 
-`with_algeon_native` installs two physical optimizer rules around DataFusion's
-own rules:
+The relevant DataFusion operator parameters are shown below. `P` is the
+physical plan's hash partition count. Input data flows from the leaf upward.
 
-| Rule | Position | Responsibility |
+```text
+ProjectionExec: customer_id, sum(orders.amount) AS total
+  AggregateExec: mode=FinalPartitioned, group=[customer_id], merge=[SUM state]
+    RepartitionExec: Hash(customer_id), partitions=P
+      AggregateExec: mode=Partial, group=[customer_id], aggr=[SUM(amount)]
+        FilterExec: status = 'paid'
+          DataSourceExec: Parquet, projection=[customer_id, amount, status]
+```
+
+Lowering reconstructs the SQL aggregate from the partial state and final
+merge expressions. The native IR retains a grouped aggregate plus the row
+predicate and result projection. Before compilation, the adapter changes the
+sink to `DeferredHostArrow`, preserving the host result contract while leaving
+materialization to the wrapper. The simplified native shape is:
+
+```text
+Sink: deferred_host_arrow (materialization by the wrapper)
+  Projection: customer_id, sum(orders.amount) AS total
+    Aggregate: group=[customer_id], SUM(amount)
+      Filter: status = 'paid'
+        LocalParquetSource: read_columns=[customer_id, amount, status]
+```
+
+Once this whole-query candidate is selected, the completed DataFusion tree
+contains the attempt's admission wrapper and the native execution wrapper:
+
+```text
+NativeAdmissionExec
+  AlgeonNativeExec
+```
+
+`AlgeonNativeExec` holds the native IR and compiled pipeline internally.
+The native operators are not DataFusion child nodes. A shorter `EXPLAIN` tree
+can therefore represent the same scan, filter and aggregation work.
+
+These are simplified shapes, not verbatim `EXPLAIN` output. The
+[distributed aggregate lowering tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/sql_aggregate_shapes/default_distributed.rs)
+cover partial/final reconstruction, and the
+[native IR goldens](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/lowering_tests/goldens/representative_query_plans.txt)
+show scan, filter, aggregate and projection nodes for related queries.
+
+</details>
+
+## What the GPU compiler produces
+
+The native optimizer rewrites the IR before capability validation and pipeline
+compilation. **Compiled** means a schedule over existing GPU operations. For
+the illustrated shape, the task kinds are `source_read`, `unary` for the
+filter, `aggregate`, and `unary` for the output projection. Identity
+projections can disappear during optimization; the alias to `total` is shown
+explicitly here. The schedule also records data dependencies, completion
+barriers and resident resource lifetimes.
+
+An aggregate barrier prevents consumers from reading incomplete group state.
+A resource between tasks names its producer and consumers; its lifetime ends
+after those consumers finish. During chunk execution, one compiled aggregate
+task can accumulate many partial results. A task count, a chunk count and a
+CUDA stream count describe different aspects of execution.
+
+At the deferred host sink, the root resource remains a GPU-resident output
+until `AlgeonNativeExec` materializes host Arrow batches. The wrapper owns
+that incremental transfer; this adapter schedule has no `sink_materialize`
+task. The boundary remains visible in transfer metrics.
+
+The same representation supports more complex plans. A native join expands
+into build, probe and materialization tasks, with a build-before-probe barrier.
+Consequently, a visualizer needs both the native plan and compiled topology to
+explain how one SQL operator maps to scheduled work. The
+[pipeline compiler](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-planning/src/pipeline/compile.rs)
+owns these task and resource relationships.
+
+## Partitions and result semantics
+
+A DataFusion partition is a stream of batches processed as part of a CPU
+execution plan. Native execution has its own chunk and concurrency controls.
+Supported repartition and coalescing wrappers can disappear during lowering;
+their partition counts do not become CUDA stream counts.
+
+The required result still constrains the replacement. For example, partial
+`AVG` values require counts as well as sums; averaging the partial averages
+would change the answer. A global `ORDER BY ... LIMIT` requires a final merge
+of chunk candidates. Independently sorted chunks cannot satisfy global order.
+
+The native host-output wrapper exposes one bounded output partition. When
+native fragments sit under CPU operators, the adapter verifies the parent's
+schema, ordering and distribution requirements, including co-partitioned join
+inputs. An incompatible replacement is left out.
+
+## Connect the plan to an execution
+
+Use the same SQL and session settings when inspecting the example. On the
+Flight SQL server, `EXPLAIN VERBOSE` exposes physical-plan details, while
+`EXPLAIN GPU` returns native candidate outcomes and coverage of the completed
+plan:
+
+```sql
+EXPLAIN GPU
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+WHERE status = 'paid'
+GROUP BY customer_id;
+```
+
+`EXPLAIN GPU` plans its inner query without executing it. A later execution of
+that SQL has its own query ID and attempt. The explain statement's query ID
+cannot identify observations from that later run.
+
+After consuming the query's Flight `DoGet` result, retrieve `GetQueryStats`
+using **that execution's query ID**. Its `[planning]` section describes
+selection; `[execution]` contains the attempt's observed work. Available
+`[physical_plan]` and `[native_explain]` sections retain the textual plans.
+
+| Question | Fields to inspect | Interpretation |
 | --- | --- | --- |
-| `algeon_datafusion_native_count_only` | Before `aggregate_statistics` | Capture safe zero-column count shapes before DataFusion replaces them with statistics. |
-| `algeon_datafusion_native` | After the other physical optimizer rules, immediately before `SanityCheckPlan` | Make the final native selection. Under `NativeRequired`, its last step rejects the completed plan when it contains DataFusion CPU operators. This public name is also the deduplication key. |
+| Was the whole subtree replaced? | `physical_root`, `post_native_plan_root`, `native_plan_fragment_count`, `host_datafusion_boundary_count` | Candidate selection and final executable coverage are separate facts. |
+| Which native operator ran in which task? | `plan_task_mapping_rows`, `task_operator_rows`, `task_runtime_rows` | Correlate native plan nodes with compiled tasks and their observations. |
+| How much input survived? | `row_groups_selected`, `source_chunks_committed`, `partial_aggregate_input_rows`, `output_rows` | Row groups, chunks, aggregate input rows and result rows have different scopes. |
+| Did aggregation require merging? | `partial_aggregate_count`, `final_merge_attempts`, `final_merge_levels` | Explain the native chunk-and-merge path without inferring it from CPU partitions. |
+| What constrained device memory? | `query_grant_bytes`, `allocator_high_water_bytes`, `resident_dataframe_peak_bytes` | The grant is the allocation cap. Allocator and resident-dataframe peaks measure different memory scopes. |
+| Did execution and cleanup finish? | `attempt_outcome`, `attempt_cleanup_disposition`, `attempt_capacity_disposition` | Distinguish the query result from cleanup and the capacity's reuse state. |
 
-Rules added to the session builder after `with_algeon_native` run after
-`SanityCheckPlan`, so the `NativeRequired` check does not see their output.
+For task edges, barriers and a timeline, `GetQueryRuntimeArtifact` returns a
+control frame followed by JSONL when the sealed artifact is available. The
+artifact includes native plan nodes, task definitions, resource relationships
+and runtime events. Correlate `(plan_execution_id, plan_node_id)` with the task
+definitions, then use `(plan_execution_id, task_id)` for task observations.
+IDs are local to their plan execution; the DataFusion tree and native task
+graph do not have a one-to-one node mapping.
 
-The entry points are `crates/algeon-datafusion/src/session.rs` for rule ordering and
-`AlgeonNativePhysicalOptimizerRule::optimize` in `crates/algeon-datafusion/src/planner/native.rs` for the
-rewrite. The rule is idempotent: an admission wrapper, a native root, or a plan
-holding a [native fragment](#selection-fallback-and-mixed-execution) under
-DataFusion operators is not lowered again.
+<details>
+<summary>Retrieve the statistics and runtime artifact with a Flight client</summary>
 
-## Lowering pipeline
+Here, `client` is the authenticated `pyarrow.flight.FlightClient`, `options`
+contains the same call headers used for the query, and `query_id` comes from
+its Flight SQL statement ticket. Consume its `DoGet` stream before requesting
+the terminal artifact.
 
-### 1. Recognize a physical candidate
+```python
+import json
+from pyarrow import flight
 
-`crates/algeon-datafusion/src/native/normalize.rs` removes only known transparent wrappers and builds a
-`NormalizedNativePlan` for an exact supported shape. Operator, expression,
-type, source, and ordering checks stay in `crates/algeon-datafusion/src/native/validate.rs`,
-`crates/algeon-datafusion/src/native/expression_contract/`, and the source-specific lowering code.
+stats = b"".join(
+    bytes(result.body)
+    for result in client.do_action(
+        flight.Action("GetQueryStats", query_id.encode()), options
+    )
+).decode()
 
-Normalization is deliberately narrower than DataFusion's plan model. A miss
-returns a stable `CapabilityReason`; it does not guess at an equivalent plan.
+frames = [
+    bytes(result.body)
+    for result in client.do_action(
+        flight.Action("GetQueryRuntimeArtifact", query_id.encode()), options
+    )
+]
+control = json.loads(frames[0])
+if control["runtime_jsonl_follows"]:
+    runtime_records = [json.loads(line) for line in frames[1].splitlines()]
+```
 
-### 2. Build engine-owned IR
+The control frame describes artifact availability. Capture is bounded: check
+`incomplete`, `artifact_truncated` and `metric_projection_truncated` in the
+statistics, and completeness information in the runtime artifact. An absent
+observation does not establish that its work took zero time or used zero bytes.
+Component timers and attempt elapsed time also have different scopes; their
+sum is not a kernel-only GPU duration.
 
-`crates/algeon-datafusion/src/native/lowering/` recursively translates the normalized tree with
-`QueryPlanBuilder`. The result is an append-only DAG of engine `PlanNode`s with
-an explicit `ResultSink`. The host sink preserves the DataFusion output schema,
-including schema metadata.
+The [Flight action handlers](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/server/flight/rpc.rs)
+define retrieval and ownership checks. The
+[runtime JSONL exporter](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-runtime/src/observability/jsonl.rs)
+writes the retained topology, events and completeness footer.
 
-Declared ordering is part of the replacement contract. Lowering must prove the
-native plan reproduces it or append a supported native sort. Otherwise the
-candidate remains on DataFusion with `NativeOrderedOutputUnsupported`.
+</details>
 
-### 3. Select an executable native plan
+## Select an execution path {/* #selection-fallback-and-mixed-execution */}
 
-`replace_lowered_root_or_keep_plan` in `crates/algeon-datafusion/src/planner/native/attempt.rs` accepts
-only one lowered plan with one selected candidate. It then:
+<PlanSelection />
 
-1. runs the engine-owned native optimizer;
-2. rechecks declared output ordering;
-3. applies the engine-owned native cost decision; and
-4. builds capability diagnostics and rejects a plan whose kernel, type, or
-   semantic requirements are unsupported before creating a wrapper. Memory
-   sizing is not part of this check; the query allocator enforces the grant at
-   run time.
+The default mode first attempts whole-query lowering. Unsupported operators,
+types or semantics leave CPU work in the completed plan; supported subtrees
+may still become GPU fragments. Explicit graph, vector and ML functions also
+form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
+such a mixed plan.
 
-Every non-selection returns the original executable DataFusion plan. A
-native-capable plan declined by cost is distinct from an unsupported plan.
+`PlanningReport` records each candidate as selected, unsupported with a
+structured reason, or supported but not selected by cost. A missing memory
+estimate does not establish lack of GPU support. Allocation limits are
+enforced during execution.
 
-### 4. Choose the DataFusion wrapper
+## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 
-The selected candidate becomes one `AlgeonNativeExec` node. Its children are
-the explicit GPU producers of the named GPU-resident sources the plan reads,
-and the node checks that the required and provided input names match exactly;
-this is GPU-to-GPU composition, not arbitrary relational fragment extraction.
-The node's output either streams host Arrow or stays on the GPU for a consumer
-that binds it by input name. EXPLAIN names the four shapes
-`AlgeonNativeExec`, `AlgeonNativeComposedExec` (host output with producers),
-`AlgeonNativeGpuProducerExec`, and `AlgeonNativeComposedGpuProducerExec`.
+`NativeRequired` rejects a completed plan containing DataFusion CPU operators.
+`FunctionsOnly` retains CPU relational processing around explicit GPU
+functions. The default, `NativePreferred`, permits a CPU or mixed plan.
+These modes classify DataFusion plan nodes. CPU orchestration and I/O metadata
+remain part of native execution. The default statistical mode uses GPU kernels;
+an optional [DataFusion-exact mode](../integration/configuration.mdx#native-settings)
+for variance and standard deviation uses host accumulation inside the native
+wrapper. Plan coverage alone does not certify that all computation stays on
+the GPU.
 
-The planner also attaches admission evidence. Each selected fragment records
-the device capabilities and exact plan scope needed for execution. When the
-session config is set up for planner-side admission (an admission source and
-no `QueryServiceHandle`), the fragment evidence is combined into one
-`QueryAdmissionTicket` bound to the plan. Device and grant acquisition wait
-until execution. Configs that already hold a `QueryServiceHandle` use that
-handle's context. A cuGraph root binds its evidence after lakehouse footer
-metadata has resolved so the admitted scope matches the executable plan.
+Use [GPU coverage validation](../integration/gpu-coverage-validation.mdx) to
+inspect the completed plan without running it. `EXPLAIN` does not claim a GPU
+grant. Once native execution starts, an error returns to the caller without
+replaying the query on CPU.
 
-## Selection, fallback, and mixed execution
-
-`PlanningReport` is the public planning evidence. Assert its structured
-outcomes rather than formatted plan text:
-
-| Outcome | Meaning |
-| --- | --- |
-| `Selected` | The candidate became native IR and passed final selection. |
-| `NotSupported` | A `CapabilityReason` identifies the unsupported semantic, source, ordering, or execution contract. |
-| `NotSelectedByCost` | The candidate is supported, but the native cost decision retained DataFusion and records its evidence. |
-
-The rule keeps no per-query state. Each planning call records its
-diagnostics on its own invocation: `plan_with_native_diagnostics` plans a
-logical plan and returns that call's diagnostics, `AlgeonAttempt::planning_diagnostics`
-returns the latest planning pass of an attempt, and
-`AlgeonNativePhysicalOptimizerRule::optimize_with_diagnostics` applies the rule
-to one physical plan. The bundle pairs the report with native optimizer,
-source, and capability evidence of that one call.
-
-When enabled, relational selection first tries the whole query. Explicit GPU
-UDTFs can separately compose with DataFusion CPU operators, including in
-`FunctionsOnly` mode. When the whole query does not lower, the cost model did
-not decline it, and DataFusion CPU execution is allowed,
-`crates/algeon-datafusion/src/planner/native/fragment.rs` places native
-fragments below the operators that stay on DataFusion. Each child of such an
-operator is lowered as a host-output fragment; if it does not lower, the search
-continues below it, and a child the cost model declines stays on DataFusion
-whole. A fragment replaces its child only when the rebuilt parent keeps the
-contracts it held over that child: the same schema, a bounded child (a fragment
-emits once its input is exhausted), and DataFusion's sanity check of the
-parent's ordering, distribution, pipeline and executable invariants, which
-include the partition layout of co-partitioned join inputs. A fragment the
-parent cannot keep is reported as `NotSupported` with
-`native_fragment_parent_contract_unsupported`, and the search tries the
-subtrees below it. When a DataFusion filter stays above a Parquet scan through
-row-preserving exchanges only, the fragment reads the scan without the
-predicate copy DataFusion made for pruning, since the filter still evaluates
-it. Fragments are not placed below metadata table functions' CPU boundary or
-into GPU UDTF and graph inputs. The report lists the root's outcome followed by
-each fragment candidate, and the final root admission aggregates the evidence
-of every kept fragment, so all fragments of an attempt share its one grant.
-
-## Native execution boundary
-
-A host-output `AlgeonNativeExec` is an ordinary DataFusion `ExecutionPlan` with
-one bounded output partition. At execution it acquires the admitted native
-context, runs the engine's observed execution entry point, and exposes Arrow
-`RecordBatch`es to the caller. With producers, it first turns their results
-into the `GpuResidentInputMap` consumed by the native plan, avoiding an
-intermediate host materialization.
-
-The runtime observation snapshot is the source for engine `QueryMetrics`,
-DataFusion metrics, and native report projections. Once native execution has
-started, a failure is returned as a structured error; the query is not replayed
-through the retained CPU plan.
-
-Inside the wrapper, the engine may execute independent work on multiple
-lanes of the one admitted attempt: task claims, aggregate source chunks,
-and fused top-k sort candidates. The wrapper boundary is unchanged by this:
-one output partition, declared ordering preserved, `Final` emission. A
-global top-k merges per-chunk candidates with the same comparator and
-applies the offset once at the end; concatenated sorted chunks are never
-presented as a global sort. GPU-resident sinks adopt lane-produced frames
-onto the root runtime before the lane leases release.
-
-## Baseline preservation and final-plan requirements
-
-`NotSupported` and `NotSelectedByCost` are planning outcomes, not errors. The
-original DataFusion plan remains executable unless the caller configured a
-completed-plan requirement.
-
-`classify_final_plan` walks the exact result and reports `DataFusion`, `Native`,
-or `Mixed`. `FinalPlanRequirement::NoDataFusionCpu` rejects a completed plan
-that would execute DataFusion CPU operators. A feature-disabled cuGraph
-terminal is exempt because it executes neither CPU nor GPU work. An
-unsatisfied requirement returns `FinalPlanRequirementUnsatisfied`; `Rejected`
-is the terminal planning outcome, not another physical node.
-
-## Extending native lowering
-
-Keep changes at the owner of the missing contract:
-
-| Change | Extend |
-| --- | --- |
-| Recognize another DataFusion physical shape | `crates/algeon-datafusion/src/native/normalize.rs`, `crates/algeon-datafusion/src/native/validate.rs`, and the existing module in `crates/algeon-datafusion/src/native/lowering/` |
-| Add or change native IR semantics | `crates/algeon-query-planning/src/plan/`, `crates/algeon-query-planning/src/optimizer/`, and `crates/algeon-query-planning/src/capability/`; execution changes remain in `crates/algeon-query-engine/src/exec/` |
-| Add an explicit GPU producer or graph island | The existing `GpuResidentProducer` or `GraphExecutionPlan` boundary in `crates/algeon-datafusion/src/native_exec/`, then compose through the current wrappers |
-| Add a missing cuDF or cuGraph primitive | `components/cudf` or `components/cugraph`; do not emulate it in the DataFusion adapter |
-| Add a missing cuVS primitive | `components/cuvs`; preserve runtime binding, tensor ownership, and completion contracts |
-| Change selection evidence | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/capability.rs`, and the existing public report projections and contract tests |
-
-Extend `tests/native_planning/lowering.rs` for lowering and report behavior,
-`tests/native_exec_tests.rs` for selection, fallback, mixed, and wrapper
-contracts, and the engine's `native_contract_tests` for DataFusion-independent
-behavior. A useful focused loop is:
-
-~~~bash
-cargo nextest run -p algeon-datafusion --all-features --test native_planning_tests
-cargo nextest run -p query-engine --all-features --test native_contract_tests
-~~~
+Next, follow the selected scan [from Parquet to GPU memory](./data-path.mdx).

@@ -1,151 +1,82 @@
 ---
-sidebar_position: 2
+sidebar_position: 6
 slug: /design/admission
-description: "How Algeon admits one bounded GPU attempt for an executable native plan."
+title: Memory and query lifetime
+description: "One device, one memory cap and one cleanup lifecycle for each native query attempt."
 ---
 
-# Admission & Memory Governance
+import {AttemptLifetime, AllocationPath} from '@site/src/components/design/GuideDiagrams';
 
-Algeon admits GPU work once per native query attempt: one admission, one
-selected device, and one immutable memory grant. Embedded DataFusion sessions
-and the Flight SQL server share the same process-scoped `AlgeonGpuBackend`,
-`QueryService`, bounded queue, and per-device ledgers. Each attempt has one
-lazy admission ticket. Planning does not reserve a GPU slot; the ticket claims
-admission when the attempt's first native stream is polled, and the claim fixes
-the device. Every later native fragment of the attempt reuses that admission
-and grant. A fragment planned after the claim, such as the result of a CTAS
-whose input already ran, joins the grant when the granted device provides every
-capability the fragment requires; otherwise it fails with a typed error. If the
-claim fails, every fragment of the attempt reports that failure. The grant is
-released once the attempt is terminal and no fragment is running; dropping a
-query handle releases nothing. `EXPLAIN` does not admit or execute the plan.
+# Memory and query lifetime
 
-Admission governs device memory. Host memory remains a DataFusion `MemoryPool`
-concern.
+Concurrent queries share a finite amount of GPU VRAM. Algeon separates
+permission to start from allocation during execution: the runtime commits a
+configured byte cap, and the query's allocator enforces it.
 
-The runtime path is:
+## Admission {/* #from-capability-validation-to-admission */}
 
-~~~text
-QueryPlan
-  -> AttemptCapabilityEvidence
-  -> compatible-device resolution
-  -> bounded queue and placement
-  -> DeviceLedger grant
-  -> AdmissionEnvelope
-  -> QueryHandle / ExecutionContext
-~~~
+<AttemptLifetime />
 
-| Term | Meaning |
-| --- | --- |
-| `AttemptCapabilityEvidence` | Planning-owned evidence for required device capabilities, which decide placement at the claim, and exact executable plan scopes, which grow as later fragments join the grant. It contains no memory estimate. |
-| Attempt | One bounded native execution of one admitted query on one selected device. |
-| `DeviceLedger` | The per-device integer accounting authority for immutable grants, resident cache charges, and attempt slots. |
-| `MemoryGrant` | The service-configured byte cap committed to one attempt. It becomes the ceiling of the query allocation domain. |
-| `AdmissionEnvelope` | The physical resources built around a committed grant: attempt lane, root stream, allocation domain, and worker scope. |
-| `QueryHandle` | The published admission result used by execution. The attempt releases it when it reaches its terminal outcome; the attempt resources return after cleanup completes. |
+An **attempt** is one execution lifecycle. Its first native work claims one
+compatible device and one immutable **grant**. A process-scoped backend shares
+admission across sessions, including embedded and server use. The bounded
+queue preserves request order; capacity pressure waits within configured
+deadlines, while missing device capabilities produce a structured error.
 
-## From capability validation to admission
+All native fragments of an attempt share its grant. A later fragment can join
+only when that device supports its required capabilities. A second admission
+claim cannot acquire another grant for the attempt.
 
-Planning validates the exact native IR and records its required device
-capabilities and executable plan scopes in `AttemptCapabilityEvidence`. A
-missing memory estimate does not make an operator unsupported and does not
-reject admission.
+Some systems connect GPUs through
+[NVLink](https://www.nvidia.com/en-us/data-center/nvlink/) for peer-device
+traffic. Algeon keeps an attempt on its selected GPU; VRAM on other GPUs
+does not enlarge that device's grant or ledger capacity.
 
-A submission reserves queue capacity and a FIFO sequence before
-device-specific owner resolution. Pending resolution counts against queue
-capacity and acts as an ordering barrier, so a slow request cannot be bypassed
-by younger work. The service rejects a request locally when no installed
-device supports all required capabilities or when the configured cap cannot
-be granted by a compatible device ledger. Capacity pressure waits within the
-configured queue and deadline.
+## Capacity and allocation {/* #device-profiles-and-grants */}
 
-Composed GPU execution binds each producer occurrence and the consumer into
-one evidence set. Runtime activation validates producer scope, occurrence,
-schema, and resident ownership before execution uses the frames. The composed
-query uses one ticket, one selected device, and one grant.
+The device **ledger** accounts for committed grants, cached resident data and
+active-attempt slots. Admission commits the service-configured cap without
+predicting the query's peak. For example, with 16 GiB available for grants
+and an 8 GiB query cap, memory accounting permits two grants, even when their
+current allocations total only 3 GiB. Other service limits can reduce that
+concurrency. These numbers are illustrative; deployments configure their own
+limits.
 
-Native execution requires planning-issued capability and scope evidence; an
-admission without it can execute no native plan.
+### The allocation path {/* #allocation-enforcement */}
 
-## Device profiles and grants
+<AllocationPath />
 
-Each CUDA ordinal has one immutable `DeviceResourceProfile`, fixed at backend
-construction. It declares the managed capacity, backend reserve, cache cap,
-query cap, active-attempt limit, execution-resource bounds, and supported
-device capabilities.
+`DeviceMemoryResource` is the allocation interface bound to GPU work. The
+query domain checks allocations against its grant and obtains storage through
+the device's RMM memory resource. RMM is RAPIDS' memory-management library.
+A pool can reuse GPU allocations across operations.
 
-The `DeviceLedger` accounts for grants and resident cache charges with integer
-arithmetic. It is not a residency oracle and does not predict an operator's
-peak memory. Admission commits the configured query cap when ledger capacity
-and an attempt slot are available. The grant does not grow, shrink, borrow, or
-move to another device during the attempt.
+The grant covers allocations in device VRAM. I/O bounce buffers and other host
+staging occupy system RAM, outside this GPU cap. Pinning a host buffer for DMA
+does not charge it as a device allocation.
 
-## Execution lanes and width
+All execution lanes share the query cap. There is no separate allocation
+quota for each operator or stream. An allocation exceeding the cap returns
+a typed failure at its source. Chunking can reduce live intermediates, but
+an input, hash table or result that cannot fit can still fail. Native execution
+does not provide general disk spilling or CPU replay.
 
-One admitted attempt executes its compiled pipeline on execution lanes.
-Each lane holds one auxiliary permit of the attempt envelope, one service
-stream lease, and one auxiliary fork of the native fork-stream route for the
-whole run. Fork subsets never overlap between live lanes. The coordinator
-claims runnable tasks, resolves each claim into owned scratch state, and
-commits lane outputs in claim order. Lanes never borrow coordinator state.
+## Completion and resident data {/* #resident-handoff-and-release */}
 
-Width comes from the service profile and ready work, in that order. The
-attempt envelope caps lanes at `source_work_per_attempt` auxiliary permits;
-the device pool caps concurrent execution jobs across attempts with typed
-saturation instead of an unbounded queue. Materialized tasks additionally
-cap lanes at the compiled graph's independent leaves. Aggregate source
-chunks and fused top-k sort candidates expand inside those bounds; full
-sorts without a limit stay serial on the coordinator. Lane acquisition never
-waits: a saturated envelope narrows the run to width 1 instead of
-deadlocking, so a light query keeps progressing beside a wide one.
+An output may remain on the GPU for another native consumer. Its resident
+lease retains the backing buffers and completion dependencies through the
+last borrow. Source and graph caches can retain reusable data under their own
+device-ledger charges; cache use does not make those bytes unaccounted for.
 
-`grant / lane_count` is not a per-lane allocator quota. All lanes allocate
-against the one query domain under the immutable grant. A retryable resource
-failure retries with less simultaneous live work: sort candidates retry
-serially while the merge loop reduces its fan-in.
+Cancellation stops further submission while already submitted work is settled.
+An attempt becoming terminal is only part of cleanup: active fragments,
+retained outputs and pending GPU work must also finish before their resources
+can be reused. A failed completion fence or cleanup closes admission on the
+affected device and records the failure.
 
-## Allocation enforcement
-
-The query allocation domain is the single arbiter of the attempt's allocation
-limit. cuDF, cuGraph, and cuVS execute with the domain memory resource, and an
-allocation beyond the immutable grant returns a typed allocation failure at
-its native source. Algeon does not add per-operator reservations or reject work
-from an estimate-derived byte requirement.
-
-The allocation domain records aligned current and peak bytes for attempt-level
-observation. Device pool used, reserved, and high-water values remain
-device-scoped observations; they are not projected as attempt peaks.
-
-cuGraph sizing reads the effective remaining query memory from its execution
-handle when selecting native batches or strategies. This value is a current
-sizing snapshot, not a reservation. The allocator still decides whether each
-real allocation succeeds.
-
-## Resident handoff and release
-
-Published GPU-resident outputs retain their backing allocation owners and an
-immutable resident lease. Freeze verifies that every live producer-domain
-allocation is represented by the published output owners, deduplicating shared
-views by backing allocation identity.
-
-A resident grant returns to the ledger only after the final borrow completes,
-required completion fences succeed, and the allocation domain reaches zero.
-Cleanup or fence failure closes admission for the affected device and records
-the cleanup disposition instead of making the grant reusable.
-
-## Queue and shutdown behavior
-
-Cancellation, deadlines, and queue closure remove pending requests and release
-their queue capacity. Service shutdown waits for pending owner resolution,
-active attempts, resident leases, GPU resources, and observation delivery.
-Terminal attempt reports are emitted from the runtime observation snapshot.
-
-## Public observation
-
-`QueryMetrics`, DataFusion metrics, JSONL, and TSV reports are projections of
-the same runtime observation snapshot. Attempt allocation peaks come from the
-query domain. Device pool observations retain their device scope and
-availability metadata.
-
-See [Integrating Algeon](../integration/overview.mdx) for backend construction
-and server configuration.
+Attempt allocation peaks and device pool reservations measure different
+scopes. Reports and DataFusion metrics come from the runtime's observation
+snapshot, allowing failures to be associated with the attempt and its cleanup
+outcome. See [error handling](../integration/handling-errors.mdx) and
+[admission configuration](../integration/configuration.mdx#admission) for the
+operational interfaces.

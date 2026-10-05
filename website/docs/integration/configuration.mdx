@@ -351,7 +351,7 @@ metadata reads use `AWS_REGION` first. Set both to the same region.
 `KVIKIO_COMPAT_MODE=ON|OFF|AUTO` is not a `ServerConfig` field; set it in the
 process environment before startup. `native.lakehouse_footer_pruning = true`
 enables Parquet-footer row-group pruning for `s3://` scans (see
-[Lakehouse and workspace boundary](../design/index.mdx#lakehouse-and-workspace-boundary)).
+[Projection and scan pruning](../design/data-path.mdx#projection-and-scan-pruning)).
 
 ## Workspace overlay
 

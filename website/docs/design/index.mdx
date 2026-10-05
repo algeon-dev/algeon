@@ -1,394 +1,70 @@
 ---
-sidebar_position: 2
+sidebar_position: 1
 slug: /design
-description: "How a query moves from DataFusion to the GPU and back, which crate owns each step, and where the integration surfaces sit."
+description: "Follow a query from SQL to GPU columns and back, then explore the boundaries that make it work."
 ---
 
-import {StackDiagram, SystemDiagram} from '@site/src/components/design/Diagram';
+import {QueryArchitecture} from '@site/src/components/design/GuideDiagrams';
 
 # Design
 
-This documentation covers Algeon's first integration, the
-**DataFusion adapter**. DataFusion keeps
-SQL parsing, logical planning, physical planning, catalogs, DataFrame APIs, and
-CPU execution. Algeon adds opt-in GPU execution on cuDF, SQL-visible cuGraph and
-cuVS algorithms, local and S3 Parquet source handling, and structured diagnostics
-around that DataFusion session. Throughout these pages, **native** means
-Algeon's GPU execution path, as opposed to DataFusion's CPU operators.
+Algeon adds GPU execution to a DataFusion session. DataFusion provides SQL,
+catalogs and query planning; Algeon translates supported work into GPU
+operations and returns Arrow record batches through the original interface.
+These pages call that GPU path **native execution**.
 
-- **For users:** the GPU path is an implementation detail behind ordinary
-  DataFusion or Flight SQL APIs.
-- **For developers:** every native decision is local, reportable, and backed
-  by an adapter or engine contract.
-- **Non-goals:** Algeon is not a separate SQL engine, does not accept external
-  serialized query plans, and does not run a single query across several GPUs.
+## A query through the system {/* #how-a-query-runs */}
 
-## Read this if
+<QueryArchitecture />
 
-- **Backend integrator:** Start with [Integration surfaces](#integration-surfaces)
-  and [Session wiring](./native-lowering.mdx#session-wiring). Algeon fits
-  inside your service boundary rather than replacing it.
-- **Flight SQL operator:** Read
-  [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
-  use server config and diagnostics as the deployment contract.
-- **Graph or vector SQL user:** Jump to
-  [Specialized GPU UDTFs](#specialized-gpu-udtfs). Discover and
-  validate calls before running GPU work.
-- **Native contributor:** Read
-  [Native Lowering & Final Plans](./native-lowering.mdx), then use
-  [Crates and ownership](#crates-and-ownership) and
-  [Where to change what](#where-to-change-what) to route code changes.
+The diagram follows a query selected for native execution. Its filters, joins
+and aggregations operate on GPU columns. The CPU still plans the query,
+reads metadata and submits work. Local files and object storage can supply
+the input; a query attempt uses one GPU.
 
-## How a query runs
+An embedded application and the Flight SQL server use the same execution
+stack. The server adds a remote interface, authentication and session
+management around it.
 
-A query enters through a DataFusion API or the Flight SQL server and leaves as
-Arrow rows through that same interface. In between:
+## Module boundaries {/* #crates-and-ownership */}
 
-1. **DataFusion plans.** SQL parsing, catalog resolution, logical and physical
-   planning are stock DataFusion. Algeon does not parse SQL; it works from the
-   completed physical plan.
-2. **Algeon evaluates the plan as a GPU candidate.** A physical optimizer rule
-   recognizes whole relational plans whose operators, types, and semantics
-   have an exact native mapping. Plans that are not selected stay on
-   DataFusion and execute on CPU as if Algeon were absent; the reason is
-   recorded in the [`PlanningReport`](./native-lowering.mdx).
-3. **A selected candidate is lowered to the DataFusion-free IR.** The adapter
-   translates the DataFusion `ExecutionPlan` tree into the planning crate's
-   closed `QueryPlan`, then planning checks kernels, types, semantics, and
-   scope for every node. Planning never estimates bytes.
-4. **Admission grants a memory cap on one device.** When execution first
-   needs the GPU, the runtime places the query on one compatible device and
-   commits the service-configured cap as an immutable grant. Waiting is FIFO
-   among capability-compatible requests; nothing overtakes and nothing is
-   protected. `EXPLAIN` does not admit.
-5. **cuDF, cuGraph, and cuVS execute inside the cap.** The query's allocator
-   enforces the grant; an allocation beyond it fails with a typed allocation
-   error at its source. A native attempt that fails after execution starts is
-   terminal; it is not replayed on CPU.
-6. **Arrow batches return.** Results flow back through the DataFusion
-   `ExecutionPlan` wrapper, so callers see ordinary record batches, metrics,
-   and errors. Composed GPU fragments can hand a GPU-resident frame to the
-   next native consumer without a host round-trip.
+The adapter contains DataFusion-specific translation and result wrappers.
+`query-planning` owns the intermediate representation (**IR**), an explicit
+description of sources, operations and their dependencies. `query-runtime`
+owns access to the device and the lifetime of each attempt. `query-engine`
+executes the compiled schedule using both contracts.
 
-`cugraph_*` and `cuvs_*` calls enter this flow as explicit GPU islands: they
-are planned as `GraphAlgorithm` and `VectorAlgorithm` nodes of the same IR and
-use the same admission and allocation path.
+The adapter imports each query crate directly. The engine imports planning
+and runtime; runtime imports planning. These three query crates have no
+DataFusion dependency.
 
-Two pages carry the details behind this flow:
+Below them, the GPU component crates provide Rust APIs over NVIDIA's RAPIDS
+libraries:
 
-- [Native Lowering & Final Plans](./native-lowering.mdx): the plan-time
-  boundary: candidate recognition, the `algeon_datafusion_native` rule,
-  baseline preservation, final-plan requirements, and planning evidence.
-- [Admission & Memory Governance](./admission.mdx): the runtime boundary:
-  process-wide admission, per-device ledgers, immutable grants, and
-  allocation enforcement shared by library and server modes.
-
-## Crates and ownership
-
-<StackDiagram
-  ariaLabel="Algeon crate and RAPIDS layering"
-  nodes={[
-    {
-      kind: 'upstream', name: 'DataFusion', note: 'SQL · planner · CPU operators', tone: 'plan',
-      sub: 'datafusion',
-      detail: <>Algeon consumes DataFusion physical-plan and{" "}
-        <code>ExecutionPlan</code> APIs. SQL parsing, catalog resolution, and
-        CPU execution remain upstream behavior.</>,
-    },
-    {
-      kind: 'adapter', name: 'algeon-datafusion', note: 'rule wiring · lowering · wrappers · reports', tone: 'engine',
-      sub: 'crates/algeon-datafusion/src/',
-      detail: <>Everything DataFusion-specific lives here:{" "}
-        <code>crates/algeon-datafusion/src/native/</code> for shape recognition and lowering,{" "}
-        <code>crates/algeon-datafusion/src/native_exec/</code> for wrappers,{" "}
-        <code>crates/algeon-datafusion/src/cugraph_sql/</code> and <code>crates/algeon-datafusion/src/cuvs_sql/</code> for the
-        GPU UDTF families, <code>crates/algeon-datafusion/src/native_report/</code> for report
-        rows, and <code>crates/algeon-datafusion/src/error.rs</code> for adapter errors.</>,
-    },
-    {
-      kind: 'planning', name: 'query-planning', note: 'IR · optimizer · capability · proof', tone: 'plan',
-      sub: 'crates/algeon-query-planning',
-      detail: <>The closed planning contract. It owns <code>QueryPlan</code>,
-        expressions, source facts, capability analysis, proof diagnostics,
-        and compiled pipelines. It has no DataFusion or execution dependency.</>,
-    },
-    {
-      kind: 'runtime', name: 'query-runtime', note: 'lifecycle · ledger · grant · observation', tone: 'engine',
-      sub: 'crates/algeon-query-runtime',
-      detail: <>The resource authority. It consumes planning contracts and owns
-        the query service, attempt lifecycle, device placement, the single
-        per-device ledger, immutable grants, caches, observations, and metrics.</>,
-    },
-    {
-      kind: 'engine', name: 'query-engine', note: 'execution · composition', tone: 'bridge',
-      sub: 'crates/algeon-query-engine',
-      detail: <>The native execution owner. It composes one planning result
-        with one runtime grant and executes relational, graph, vector, and
-        source work. Callers import planning and runtime items from their own
-        crates.</>,
-    },
-    {
-      kind: 'bindings', name: 'components/(cudf, cugraph, cuvs, cuml)', note: 'safe Rust over RAPIDS', tone: 'gpu',
-      boundary: 'FFI / C ABI boundary',
-      sub: 'cudf · cugraph · cuvs',
-      detail: <>The component crates own RAII device memory, runtime and stream
-        invariants, RAPIDS interop contracts, and structured FFI errors. A
-        missing GPU capability is added here, not worked around above.</>,
-    },
-    {
-      kind: 'native', name: 'libcudf/libcugraph/libcuvs/libcuml + RMM', note: 'C / C++ / CUDA kernels · memory pool', tone: 'gpu',
-      sub: 'NVIDIA RAPIDS',
-      detail: <>CUDA kernels and the RMM allocator live below the Rust
-        boundary. C++ exceptions are converted at or below the C ABI and
-        surface in Rust as structured <code>Result</code>s.</>,
-    },
-  ]}
-  caption={<>Each layer depends only on the layers below it. Moving down the
-  stack, a query loses DataFusion types (at the adapter), then Rust plan
-  types (at the FFI boundary); moving up, results and errors gain structure
-  at each step.</>}
-/>
-
-The root workspace contains these crates. Default members are the adapter,
-`workloads`, and `query-engine`; the rest are built on request.
-
-| Crate | Path | Owns |
-| --- | --- | --- |
-| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph, cuVS, and cuML UDTFs, the GPU UDTF catalog, reports, and errors. The only crate that depends on DataFusion. |
-| `query-planning` | `crates/algeon-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
-| `query-runtime` | `crates/algeon-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
-| `query-engine` | `crates/algeon-query-engine` | Native execution composition. |
-| `workloads` | `crates/workloads` | Benchmark catalogs, fixtures, dataset discovery, and DataFusion registration. |
-| `server` | `crates/algeon-server` | Standalone binary/package shell for the Arrow Flight SQL service; implementation and library API belong to `algeon-datafusion::server`. |
-| `bench` | `crates/bench` | Benchmark, report, triage, and stress binaries. Non-default member. |
-| `tools` | `crates/tools` | Developer, operator, and explicit external-service E2E tools. Non-default member. |
-| `examples` | `crates/examples` | Runnable embedding examples. Non-default member. |
-| `cudf`, `cudf-sys`, `rapids-interop` | `components/cudf` | Safe Rust and FFI over libcudf and RMM, plus the shared RAPIDS interop types. |
-| `cugraph`, `cugraph-sys` | `components/cugraph` | Safe Rust and FFI over libcugraph. |
-| `cuvs`, `cuvs-sys` | `components/cuvs` | Safe Rust and FFI over libcuvs. |
-
-The three query crates are DataFusion-free for two reasons. DataFusion's
-`ExecutionPlan` is an open trait that changes with DataFusion releases, while
-`QueryPlan` is a closed set of nodes the native stack fully controls, so
-lowering absorbs upstream change in one place. And each crate can be tested
-alone: planning tests pin IR and proof behavior without a runtime or executor,
-runtime tests pin grants and lifecycle without the engine, and engine contract
-tests exercise the whole native path without DataFusion in scope.
-
-The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
-`Aggregate`, `Window`, `Sort`, `Limit`, `Join`, `Union`, `EdgeNormalize`,
-`GraphAlgorithm`, and `VectorAlgorithm`.
-
-## Integration surfaces
-
-| Surface | Use it when | Primary owner |
-| --- | --- | --- |
-| Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Algeon on a caller-owned `SessionStateBuilder`. | `crates/algeon-datafusion/src/session.rs`, `crates/algeon-datafusion/src/backend.rs` |
-| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `crates/algeon-server/` |
-| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `crates/algeon-datafusion/src/cugraph_sql/` |
-| cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `crates/algeon-datafusion/src/cuvs_sql/` |
-| GPU UDTF catalog | You want to list, describe, and validate the installed `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
-| Parquet sources | You need local or `s3://` Parquet tables to lower into native scan facts. | `crates/algeon-datafusion/src/native/source.rs`, `crates/algeon-datafusion/src/native/lowering/source/` |
-| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, UDTF validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
-
-The preferred embedded entry point is a process-scoped `AlgeonGpuBackend`. It
-installs the native optimizer and gives every installed session the same
-process-wide admission service and per-device memory ledger, so concurrent
-sessions draw from one GPU capacity authority
-(see [Admission & Memory Governance](./admission.mdx)). The cuGraph and cuVS
-lines require the matching feature; omit them for a pure relational session.
-
-```rust
-use datafusion::execution::SessionStateBuilder;
-use algeon_datafusion::{
-    backend::{GpuMemoryOwnership, AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile},
-    cugraph_sql::CugraphSqlConfig,
-    session::AlgeonSessionStateBuilderExt,
-};
-
-let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
-let backend = AlgeonGpuBackend::builder()
-    .devices([device])
-    .build()?;
-
-let state = backend
-    .install_on(SessionStateBuilder::new_with_default_features())?
-    .try_with_cugraph_sql(CugraphSqlConfig::default())?
-    .try_with_cuvs_sql()?
-    .build();
-```
-
-### Baseline preservation and requirements
-
-Installing the relational optimizer preserves the executable DataFusion
-baseline. A candidate that is `NotSupported` or `NotSelectedByCost` is reported
-but does not turn an otherwise valid query into an error. A caller that needs
-the final plan to avoid DataFusion CPU execution configures a completed-plan
-requirement such as `NoDataFusionCpu`; that requirement evaluates the exact
-plan after native selection. The full boundary is described in
-[Baseline preservation and final-plan requirements](./native-lowering.mdx#baseline-preservation-and-final-plan-requirements).
-
-### Feature gates
-
-| Feature | Adds |
+| Component | Work performed on the GPU |
 | --- | --- |
-| `cugraph` | cuGraph UDTFs and graph execution. |
-| `cuvs` | cuVS UDTFs (`cuvs_brute_force_knn`, `cuvs_kmeans`, `cuvs_pca`) and their GPU execution. |
-| `nvml` | Optional NVML device diagnostics. |
+| `cudf` | Parquet decoding and column operations, including joins and aggregation. |
+| `cugraph` | Graph construction and algorithms such as PageRank. |
+| `cuvs` | Vector search, clustering and dimensionality reduction. |
+| `cuml` | Machine learning operations and forest inference. |
 
-`algeon-datafusion` exposes these DataFusion-specific features; the private
-`server` shell forwards them to the adapter and engine.
+The adapter, runtime and engine call the components they need directly.
+Component APIs bind operations to a CUDA stream and memory resource; native
+RAPIDS libraries perform the work. Shared interop contracts preserve buffer
+ownership across library boundaries.
 
-## Specialized GPU UDTFs
+## Follow the data
 
-Graph, vector, and ML algorithms are exposed as GPU UDTFs. Their descriptors are
-projected through the shared GPU UDTF catalog, so `gpu_list_functions`,
-`gpu_describe_function`, and `gpu_validate_call` provide discovery and dry-run
-validation for every installed family without provider-specific metadata
-UDTFs. The recommended workflow for either family is:
+1. [From SQL to a GPU plan](./native-lowering.mdx) explains the translation of
+   CPU partitions and SQL semantics into a native schedule.
+2. [From Parquet to GPU memory](./data-path.mdx) follows bytes through local
+   storage, KvikIO, staging buffers and decoding.
+3. [Inside GPU execution](./gpu-execution.mdx) connects column layouts,
+   parallel work and CUDA streams.
+4. [GPU table functions](./gpu-table-functions.mdx) follows cuDF buffers through
+   cuGraph, cuVS and cuML, then back into relational operations.
+5. [Memory and query lifetime](./admission.mdx) explains admission, allocation
+   limits and safe reuse after a query finishes.
 
-1. `gpu_list_functions()` to discover enabled UDTFs, filtering with
-   `WHERE provider = 'cugraph'` or `'cuvs'` for one family.
-2. `gpu_describe_function('<fn>')` to inspect the fixed descriptor, including
-   signatures, options, schemas, examples, and limitations.
-3. `gpu_validate_call('<fn>', '<call_json>')` to check a JSON envelope
-   containing named relations and options without scanning inputs or
-   launching CUDA.
-4. Execute the UDTF once validation returns `valid = true`.
-
-### cuGraph SQL path
-
-With `--features cugraph`, every graph execution UDTF in
-`CUGRAPH_OPERATION_REGISTRY` is available as a `cugraph_*` UDTF:
-
-```sql
-SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))
-ORDER BY value DESC;
-```
-
-<SystemDiagram
-  ariaLabel="cuGraph SQL execution path"
-  lanes={[
-    {id: 'host', label: 'host'},
-    {id: 'gpu', label: 'gpu', tone: 'gpu'},
-  ]}
-  nodes={[
-    {
-      id: 'udtf', lane: 'host', col: 0,
-      kind: 'sql', name: 'cugraph_*()', note: ['UDTF', 'CugraphAlgoExec'], tone: 'plan',
-      sub: 'crates/algeon-datafusion/src/cugraph_sql/table_function.rs · crates/algeon-datafusion/src/cugraph_sql/exec/',
-      detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
-        resolves the edge relation in the DataFusion catalog, creates the
-        physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
-        The metadata UDTFs expose the same registry for humans and agents.</>,
-    },
-    {
-      id: 'gdf', lane: 'gpu', col: 1,
-      kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
-      sub: 'execute_edge_source_to_gpu',
-      detail: <>If the edge source is already a native GPU plan
-        (an <code>AlgeonNativeExec</code>),
-        its GPU-resident frame is handed forward without materializing host
-        Arrow. Otherwise DataFusion produces Arrow batches and Algeon imports
-        them into cuDF.</>,
-    },
-    {
-      id: 'graph', lane: 'gpu', col: 2,
-      kind: 'cuGraph', name: 'Graph<T>', note: ['prepared export', 'typed algorithm'], tone: 'graph',
-      sub: 'crates/algeon-query-engine/src/exec/graph_algorithm/',
-      detail: <>The engine prepares a cuDF table export, binds a cuGraph{" "}
-        <code>ResourceHandle</code> to a runtime on the same device and stream,
-        builds a typed cuGraph graph, and runs the selected algorithm. Graph
-        execution allocates inside the query's memory cap, so graph workspace
-        allocations (including libcugraph's own) are charged to the query.
-        Stable edge-id paths use borrowed device slices directly.</>,
-    },
-    {
-      id: 'res', lane: 'host', col: 3,
-      kind: 'result', name: 'relation rows', note: 'Arrow or GPU sink', tone: 'plain',
-      sub: 'QueryOutput::HostArrow · QueryOutput::GpuResident',
-      detail: <>Results return through the native query sink. SQL callers get
-        rows; composed GPU fragments may keep a GPU-resident handle. Interop
-        promises no unnecessary edge-source host round-trip, but output
-        conversion is algorithm- and sink-specific.</>,
-    },
-  ]}
-  edges={[
-    {from: 'udtf', to: 'gdf'},
-    {from: 'gdf', to: 'graph', label: 'edge columns'},
-    {from: 'graph', to: 'res'},
-  ]}
-  regions={[
-    {
-      label: 'same device/stream/provenance domain',
-      nodes: ['gdf', 'graph'],
-      tone: 'gpu',
-    },
-  ]}
-  caption={<>Arrows show where the edge data moves: from SQL arguments to a
-  GPU frame, then into a typed graph, then back to the caller as rows. Inside
-  the shaded region the data stays on one device and stream; a value crosses
-  to host memory only at the ends of the path.</>}
-/>
-
-cuGraph shares the native cuDF runtime, metrics, memory cap, and structured
-error handling; it is not a separate service boundary. The UDTF reference
-lives in [cuGraph SQL API](../cugraph/overview.mdx).
-
-### cuVS SQL path
-
-With `--features cuvs`, `cuvs_brute_force_knn`, `cuvs_kmeans`, and `cuvs_pca`
-run on the GPU once the session installs cuVS SQL (`try_with_cuvs_sql()`;
-the Flight SQL server installs it on every session it builds) and a
-`AlgeonGpuBackend` is present. They follow the cuGraph path with one
-difference: instead of an edge relation, they take vector relations that the
-adapter lowers to a `VectorAlgorithm` node, and the engine executes that node
-through the `cuvs` component inside the same admitted memory cap. Each
-call builds the index, model, or transform it needs for that statement; there
-is no cross-statement cache of vector artifacts. See
-[cuVS SQL API](../cuvs/overview.mdx#execution) for the execution conditions
-and UDTF reference.
-
-## Lakehouse and workspace boundary
-
-Source data and the interactive workspace stay separate:
-
-- Local and `s3://` Parquet scans lower to format-neutral scan facts in the
-  adapter.
-- Interactive DDL such as `CREATE VIEW` belongs in a mutable DataFusion
-  workspace, including graph edge views built over source tables.
-- The Flight SQL server can expose a workspace overlay so users get short names
-  without teaching a read-only source catalog to accept views.
-
-Enable footer pruning (`native.lakehouse_footer_pruning`, or
-`AlgeonNativeExecutionConfig::with_lakehouse_footer_pruning` in the library) to
-let native object-store scans use Parquet footers for safe static and
-dimension-derived row-group pruning before execution.
-
-Iceberg sources are not supported; see
-[Iceberg support](../integration/overview.mdx#iceberg-support).
-
-## Where to change what
-
-For contributors, the ownership table above is the routing rule: DataFusion
-types stop at the adapter, plan and proof semantics live in planning, resource
-decisions live in runtime, execution composition lives in the engine, and
-missing GPU capability is added in the component crates rather than worked
-around above them. The table below maps common changes to their home and the
-contract each one must keep stable.
-
-| If you are changing... | Home | Keep stable |
-| --- | --- | --- |
-| Which DataFusion physical shapes lower natively | `crates/algeon-datafusion/src/native/normalize.rs`, `crates/algeon-datafusion/src/native/lowering/`, `crates/algeon-datafusion/src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names, final-plan requirements |
-| Native IR, optimizer, capability, proof, or compiled-pipeline semantics | `crates/algeon-query-planning/src/{plan,expr,source,optimizer,capability,admission,pipeline}/` | One proof path and structured planning diagnostics; no family-name shortcuts |
-| Attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/algeon-query-runtime/src/{attempt,runtime,observability,metrics}/` | One ledger, immutable grants, and runtime observation projections |
-| Native execution semantics or planning/runtime composition | `crates/algeon-query-engine/src/exec/` | Engine execution contracts |
-| cuGraph or cuVS SQL behavior | `crates/algeon-datafusion/src/cugraph_sql/`, `crates/algeon-datafusion/src/cuvs_sql/`, `crates/algeon-datafusion/src/gpu_functions/`, `crates/algeon-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
-| Parquet source or workspace-overlay behavior | `crates/algeon-datafusion/src/native/source.rs`, `crates/algeon-datafusion/src/native/lowering/source/`, server workspace configuration | Source diagnostics and credential-safe error facts |
-| GPU memory, streams, source readers, or graph/vector interop | `components/cudf`, `components/cugraph`, `components/cuvs` | Component crate APIs and FFI error mapping |
-| Public diagnostics | `crates/algeon-datafusion/src/native_report/schema.rs`, `crates/algeon-datafusion/src/native_exec/metrics/`, `crates/algeon-datafusion/src/error.rs` | TSV headers, metric names, `ErrorCode`s |
-
-Lowering extension steps are on
-[Extending native lowering](./native-lowering.mdx#extending-native-lowering).
-The [Glossary](../reference/glossary.md) defines the terms used across these
-pages.
+Configuration and API examples live in [Integrating Algeon](../integration/overview.mdx).
+The [Glossary](../reference/glossary.md) defines the vocabulary used here.

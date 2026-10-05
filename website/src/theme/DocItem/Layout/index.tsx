@@ -202,7 +202,7 @@ export default function DocItemLayout({children}: Props): ReactNode {
       </div>
 
       {showPinnedTOC && (
-        <div className="col col--3">
+        <div className={clsx('col col--3', styles.tocCol)}>
           <div className={styles.pinnedTocContainer}>
             <div className={styles.pinnedTocLineHeader}>
               <button

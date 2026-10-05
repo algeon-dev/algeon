@@ -102,11 +102,22 @@
 /* Give the wide wordmark logo room to breathe in the navbar. */
 :root {
   --ifm-navbar-height: 3.75rem;
+  scrollbar-gutter: stable;
 }
 
 :root:root {
   --doc-sidebar-width: 260px;
   --ifm-container-width-xl: 1560px;
+  --algeon-layout-width: 1600px;
+  --algeon-layout-toc-width: 295px;
+}
+
+@media (min-width: 1601px) {
+  .navbar__inner {
+    max-width: var(--algeon-layout-width);
+    margin-inline: auto;
+    padding-inline: 1.75rem;
+  }
 }
 
 @media (min-width: 997px) {
@@ -121,28 +132,28 @@
 }
 
 @media (min-width: 997px) and (pointer: fine) {
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar {
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar {
     scrollbar-color: transparent transparent;
   }
 
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar::-webkit-scrollbar-track,
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar::-webkit-scrollbar-thumb {
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar::-webkit-scrollbar-track,
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar::-webkit-scrollbar-thumb {
     background: transparent;
   }
 
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover,
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within {
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover,
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within {
     scrollbar-color: var(--ifm-scrollbar-thumb-background-color)
       var(--ifm-scrollbar-track-background-color);
   }
 
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover::-webkit-scrollbar-track,
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within::-webkit-scrollbar-track {
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover::-webkit-scrollbar-track,
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within::-webkit-scrollbar-track {
     background: var(--ifm-scrollbar-track-background-color);
   }
 
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover::-webkit-scrollbar-thumb,
-  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within::-webkit-scrollbar-thumb {
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:hover::-webkit-scrollbar-thumb,
+  :is(.theme-doc-sidebar-container nav.menu, .theme-doc-toc-desktop).thin-scrollbar:focus-within::-webkit-scrollbar-thumb {
     background: var(--ifm-scrollbar-thumb-background-color);
   }
 }
@@ -674,6 +685,30 @@
 .blog-wrapper.blog-list-page main > article > header h2 {
   font-size: clamp(2rem, 2.25vw, 2.35rem);
   line-height: 1.16;
+}
+
+@media (min-width: 1601px) {
+  .blog-wrapper .theme-layout-main > .container {
+    max-width: var(--algeon-layout-width);
+  }
+
+  .blog-wrapper .theme-layout-main > .container > .row {
+    justify-content: flex-start;
+  }
+
+  .blog-wrapper .theme-layout-main > .container > .row > aside.col {
+    --ifm-col-width: var(--doc-sidebar-width);
+    padding-left: 1.75rem;
+  }
+
+  .blog-wrapper .theme-layout-main > .container > .row > main.col {
+    flex: 1 1 0;
+    max-width: calc(100% - var(--doc-sidebar-width) - var(--algeon-layout-toc-width));
+  }
+
+  .blog-wrapper .theme-layout-main > .container > .row > .col--2 {
+    --ifm-col-width: var(--algeon-layout-toc-width);
+  }
 }
 
 /* Design page table sizing. */

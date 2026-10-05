@@ -1,0 +1,115 @@
+---
+sidebar_position: 3
+title: From Parquet to GPU memory
+description: "Follow metadata and column bytes through KvikIO, host staging, GPUDirect Storage and cuDF decoding."
+---
+
+import {ParquetRead, StorageRoutes} from '@site/src/components/design/GuideDiagrams';
+
+# From Parquet to GPU memory
+
+A Parquet file contains compressed column pages plus metadata describing their
+locations. A GPU query needs decoded columns in **VRAM**, the GPU's local
+device memory. Between those representations, Algeon must select byte ranges,
+read them and decode them. Host staging buffers occupy separate system RAM.
+
+## Projection and scan pruning
+
+<ParquetRead />
+
+The scan can exclude data at several levels. A **row group** is a horizontal
+slice of a Parquet file, with a separate column chunk for each field.
+
+| Unit | How the scan is reduced |
+| --- | --- |
+| Files | Native lowering preserves the file set supplied by DataFusion's scan, including any upstream file or partition pruning. |
+| Column chunks | Projection keeps columns needed by downstream operators and predicates. In the [grouped-sum example](./native-lowering.mdx#translate-the-work), `status` must still be read for the filter even though it is absent from the final output. |
+| Row groups | Native lowering preserves explicit row-group selections and can use footer statistics, such as min/max and null counts, to exclude groups for supported predicates. Groups with insufficient evidence remain candidates. |
+| Rows | Predicates evaluate the rows in retained groups, inside the reader when pushed down or in a GPU filter operator. This reduces rows passed onward after decoding. |
+
+When a predicate is pushed into the cuDF reader, its statistics filter can
+reduce row groups further. Supported equality predicates can also use Bloom
+filters stored in the file. The predicate and available metadata determine
+which stages apply. For native S3 footer pruning, enable
+`native.lakehouse_footer_pruning`; see the
+[Parquet source flags](../integration/configuration.mdx#parquet-source-flags).
+
+The host reads metadata to identify schema, row groups and column ranges.
+Selected payload reaches GPU buffers through the cuDF datasource and KvikIO.
+cuDF decompresses and decodes the retained column chunks. Parquet bytes on disk
+and decoded columns can have very different sizes. A selective row predicate
+can still require reading many bytes when metadata cannot exclude row groups.
+
+Source-read observations report `pruning_input_row_groups`,
+`row_groups_after_stats_filter` and `row_groups_after_bloom_filter` when the
+reader supplies that evidence. Their starting count is already after the
+caller's row-group selection. A missing stage count means it was not reported;
+it does not mean zero groups survived. Compare these counts with output rows
+to distinguish metadata pruning from row filtering.
+
+## The transport depends on the source
+
+<StorageRoutes />
+
+### Local NVMe and compatibility mode
+
+In the cuDF integration used by Algeon,
+[local reads default to compatibility mode](https://github.com/algeon-dev/cudf/blob/algeon-26.08/cpp/src/io/utilities/config_utils.cpp#L19-L33)
+(`KVIKIO_COMPAT_MODE=ON`) unless configured otherwise. KvikIO uses POSIX reads
+such as `pread` into a pinned host **bounce buffer**, then copies the bytes
+to device memory. Pinned memory remains at a stable physical location for
+the transfer. A bounce buffer is temporary staging storage, reused across
+chunks.
+
+On a discrete GPU attached through **PCI Express (PCIe)**, the copy moves
+bytes from host RAM across that link into VRAM. Selecting fewer column pages
+reduces both storage reads and PCIe traffic. The host/device link has its own
+bandwidth limit, separate from accesses within GPU memory; see NVIDIA's
+[host/device transfer guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#data-transfer-between-host-and-device).
+The link depends on the platform: some CPU/GPU systems use
+[NVLink-C2C](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/understanding-memory.html).
+The diagram illustrates the PCIe case.
+
+Buffered POSIX reads can pass through the operating system's page cache.
+Where enabled and supported, `O_DIRECT` bypasses that cache; the host staging
+and GPU copy still belong to this compatibility path. Larger range reads
+amortize syscall and submission overhead, while concurrent reads require
+more staging space.
+
+### GPUDirect Storage
+
+With a suitable filesystem, driver and device configuration, KvikIO can use
+cuFile and **GPUDirect Storage (GDS)**. Storage hardware transfers the payload
+to GPU memory through **DMA**, direct memory access, avoiding the host payload
+bounce buffer. CPU code still opens files and submits requests. The payload
+still traverses the machine's I/O interconnect; PCIe switches and root-port
+placement affect the route between an NVMe device and GPU VRAM.
+
+`AUTO` permits a POSIX fallback, and cuFile also has its own compatibility
+mode. Small or unaligned requests may use alternate paths. An enabled setting
+alone therefore does not establish that a read used direct DMA.
+See [KvikIO's mode controls](https://docs.nvidia.com/kvikio/latest/runtime_settings/#compatibility-mode-kvikio-compat-mode)
+and the [GDS overview](https://docs.nvidia.com/gpudirect-storage/overview-guide/).
+
+### Object storage and libcurl
+
+Algeon's native S3 datasource uses KvikIO HTTP range reads. libcurl receives
+chunks into host buffers; KvikIO accumulates them in pinned staging memory
+and copies them to the GPU. The network receive buffer and pinned bounce
+buffer have different roles, even though both occupy host memory.
+
+**RDMA**, remote direct memory access, requires a compatible network and
+storage stack. It is distinct from local NVMe DMA. Algeon's HTTP/libcurl
+source follows the staged path shown above; an `s3://` URL does not imply
+RDMA or GDS. KvikIO's
+[remote transfer implementation](https://github.com/rapidsai/kvikio/blob/0f6900f08c5a7ca150689e5454ae28562f875eec/cpp/src/remote_handle.cpp#L37-L133)
+shows the host staging and device copy.
+
+## Source and workspace {/* #lakehouse-and-workspace-boundary */}
+
+Local and S3 Parquet are read-only sources. SQL views belong to the mutable
+DataFusion workspace; creating a view does not rewrite a Parquet file or
+materialize it on the GPU.
+Iceberg sources are currently [unsupported](../integration/overview.mdx#iceberg-support).
+
+Next, inspect [the decoded columns and their execution schedule](./gpu-execution.mdx).

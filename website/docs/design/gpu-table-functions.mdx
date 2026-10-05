@@ -1,0 +1,216 @@
+---
+sidebar_position: 5
+title: GPU table functions
+description: "Follow GPU UDTF inputs, buffer ownership and completion from cuDF through cuGraph, cuVS or cuML and back into SQL."
+---
+
+import {GpuUdtfFlow} from '@site/src/components/design/GuideDiagrams';
+import styles from '@site/src/components/design/styles.module.css';
+
+# GPU table functions
+
+A GPU UDTF returns a relation that can feed another SQL operator. Algeon binds
+its input subqueries into the DataFusion plan, executes the algorithm through
+the native engine and exposes its output columns to downstream consumers.
+The transfer contract specifies who owns the device buffers and when GPU work
+may read or release them.
+
+## An algorithm inside a query
+
+Assume registered relations `citations(src, dst, citation_year)` and
+`papers(paper_id, field)`, with matching integer vertex IDs. This example
+filters the graph's edges before PageRank, filters the scores afterward, then
+joins paper metadata and aggregates by field:
+
+```sql
+WITH ranked AS (
+  SELECT vertex, value
+  FROM cugraph_pagerank(
+    edges => (
+      SELECT src, dst
+      FROM citations
+      WHERE citation_year >= 2020
+    ),
+    alpha => 0.85
+  )
+)
+SELECT p.field, COUNT(*) AS paper_count, AVG(r.value) AS mean_pagerank
+FROM ranked r
+JOIN papers p ON p.paper_id = r.vertex
+WHERE r.value > 0.0001
+GROUP BY p.field;
+```
+
+The edge predicate changes the graph on which PageRank runs. The score
+predicate applies to its output; moving it before the algorithm would change
+the query's meaning. See the [PageRank reference](../cugraph/udtfs/centrality/cugraph_pagerank.mdx)
+for a captured dataset example and the full argument contract.
+
+Each SQL family registers a DataFusion `RelationPlanner`. Named relation
+arguments become logical plan children, including separate roles such as
+cuVS `dataset` and `queries`, or cuML `training` and `predict`. Extension
+planning creates the GPU execution nodes. Native lowering represents the
+operation as `GraphAlgorithm`, `VectorAlgorithm` or `MlAlgorithm`, with
+explicit inputs and a result schema; the compiled schedule contains the
+corresponding algorithm task.
+
+The illustration below follows an uncached call with supported surrounding
+SQL selected for native execution. Separate native fragments can exchange
+GPU-resident results within the attempt. Each fragment has its own compiled schedule;
+the composition does not require one fused kernel.
+
+<GpuUdtfFlow />
+
+Execution mode determines the host boundaries. In
+[`functions_only`](../integration/datafusion-session.mdx#choose-an-execution-mode),
+ordinary input subqueries and surrounding SQL execute on DataFusion CPU.
+Their Arrow batches require upload, and a CPU consumer requires host result
+materialization. A supported native consumer can continue from GPU columns
+without that intermediate round trip over PCIe.
+
+## From cuDF columns to a cuGraph result
+
+The cuDF frame retains ownership of its edge columns. Calling
+`try_prepare_device_table_export()` creates a `PreparedTableExport` containing
+the column layout, buffer ranges and device placement, together with producer
+readiness. The export also retains a shared owner of the frame. Preparing this
+description does not copy the edge values or transfer their allocation to
+cuGraph.
+
+The cuGraph resource handle binds to the execution runtime's device, CUDA
+stream and memory resource. Before graph construction, a read lease orders
+consumer access after the producer's work. The import checks the selected
+column types, active ranges and null contract. Graph construction then
+creates its own representation, including renumbering when requested.
+The `python_cugraph` construction path can first copy edge columns into owned
+cuDF storage for normalization. These steps can allocate and copy within
+VRAM; their precise semantics are covered by
+[Graph Inputs and Construction](../cugraph/graph-options.mdx).
+
+For PageRank, the native result object owns its vertex and score arrays.
+`to_dataframe(runtime)` copies those arrays into independently owned cuDF
+columns on the same GPU. The result can then outlive the cuGraph result
+object. Result-schema normalization supplies the SQL-facing `vertex` and
+`value` columns, and the native consumer can apply its filter, join or
+aggregate to the resulting `GpuDataFrame`.
+
+The PageRank result copy consumes device-memory bandwidth and temporarily
+requires both allocations. Keeping this boundary in VRAM avoids a host
+materialization, but the graph preparation and result conversion still have
+measurable costs.
+
+## Ownership lasts through GPU completion
+
+Rust lifetimes protect the borrowed view during submission. CUDA operations
+can finish after a Rust call returns, so the interop contract also carries
+completion evidence. `algeon-interop` owns this contract; the cuDF adapters
+provide its CUDA implementation and expose the types through
+`cudf::interop::contract`.
+
+| State | Storage owner and ordering |
+| --- | --- |
+| Prepared export | The producer still owns the allocation. The description records its layout and readiness, and can retain a shared producer owner. |
+| Active read lease | The consumer stream is ordered after producer readiness, using a CUDA event when needed. The lease bounds access to the export. |
+| Read submitted | `complete()` records completion after the consumer's reads. A pending `LeaseCompletion` retains its witness and producer owner until those reads finish. |
+| Owner release | Explicit synchronization or destruction settles the pending completion before releasing its retained owner. The allocation remains live while other owners still use it. |
+
+`complete()` can return while the GPU is still reading. A cuGraph graph can
+retain the pending input completion, allowing construction to return without
+an immediate host wait on that lease. Graph parking settles these input
+completions before the graph enters a reusable cache. An export without a
+retained owner requires synchronization before lease completion returns.
+
+The cleanup paths cover early returns as well. Dropping an incomplete read
+lease invokes the backend completion fallback. Dropping a pending
+`LeaseCompletion` waits on its witness; if that wait fails, the retained owner
+is deliberately leaked because queued reads may still reference it. Attempt
+cleanup and device capacity reuse follow the
+[completion and release contract](./admission.mdx#resident-handoff-and-release).
+
+Active cuGraph, cuVS and cuML resources are bound to their runtime context;
+their Rust wrappers restrict transfer between threads. A graph prepared for
+cache transfer uses `ParkedGraph` with a completion event. Resuming it on an
+attempt's stream establishes the dependency before algorithm execution.
+
+## cuVS and cuML layouts and result ownership
+
+Columnar SQL input and an algorithm's matrix layout can differ. The supported
+element types, null checks and shape checks are part of the library boundary.
+For list vectors, Algeon validates the active offsets and common vector
+dimension before exposing a tensor view.
+
+<div className={styles.algorithmComparison}>
+
+| Boundary | cuGraph | cuVS | cuML |
+| --- | --- | --- | --- |
+| Algorithm input | Edge columns become a constructed graph. Normalization and renumbering can create additional storage. | Separate feature columns are packed into a dense matrix. Supported, validated list children can be borrowed as tensors when the runtime binding matches; other paths copy or pack. | SQL execution packs feature relations into the matrix layout required by the operation, such as column-major TSVD or row-major prediction input. |
+| Result to cuDF | PageRank copies cuGraph-owned result arrays into cuDF columns on the device. | Runtime-owned output buffers can be consumed as cuDF columns without copying that allocation. Relational assembly can still gather IDs, sort or create other columns. | Validated runtime-owned output buffers can become cuDF columns. Matrix unpacking and output ID assembly can require further device work. |
+| Algorithm state | An eligible constructed graph can use the server's accounted graph cache. | SQL indexes and fitted transforms are local to the evaluated statement. There is no persistent SQL vector-index cache. | Fitting UDTFs release their model after the call. Forest inference binds an imported model; SQL does not expose a reusable fitted-model cache. |
+
+</div>
+
+An output buffer's ownership transfer is narrower than a zero-copy claim for
+the whole UDTF. For example, kNN output assembly maps neighbor ordinals back
+to relation IDs and orders the returned neighbors on the GPU. A cuML
+prediction retains its model and feature matrix through the native read
+lifetime, even though the output becomes a separate relation.
+
+The input contracts are documented in [Vector Inputs](../cuvs/vector-inputs.mdx)
+and [ML Inputs](../cuml/ml-inputs.mdx). The API references describe
+[cuVS statement lifetimes](../cuvs/overview.mdx#execution) and
+[cuML model lifetimes](../cuml/overview.mdx#execution-and-lifetime).
+
+## Resident results and the query memory cap
+
+An interop read lease protects a library's access to producer buffers. A
+resident result also carries query-runtime ownership and accounting across
+native consumers. `GpuDataFrame` records placement and retained owners;
+`GpuResultHandle` exposes a resident result with its completion dependencies.
+A resident source must match its declared schema and the consumer's device.
+The handle also retains producer execution identity and graph-source
+provenance when available.
+
+Derived frames can contain a mixture of aliases and newly allocated columns.
+The identity-aware residency path associates a retained source lease with
+the `ColumnMemoryIdentity` values it protects. A later projection preserves
+that lease when those columns survive. When only fresh columns remain, the
+corresponding transitive lease can be released without retaining an unrelated
+source allocation.
+
+The attempt's immutable grant applies across its native fragments. For an
+uncached UDTF, graph workspace, packed matrices and algorithm outputs allocate
+through the query domain, alongside relational intermediates. cuML
+random-forest fitting also routes its native pool streams through that domain.
+Those streams share the
+allocation limit; they do not obtain independent query grants.
+
+Reusable cached graphs have separate device-ledger charges. On a cache hit,
+the attempt stream waits for the parked graph, while algorithm workspace and
+outputs allocate under the borrowing attempt. The insertion path copies edges
+into the cache allocation scope, constructs the graph and runs the initial
+algorithm there, then copies its result into the attempt domain. Input
+columns, graph or index state and output buffers can coexist in VRAM, and an
+allocation can fail at its domain's cap. The
+[memory and query lifetime page](./admission.mdx) describes that enforcement.
+
+## Observe the boundaries
+
+Use the [plan and runtime artifacts](./native-lowering.mdx#connect-the-plan-to-an-execution)
+to distinguish native composition from host boundaries. Planning output alone
+does not measure uploads, copies or algorithm time.
+
+Graph runtime rows include `gpu_resident_input_handoffs`,
+`host_to_device_uploads` and `device_to_host_materializations`. These counters
+describe input and output boundaries; a resident handoff does not prove the
+absence of device copies during normalization or result conversion. PageRank's
+`algorithm_metadata` records iteration count and convergence information.
+
+cuVS operator stages separate `vector_pack`, `vector_native` and
+`vector_assemble`; cuML uses `ml_pack`, `ml_native` and `ml_assemble`. Stage
+identity includes the algorithm, relation role where applicable, and runtime
+binding. The pack stage also records matrix layout and dimension. A pack
+stage can cover validation and a borrowed tensor view, so its output bytes
+alone do not establish the number of bytes copied.
+
+Next, follow [memory and query lifetime](./admission.mdx) through admission,
+cancellation and resource release.
