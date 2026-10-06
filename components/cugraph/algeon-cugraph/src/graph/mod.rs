@@ -262,6 +262,25 @@ impl<T> Graph<T> {
         self
     }
 
+    /// Waits for graph construction to finish reading prepared inputs and
+    /// releases their retained producer owners.
+    ///
+    /// Prepared construction remains asynchronous until this boundary, parking,
+    /// or graph destruction. This method waits on the construction completion
+    /// witnesses; it does not wait for algorithm work submitted afterward.
+    /// On failure, unfinished witnesses and their owners remain retained.
+    pub fn synchronize_input_reads(&mut self) -> Result<()> {
+        self.finish_input_reads("Graph::synchronize_input_reads")
+    }
+
+    fn finish_input_reads(&mut self, operation: &'static str) -> Result<()> {
+        if let Some(pending) = self.pending_input_completion.as_mut() {
+            pending.synchronize(operation)?;
+        }
+        self.pending_input_completion = None;
+        Ok(())
+    }
+
     /// Park this graph for transfer to another Rust thread.
     ///
     /// Parking consumes the non-Send [`Graph`] and returns a [`ParkedGraph`]
@@ -281,11 +300,7 @@ impl<T> Graph<T> {
         let operation = "Graph::park";
         self.validate_runtime_bound_transfer(handle, operation)?;
 
-        if let Some(pending) = self.pending_input_completion.as_mut() {
-            pending.synchronize(operation)?;
-        }
-        drop(self.pending_input_completion.take());
-
+        self.finish_input_reads(operation)?;
         self.park_recorded(handle, operation)
     }
 
@@ -331,15 +346,8 @@ impl<T> Graph<T> {
                 )
                 .with_context("handle_binding_id", entering.to_string()));
         }
-        let mut this = self;
-        if let Some(pending) = this.pending_input_completion.as_mut() {
-            pending.synchronize(operation)?;
-        }
-        // Release the witnesses before the park event is recorded: a parked
-        // graph outlives this call, so retaining them would keep its input
-        // column owners alive for the whole cached lifetime.
-        drop(this.pending_input_completion.take());
-        this.park_recorded(handle, operation)
+        self.finish_input_reads(operation)?;
+        self.park_recorded(handle, operation)
     }
 
     fn park_recorded(self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<ParkedGraph<T>> {

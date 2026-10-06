@@ -12,7 +12,7 @@ benchmark generators (`fixture/tpc-h/`, `fixture/tpc-ds/`, `fixture/clickbench/`
 | [`amazon_reviews_2023/`](amazon_reviews_2023/README.md) | Amazon Reviews 2023 Electronics JSONL, 27 GB | `reviews` (43.9M), `products` (1.6M); 11 GB | `scripts/prepare.py` | semantic catalog search, review clustering and UMAP; relational joins and aggregation |
 | [`ember2024/`](ember2024/README.md) | EMBER2024 archives and weekly JSONL, 24 GB compressed | `test`, `challenge`, `train` feature splits; 5.2 GB | `scripts/prepare.py` via `prepare.sh` | `cuml_forest_predict` demos, `forest_predict` bench |
 | [`kuairand/`](kuairand/README.md) | KuaiRand recommendation logs (Pure / 1K / 27K), 194 MB to 46 GB | `interactions` (2.6M to 323M), `users` (27K), `videos` (7.6K to 32M), `video_stats`; 81 MB to 40 GB | `scripts/prepare.py` | sequential recommendation, unbiased offline evaluation, multi-table join and group-by demos |
-| [`merrec/`](merrec/README.md) | MerRec (Mercari C2C recommendation), 6 monthly partitions | `events`, `items`; 80M items, 1B events | `scripts/prepare.py` | sequential recommendation, C2C e-commerce interaction graph, relational join and aggregation demos |
+| [`merrec/`](merrec/README.md) | MerRec (Mercari C2C recommendation), 6 monthly partitions | `events`, `items`; six-month source: 1.268B events; unique item count recorded after conversion | `scripts/prepare.py` | sequential recommendation, C2C e-commerce interaction graph, relational join and aggregation demos |
 
 ## Layout
 
@@ -33,7 +33,8 @@ under a dataset directory except `README.md`, `scripts/`, and `*.sh`.
 
 Put the generated output on local NVMe with a symlink when the repository
 sits on network storage; the converters write through the link. On the
-development host `raw/` stays on the EBS root volume and every generated path
+development host MerRec downloads and conversion scratch use NVMe; other
+`raw/` directories stay on the EBS root volume. Every generated path
 points into the same layout under `/mnt/algeon-nvme/algeon/fixture/demo/`:
 
 ```
@@ -56,7 +57,8 @@ fixture/fixture.sh amazon-reviews prepare --out-dir "$N/amazon_reviews_2023" --f
 fixture/fixture.sh ember2024 prepare --split challenge --split test --force   # writes through ember2024/parquet
 fixture/fixture.sh ember2024 prepare --split train --rows 1000000 --force
 fixture/fixture.sh kuairand prepare --out-dir "$N/kuairand" --force
-fixture/fixture.sh merrec prepare --out-dir "$N/merrec" --force
+fixture/fixture.sh merrec prepare --partition all --download --out-dir "$N/merrec" \
+  --duckdb-memory-limit 32GB --duckdb-threads 8 --force
 ```
 
 The instance NVMe does not survive a stop, so rerun these after one. The

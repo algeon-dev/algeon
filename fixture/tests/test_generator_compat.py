@@ -8,6 +8,8 @@ benchmark datasets.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import importlib.util
 import json
 import os
@@ -18,6 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -32,6 +35,7 @@ CITATION_NETWORK_PREPARE = REPO_ROOT / "fixture" / "demo" / "citation_network" /
 AMAZON_REVIEWS_PREPARE = REPO_ROOT / "fixture" / "demo" / "amazon_reviews_2023" / "scripts" / "prepare.py"
 KUAIRAND_PREPARE = REPO_ROOT / "fixture" / "demo" / "kuairand" / "scripts" / "prepare.py"
 MERREC_PREPARE = REPO_ROOT / "fixture" / "demo" / "merrec" / "scripts" / "prepare.py"
+MERREC_RUN = REPO_ROOT / "scripts" / "dev" / "merrec_run.py"
 
 
 def run_cmd(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -598,7 +602,18 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="algeon_merrec.") as tmp:
             root = Path(tmp)
             source_parquet = write_merrec_source(root)
-            result = run_cmd(merrec_prepare_command(root, source_parquet))
+            table = pq.read_table(source_parquet)
+            table = table.set_column(table.schema.get_field_index("name"), "name",
+                                     pa.array(["Running Shoes", "Leather Jacket", "Updated Shoes"]))
+            table = table.set_column(table.schema.get_field_index("price"), "price",
+                                     pa.array([55.0, 120.0, 65.0]))
+            table = table.set_column(table.schema.get_field_index("brand_name"), "brand_name",
+                                     pa.array(["Nike", "Zara", None], type=pa.string()))
+            source_dir = root / "shards"
+            source_dir.mkdir()
+            pq.write_table(table.take([2, 0]), source_dir / "first.parquet")
+            pq.write_table(table.take([1]), source_dir / "second.parquet")
+            result = run_cmd(merrec_prepare_command(root, source_dir))
             self.assertEqual(result.returncode, 0, result.stderr)
 
             out_dir = root / "out"
@@ -607,13 +622,13 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             item_file = pq.ParquetFile(parquet_dir / "items.parquet")
             item_table = item_file.read()
             self.assertEqual(item_table.column("item_id").to_pylist(), [201, 202])
-            self.assertEqual(item_table.column("name").to_pylist(), ["Running Shoes", "Leather Jacket"])
-            self.assertEqual(item_table.column("price").to_pylist(), [55.0, 120.0])
+            self.assertEqual(item_table.column("name").to_pylist(), ["Updated Shoes", "Leather Jacket"])
+            self.assertEqual(item_table.column("price").to_pylist(), [65.0, 120.0])
             self.assertEqual(
                 item_table.column("category_path").to_pylist(),
                 ["Footwear > Athletic > Sneakers", "Clothing > Outerwear > Jackets"],
             )
-            self.assertEqual(item_table.column("brand_name").to_pylist(), ["Nike", "Zara"])
+            self.assertEqual(item_table.column("brand_name").to_pylist(), [None, "Zara"])
 
             event_file = pq.ParquetFile(parquet_dir / "events.parquet")
             event_table = event_file.read()
@@ -640,6 +655,269 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertEqual(manifest["counts"]["events"], 3)
             self.assertEqual(manifest["counts"]["items"], 2)
             self.assertEqual(manifest["counts"]["users"], 2)
+            self.assertEqual(manifest["dataset"]["selection"], "explicit")
+            self.assertEqual(manifest["dataset"]["input_rows"], 3)
+            self.assertEqual(len(manifest["sources"]), 2)
+
+    def test_merrec_row_group_streaming_bounds_dictionary_reader_memory(self) -> None:
+        module = load_script_module("merrec_streaming_under_test", MERREC_PREPARE)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_streaming.") as tmp:
+            path = Path(tmp) / "sorted.parquet"
+            source = pa.table({
+                "id": pa.array(range(32_768), type=pa.int64()),
+                "payload": pa.array([f"{index:064x}" for index in range(32_768)]),
+            })
+            with pq.ParquetWriter(path, source.schema, use_dictionary=["payload"]) as writer:
+                for _ in range(65):
+                    writer.write_table(source)
+            reader = pq.ParquetFile(path)
+            baseline = pa.total_allocated_bytes()
+            peak = 0
+            group_rows = []
+            for table in module.output_row_groups(reader, 65_536):
+                peak = max(peak, pa.total_allocated_bytes() - baseline)
+                group_rows.append(table.num_rows)
+            self.assertEqual(group_rows, [65_536] * 32 + [32_768])
+            self.assertLess(peak, source.nbytes * 8,
+                            "decoded dictionaries must not accumulate across source row groups")
+
+    def test_merrec_explicit_limit_and_empty_source_retain_event_counts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_limits.") as tmp:
+            root = Path(tmp)
+            source = write_merrec_source(root)
+            result = run_cmd([*merrec_prepare_command(root, source), "--limit", "2"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            events = pq.read_table(root / "out/parquet/events.parquet")
+            self.assertEqual(events.column("item_id").to_pylist(), [201, 202])
+            manifest = json.loads((root / "out/manifest.json").read_text())
+            self.assertEqual(manifest["dataset"]["input_rows"], 3)
+            self.assertEqual(manifest["counts"]["events"], 2)
+            pq.write_table(pq.read_table(source).slice(0, 0), source)
+            result = run_cmd([*merrec_prepare_command(root, source), "--force"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ["items", "events"]:
+                self.assertEqual(pq.ParquetFile(root / f"out/parquet/{name}.parquet").metadata.num_rows, 0)
+
+    def test_merrec_prepare_requires_complete_sources_even_when_sample_exists(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_scope.") as tmp:
+            root = Path(tmp)
+            sample_dir = root / "raw" / "sample"
+            sample_dir.mkdir(parents=True)
+            source = write_merrec_source(root)
+            shutil.copy2(source, sample_dir / "20231001_000000000000.parquet")
+            result = run_cmd([sys.executable, str(MERREC_PREPARE), "--out-dir", str(root)])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("incomplete MerRec source", result.stderr)
+            self.assertFalse((root / "manifest.json").exists())
+
+    def test_merrec_managed_source_rejects_same_size_corruption(self) -> None:
+        module = load_script_module("merrec_source_integrity_under_test", MERREC_PREPARE)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_integrity.") as tmp:
+            root = Path(tmp)
+            source = write_merrec_source(root)
+            original = source.read_bytes()
+            directory = root / "raw" / "20231001"
+            directory.mkdir(parents=True)
+            damaged = bytearray(original)
+            damaged[4] ^= 1
+            (directory / "000000000000.parquet").write_bytes(damaged)
+            inventory = {"20231001": [{"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}]}
+            with patch.object(module, "PARTITIONS", inventory):
+                with self.assertRaisesRegex(SystemExit, "source integrity check failed"):
+                    module.main(["--shards", "1", "--raw-dir", str(root / "raw"),
+                                 "--out-dir", str(root / "out")])
+            self.assertFalse((root / "out" / "manifest.json").exists())
+
+    def test_merrec_runner_exports_results_outside_repository(self) -> None:
+        module = load_script_module("merrec_runner_export_under_test", MERREC_RUN)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_export.") as tmp:
+            root = Path(tmp)
+            module.REPORT = root / "report"
+            module.DATA = root / "parquet"
+            module.DATA.mkdir()
+            pq.write_table(pa.table({"events": [494357]}), module.DATA / "counts.parquet")
+
+            footer = {"record_type": "footer", "data": {"attempt_report": {
+                "final_domain_usage": {"peak_bytes": 8192, "peak_aligned_bytes": 8448}}}}
+            runtime_jsonl = (json.dumps(footer) + "\n").encode()
+            control = {"query_id": "query-1", "runtime_jsonl_follows": True, "state": "sealed"}
+
+            def do_action(action, options):
+                self.assertEqual(action.type, "GetQueryRuntimeArtifact")
+                self.assertEqual(bytes(action.body), b"query-1")
+                return iter([SimpleNamespace(body=json.dumps(control).encode()),
+                             SimpleNamespace(body=runtime_jsonl)])
+
+            class Client:
+                client = SimpleNamespace(do_action=do_action)
+                options = None
+
+                def run(self, name: str, sql: str) -> dict:
+                    return {"name": name, "sql": sql, "status": "ok", "rows": 1, "query_id": "query-1"}
+
+            record = module.run_and_export(Client(), "counts", "SELECT COUNT(*) AS events FROM merrec_events")
+            self.assertEqual(record["csv_export"]["status"], "written")
+            self.assertTrue(Path(record["csv_export"]["path"]).is_file())
+            self.assertEqual(record["runtime_artifact"]["status"], "written")
+            runtime_path = Path(record["runtime_artifact"]["path"])
+            with gzip.open(runtime_path, "rb") as output:
+                self.assertEqual(output.read(), runtime_jsonl)
+            control.update(runtime_jsonl_follows=False, state="unavailable", reason="capture_disabled")
+            record = module.run_and_export(Client(), "counts", "SELECT COUNT(*) AS events FROM merrec_events")
+            self.assertEqual(record["status"], "ok")
+            self.assertEqual(record["runtime_artifact"]["status"], "unavailable")
+            self.assertEqual(record["runtime_artifact"]["control"]["reason"], "capture_disabled")
+            self.assertFalse(runtime_path.exists(), "a new run must not retain an older runtime artifact")
+            with patch.object(Client.client, "do_action", side_effect=RuntimeError("artifact expired")):
+                record = module.run_and_export(Client(), "counts", "SELECT COUNT(*) AS events FROM merrec_events")
+            self.assertEqual(record["status"], "ok")
+            self.assertEqual(record["runtime_artifact"], {"status": "error", "error": "artifact expired"})
+
+    def test_merrec_runner_waits_for_failed_query_runtime_artifact_without_rerunning(self) -> None:
+        module = load_script_module("merrec_runner_pending_runtime_under_test", MERREC_RUN)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_runtime_wait.") as tmp:
+            module.REPORT = Path(tmp) / "report"
+            pending = {"state": "active", "retryable": True, "runtime_jsonl_follows": False,
+                       "attempt": None, "query_id": "failed-query"}
+            sealed = {**pending, "state": "sealed", "retryable": False, "runtime_jsonl_follows": True}
+            runtime_jsonl = b'{"record_type":"footer","data":{"peak_bytes":8192}}\n'
+            responses = iter([
+                [SimpleNamespace(body=json.dumps(pending).encode())],
+                [SimpleNamespace(body=json.dumps(sealed).encode()), SimpleNamespace(body=runtime_jsonl)],
+            ])
+            calls = []
+            runs = []
+
+            def do_action(action, options):
+                calls.append((action.type, bytes(action.body), options.timeout))
+                self.assertEqual(options.headers, [(b"authorization", b"test-token")])
+                return iter(next(responses))
+
+            class Client:
+                client = SimpleNamespace(do_action=do_action)
+                options = module.flight.FlightCallOptions(timeout=1, headers=[(b"authorization", b"test-token")])
+
+                def run(self, name, sql):
+                    runs.append(sql)
+                    return {"name": name, "sql": sql, "status": "error", "elapsed_s": 7.0,
+                            "error": "query memory cap exceeded", "query_id": "failed-query"}
+
+            clock = [0.0]
+            with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(module.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+                record = module.run_and_export(Client(), "graph", "SELECT * FROM graph")
+            self.assertEqual(runs, ["SELECT * FROM graph"])
+            self.assertEqual(record["status"], "error")
+            self.assertEqual(record["elapsed_s"], 7.0)
+            self.assertEqual(record["error"], "query memory cap exceeded")
+            self.assertEqual(record["runtime_artifact"]["status"], "written")
+            self.assertEqual(record["csv_export"], {"status": "skipped", "reason": "query_failed"})
+            self.assertEqual([call[:2] for call in calls], [("GetQueryRuntimeArtifact", b"failed-query")] * 2)
+            self.assertAlmostEqual(calls[1][2], 0.9)
+            with gzip.open(record["runtime_artifact"]["path"], "rb") as runtime:
+                self.assertEqual(runtime.read(), runtime_jsonl)
+
+    def test_merrec_runtime_artifact_deadline_preserves_original_pending_control(self) -> None:
+        module = load_script_module("merrec_runner_runtime_deadline_under_test", MERREC_RUN)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_runtime_deadline.") as tmp:
+            module.REPORT = Path(tmp)
+            initial = {"state": "pending", "retryable": True, "runtime_jsonl_follows": False,
+                       "attempt": None, "query_id": "query-1"}
+            later = {**initial, "state": "active"}
+            clock = [0.0]
+            calls = []
+
+            def do_action(action, options):
+                calls.append(options.timeout)
+                control = initial if len(calls) == 1 else later
+                return iter([SimpleNamespace(body=json.dumps(control).encode())])
+
+            client = SimpleNamespace(client=SimpleNamespace(do_action=do_action),
+                                     options=module.flight.FlightCallOptions(timeout=0.25))
+            with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(module.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+                artifact = module.capture_runtime_artifact(client, "graph", "query-1")
+            self.assertEqual(artifact, {"status": "unavailable", "control": initial})
+            self.assertEqual(len(calls), 3)
+            self.assertAlmostEqual(clock[0], 0.25)
+            self.assertFalse((module.REPORT / "results/graph.runtime.jsonl.gz").exists())
+
+            def timed_out_action(action, options):
+                if not calls:
+                    calls.append(options.timeout)
+                    return iter([SimpleNamespace(body=json.dumps(initial).encode())])
+                clock[0] = 0.25
+                raise TimeoutError("artifact call deadline expired")
+
+            calls.clear()
+            clock[0] = 0.0
+            client.client.do_action = timed_out_action
+            with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(module.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+                artifact = module.capture_runtime_artifact(client, "graph", "query-1")
+            self.assertEqual(artifact, {"status": "unavailable", "control": initial})
+
+            calls.clear()
+            clock[0] = 0.0
+            client.options = module.flight.FlightCallOptions(timeout=1800)
+
+            def long_query_timeout_action(action, options):
+                calls.append(options.timeout)
+                if len(calls) == 1:
+                    return iter([SimpleNamespace(body=json.dumps(initial).encode())])
+                clock[0] = 30.0
+                raise TimeoutError("artifact cleanup deadline expired")
+
+            client.client.do_action = long_query_timeout_action
+            with patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(module.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+                artifact = module.capture_runtime_artifact(client, "graph", "query-1")
+            self.assertEqual(artifact, {"status": "unavailable", "control": initial})
+            self.assertEqual(calls[0], 30.0)
+            self.assertAlmostEqual(calls[1], 29.9)
+
+    def test_merrec_runner_records_registered_sources_and_rejects_scope_switch(self) -> None:
+        module = load_script_module("merrec_runner_sources_under_test", MERREC_RUN)
+        with tempfile.TemporaryDirectory(prefix="algeon_merrec_runner.") as tmp:
+            root = Path(tmp)
+            sample = root / "sample's dataset"
+            full = root / "full"
+            manifests = []
+            for directory, events in ((sample, 3), (full, 30)):
+                (directory / "parquet").mkdir(parents=True)
+                manifest = {"counts": {"events": events}, "tables": {
+                    name: {"path": f"parquet/{name}.parquet"} for name in ("items", "events")}}
+                (directory / "manifest.json").write_text(json.dumps(manifest))
+                manifests.append(manifest)
+            module.SOURCE_DATA = full / "parquet"
+            query = root / "counts.sql"
+            query.write_text("SELECT COUNT(*) AS events FROM merrec_events")
+            executions = []
+
+            class Client:
+                def execute(self, sql):
+                    if sql.startswith("SHOW CREATE TABLE"):
+                        name = sql.removeprefix("SHOW CREATE TABLE merrec_")
+                        location = str(sample / "parquet" / f"{name}.parquet").replace("'", "''")
+                        return pa.table({"definition": [
+                            f"CREATE EXTERNAL TABLE merrec_{name} STORED AS PARQUET LOCATION '{location}'"
+                        ]}), "metadata"
+                    return pa.table({}), "registration"
+
+                def run(self, name, sql):
+                    executions.append(sql)
+                    pq.write_table(pa.table({"events": [3]}), module.DATA / f"{name}.parquet")
+                    return {"name": name, "sql": sql, "status": "ok", "rows": 1}
+
+            research = SimpleNamespace(ResearchClient=lambda uri: Client(), flight=SimpleNamespace(
+                FlightCallOptions=lambda **kwargs: None))
+            args = ["--report-dir", str(root / "report"), "--results-dir", str(root / "results"), str(query)]
+            with patch.object(module, "load_research_client", return_value=research):
+                self.assertEqual(module.main(args), 0)
+                self.assertEqual(json.loads((root / "report/input_manifest.json").read_text()), manifests[0])
+                self.assertEqual(module.main(["--register", "--data-dir", str(full / "parquet"), *args]), 1)
+            self.assertEqual(len(executions), 1, "a conflicting registration must stop before executing the query")
+            self.assertEqual(json.loads((root / "report/input_manifest.json").read_text()), manifests[0])
 
     @unittest.skipUnless(shutil.which("duckdb"), "duckdb CLI is required")
     def test_merrec_prepare_rejects_negative_price(self) -> None:
@@ -651,6 +929,18 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("negative price", result.stderr)
             self.assertFalse((root / "out" / "parquet" / "events.parquet").exists())
+
+            source_parquet = write_merrec_source(root)
+            result = run_cmd(merrec_prepare_command(root, source_parquet))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            paths = [root / "out" / "manifest.json", root / "out" / "parquet" / "events.parquet",
+                     root / "out" / "parquet" / "items.parquet"]
+            previous = [path.read_bytes() for path in paths]
+            write_merrec_source(root, invalid_price=True)
+            result = run_cmd([*merrec_prepare_command(root, source_parquet), "--force"])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("negative price", result.stderr)
+            self.assertEqual([path.read_bytes() for path in paths], previous)
 
     def test_fixture_router_exposes_merrec_prepare_help(self) -> None:
         result = run_cmd([str(FIXTURE_SH), "merrec", "prepare", "--help"])

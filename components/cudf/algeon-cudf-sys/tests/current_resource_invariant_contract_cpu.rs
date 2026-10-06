@@ -255,21 +255,22 @@ fn rmm_install_primitive_is_a_single_locked_choke_point() {
 }
 
 #[test]
-fn rmm_device_buffer_stream_allocations_use_explicit_memory_resource() {
+fn rmm_device_stream_allocations_use_explicit_memory_resource() {
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src");
     let mut violations = Vec::new();
 
     for entry in fs::read_dir(&src_dir).expect("native/src must be readable") {
         let path = entry.expect("native/src entry must be readable").path();
         let is_join_common = path.file_name().and_then(|name| name.to_str()) == Some("join_common.hpp");
-        if path.extension().and_then(|ext| ext.to_str()) != Some("cpp") && !is_join_common {
+        if !matches!(path.extension().and_then(|ext| ext.to_str()), Some("cpp" | "cu")) && !is_join_common {
             continue;
         }
 
         let source = fs::read_to_string(&path).expect("native source file must be readable");
         let lines: Vec<_> = source.lines().collect();
         for (index, line) in lines.iter().enumerate() {
-            if !line.contains("rmm::device_buffer") {
+            let device_vector_allocation = line.contains("rmm::device_uvector") && !line.contains("const&");
+            if !line.contains("rmm::device_buffer") && !device_vector_allocation {
                 continue;
             }
             let statement = statement_from(&lines, index);
@@ -280,7 +281,7 @@ fn rmm_device_buffer_stream_allocations_use_explicit_memory_resource() {
             {
                 let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("<unknown>");
                 violations.push(format!(
-                    "{}:{} rmm::device_buffer stream allocation must pass an explicit memory resource:\n{}",
+                    "{}:{} RMM device stream allocation must pass an explicit memory resource:\n{}",
                     name,
                     index + 1,
                     statement
@@ -291,7 +292,7 @@ fn rmm_device_buffer_stream_allocations_use_explicit_memory_resource() {
 
     assert!(
         violations.is_empty(),
-        "rmm::device_buffer(size, stream) uses RMM current resource; pass the caller's explicit \
+        "RMM device allocation without a resource uses RMM current resource; pass the caller's explicit \
          execution memory resource instead.\n{}",
         violations.join("\n\n")
     );

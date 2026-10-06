@@ -125,7 +125,7 @@ Native settings are accepted both under `[native]` and through the environment:
 | TOML field | Environment variable | Default |
 | --- | --- | --- |
 | `execution_mode` | `ALGEON_SERVER_EXECUTION_MODE` | `native_preferred` |
-| `max_source_chunk_bytes` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | 64 MiB |
+| `max_source_chunk_bytes` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | Derived from the admitted grant |
 | `max_row_groups_per_chunk` | `ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
 | `max_retry_attempts` | `ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
 | `max_source_reads_in_flight` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
@@ -151,9 +151,15 @@ variable is set.
 
 Native settings carry no device-budget planning placeholder. Device capacity
 is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)
-entries. `max_source_chunk_bytes` and `max_row_groups_per_chunk` are
-independent: each defaults to the engine default (64 MiB / `1`) when unset,
-and setting one no longer requires the other.
+entries. An omitted `max_source_chunk_bytes` uses the immutable grant to size
+source reads. Compatible row-group chunks are coalesced into batches;
+source-adjacent aggregates account for observed decoded and staged bytes per
+row and live allocation-domain usage before the next read. The allocator
+enforces the grant, including retained aggregate and graph state.
+
+Explicit `max_source_chunk_bytes` values limit the source-byte grouping target.
+`max_row_groups_per_chunk` defaults to `1`, preserving individual retry units
+inside coalesced reads. Each setting can be supplied independently.
 
 ## Authentication
 
@@ -241,6 +247,25 @@ The construction-policy override is rejected when
 but execution returns a structured `required_feature_disabled` error.
 Per-call named `construction_policy` and other graph values override these defaults; see
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
+
+Explicit cuGraph functions also accept host staging limits in the server TOML:
+
+```toml
+[cugraph]
+max_input_staging_bytes = 8589934592
+max_output_staging_bytes = 2147483648
+```
+
+Both values must be positive. Each defaults to 1 GiB when omitted. The input
+limit covers retained Arrow batches from edges and graph side inputs together;
+the output limit covers eagerly materialized Arrow results. Input buffers shared
+by slices or by different source partitions are counted once across retained
+batches. GPU-resident inputs
+bypass host input staging. These limits apply to host RAM separately from the
+query device grant, and the DataFusion memory pool may impose a lower allocation limit.
+Setting either field while `ALGEON_SERVER_CUGRAPH_ENABLED=false` fails startup.
+Embedded sessions pass `GpuIslandHostBoundaryConfig` through
+`CugraphSqlConfig.host_boundary_config`; conflicting reinstallations are rejected.
 
 cuVS has no enable variable. The server installs cuVS SQL on every session it
 builds; the `cuvs` feature decides whether the UDTFs execute or return a

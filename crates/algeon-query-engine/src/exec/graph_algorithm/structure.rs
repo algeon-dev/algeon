@@ -26,7 +26,7 @@ pub(super) fn execute_degrees_all(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
@@ -67,7 +67,7 @@ pub(super) fn execute_in_degrees_all(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
@@ -109,7 +109,7 @@ pub(super) fn execute_out_degrees_all(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     // out_degrees_all is layout-agnostic in the local `cugraph` crate; build Forward for
@@ -153,7 +153,7 @@ pub(super) fn execute_weakly_connected_components(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
@@ -196,7 +196,7 @@ pub(super) fn execute_strongly_connected_components(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
@@ -239,7 +239,7 @@ pub(super) fn execute_triangle_count_all(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
@@ -282,7 +282,7 @@ pub(super) fn execute_core_number(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let cn_params = CoreNumberParams {
         degree_type: degree_type_to_cugraph(params.degree_type, spec.graph_options.directed),
@@ -327,7 +327,7 @@ pub(super) fn execute_k_core(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let kc_params = k_core_params(params, spec.graph_options.directed)?;
 
@@ -377,7 +377,7 @@ pub(super) fn execute_minimum_spanning_tree(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
 
     run_with_cugraph_graph::<cugraph::Forward, _>(

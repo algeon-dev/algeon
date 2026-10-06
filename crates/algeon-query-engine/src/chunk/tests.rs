@@ -12,7 +12,7 @@ use arrow::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_planning::{
-    chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy},
+    chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel},
     error::QueryErrorCode,
     execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     expr::{BinaryOp, Expr, LiteralValue},
@@ -123,6 +123,22 @@ fn write_i64_parquet(path: &PathBuf, values: &[i64], max_row_group_rows: usize) 
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+#[test]
+fn adaptive_source_targets_follow_immutable_grant_and_explicit_targets() {
+    let model = SourceTaskMemoryModel::aggregate_pipeline(true);
+    for grant in [256 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 64 * 1024 * 1024 * 1024] {
+        let adaptive = bounded_policy(grant, MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES, 1);
+        let target = SourceChunkPlanningPolicy::for_source_task(adaptive, model);
+        assert_eq!(target.max_source_chunk_bytes, Some(grant / model.live_slot_count()));
+        assert_eq!(target.max_row_groups_per_chunk, 1);
+        let source_target = SourceChunkPlanningPolicy::from(adaptive).max_source_chunk_bytes.unwrap();
+        assert!(source_target > 0 && source_target < grant);
+        let explicit = SourceChunkPlanningPolicy::for_source_task(bounded_policy(grant, 16 * 1024 * 1024, 2), model);
+        assert_eq!(explicit.max_source_chunk_bytes, Some(16 * 1024 * 1024));
+        assert_eq!(explicit.max_row_groups_per_chunk, 2);
+    }
 }
 
 #[test]

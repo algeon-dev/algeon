@@ -21,7 +21,7 @@ files with which to evaluate false positives.
 | Item | Details |
 |---|---|
 | Source | [EMBER2024](https://github.com/FutureComputing4AI/EMBER2024): features for 3,232,000 files uploaded to VirusTotal between September 2023 and December 2024 |
-| Scale | Challenge: 6,315 malicious files, 3,225 of them Win32. Train and test: a 1% SHA-256 sample of vectors, plus metadata for every unique file |
+| Scale | Full deduplicated dataset: 2,626,000 train files (~1.56M Win32), 605,929 test files (359,994 Win32), and 6,315 challenge files (3,225 Win32) |
 | Preparation | About 24.3 GB of compressed raw archives. Python scripts read all three splits and write Parquet under `target/ember2024-research/` |
 | Python packages | Pinned in `fixture/demo/ember2024/research-requirements.txt` |
 | Server | `127.0.0.1:50062` with the EMBER model root; the captures used a 64 GiB device limit and 32 GiB per query |
@@ -66,10 +66,10 @@ and run the preparation script:
 ```
 
 The script reads all three splits, so allow time for the full metadata scan.
-It keeps the first row for each SHA-256 within a split. The challenge split
-keeps every unique row; train and test keep a one-percent SHA-256 sample of
-vectors and metadata for every unique row. IDs use disjoint ranges: train
-starts at `0`, test at `10,000,000`, and challenge at `20,000,000`.
+It keeps the first row for each SHA-256 within a split, preserving all unique
+rows across train, test, and challenge splits without downsampling. IDs use
+disjoint ranges: train starts at `0`, test at `10,000,000`, and challenge at
+`20,000,000`.
 
 Each vector row stores the full 2,568-element Float32 feature vector and a
 512-element `histogram`: a 256-bin byte histogram followed by a 256-bin
@@ -168,8 +168,8 @@ a result record under `docs/research/ember2024/results/`.
 | `ember_metadata_challenge` | 6,315 | SHA-256, file type, week, label, and family | Most examples |
 | `ember_research_vectors_challenge` | 6,315 | `id`, `split`, `label`, `vector`, `histogram` | Most examples |
 | `ember_metadata_train`, `ember_metadata_test` | 2,626,000; 605,929 | Metadata for every unique file | Classifier comparison |
-| `ember_research_vectors_train`, `ember_research_vectors_test` | 26,277; 6,102 | One-percent SHA-256 vector sample | Classifier comparison |
-| `ember_metadata`, `ember_research_vectors` | 3,238,244; 38,694 | All three splits combined, selected by `split` | Reference search |
+| `ember_research_vectors_train`, `ember_research_vectors_test` | 2,626,000; 605,929 | Full deduplicated vectors per split | Classifier comparison |
+| `ember_metadata`, `ember_research_vectors` | 3,238,244; 3,238,244 | All three splits combined, selected by `split` | Reference search |
 | `ember_attributions` | 6,315 | Signed SHAP values summed into 12 feature blocks | Forest review |
 | `ember_feature_groups` | 12 | Block index, name, first feature, and feature count | Forest review |
 | `ember_48_challenge_import_edges` | 80,673 | Sample-to-symbol edges | Import review |
@@ -177,11 +177,11 @@ a result record under `docs/research/ember2024/results/`.
 | `ember_48_challenge_import_sample_counts` | 3,225 | Import counts per sample, including isolates | Import review |
 | `ember_49_challenge_graph_seed` | 1 | The unlabeled seed file | Import review |
 
-The training query uses 15,588 sampled Win32 rows after joining vectors to
-metadata, and the test query evaluates 3,618 sampled Win32 rows from the
-later held-out period. Labels are joined after prediction for reporting. The
-cuVS examples pass only IDs and histograms to search, then join labels and
-family names after the UDTF returns.
+The training query trains over the full ~1.56M Win32 files in the training
+cohort after joining vectors to metadata, and the test query evaluates all
+359,994 held-out Win32 files from weeks 52 to 63. Labels are joined after
+prediction for reporting. The cuVS examples pass only IDs and histograms to
+search, then join labels and family names after the UDTF returns.
 
 ## Captured run
 

@@ -11,7 +11,6 @@ use datafusion::{
 #[cfg(feature = "cugraph")]
 use datafusion::{common::DataFusionError, execution::SessionState};
 
-use super::CugraphLogicalNode;
 #[cfg(not(feature = "cugraph"))]
 use super::planning::CugraphFeatureDisabledExec;
 #[cfg(feature = "cugraph")]
@@ -19,11 +18,20 @@ use super::{
     CugraphAlgoExec,
     planning::{literal_bfs_source_plan, validate_edge_source_schema},
 };
+use super::{CugraphLogicalNode, GpuIslandHostBoundaryConfig};
 #[cfg(feature = "cugraph")]
 use crate::session::{planning_native_execution_config, session_state_with_native_execution_config};
 
 #[derive(Debug)]
-pub struct CugraphExtensionPlanner;
+pub struct CugraphExtensionPlanner {
+    host_boundary_config: GpuIslandHostBoundaryConfig,
+}
+
+impl CugraphExtensionPlanner {
+    pub(crate) fn new(host_boundary_config: GpuIslandHostBoundaryConfig) -> Self {
+        Self { host_boundary_config }
+    }
+}
 
 #[async_trait]
 impl ExtensionPlanner for CugraphExtensionPlanner {
@@ -42,7 +50,7 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
 
         #[cfg(not(feature = "cugraph"))]
         {
-            let _ = (planner, logical_inputs, session);
+            let _ = (planner, logical_inputs, session, self.host_boundary_config);
             let exec = CugraphFeatureDisabledExec::new(node.spec().algorithm, node.output_schema(), None, None)?;
             return Ok(Some(Arc::new(exec) as Arc<dyn ExecutionPlan>));
         }
@@ -77,13 +85,14 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
                 predicate_sources.push(source);
             }
             predicate_sources.extend(children);
-            let exec = CugraphAlgoExec::try_new_with_reserved_gpu_result_input_name(
+            let exec = CugraphAlgoExec::try_new_with_gpu_result_input_name(
                 node.spec().clone(),
                 edge_source,
                 predicate_sources,
                 None,
                 None,
                 native_execution_config,
+                self.host_boundary_config,
                 node.gpu_result_input_name().to_string(),
             )?;
             Ok(Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))

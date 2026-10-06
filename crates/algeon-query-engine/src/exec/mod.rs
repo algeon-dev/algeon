@@ -161,26 +161,45 @@ pub fn admit_query_plan(
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Borrowed inputs for one native plan execution.
+/// Inputs for one native plan execution.
 ///
-/// Execution takes only an admitted plan, so it never decides again; callers
-/// obtain one from planning or from [`admit_query_plan`].
+/// Execution uses the supplied admission artifact without repeating admission.
+/// Callers obtain that artifact from planning or [`admit_query_plan`].
 pub struct QueryExecutionRequest<'a> {
     admitted: &'a AdmittedPlan,
     gpu_inputs: Option<&'a GpuResidentInputMap>,
+    owned_gpu_inputs: Option<GpuResidentInputMap>,
 }
 
 impl<'a> QueryExecutionRequest<'a> {
     /// Creates a request that executes an admitted plan without external
     /// GPU-resident inputs.
     pub const fn admitted(admitted: &'a AdmittedPlan) -> Self {
-        Self { admitted, gpu_inputs: None }
+        Self { admitted, gpu_inputs: None, owned_gpu_inputs: None }
     }
 
     /// Supplies GPU-resident inputs keyed by the source names in the plan.
     pub const fn with_gpu_inputs(mut self, gpu_inputs: &'a GpuResidentInputMap) -> Self {
         self.gpu_inputs = Some(gpu_inputs);
         self
+    }
+
+    /// Transfers GPU-resident inputs to execution. Each handle is released
+    /// after its final scheduled source read; downstream frames retain their
+    /// own aliases and reader lifetimes. Other caller-held handle clones remain
+    /// reusable.
+    pub fn with_owned_gpu_inputs(mut self, gpu_inputs: GpuResidentInputMap) -> Self {
+        self.gpu_inputs = None;
+        self.owned_gpu_inputs = Some(gpu_inputs);
+        self
+    }
+
+    fn into_parts(self) -> (&'a AdmittedPlan, GpuResidentInputMap) {
+        let gpu_inputs = match self.gpu_inputs {
+            Some(inputs) => inputs.clone(),
+            None => self.owned_gpu_inputs.unwrap_or_default(),
+        };
+        (self.admitted, gpu_inputs)
     }
 }
 
@@ -191,15 +210,14 @@ impl<'a> QueryExecutionRequest<'a> {
 /// context that owns its runtime observation owns query terminalization and
 /// returns its sealed snapshot in the outcome.
 pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionRequest<'_>) -> QueryExecutionOutcome {
-    let empty_inputs = GpuResidentInputMap::new();
-    let gpu_inputs = request.gpu_inputs.unwrap_or(&empty_inputs);
-    execute_query_plan_with_observation(context, request.admitted, gpu_inputs)
+    let (admitted, gpu_inputs) = request.into_parts();
+    execute_query_plan_with_observation(context, admitted, gpu_inputs)
 }
 
 fn execute_query_plan_with_observation(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,
-    gpu_inputs: &GpuResidentInputMap,
+    gpu_inputs: GpuResidentInputMap,
 ) -> QueryExecutionOutcome {
     let plan = admitted.plan();
     let (query_id, trace_id) = plan_identity(context);
@@ -298,7 +316,7 @@ fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> Quer
 fn execute_query_plan_output(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,
-    gpu_inputs: &GpuResidentInputMap,
+    gpu_inputs: GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Output> {
@@ -338,7 +356,7 @@ fn execute_query_plan_output(
             return Err(vector_algorithm_execution_unavailable(node.id, vector));
         }
     }
-    let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
+    let context = context.with_admitted_gpu_inputs(plan, &gpu_inputs)?;
     // Derive the per-query exact-order scope here so every context clone,
     // including the source-read worker contexts on spawned threads, observes
     // the same scope.
@@ -346,7 +364,7 @@ fn execute_query_plan_output(
         && plan_requires_datafusion_exact_statistical_order(plan);
     let context = context.with_datafusion_order_tracking(datafusion_order_tracking);
     let context = &context;
-    context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;
+    context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, &gpu_inputs)?;
     let _attempt_execution_range = attempt_execution_range(context);
     execute_bounded_query_plan(context, admitted, gpu_inputs, metrics, observation_scope)
 }

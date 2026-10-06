@@ -9,8 +9,9 @@ use query_planning::{
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
-    plan::{NodeId, QueryPlan},
+    plan::{NodeId, PlanNode, QueryPlan},
     policy::PlanningPolicy,
+    source::SourceNode,
 };
 use query_runtime::{
     native_error::cudf_query_error,
@@ -63,6 +64,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) policy: PlanningPolicy,
     pub(super) pipeline: &'a CompiledPipeline,
     pub(super) gpu_inputs: GpuResidentInputMap,
+    pub(super) remaining_gpu_input_reads: BTreeMap<String, usize>,
     pub(super) dynamic_filters: DynamicFilterSet,
     pub(super) source_post_decode_applied_routes: BTreeMap<ResidentResourceId, BTreeSet<DynamicFilterId>>,
     pub(super) join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
@@ -79,8 +81,29 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a ExecutionMetrics,
     ) -> Result<Self> {
+        Self::new_owned(context, plan, policy, pipeline, gpu_inputs.clone(), metrics)
+    }
+
+    pub(super) fn new_owned(
+        context: &'a ExecutionContext,
+        plan: &'a QueryPlan,
+        policy: PlanningPolicy,
+        pipeline: &'a CompiledPipeline,
+        gpu_inputs: GpuResidentInputMap,
+        metrics: &'a ExecutionMetrics,
+    ) -> Result<Self> {
         let execution = BoundedExecutionAttempt::new(context, context.device_budget_bytes(), metrics);
-        let gpu_inputs = gpu_inputs.clone();
+        let mut remaining_gpu_input_reads = BTreeMap::new();
+        for task in pipeline.tasks() {
+            if task.kind() == PipelineTaskKind::GpuResidentSource
+                && let Some(node_id) = task.plan_node()
+                && let Some(node) = plan.node(node_id)
+                && let PlanNode::Source(source) = &node.kind
+                && let SourceNode::GpuResident(source) = source.as_ref()
+            {
+                *remaining_gpu_input_reads.entry(source.input_name.clone()).or_insert(0) += 1;
+            }
+        }
         Ok(Self {
             execution,
             aggregate_dispatch: None,
@@ -88,6 +111,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             policy,
             pipeline,
             gpu_inputs,
+            remaining_gpu_input_reads,
             dynamic_filters: DynamicFilterSet::new(),
             source_post_decode_applied_routes: BTreeMap::new(),
             join_builds: BTreeMap::new(),
@@ -287,6 +311,8 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             release_bounded_compiled_join_probe_state(&mut self.execution, probe);
         }
         self.join_builds.clear();
+        self.gpu_inputs.clear();
+        self.remaining_gpu_input_reads.clear();
         Ok(())
     }
 

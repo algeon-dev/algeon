@@ -11,6 +11,7 @@ use std::{
 };
 
 use cudf::{
+    DeviceId, DeviceMemoryResource, Runtime,
     interop::{
         contract::{
             ActiveLeaseBackend, CompletionAuthority, CompletionWitness, CompletionWitnessBackend, InteropErrorKind,
@@ -21,10 +22,14 @@ use cudf::{
     runtime::{DeviceEntryGuard, DeviceFaultNativeStatus, DeviceHealthStatus},
     testing::interop::column_export_with_lease_backend_for_test,
 };
+use cugraph_sys::{
+    cugraph_edgelist_get_destinations, cugraph_edgelist_get_edge_weights, cugraph_edgelist_get_sources,
+    cugraph_edgelist_t, cugraph_type_erased_device_array_view_t,
+};
 
 use super::*;
 use crate::{
-    array::DeviceArray,
+    array::{DeviceArray, RawDeviceArrayView},
     cuda::{TestCudaCall, TestCudaHooks, fail_next_fatal_device_resource_destroy},
     error::ErrorKind,
     handle::ResourceHandle,
@@ -146,6 +151,38 @@ fn test_graph_creation_triangle() {
 
     let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered);
     assert!(graph.is_ok(), "graph creation failed: {:?}", graph.err());
+}
+
+#[test]
+fn test_graph_synchronize_input_reads_releases_owner_before_graph_destruction() {
+    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+    let entered = handle.enter("test_graph_synchronize_input_reads_releases_owner").expect("entered");
+    let owner = Arc::new(());
+    let pending = pending_input_completion(&runtime, Arc::clone(&owner), false);
+    let mut graph = dummy_runtime_bound_graph(&entered, Some(pending));
+
+    assert_eq!(Arc::strong_count(&owner), 2);
+    graph.synchronize_input_reads().expect("construction input fence");
+    assert_eq!(Arc::strong_count(&owner), 1, "producer ownership must end while the graph remains live");
+    assert!(graph.pending_input_completion.is_none());
+    graph.park(&entered).expect("completed graph remains parkable");
+}
+
+#[test]
+fn test_graph_synchronize_input_reads_failure_retains_unfinished_owner() {
+    let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+    let entered = handle.enter("test_graph_synchronize_input_reads_failure").expect("entered");
+    let owner = Arc::new(());
+    let pending = pending_input_completion(&runtime, Arc::clone(&owner), true);
+    let mut graph = dummy_runtime_bound_graph(&entered, Some(pending));
+
+    let error = graph.synchronize_input_reads().expect_err("failed construction input fence");
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    assert_eq!(error.operation(), "Graph::synchronize_input_reads");
+    assert!(graph.pending_input_completion.is_some());
+    assert_eq!(Arc::strong_count(&owner), 2, "an unfinished read must continue retaining producer storage");
 }
 
 #[test]
@@ -798,4 +835,125 @@ fn test_from_raw_views_preserves_known_dtypes_in_builder_state() {
 
     assert_eq!(builder.vertex_dtype, DataType::Int32);
     assert_eq!(builder.weight_dtype, DataType::Float64);
+}
+
+#[test]
+fn test_weighted_graph_frugal_quarters_preserve_edges_under_cap() {
+    fn construct_edges(
+        sources: &[i64],
+        destinations: &[i64],
+        weights: &[f64],
+        cap: usize,
+    ) -> (Vec<(i64, i64, u64)>, u64) {
+        let device = DeviceId::current().expect("CUDA device");
+        let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
+        let budget = upstream.budget_tracking_limit(cap).expect("construction allocation cap");
+        let runtime = Arc::new(Runtime::builder().with_memory_resource(budget.clone()).build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+        let entered = handle.enter("weighted_frugal_quarters").expect("entered context");
+        let graph = {
+            let source = DeviceArray::from_slice(&entered, sources).expect("source array");
+            let destination = DeviceArray::from_slice(&entered, destinations).expect("destination array");
+            let weight = DeviceArray::from_slice(&entered, weights).expect("weight array");
+            let source_view = source.view().expect("source view");
+            let destination_view = destination.view().expect("destination view");
+            let weight_view = weight.view().expect("weight view");
+            GraphBuilder::new(&source_view, &destination_view)
+                .weights(&weight_view)
+                .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+                .renumber()
+                .build::<Forward>(&entered)
+                .expect("weighted graph must fit its construction cap")
+        };
+        let construction_peak = budget.budget_tracking_usage().expect("construction usage").peak_bytes;
+        let mut raw_edgelist = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        // SAFETY: the graph and entered handle remain alive until the returned edgelist is copied and freed.
+        unsafe {
+            let status = cugraph_decompress_to_edgelist(
+                entered.handle_ptr(),
+                graph.as_ptr(&entered, "weighted_frugal_quarters").expect("graph handle"),
+                to_bool_t(false),
+                &mut raw_edgelist,
+                &mut error,
+            );
+            check_error(status, error, entered.device(), "weighted_frugal_quarters").expect("decompress graph");
+        }
+        // SAFETY: successful decompression transfers the result to this owner until all host copies complete.
+        let _edgelist =
+            unsafe { DecompressedEdgelist::from_raw(raw_edgelist, entered.device(), entered.runtime_bound_lease()) }
+                .expect("owned edgelist");
+        let read_column =
+            |getter: unsafe extern "C" fn(*mut cugraph_edgelist_t) -> *mut cugraph_type_erased_device_array_view_t,
+             expected_dtype| {
+                // SAFETY: these views borrow the live edgelist; its owner outlives every host copy.
+                let view = unsafe {
+                    RawDeviceArrayView::from_borrowed(
+                        getter(raw_edgelist),
+                        Some(entered.device()),
+                        "weighted_frugal_quarters",
+                        "edgelist column",
+                    )
+                }
+                .expect("edgelist column view");
+                assert_eq!(view.dtype().expect("column dtype"), expected_dtype);
+                view.to_host_vec(&entered).expect("host column")
+            };
+        let source = read_column(cugraph_edgelist_get_sources, DataType::Int64);
+        let destination = read_column(cugraph_edgelist_get_destinations, DataType::Int64);
+        let weight = read_column(cugraph_edgelist_get_edge_weights, DataType::Float64);
+        let mut edges = source
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(destination.as_chunks::<8>().0.iter())
+            .zip(weight.as_chunks::<8>().0.iter())
+            .map(|((source, destination), weight)| {
+                (i64::from_ne_bytes(*source), i64::from_ne_bytes(*destination), u64::from_ne_bytes(*weight))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        (edges, construction_peak)
+    }
+
+    const ROWS: usize = 1 << 20;
+    const MIB: usize = 1 << 20;
+    let destination = (0..ROWS).map(|row| (row % 1024) as i64).collect::<Vec<_>>();
+    let weights = (0..ROWS).map(|row| 1.0 + (row % 251) as f64 / 256.0).collect::<Vec<_>>();
+    for skewed in [false, true] {
+        let source =
+            (0..ROWS)
+                .map(|row| {
+                    if skewed {
+                        if row < ROWS * 7 / 8 { 0 } else { 1 + (row % 16) as i64 }
+                    } else {
+                        (row / 1024) as i64
+                    }
+                })
+                .collect::<Vec<_>>();
+        let mut expected = source
+            .iter()
+            .zip(&destination)
+            .zip(&weights)
+            .map(|((&source, &destination), &weight)| (source, destination, weight.to_bits()))
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        let (nonfrugal, _) = construct_edges(&source, &destination, &weights, 512 * MIB);
+        let cap = if skewed { 80 * MIB } else { 58 * MIB };
+        let (frugal, peak) = construct_edges(&source, &destination, &weights, cap);
+        for (description, actual, expected) in
+            [("nonfrugal input", &nonfrugal, &expected), ("frugal versus nonfrugal", &frugal, &nonfrugal)]
+        {
+            assert_eq!(actual.len(), expected.len(), "{description} edge count, skewed={skewed}");
+            if let Some((row, (actual, expected))) =
+                actual.iter().zip(expected).enumerate().find(|(_, (actual, expected))| actual != expected)
+            {
+                panic!(
+                    "{description} mismatch at row {row}, skewed={skewed}: actual={actual:?}, expected={expected:?}"
+                );
+            }
+        }
+        assert!(peak <= cap as u64);
+        eprintln!("weighted graph construction skewed={skewed}, peak={peak}, cap={cap}");
+    }
 }

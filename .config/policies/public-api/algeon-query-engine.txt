@@ -27,6 +27,7 @@ pub struct query_engine::exec::QueryExecutionRequest<'a>
 impl<'a> query_engine::exec::QueryExecutionRequest<'a>
 pub const fn query_engine::exec::QueryExecutionRequest<'a>::admitted(&'a query_planning::admission::bounded::AdmittedPlan) -> Self
 pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a query_runtime::runtime::resident::GpuResidentInputMap) -> Self
+pub fn query_engine::exec::QueryExecutionRequest<'a>::with_owned_gpu_inputs(self, query_runtime::runtime::resident::GpuResidentInputMap) -> Self
 pub fn query_engine::exec::admit_query_plan(&query_planning::plan::core::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::policy::PlanningPolicy) -> query_planning::error::Result<alloc::sync::Arc<query_planning::admission::bounded::AdmittedPlan>>
 pub fn query_engine::exec::execute_query_plan(&query_runtime::runtime::context::ExecutionContext, query_engine::exec::QueryExecutionRequest<'_>) -> query_engine::exec::output::QueryExecutionOutcome
 pub fn query_engine::exec::preflight_query_plan(&query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>

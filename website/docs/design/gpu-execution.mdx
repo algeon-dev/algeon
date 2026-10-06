@@ -48,8 +48,8 @@ completion dependencies before sharing results.
 An execution **lane** combines a worker's owned task state with a leased
 stream. Independent source chunks or tasks can use multiple lanes, bounded
 by service resources and the work available. The coordinator merges their
-outputs under the required SQL semantics. A DataFusion CPU partition does
-not determine lane ownership or width.
+outputs under the required SQL semantics. **A DataFusion CPU partition does
+not determine lane ownership or width.**
 
 Cross-stream dependencies use completion fences, such as CUDA events. The
 consumer waits for the producer's work before reading its buffers, and
@@ -65,9 +65,44 @@ A SQL table function can run cuGraph, cuVS or cuML inside a larger query.
 cuDF columns supply edges or features; the algorithm returns columns for
 subsequent filters, joins and aggregation. Format conversion and result
 ownership determine which boundaries borrow buffers and which perform device
-copies.
-
-Continue with [GPU table functions](./gpu-table-functions.mdx) for a PageRank
+copies. See [GPU table functions](./gpu-table-functions.mdx) for a PageRank
 example, the prepared-export lifetime and the differences between the three
-libraries. Then follow [admission and resource release](./admission.mdx)
-across the attempt.
+libraries.
+
+## Result egress and host synchronization
+
+When a query fragment completes its relational and algorithmic stages,
+execution reaches its terminal sink (`ResultSink::HostArrow` or a deferred host
+batch cursor). The engine transfers the output column buffers from VRAM to host
+memory, packaging them into Arrow `RecordBatch` instances for DataFusion.
+
+```text
+       GPU VRAM                                Host RAM
+ ┌──────────────────┐                    ┌──────────────────┐
+ │  Terminal Table  │ ── PCIe DMA ───►   │ Arrow Buffers    │
+ └──────────────────┘ (cudaMemcpyAsync)  └──────────────────┘
+          │                                        ▲
+   Stream FIFO tail                                │
+          ▼                                        │
+ ┌──────────────────┐                     cudaStreamSynchronize
+ │ Completion Event │ ── PCIe MSI-X ───►  (wakes host thread,
+ └──────────────────┘   or Doorbell        verifies coherence)
+```
+
+The device-to-host transfer uses the ordered FIFO guarantee of the execution
+stream. Upstream compute kernels precede the copy operation in the queue. The
+hardware command processor and copy engine execute earlier kernels to
+completion before starting the transfer over PCIe.
+
+Host CPU threads avoid busy polling while waiting for execution to finish.
+`cudaStreamSynchronize` establishes a host fence: the driver yields the OS
+worker thread, which sleeps in the operating system scheduler until the GPU
+signals completion. When the copy engine writes the final byte to host memory,
+the hardware issues a PCIe MSI-X interrupt or updates a host-coherent memory
+doorbell. The kernel driver receives the signal and wakes the worker thread.
+
+Because the return of `cudaStreamSynchronize` guarantees CPU cache coherence
+with the transferred bytes, the worker can safely wrap the host buffers into
+Arrow arrays without redundant copies. Materialization completes the native
+fragment, leading to [admission and resource release](./admission.mdx) across
+the attempt.

@@ -858,7 +858,7 @@ fn sorting_duplicate_non_ex_production_apis_are_removed() {
         "cudf_stable_sort_ex(input, column_order, null_precedence, num_keys, out, nullptr)",
         "cudf_sort_by_key_ex(values, keys, column_order, null_precedence, num_key_columns, out, nullptr)",
         "cudf_stable_sort_by_key_ex(values, keys, column_order, null_precedence, num_key_columns, out, nullptr)",
-        "cudf_sorted_order_ex(input, column_order, null_precedence, num_keys, out, nullptr)",
+        "cudf_sorted_order_ex(input, column_order, null_precedence, num_keys, stable, out, nullptr)",
         "is_sorted_impl(input, column_order, null_precedence, num_keys, out, nullptr)",
     ] {
         assert!(
@@ -870,10 +870,13 @@ fn sorting_duplicate_non_ex_production_apis_are_removed() {
 
 #[test]
 fn stream_compaction_ex_entries_use_required_exec_options() {
-    for (function, end_marker) in
-        [("cudf_drop_nulls_ex", "cudf_status_t cudf_distinct_ex"), ("cudf_distinct_ex", "}  // extern \"C\"")]
-    {
-        let body = function_region(STREAM_COMPACTION_CPP, &format!("cudf_status_t {function}"), end_marker);
+    for (source, function, end_marker) in [
+        (STREAM_COMPACTION_CPP, "cudf_drop_nulls_ex", "cudf_status_t cudf_distinct_ex"),
+        (STREAM_COMPACTION_CPP, "cudf_distinct_ex", "cudf_status_t cudf_unique_ex"),
+        (STREAM_COMPACTION_CPP, "cudf_unique_ex", "}  // extern \"C\""),
+        (ORDERED_UNIQUE_CU, "cudf_ordered_unique_indices_ex", "CUDF_RUST_CATCH"),
+    ] {
+        let body = function_region(source, &format!("cudf_status_t {function}"), end_marker);
         assert!(
             body.contains("cudf_resolve_required_exec_options(options, &exec)"),
             "{function} must use the strict execution-options resolver"

@@ -243,7 +243,7 @@ fn graph_runtime_vertex_count_probe(
     input: &DataFrame,
 ) -> Result<Option<u64>> {
     match runtime_graph_statistics_probe(context, input, spec) {
-        Ok(vertex_count) => Ok(Some(vertex_count)),
+        Ok(probe) => Ok(probe),
         Err(error)
             if matches!(
                 error.code(),

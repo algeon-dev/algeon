@@ -87,6 +87,8 @@ where
     context.check_cancellation(operation)?;
 
     if let Some(checkout) = cache.checkout::<T>(&resident_key, None)? {
+        // A cache hit needs no input edges during algorithm workspace allocation.
+        drop(edges);
         return run_checked_out_resident_graph(context, &attempt_runtime, cache, checkout, operation, f);
     }
 
@@ -129,6 +131,8 @@ where
             return Err(primary);
         },
     };
+    // The successful cache copy replaces the attempt input before graph construction and algorithm workspace.
+    drop(edges);
     let handle = match ResourceHandle::for_runtime(std::sync::Arc::clone(&cache_runtime)) {
         Ok(handle) => handle,
         Err(error) => {
@@ -163,20 +167,28 @@ where
         },
     };
     let build_result = (|| {
-        let export = cached_edges.try_prepare_device_table_export().map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::CudfDependencyFailure,
-                "query_engine.graph_algorithm.resident_cache.prepare_table_export",
-                "failed to prepare resident-cache graph edge-list export",
-            )
-            .with_source(error)
-        })?;
-        let _graph_build_range = graph_build_range(operation);
-        let mut graph =
-            graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
-                "query_engine.graph_algorithm.resident_cache.build_graph",
-                "failed to build cuGraph graph in the resident-cache allocation domain",
+        let mut graph = {
+            let construction_edges = cached_edges;
+            let export = construction_edges.try_prepare_device_table_export().map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::CudfDependencyFailure,
+                    "query_engine.graph_algorithm.resident_cache.prepare_table_export",
+                    "failed to prepare resident-cache graph edge-list export",
+                )
+                .with_source(error)
+            })?;
+            let _graph_build_range = graph_build_range(operation);
+            let mut graph =
+                graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
+                    "query_engine.graph_algorithm.resident_cache.build_graph",
+                    "failed to build cuGraph graph in the resident-cache allocation domain",
+                ))?;
+            graph.synchronize_input_reads().map_err(map_cugraph_error(
+                "query_engine.graph_algorithm.resident_cache.complete_input_reads",
+                "failed to complete resident-cache graph construction input reads",
             ))?;
+            graph
+        };
         let outcome = f(cache_runtime.as_ref(), &entered, &mut graph)
             .and_then(|outcome| copy_graph_result_into_attempt(outcome, &attempt_runtime));
         let parked = graph.park(&entered).map_err(map_cugraph_error(
@@ -185,10 +197,9 @@ where
         ))?;
         Ok::<_, QueryError>((outcome, parked))
     })();
-    // The handle and edge frame can retain scope allocations until after native graph construction unwinds.
+    // The handle can retain scope allocations until after native graph construction unwinds.
     drop(entered);
     drop(handle);
-    drop(cached_edges);
 
     let (outcome, parked) = match build_result {
         Ok(result) => result,

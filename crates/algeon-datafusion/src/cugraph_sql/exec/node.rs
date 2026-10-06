@@ -83,27 +83,6 @@ impl CugraphAlgoExec {
         )
     }
 
-    pub(crate) fn try_new_with_reserved_gpu_result_input_name(
-        spec: CugraphAlgorithmSpec,
-        edge_source: Arc<dyn ExecutionPlan>,
-        predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
-        projection: Option<Vec<usize>>,
-        limit: Option<usize>,
-        native_execution_config: AlgeonNativeExecutionConfig,
-        gpu_result_input_name: String,
-    ) -> DataFusionResult<Self> {
-        Self::try_new_with_gpu_result_input_name(
-            spec,
-            edge_source,
-            predicate_sources,
-            projection,
-            limit,
-            native_execution_config,
-            GpuIslandHostBoundaryConfig::default(),
-            gpu_result_input_name,
-        )
-    }
-
     pub(crate) fn next_gpu_result_input_name() -> String {
         let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         format!("__algeon_datafusion_cugraph_result_{id}")
@@ -132,7 +111,7 @@ impl CugraphAlgoExec {
     }
 
     #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
-    pub(super) fn try_new_with_gpu_result_input_name(
+    pub(crate) fn try_new_with_gpu_result_input_name(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
         predicate_sources: Vec<Arc<dyn ExecutionPlan>>,

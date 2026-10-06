@@ -10,9 +10,18 @@ pub(super) struct ServerFileOverlay {
     pub(super) auth: AuthConfig,
     pub(super) admission: ServerAdmissionFileConfig,
     pub(super) native: ServerNativeFileConfig,
+    pub(super) cugraph: ServerCugraphFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
     pub(super) models: ServerModelsFileConfig,
     pub(super) s3: Option<ServerS3FileConfig>,
+}
+
+/// `[cugraph]`: cumulative Arrow staging limits for explicit graph functions.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerCugraphFileConfig {
+    pub(super) max_input_staging_bytes: Option<usize>,
+    pub(super) max_output_staging_bytes: Option<usize>,
 }
 
 /// `[s3]`: the S3 storage every `s3://` source reads through.

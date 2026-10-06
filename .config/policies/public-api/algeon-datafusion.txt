@@ -456,6 +456,7 @@ impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphSpectralC
 pub fn algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphSqlConfig
 pub algeon_datafusion::cugraph_sql::CugraphSqlConfig::default_graph_options: algeon_datafusion::cugraph_sql::CugraphGraphOptions
+pub algeon_datafusion::cugraph_sql::CugraphSqlConfig::host_boundary_config: algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig
 pub struct algeon_datafusion::cugraph_sql::CugraphSsspParams
 pub algeon_datafusion::cugraph_sql::CugraphSsspParams::cutoff: core::option::Option<f64>
 pub algeon_datafusion::cugraph_sql::CugraphSsspParams::source_vertex: algeon_datafusion::cugraph_sql::CugraphVertexSelector
@@ -1986,6 +1987,7 @@ pub struct algeon_datafusion::server::AuthConfig
 pub algeon_datafusion::server::AuthConfig::mode: algeon_datafusion::server::AuthMode
 pub struct algeon_datafusion::server::CugraphServerConfig
 pub algeon_datafusion::server::CugraphServerConfig::default_graph_options: algeon_datafusion::cugraph_sql::CugraphGraphOptions
+pub algeon_datafusion::server::CugraphServerConfig::host_boundary_config: algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig
 pub struct algeon_datafusion::server::FlightSqlServer
 impl algeon_datafusion::server::FlightSqlServer
 pub fn algeon_datafusion::server::FlightSqlServer::backend(&self) -> core::option::Option<&algeon_datafusion::backend::AlgeonGpuBackend>

@@ -13,8 +13,8 @@ use datafusion::{
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
-            BinaryExpr, CaseExpr, CastExpr, DynamicFilterPhysicalExpr, IsNotNullExpr, IsNullExpr, LikeExpr, NotExpr,
-            TryCastExpr, binary, col, in_list, lit,
+            BinaryExpr, CaseExpr, CastExpr, DynamicFilterPhysicalExpr, IsNotNullExpr, IsNullExpr, LikeExpr,
+            NegativeExpr, NotExpr, TryCastExpr, binary, col, in_list, lit,
         },
     },
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
@@ -143,6 +143,7 @@ fn every_supported_top_level_expression_shape_validates_then_lowers() {
         ("binary", binary(number(), Operator::Plus, lit(ScalarValue::Int64(Some(1))), &schema).unwrap()),
         ("interval binary", Arc::new(BinaryExpr::new(col("date", &schema).unwrap(), Operator::Plus, interval))),
         ("not", Arc::new(NotExpr::new(flag()))),
+        ("negative", Arc::new(NegativeExpr::new(number()))),
         ("is null", Arc::new(IsNullExpr::new(number()))),
         ("is not null", Arc::new(IsNotNullExpr::new(number()))),
         ("cast", Arc::new(CastExpr::new(number(), DataType::Float64, None))),
@@ -156,6 +157,29 @@ fn every_supported_top_level_expression_shape_validates_then_lowers() {
 
     for (label, expr) in shapes {
         assert_validation_lowering_parity(label, &expr, &schema);
+    }
+}
+
+#[test]
+fn negative_expression_preserves_structured_rejection_for_scalar_overflow_and_temporal_types() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("number", DataType::Int64, false),
+        Field::new("date", DataType::Date32, false),
+    ]));
+    let array_negation = Arc::new(NegativeExpr::new(col("number", &schema).unwrap())) as Arc<dyn PhysicalExpr>;
+    assert_validation_lowering_parity("integer array negation", &array_negation, &schema);
+    for expr in [
+        Arc::new(NegativeExpr::new(lit(ScalarValue::Int64(Some(i64::MIN))))) as Arc<dyn PhysicalExpr>,
+        Arc::new(NegativeExpr::new(Arc::new(CastExpr::new(
+            lit(ScalarValue::Int64(Some(i64::MIN))),
+            DataType::Int64,
+            None,
+        )))),
+        Arc::new(NegativeExpr::new(col("date", &schema).unwrap())),
+    ] {
+        let rejection = validate_physical_expr_contract(&expr, &schema).unwrap_err();
+        assert_eq!(rejection.capability(), ExpressionCapability::NegativeExpression);
+        assert!(lower_physical_expr_for_test(&expr, &schema).is_err());
     }
 }
 

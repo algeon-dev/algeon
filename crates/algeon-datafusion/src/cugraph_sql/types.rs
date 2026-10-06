@@ -31,7 +31,8 @@ pub(crate) const CUGRAPH_Y_COLUMN: &str = "y";
 /// island.
 ///
 /// Input staging covers the edge source and every graph side input under one
-/// shared limit. Output staging covers all eagerly materialized Arrow batches
+/// shared limit. Shared input buffers count once across batches and partitions.
+/// Output staging covers all eagerly materialized Arrow batches
 /// retained until GPU ownership has been released.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuIslandHostBoundaryConfig {
@@ -76,6 +77,8 @@ impl Default for GpuIslandHostBoundaryConfig {
 pub struct CugraphSqlConfig {
     /// Graph construction defaults applied before named value arguments.
     pub default_graph_options: CugraphGraphOptions,
+    /// Cumulative Arrow staging limits for graph inputs and materialized outputs.
+    pub host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,0 +1,17 @@
+[[admission.device_profiles]]
+device_ordinal = 0
+memory_limit_bytes = 100931731456
+backend_reserve_bytes = 1073741824
+cache_cap_bytes = 0
+default_query_limit_bytes = 96636764160
+max_active_attempts = 1
+source_work_per_attempt = 2
+stream_pool_size = 8
+worker_count = 4
+lane_count = 4
+
+[native]
+execution_mode = "native_required"
+
+[models]
+root = "fixture/demo/ember2024/models"

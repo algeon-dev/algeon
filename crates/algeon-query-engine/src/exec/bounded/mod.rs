@@ -66,7 +66,7 @@ pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPo
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,
-    gpu_inputs: &GpuResidentInputMap,
+    gpu_inputs: GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {

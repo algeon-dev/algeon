@@ -1584,6 +1584,7 @@ pub fn cudf::DataFramePreparedSort::input(&self) -> &cudf::DataFrame
 pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::Series)
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
+pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
@@ -5167,6 +5168,7 @@ pub fn cudf::DataFramePreparedSort::input(&self) -> &cudf::DataFrame
 pub fn cudf::DataFramePreparedSort::into_parts(self) -> (cudf::DataFrame, cudf::Series)
 pub fn cudf::DataFramePreparedSort::is_empty(&self) -> bool
 pub fn cudf::DataFramePreparedSort::materialize(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
+pub fn cudf::DataFramePreparedSort::materialize_drop_consecutive_duplicates(self, cudf::frame::dataframe::DropDuplicatesOptions, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::DataFramePreparedSort::materialize_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::DataFrame>>
 pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes(&self, cudf::runtime::execution_context::Exec<'_>) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize

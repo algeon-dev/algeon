@@ -152,7 +152,7 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 family_id: "cugraph",
                 display_name: "cuGraph",
                 install_operation: "algeon_datafusion.cugraph_sql.install",
-                extension_planner: Arc::new(CugraphExtensionPlanner),
+                extension_planner: Arc::new(CugraphExtensionPlanner::new(config.host_boundary_config)),
                 relation_planner: cugraph_relation_planner(config.clone()),
                 gpu_family: Arc::new(CugraphGpuFunctionFamily::new(config)),
             },

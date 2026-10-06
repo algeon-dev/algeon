@@ -760,15 +760,23 @@ fn stream_compaction_helpers_require_explicit_execution_options() {
         body.contains("exec_options: &cudf_sys::cudf_exec_options_t"),
         "drop_nulls_impl must require an explicit options reference"
     );
+    for required in ["cudf_sys::cudf_unique_ex(", "cudf_sys::cudf_ordered_unique_indices_ex("] {
+        assert!(STREAM_COMPACTION_RS.contains(required), "stream compaction helpers must retain `{required}`");
+    }
 
     for forbidden in [
         "Option<&'a cudf_sys::cudf_exec_options_t>",
         "Option<&cudf_sys::cudf_exec_options_t>",
         "cudf_sys::cudf_drop_nulls(",
         "cudf_sys::cudf_distinct(",
+        "cudf_sys::cudf_unique(",
+        "cudf_sys::cudf_ordered_unique_indices(",
         "execution_context_provided",
     ] {
-        assert!(!body.contains(forbidden), "stream compaction helpers must not retain `{forbidden}` fallback behavior");
+        assert!(
+            !STREAM_COMPACTION_RS.contains(forbidden),
+            "stream compaction helpers must not retain `{forbidden}` fallback behavior"
+        );
     }
 }
 

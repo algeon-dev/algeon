@@ -6,6 +6,8 @@
 mod descriptions;
 mod result_schemas;
 
+use std::any::Any;
+
 use arrow::datatypes::Schema;
 use datafusion::{
     catalog::Session,
@@ -36,7 +38,7 @@ use crate::{
 };
 
 /// cuGraph's family adapter for the common GPU metadata catalog.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CugraphGpuFunctionFamily {
     config: CugraphSqlConfig,
     availability: GpuFunctionAvailability,
@@ -61,6 +63,10 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             .iter()
             .map(|definition| descriptor(definition.algorithm, &self.config, self.availability.clone()))
             .collect()
+    }
+
+    fn same_installation(&self, installed: &dyn GpuFunctionFamily) -> bool {
+        (installed as &dyn Any).downcast_ref::<Self>() == Some(self)
     }
 
     async fn validate(

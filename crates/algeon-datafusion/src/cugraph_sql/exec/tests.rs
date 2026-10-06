@@ -1727,6 +1727,33 @@ async fn cugraph_producer_preparation_enforces_the_cumulative_input_cap() {
 }
 
 #[tokio::test]
+async fn cugraph_producer_preparation_counts_shared_buffers_once_across_batches_and_partitions() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let batch = collect(memory_edge_source(16), Arc::clone(&task_context)).await.unwrap().remove(0);
+    let retained_bytes = get_record_batch_memory_size(&batch);
+    let first = batch.slice(0, 8);
+    let second = batch.slice(8, 8);
+    for partitions in [vec![vec![first.clone(), second.clone()]], vec![vec![first.clone()], vec![second.clone()]]] {
+        let source = MemorySourceConfig::try_new_exec(&partitions, batch.schema(), None).unwrap();
+        let staged = stage_cugraph_inputs(
+            &triangle_spec(),
+            source,
+            vec![],
+            Arc::clone(&task_context),
+            &ExecutionCancellation::new(),
+            retained_bytes,
+        )
+        .await
+        .expect("sliced batches must fit the limit for their one shared allocation");
+        assert_eq!(staged.row_bounds(&ParquetReadStrategyConfig::default()).unwrap().edge_row_upper_bound(), Some(16));
+        assert_eq!(runtime.memory_pool.reserved(), retained_bytes);
+        drop(staged);
+        assert_eq!(runtime.memory_pool.reserved(), 0);
+    }
+}
+
+#[tokio::test]
 async fn cugraph_producer_preparation_keeps_utf8_literal_sources_out_of_host_staging() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
@@ -2111,10 +2138,11 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
     let config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let host_boundary_config = GpuIslandHostBoundaryConfig::try_new(18_000, 2_600).unwrap();
     let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig { host_boundary_config, ..Default::default() })
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -2136,6 +2164,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
     assert_eq!(lowering.selected_count(), 1, "grouped BFS result should lower: {:#?}", lowering.report);
     let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
     let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
+    assert_eq!(exec.host_boundary_config, host_boundary_config);
     let descriptor =
         exec.graph_residency.as_ref().expect("stress-shaped SQL local-Parquet edge source should be keyable");
     let edge_schema = exec.edge_source.schema();

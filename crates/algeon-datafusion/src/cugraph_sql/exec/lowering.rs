@@ -97,7 +97,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     }
     let outcome = execute_query_plan(
         &graph_context,
-        QueryExecutionRequest::admitted(&plan.admitted).with_gpu_inputs(&plan.inputs),
+        QueryExecutionRequest::admitted(&plan.admitted).with_owned_gpu_inputs(plan.inputs),
     );
     let output = finalize_graph_query_outcome(
         metrics,

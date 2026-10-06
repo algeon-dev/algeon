@@ -314,11 +314,10 @@ fn cold_read_column_widths(source: &LocalParquetSource, read_columns: &[String])
 /// One completed raw source batch, as observed rather than estimated.
 ///
 /// Decoded bytes come from the reader's output frame and staged bytes from the
-/// frame after the source-adjacent filter and projections, so the next batch
-/// is sized from what this source actually decodes to instead of its encoded
-/// size. Partial rows are known only when the batch produced partial output;
+/// frame after the source-adjacent filter and projections. The next batch uses
+/// these observations to account for decoded working-set expansion. Partial rows are known only when the batch produced partial output;
 /// partition occupancy is known only when the batch was hash-partitioned.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct SourceAdjacentRawBatchSample {
     rows: u64,
     decoded_bytes: u64,
@@ -335,17 +334,17 @@ struct SourceAdjacentRawBatchSample {
 /// reduced locally; the query-domain allocator remains the sole cap enforcer.
 #[derive(Default)]
 struct SourceAdjacentRawBatchFeedback {
-    rows: u64,
-    decoded_bytes: u64,
-    staged_bytes: u64,
+    decoded_bytes_per_row: u64,
+    staged_bytes_per_row: u64,
     last: Option<SourceAdjacentRawBatchSample>,
 }
 
 impl SourceAdjacentRawBatchFeedback {
     fn observe(&mut self, sample: SourceAdjacentRawBatchSample) {
-        self.rows = self.rows.saturating_add(sample.rows);
-        self.decoded_bytes = self.decoded_bytes.saturating_add(sample.decoded_bytes);
-        self.staged_bytes = self.staged_bytes.saturating_add(sample.staged_bytes);
+        if sample.rows > 0 {
+            self.decoded_bytes_per_row = self.decoded_bytes_per_row.max(sample.decoded_bytes.div_ceil(sample.rows));
+            self.staged_bytes_per_row = self.staged_bytes_per_row.max(sample.staged_bytes.div_ceil(sample.rows));
+        }
         self.last = Some(sample);
     }
 
@@ -355,14 +354,21 @@ impl SourceAdjacentRawBatchFeedback {
         &self,
         policy: BoundedSourceBatchingPolicy,
         device_budget_bytes: u64,
+        retained_device_bytes: u64,
         source: &LocalParquetSource,
         remaining_chunks: &[SourceChunk],
     ) -> Option<u64> {
-        let target_bytes = policy.source_adjacent_raw_batch_working_set_target_bytes(device_budget_bytes);
-        let bytes_per_row = if self.rows > 0 {
+        let target_bytes = policy.source_adjacent_raw_batch_working_set_target_bytes(device_budget_bytes).min(
+            policy.source_adjacent_raw_batch_working_set_target_bytes(
+                device_budget_bytes.saturating_sub(retained_device_bytes),
+            ),
+        );
+        // Per-row high-water samples preserve wide batches across source files
+        // and lane completion order while retained state reduces the next target.
+        let bytes_per_row = if self.decoded_bytes_per_row > 0 {
             policy.source_adjacent_raw_batch_observed_working_set_bytes_per_row(
-                self.decoded_bytes.div_ceil(self.rows),
-                self.staged_bytes.div_ceil(self.rows),
+                self.decoded_bytes_per_row,
+                self.staged_bytes_per_row,
             )
         } else {
             let (rows, uncompressed_bytes) = remaining_chunks
@@ -444,8 +450,15 @@ fn execute_partitioned_source_adjacent_aggregate(
     let mut remaining_chunks = chunks;
     let mut batch_ordinal = 0usize;
     while !remaining_chunks.is_empty() {
-        let row_cap =
-            feedback.next_batch_row_cap(batching_policy, device_budget_bytes, bounded.source, remaining_chunks);
+        let retained_device_bytes =
+            execution.context().attempt_allocation_domain_usage()?.map_or(0, |usage| usage.current_bytes);
+        let row_cap = feedback.next_batch_row_cap(
+            batching_policy,
+            device_budget_bytes,
+            retained_device_bytes,
+            bounded.source,
+            remaining_chunks,
+        );
         let batch = source_adjacent_next_raw_source_batch(
             execution.context().memory_control_policy(),
             bounded,
@@ -462,8 +475,8 @@ fn execute_partitioned_source_adjacent_aggregate(
             split_partitioned_raw_batch_for_lanes(batch, dispatch.map_or(1, AggregateLaneDispatch::width));
         if lane_batches.len() > 1 {
             let dispatch = dispatch.expect("multiple raw batches require aggregate lanes");
-            let owned = Arc::clone(owned.as_ref().expect("lane dispatch owns its source descriptor"));
-            let partitioner = partitioner.clone();
+            let worker_owned = Arc::clone(owned.as_ref().expect("lane dispatch owns its source descriptor"));
+            let worker_partitioner = partitioner.clone();
             let min_partition_count = source_adjacent_partitioned_aggregate_min_partition_count(chunks.len());
             let mut batches = lane_batches.into_iter();
             let mut samples = Vec::new();
@@ -472,9 +485,9 @@ fn execute_partitioned_source_adjacent_aggregate(
                 &mut batches,
                 |batches, _| Ok(batches.next()),
                 move |execution, batch| {
-                    process_partitioned_source_adjacent_independent_batch(
+                    process_partitioned_source_adjacent_batch(
                         execution,
-                        &owned.plan(),
+                        &worker_owned.plan(),
                         PartitionedSourceBatchWork {
                             batch,
                             pending: None,
@@ -483,13 +496,28 @@ fn execute_partitioned_source_adjacent_aggregate(
                             estimated_input_bytes,
                             min_partition_count,
                         },
-                        &partitioner,
+                        &worker_partitioner,
                     )
                 },
                 |_, execution, output| {
                     if let Some(count) = output.partition_count {
                         debug_assert!(partition_count.is_none_or(|previous| previous == count));
                         partition_count = Some(count);
+                    }
+                    if let Some(pending) = output.pending {
+                        let inputs =
+                            partition_inputs.get_or_insert_with(|| (0..pending.len()).map(|_| Vec::new()).collect());
+                        if inputs.len() != pending.len() {
+                            return Err(bounded_invariant_violation(
+                                "source-adjacent aggregate lanes returned inconsistent partition counts",
+                                "source_adjacent_lane_partition_count_mismatch",
+                            )
+                            .with_fact("expected_partition_count", inputs.len())
+                            .with_fact("actual_partition_count", pending.len()));
+                        }
+                        for (inputs, mut new_inputs) in inputs.iter_mut().zip(pending) {
+                            inputs.append(&mut new_inputs);
+                        }
                     }
                     final_merge.accept(execution, output.outputs)?;
                     for (chunk_count, row_group_count) in output.commits {
@@ -501,6 +529,31 @@ fn execute_partitioned_source_adjacent_aggregate(
                 },
             );
             result?;
+            if let Some(inputs) = &mut partition_inputs {
+                let flush_all = source_adjacent_pending_partitions_ready(execution.context(), inputs);
+                let ready = inputs
+                    .iter_mut()
+                    .map(|inputs| {
+                        if flush_all || source_adjacent_partition_batch_ready(execution.context(), inputs) {
+                            std::mem::take(inputs)
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if ready.iter().any(|inputs| !inputs.is_empty()) {
+                    let outputs = execute_partitioned_source_adjacent_final_work(
+                        execution,
+                        bounded,
+                        ready,
+                        partition_count.unwrap_or(1),
+                        &partitioner,
+                        Some(dispatch),
+                        owned.as_ref(),
+                    )?;
+                    final_merge.accept(execution, outputs)?;
+                }
+            }
             for sample in samples {
                 feedback.observe(sample);
             }
@@ -584,30 +637,6 @@ fn split_partitioned_raw_batch_for_lanes(batch: SourceChunkBatch, width: usize) 
             })
         })
         .collect()
-}
-
-fn process_partitioned_source_adjacent_independent_batch(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    work: PartitionedSourceBatchWork,
-    partitioner: &SourceAdjacentAggregatePartitioner,
-) -> Result<PartitionedSourceBatchOutput> {
-    let mut output = process_partitioned_source_adjacent_batch(execution, bounded, work, partitioner)?;
-    let pending = output.pending.take().unwrap_or_default();
-    let final_outputs = process_partitioned_source_adjacent_final_batches(
-        execution,
-        bounded,
-        pending,
-        output.partition_count.unwrap_or(1),
-        partitioner,
-    );
-    match final_outputs {
-        Ok(final_outputs) => output.outputs.extend(final_outputs),
-        Err(error) => {
-            return Err(error);
-        },
-    }
-    Ok(output)
 }
 
 fn execute_partitioned_source_adjacent_batch_work(
@@ -710,8 +739,11 @@ fn process_partitioned_source_adjacent_batch(
                         });
                     }
                 }
+                let flush_all = source_adjacent_pending_partitions_ready(execution.context(), inputs);
                 for (partition_index, partition_inputs) in inputs.iter_mut().enumerate() {
-                    if !source_adjacent_partition_batch_ready(execution.context(), partition_inputs) {
+                    if partition_inputs.is_empty()
+                        || (!flush_all && !source_adjacent_partition_batch_ready(execution.context(), partition_inputs))
+                    {
                         continue;
                     }
                     let reduced = execute_source_adjacent_partition_aggregate_batch(
@@ -755,26 +787,28 @@ fn execute_partitioned_source_adjacent_final_work(
     };
     let owned = Arc::clone(owned.expect("lane dispatch owns its source descriptor"));
     let partitioner = partitioner.clone();
-    let mut state = (Some(pending), None);
+    let batches = pending.into_iter().enumerate().filter(|(_, inputs)| !inputs.is_empty());
+    let mut state = (batches, Vec::new());
     dispatch.execute_work(
         execution,
         &mut state,
-        |state, _| Ok(state.0.take()),
-        move |execution, pending| {
-            process_partitioned_source_adjacent_final_batches(
+        |state, _| Ok(state.0.next()),
+        move |execution, (partition_index, mut inputs)| {
+            execute_source_adjacent_partition_aggregate_batch(
                 execution,
                 &owned.plan(),
-                pending,
+                partition_index,
                 partition_count,
                 &partitioner,
+                &mut inputs,
             )
         },
-        |state, _, output| {
-            state.1 = Some(output);
+        |state, _, mut output| {
+            state.1.append(&mut output);
             Ok(())
         },
     )?;
-    Ok(state.1.expect("final partition batches complete before final merge"))
+    Ok(state.1)
 }
 
 fn process_partitioned_source_adjacent_final_batches(
@@ -963,14 +997,11 @@ fn source_adjacent_raw_source_batches(
     {
         return singleton_source_chunk_batches(chunks);
     }
-    // Grouped aggregates hash-partition each raw batch by group key, so one
-    // low-cardinality key concentrates a whole batch into a single partition
-    // that is retained while every partition slices. Cap grouped raws at the
-    // grouped target instead of the general cap so the worst-case partition
-    // stays sliceable inside the attempt grant.
+    // The working-set row target accounts for decoded input and partition copies;
+    // the source-byte target also scales with this attempt's immutable grant.
     let grouped = is_source_adjacent_grouped_aggregate(bounded);
-    let max_batch_source_read_bytes = BoundedSourceBatchingPolicy::default()
-        .source_adjacent_raw_source_batch_target_bytes(memory_policy, false, grouped);
+    let max_batch_source_read_bytes =
+        BoundedSourceBatchingPolicy::default().source_adjacent_raw_source_batch_target_bytes(memory_policy, grouped);
     plan_source_chunk_batches_with_row_cap(chunks, max_batch_source_read_bytes, max_batch_rows)
 }
 
@@ -1015,6 +1046,18 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
         source_adjacent_partition_key_count: partitioner.key_count(),
         source_adjacent_max_partition_fan_in: Some(max_partition_fan_in as u64),
     }
+}
+
+/// Applies the batch byte target to all retained partitions together; their
+/// resident bytes share one query grant even when individual partitions are small.
+fn source_adjacent_pending_partitions_ready(
+    context: &ExecutionContext,
+    inputs: &[Vec<SourceAdjacentPartitionInput>],
+) -> bool {
+    let bytes = inputs.iter().flatten().fold(0u64, |bytes, input| bytes.saturating_add(input.partial.device_bytes()));
+    bytes
+        >= BoundedSourceBatchingPolicy::default()
+            .source_adjacent_partition_batch_byte_limit_for_budget(context.device_budget_bytes())
 }
 
 fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[SourceAdjacentPartitionInput]) -> bool {
@@ -1093,18 +1136,31 @@ fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdj
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
     let mut has_string_key = false;
+    let mut integer_keys = true;
     for key_column in &lowered_keys.key_columns {
         let Ok(field) = bounded.aggregate_input_schema.field_with_name(key_column) else {
             return SourceAdjacentAggregatePartitioner::RowBalanced;
         };
         has_string_key |=
             matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View);
+        integer_keys &= matches!(
+            field.data_type(),
+            ArrowDataType::Int8
+                | ArrowDataType::Int16
+                | ArrowDataType::Int32
+                | ArrowDataType::Int64
+                | ArrowDataType::UInt8
+                | ArrowDataType::UInt16
+                | ArrowDataType::UInt32
+                | ArrowDataType::UInt64
+        );
     }
-    if !has_string_key {
+    if !has_string_key && !integer_keys {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
-    // Variable-width keys always hash-partition by group key. Chunk-count no longer
-    // demotes the path to a row-balanced streaming partition.
+    // Integer group equality, including null keys, is preserved by the raw-key
+    // hash. Floating keys keep the existing path until signed-zero and NaN
+    // canonicalization is covered by the alignment contract.
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
 }
 
@@ -1725,8 +1781,7 @@ mod tests {
         };
 
         const CHUNK_BYTES: u64 = 300 * 1024 * 1024;
-        const GROUPED_TARGET_BYTES: u64 =
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES;
+        const GROUPED_TARGET_BYTES: u64 = 94 * 1024 * 1024 * 1024 / 8;
 
         fn batchable_chunk(index: usize, bytes: u64) -> SourceChunk {
             SourceChunk {
@@ -1813,19 +1868,14 @@ mod tests {
         };
         let chunks: Vec<SourceChunk> = (0..8).map(|index| batchable_chunk(index, CHUNK_BYTES)).collect();
 
-        // Grouped aggregates hash-partition each raw batch by group key, so a
-        // low-cardinality key concentrates a whole batch into one partition.
-        // Batches must stay at the grouped target even when the configured
-        // chunk cap is much larger.
         let grouped_batches = source_adjacent_raw_source_batches(
             policy,
             &plan_with_group_exprs(&source, &filter, &grouped, &schema),
             &chunks,
             None,
         );
-        assert_eq!(grouped_batches.len(), chunks.len());
+        assert_eq!(grouped_batches.len(), 1);
         for batch in &grouped_batches {
-            assert!(batch.is_singleton());
             assert!(
                 batch.estimated_source_read_bytes.is_some_and(|bytes| bytes <= GROUPED_TARGET_BYTES),
                 "grouped raw batch exceeds grouped target: {batch:?}"
@@ -1839,7 +1889,51 @@ mod tests {
             &chunks,
             None,
         );
-        assert_eq!(ungrouped_batches.len(), 2);
+        assert_eq!(ungrouped_batches.len(), 1);
+
+        let explicit = MemoryControlPolicy { max_source_chunk_bytes: CHUNK_BYTES, ..policy };
+        let explicitly_limited = source_adjacent_raw_source_batches(
+            explicit,
+            &plan_with_group_exprs(&source, &filter, &grouped, &schema),
+            &chunks,
+            None,
+        );
+        assert_eq!(explicitly_limited.len(), chunks.len());
+
+        let batching = BoundedSourceBatchingPolicy::default();
+        let mut feedback = SourceAdjacentRawBatchFeedback::default();
+        feedback.observe(SourceAdjacentRawBatchSample {
+            rows: 1_000,
+            decoded_bytes: 16_000,
+            staged_bytes: 8_000,
+            ..Default::default()
+        });
+        let narrow_rows = feedback.next_batch_row_cap(batching, 256 * 1024 * 1024, 0, &source, &chunks).unwrap();
+        feedback.observe(SourceAdjacentRawBatchSample {
+            rows: 10,
+            decoded_bytes: 10_240,
+            staged_bytes: 10_240,
+            ..Default::default()
+        });
+        let wide_rows = feedback.next_batch_row_cap(batching, 256 * 1024 * 1024, 0, &source, &chunks).unwrap();
+        assert!(
+            wide_rows < narrow_rows / 32,
+            "recent wide rows must reduce the next batch despite a long narrow history"
+        );
+        feedback.observe(SourceAdjacentRawBatchSample {
+            rows: 1_000,
+            decoded_bytes: 16_000,
+            staged_bytes: 8_000,
+            ..Default::default()
+        });
+        assert_eq!(feedback.next_batch_row_cap(batching, 256 * 1024 * 1024, 0, &source, &chunks), Some(wide_rows));
+        let retained_rows =
+            feedback.next_batch_row_cap(batching, 256 * 1024 * 1024, 192 * 1024 * 1024, &source, &chunks).unwrap();
+        assert_eq!(retained_rows, wide_rows / 4);
+        assert!(
+            feedback.next_batch_row_cap(batching, 64 * 1024 * 1024 * 1024, 0, &source, &chunks).unwrap()
+                > wide_rows * 200
+        );
 
         // A row cap from working-set feedback bounds a batch below the encoded
         // byte target, and a chunk without a known row count stays singleton.

@@ -88,7 +88,7 @@ pub const ALGEON_SERVER_NATIVE_CONFIG_OPTIONS: &[AlgeonServerNativeConfigOption]
         env_var: ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
         value_type: "positive integer bytes",
         scope: ServerNativeConfigScope::BoundedExecution,
-        description: "Maximum source bytes planned into one native bounded source chunk.",
+        description: "Explicit source-byte grouping target; omitted values use the admitted grant and decoded working-set feedback.",
     },
     AlgeonServerNativeConfigOption {
         toml_field: "native.max_row_groups_per_chunk",

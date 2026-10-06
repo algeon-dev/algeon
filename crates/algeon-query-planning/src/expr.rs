@@ -187,8 +187,7 @@ pub enum Expr {
     /// empty strings rather than producing a null output row.
     Concat(Vec<Expr>),
     Abs(Box<Expr>),
-    /// SQL one-argument floating-point math function such as `SQRT(expr)`,
-    /// `LN(expr)`, or `EXP(expr)`.
+    /// SQL unary arithmetic or math function.
     ///
     /// The `output_type` is the frontend-declared result type. It is part of
     /// the native contract because cudf's expression builder can infer a
@@ -708,9 +707,12 @@ impl fmt::Display for DatePart {
     }
 }
 
-/// One-argument floating-point math function in native expression IR.
+/// Unary arithmetic or math function in native expression IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryMathOp {
+    /// Arithmetic negation of signed integers or floating-point values.
+    /// Integer arrays wrap at the minimum value; floating-point zero changes sign.
+    Negate,
     /// Square root; negative inputs produce NaN.
     Sqrt,
     /// Natural logarithm; zero produces negative infinity and negative inputs
@@ -723,6 +725,7 @@ pub enum UnaryMathOp {
 impl fmt::Display for UnaryMathOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Negate => "NEGATE",
             Self::Sqrt => "SQRT",
             Self::Ln => "LN",
             Self::Exp => "EXP",

@@ -6,7 +6,7 @@
 //! envelopes fail deterministically instead of falling back to whole-query
 //! wrappers.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, mem};
 
 mod executor;
 mod frame_stream;
@@ -51,7 +51,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     plan: &QueryPlan,
     policy: PlanningPolicy,
     pipeline: &CompiledPipeline,
-    gpu_inputs: &GpuResidentInputMap,
+    mut gpu_inputs: GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
@@ -61,12 +61,12 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     let scheduler =
         CompiledPipelineScheduler::new_with_prioritized_join_builds(pipeline, prioritized_join_build_tasks(pipeline))?;
     metrics.record_compiled_pipeline_attempt();
-    let lane_support = lane_dispatch_support(context, plan, policy, pipeline, gpu_inputs, metrics);
+    let lane_support = lane_dispatch_support(context, plan, policy, pipeline, &mut gpu_inputs, metrics);
     let (completed_task_count, output, host_sink) = if let Some(support) = lane_support.as_ref() {
         let (completed, output) = run_resident_lane_borrow(&scheduler, observation_scope, support)?;
         (completed, QueryOutput::GpuResident(output), false)
     } else {
-        let mut executor = CompiledGpuTaskExecutor::new(context, plan, policy, pipeline, gpu_inputs, metrics)?;
+        let mut executor = CompiledGpuTaskExecutor::new_owned(context, plan, policy, pipeline, gpu_inputs, metrics)?;
         let mut state = match observation_scope {
             Some(scope) => scheduler.run_observed(&mut executor, scope)?,
             None => scheduler.run(&mut executor)?,
@@ -95,7 +95,7 @@ fn lane_dispatch_support(
     plan: &QueryPlan,
     policy: PlanningPolicy,
     pipeline: &CompiledPipeline,
-    gpu_inputs: &GpuResidentInputMap,
+    gpu_inputs: &mut GpuResidentInputMap,
     metrics: &ExecutionMetrics,
 ) -> Option<LaneDispatchSupport> {
     if !is_resident_aggregate_lane_pipeline(pipeline) && !is_resident_sort_lane_pipeline(pipeline) {
@@ -108,7 +108,7 @@ fn lane_dispatch_support(
         plan.clone(),
         policy,
         pipeline.clone(),
-        gpu_inputs.clone(),
+        mem::take(gpu_inputs),
         metrics.clone(),
     ))
 }

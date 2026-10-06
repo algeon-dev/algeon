@@ -140,9 +140,9 @@ impl ContractGraph<'_> {
     ///
     /// A final sort establishes the global order of its sort keys either by
     /// sorting the whole input or by fusing the downstream limit into a
-    /// global top-k. Filters and limits preserve their input ordering; a
-    /// projection preserves it only when every key column passes through
-    /// under its own name. Every other producer makes no ordering promise.
+    /// global top-k. Filters, limits, and windows preserve their input ordering;
+    /// a projection preserves it only when every key column passes through,
+    /// possibly renamed. Every other producer makes no ordering promise.
     fn resource_ordering(&self, resource: &ResidentResource) -> Option<ResourceOrdering> {
         let producer = self.task(resource.producer())?;
         match producer.kind() {
@@ -158,14 +158,11 @@ impl ContractGraph<'_> {
                 let node_id = producer.plan_node()?;
                 match self.plan.node(node_id).map(|node| &node.kind)? {
                     PlanNode::Filter(_) => Some(ordering),
-                    PlanNode::Projection(projection)
-                        if projection_preserves_ordering_keys(projection, ordering.keys()) =>
-                    {
-                        Some(ordering)
-                    },
+                    PlanNode::Projection(projection) => projected_ordering(projection, &ordering),
                     _ => None,
                 }
             },
+            PipelineTaskKind::Window => self.single_input_ordering(producer).cloned(),
             PipelineTaskKind::Limit => self.single_input_ordering(producer).cloned(),
             PipelineTaskKind::VectorAlgorithm | PipelineTaskKind::MlAlgorithm => None,
             _ => None,
@@ -809,16 +806,28 @@ fn task_consumes_input_exclusively(task: &PipelineTask) -> bool {
     task.kind() == PipelineTaskKind::EdgeNormalize
 }
 
-/// Whether a projection carries every ordering key through under its own
-/// name, so a globally ordered input stays globally ordered above it.
-fn projection_preserves_ordering_keys(projection: &ProjectionNode, keys: &[SortExpr]) -> bool {
-    keys.iter().all(|key| match &key.expr {
-        Expr::Column(column) => projection.outputs.iter().any(|output| {
-            output.field.name() == column.name()
-                && passthrough_column_name(&output.expr).is_some_and(|name| name == column.name())
-        }),
-        _ => false,
-    })
+/// The ordering above a projection that carries every ordering key column
+/// through unchanged. A renamed key keeps its values, so the key is restated
+/// under the output name; a key column passed through under its own name
+/// keeps its original key.
+fn projected_ordering(projection: &ProjectionNode, ordering: &ResourceOrdering) -> Option<ResourceOrdering> {
+    let keys = ordering
+        .keys()
+        .iter()
+        .map(|key| {
+            let Expr::Column(column) = &key.expr else {
+                return None;
+            };
+            let mut passthroughs =
+                projection.outputs.iter().filter(|output| passthrough_column_name(&output.expr) == Some(column.name()));
+            if passthroughs.clone().any(|output| output.field.name() == column.name()) {
+                return Some(key.clone());
+            }
+            let output = passthroughs.next()?;
+            Some(SortExpr { expr: Expr::column(output.field.name()), ..key.clone() })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ordering.with_keys(keys))
 }
 
 fn passthrough_column_name(expr: &Expr) -> Option<&str> {

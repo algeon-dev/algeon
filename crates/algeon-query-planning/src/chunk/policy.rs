@@ -138,14 +138,17 @@ impl SourceChunkPlanningPolicy {
 
     /// Derives a source-task policy from the bounded memory policy and slot model.
     ///
-    /// For unbounded execution this returns the default unbounded policy. For
-    /// bounded execution the target is the smaller of the configured source
-    /// chunk size and `device_budget_bytes / model.live_slot_count()`.
+    /// The default source-byte setting uses
+    /// `device_budget_bytes / model.live_slot_count()`. Explicit targets at or
+    /// below the grant are bounded by the same live-slot target. An explicit
+    /// target above the grant remains available for allocation retry.
     pub fn for_source_task(memory_policy: MemoryControlPolicy, model: SourceTaskMemoryModel) -> Self {
         let base = Self::from(memory_policy);
         let MemoryControlPolicy { device_budget_bytes, max_source_chunk_bytes, max_row_groups_per_chunk, .. } =
             memory_policy;
-        if max_source_chunk_bytes > device_budget_bytes {
+        if max_source_chunk_bytes > device_budget_bytes
+            && max_source_chunk_bytes != MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES
+        {
             return base;
         }
         let budget_target = device_budget_bytes / model.live_slot_count().max(1);
@@ -230,8 +233,19 @@ impl Default for SourceChunkPlanningPolicy {
 
 impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
     fn from(memory_policy: MemoryControlPolicy) -> Self {
-        let mut policy = Self::new(Some(memory_policy.max_source_chunk_bytes), memory_policy.max_row_groups_per_chunk);
-        policy.source_chunk_planning_reason = "configured_policy";
+        let target = if memory_policy.max_source_chunk_bytes == MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES {
+            (memory_policy.device_budget_bytes / SourceTaskMemoryModel::aggregate_pipeline(false).live_slot_count())
+                .max(1)
+        } else {
+            memory_policy.max_source_chunk_bytes
+        };
+        let mut policy = Self::new(Some(target), memory_policy.max_row_groups_per_chunk);
+        policy.source_chunk_planning_reason =
+            if memory_policy.max_source_chunk_bytes == MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES {
+                "memory_cap"
+            } else {
+                "configured_policy"
+            };
         policy
     }
 }

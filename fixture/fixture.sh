@@ -17,7 +17,7 @@ Usage:
   fixture/fixture.sh ember2024 prepare [--split test|train|challenge]... [--rows N] [--force]
   fixture/fixture.sh amazon-reviews prepare [--category NAME] [--out-dir PATH] [--force]
   fixture/fixture.sh kuairand prepare [--variant pure|1k|27k] [--out-dir PATH] [--force] [--download]
-  fixture/fixture.sh merrec prepare [--partition NAME] [--input-parquet PATH] [--out-dir PATH] [--force] [--download-sample]
+  fixture/fixture.sh merrec prepare [--partition NAME|all] [--download] [--shards N] [--raw-dir PATH] [--out-dir PATH] [--force] [--download-sample]
 
 TPC-H / TPC-DS generation uses tpchgen-rs and rewrites the final Parquet layout
 with sorted, Snappy-compressed row groups by default. Run a gen_*.py with --help

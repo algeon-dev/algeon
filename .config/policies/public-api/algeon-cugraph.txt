@@ -561,6 +561,7 @@ pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>
 pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
+pub fn cugraph::graph::Graph<T>::synchronize_input_reads(&mut self) -> cugraph::error::Result<()>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
 pub fn cugraph::graph::Graph<T>::weight_dtype(&self) -> cugraph::types::DataType
 impl<T> core::fmt::Debug for cugraph::graph::Graph<T>
@@ -1589,6 +1590,7 @@ pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>
 pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
+pub fn cugraph::graph::Graph<T>::synchronize_input_reads(&mut self) -> cugraph::error::Result<()>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
 pub fn cugraph::graph::Graph<T>::weight_dtype(&self) -> cugraph::types::DataType
 impl<T> core::fmt::Debug for cugraph::graph::Graph<T>

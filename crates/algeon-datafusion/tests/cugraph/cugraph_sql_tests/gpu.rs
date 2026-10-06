@@ -7,7 +7,7 @@ use algeon_datafusion::{
     native_exec::below_native_admission,
     planner::{AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition, classify_final_plan},
 };
-use arrow::{array::ListArray, buffer::OffsetBuffer};
+use arrow::{array::ListArray, buffer::OffsetBuffer, util::display::array_value_to_string};
 use cudf::{
     frame::dataframe::HostBatchCursorConfig,
     testing::arrow::{
@@ -352,6 +352,140 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
         })
         .collect::<Vec<_>>();
     assert_eq!(distances, (0_i64..100).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn cugraph_sql_native_required_composes_bipartite_aggregate_edges_and_result_relations() {
+    let dir = unique_temp_dir("algeon-datafusion-cugraph-bipartite-composition");
+    let events_path = dir.join("events.parquet");
+    let metadata_path = dir.join("metadata.parquet");
+    let events_schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("event_type", DataType::Utf8, false),
+    ]));
+    let events = RecordBatch::try_new(
+        Arc::clone(&events_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 0, 1, 1, 9])),
+            Arc::new(Int64Array::from(vec![0, 0, 0, 0, 9])),
+            Arc::new(StringArray::from(vec!["item_view", "item_view", "item_view", "item_view", "purchase"])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(
+        fs::File::create(&events_path).unwrap(),
+        events_schema,
+        Some(WriterProperties::builder().set_max_row_group_row_count(Some(2)).build()),
+    )
+    .unwrap();
+    writer.write(&events).unwrap();
+    writer.close().unwrap();
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("segment", DataType::Utf8, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let metadata = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 9])),
+            Arc::new(StringArray::from(vec!["viewed", "viewed", "excluded"])),
+            Arc::new(BooleanArray::from(vec![true, true, false])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&metadata_path).unwrap(), metadata_schema, None).unwrap();
+    writer.write(&metadata).unwrap();
+    writer.close().unwrap();
+    let (backend, ctx) = backend_cugraph_sql_context_with_mode(
+        SessionStateBuilder::new_with_default_features().with_config(SessionConfig::new().with_target_partitions(4)),
+        AlgeonGpuExecutionMode::NativeRequired,
+    );
+    ctx.register_parquet("merrec_events", events_path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    ctx.register_parquet("item_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    let queries = [
+        "SELECT vertex, value FROM cugraph_pagerank(\
+             edges => (SELECT item_id AS src, -(user_id + 1) AS dst, CAST(COUNT(*) AS DOUBLE) AS weight \
+                       FROM merrec_events WHERE event_type = 'item_view' GROUP BY item_id, user_id), \
+             directed => false) WHERE vertex >= 0 ORDER BY value DESC, vertex LIMIT 20",
+        "WITH ranked AS (SELECT vertex, value FROM cugraph_pagerank(\
+             edges => (SELECT e.item_id AS src, -(e.user_id + 1) AS dst, CAST(COUNT(*) AS DOUBLE) AS weight \
+                       FROM merrec_events e JOIN item_metadata m ON e.item_id = m.item_id \
+                       WHERE e.event_type = 'item_view' AND m.active GROUP BY e.item_id, e.user_id), \
+             directed => false)) \
+         SELECT m.segment, COUNT(*) AS item_count, SUM(r.value) AS rank_sum \
+         FROM ranked r JOIN item_metadata m ON r.vertex = m.item_id \
+         WHERE r.vertex >= 0 AND r.value > 0 GROUP BY m.segment ORDER BY rank_sum DESC LIMIT 20",
+    ];
+    let mut expected_rank_sum = 0.0;
+    for (index, sql) in queries.into_iter().enumerate() {
+        let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+        let completion = attempt.completion();
+        let plan = attempt.plan_sql(&ctx, sql).await.unwrap();
+        assert_eq!(
+            classify_final_plan(plan.as_ref()),
+            FinalPlanDisposition::Native,
+            "{}",
+            displayable(plan.as_ref()).indent(false)
+        );
+        let graph = find_cugraph_algo_exec(plan.as_ref()).unwrap();
+        assert!(
+            graph.children().into_iter().all(|child| cugraph_input_is_native_gpu_producer(child.as_ref())),
+            "{}",
+            displayable(plan.as_ref()).indent(false)
+        );
+        let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        let live_ledgers = backend.diagnostics().unwrap().ledgers;
+        assert_eq!(live_ledgers[0].active_attempts, 1);
+        assert_eq!(live_ledgers[0].grants.len(), 1);
+        assert!(!completion.is_ready());
+        let mut batches = vec![first];
+        while let Some(batch) = stream.next().await {
+            batches.push(batch.unwrap());
+        }
+        let report = completion.await;
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+        assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
+        assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
+        assert!(report.admission.is_some());
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+        assert_eq!(metrics.graph_runtime_rows.len(), 1);
+        assert!(metrics.graph_runtime_rows.iter().all(|row| row.input_boundary == "gpu_resident"
+            && row.output_boundary == "gpu_resident"
+            && row.device_to_host_materializations == 0));
+        let batch = single_batch(&batches);
+        if index == 0 {
+            let rows = pagerank_rows(&batches);
+            assert_eq!(rows.len(), 2);
+            let mut vertices = rows.iter().map(|row| row.vertex).collect::<Vec<_>>();
+            vertices.sort_unstable();
+            assert_eq!(vertices, vec![0, 1]);
+            assert!((rows[0].value - rows[1].value).abs() < 1e-12);
+            expected_rank_sum = rows.iter().map(|row| row.value).sum();
+        } else {
+            assert_eq!(batch.num_rows(), 1);
+            assert_eq!(array_value_to_string(batch.column(0).as_ref(), 0).unwrap(), "viewed");
+            assert_eq!(batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 2);
+            assert!(
+                (batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap().value(0) - expected_rank_sum).abs()
+                    < 1e-12
+            );
+        }
+        assert!(
+            backend
+                .diagnostics()
+                .unwrap()
+                .ledgers
+                .iter()
+                .all(|ledger| ledger.active_attempts == 0 && ledger.grants.is_empty())
+        );
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
