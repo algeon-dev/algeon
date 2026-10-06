@@ -22,6 +22,10 @@
   text-wrap: pretty;
 }
 
+.algorithmComparison table {
+  min-width: 48rem;
+}
+
 /* ===== Node interactivity ================================================ */
 .nodeClickable {
   cursor: pointer;

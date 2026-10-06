@@ -116,6 +116,10 @@ The server's source and graph caches do not cache cuVS artifacts. See
 [Configuration](../integration/configuration.mdx) for server cache configuration
 and bounded memory limits.
 
+The [GPU table functions design](../design/gpu-table-functions.mdx#cuvs-and-cuml-layouts-and-result-ownership)
+explains matrix packing, borrowed tensor lifetimes and output-buffer adoption
+when vector results feed further SQL operators.
+
 ## Next steps
 
 - **[Integrate cuVS](../integration/overview.mdx)**: pick an embedded

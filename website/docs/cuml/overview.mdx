@@ -82,3 +82,7 @@ configured, it is listed but unavailable with `model_root_unconfigured`. See
 [Configuration](../integration/configuration.mdx#models-and-forest-inference)
 for the `[models]` TOML table. Allocations run within the admitted query
 memory cap. Requests exceeding that cap produce a typed allocation error.
+
+The [GPU table functions design](../design/gpu-table-functions.mdx#cuvs-and-cuml-layouts-and-result-ownership)
+connects feature-matrix and model lifetimes to output ownership, native SQL
+consumers and the shared query memory cap.

@@ -14,6 +14,24 @@
   }
 }
 
+@media (min-width: 1601px) {
+  .docItemCol {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: calc(100% - var(--algeon-layout-toc-width)) !important;
+  }
+
+  .tocCol {
+    flex: 0 0 var(--algeon-layout-toc-width);
+    max-width: var(--algeon-layout-toc-width);
+  }
+
+  .docItemColFull {
+    max-width: calc(var(--algeon-layout-width) - var(--doc-sidebar-width) - var(--algeon-layout-toc-width)) !important;
+    margin-inline: auto;
+  }
+}
+
 /* ==========================================================================
    Pinned Desktop TOC Enhancement
    ========================================================================== */
@@ -24,17 +42,17 @@
   max-height: calc(100vh - (var(--ifm-navbar-height) + 2rem));
   display: flex;
   flex-direction: column;
-  padding-left: 1.25rem;
 }
 
-@media (min-width: 1200px) {
-  .pinnedTocContainer {
-    padding-left: 1.75rem;
-  }
+.pinnedTocContainer :global(.theme-doc-toc-desktop) {
+  position: static;
+  min-height: 0;
+  max-height: none;
 }
 
 .pinnedTocLineHeader {
   position: relative;
+  flex-shrink: 0;
   height: 24px;
   margin-bottom: 2px;
 }
@@ -50,6 +68,7 @@
 }
 
 .pinnedTocTitle {
+  flex-shrink: 0;
   padding: 0 0 0.5rem 1rem;
   border-left: 1px solid var(--ifm-toc-border-color);
   color: var(--ifm-font-color-secondary);
@@ -98,6 +117,18 @@
   top: calc(var(--ifm-navbar-height) + 1.25rem);
   z-index: 120;
   display: block;
+}
+
+@media (min-width: 1601px) {
+  .floatingTocWrapper {
+    right: calc((100% - var(--algeon-layout-width)) / 2);
+  }
+
+  .floatingTocWrapper .floatingTocPill,
+  .floatingTocWrapper .floatingTocPanel {
+    border-right: 1px solid var(--ifm-toc-border-color);
+    border-radius: 8px;
+  }
 }
 
 @media (max-width: 996px) {
