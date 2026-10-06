@@ -6,8 +6,8 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
         NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
-    session::AlgeonSessionStateBuilderExt,
+    planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
+    session::{AlgeonSessionStateBuilderExt, apply_algeon_option_overrides},
 };
 use arrow::record_batch::RecordBatch;
 use datafusion::{
@@ -46,10 +46,10 @@ pub use analytical_olap::{
 ///
 /// Uses one target partition and disables DataFusion repartitioning and
 /// dynamic filter pushdown so planning/execution reports are stable and easy
-/// to compare across native lowering changes. DataFusion defaults
-/// uncorrelated scalar subqueries to `ScalarSubqueryExec`; the native adapter's
-/// TPC-H contract is the relationalized join form because that is the shape the
-/// native IR can admit and execute as one plan.
+/// to compare across native lowering changes. It also applies the DataFusion
+/// option overrides of a relational Algeon execution mode, because plain
+/// DataFusion contexts built from this config (fallback-pressure items and the
+/// `report` CPU profile) must plan the physical shapes an Algeon session plans.
 pub fn tpch_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -57,7 +57,7 @@ pub fn tpch_report_session_config() -> SessionConfig {
         .with_repartition_joins(false)
         .with_repartition_sorts(false)
         .with_target_partitions(1);
-    config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
+    apply_algeon_option_overrides(config.options_mut(), AlgeonGpuExecutionMode::NativePreferred);
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;

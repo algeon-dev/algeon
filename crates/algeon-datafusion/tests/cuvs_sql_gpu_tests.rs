@@ -1227,6 +1227,125 @@ async fn composed_cuvs_attempt_seals_metrics_of_every_native_wrapper() {
     close_cuvs_test_backend(backend, ctx);
 }
 
+/// K-means reads the CTE's columns; the join reads the same columns again.
+const KMEANS_JOIN_SQL: &str = "WITH centers AS (\
+       SELECT id, CAST(SUM(d0) AS REAL) AS d0, CAST(SUM(d1) AS REAL) AS d1 FROM shared_points GROUP BY id), \
+     assignments AS (\
+       SELECT id, cluster_id FROM cuvs_kmeans(\
+         input => (SELECT id, d0, d1 FROM centers ORDER BY id), n_clusters => 2, init => 'kmeans++')) \
+     SELECT COUNT(*) AS members, SUM(c.d0) AS d0_total, SUM(c.d1) AS d1_total \
+     FROM assignments a JOIN centers c ON c.id = a.id \
+     GROUP BY a.cluster_id ORDER BY d0_total";
+
+/// `personas` is inlined twice, so K-means and its input run under both the
+/// top-k input and the final join. The three feature-only copies of
+/// `centers` match; the final join also needs `n`, so its copy differs.
+const NESTED_PERSONAS_SQL: &str = "WITH centers AS (\
+       SELECT id, CAST(SUM(d0) AS REAL) AS d0, CAST(SUM(d1) AS REAL) AS d1, COUNT(*) AS n \
+       FROM shared_points GROUP BY id), \
+     assignments AS (\
+       SELECT id, cluster_id FROM cuvs_kmeans(\
+         input => (SELECT id, d0, d1 FROM centers ORDER BY id), n_clusters => 2, init => 'kmeans++')), \
+     personas AS (\
+       SELECT a.cluster_id AS id, COUNT(*) AS members, SUM(c.n) AS rows, \
+         CAST(AVG(c.d0) AS REAL) AS d0, CAST(AVG(c.d1) AS REAL) AS d1 \
+       FROM assignments a JOIN centers c ON c.id = a.id GROUP BY a.cluster_id), \
+     leading AS (\
+       SELECT id, position, value FROM cuvs_top_k(\
+         input => (SELECT id, d0, d1 FROM personas ORDER BY id), k => 1, select => 'max')) \
+     SELECT p.members, CAST(p.rows AS DOUBLE) AS rows, CAST(l.value AS DOUBLE) AS value \
+     FROM leading l JOIN personas p ON p.id = l.id ORDER BY value";
+
+/// Registers eight ids with two rows each around (0, 1) and (10, 11), so
+/// K-means assigns the same two clusters on every run.
+async fn register_shared_points(ctx: &SessionContext, dir: &std::path::Path) {
+    let path = dir.join("shared_points.parquet");
+    let schema = wide_vector_schema("id");
+    let ids = (0..16).map(|row| row % 8).collect::<Vec<i64>>();
+    let d0 = ids.iter().map(|id| if *id < 4 { 0.0 } else { 10.0 }).collect::<Vec<f32>>();
+    let d1 = ids.iter().map(|id| if *id < 4 { 1.0 } else { 11.0 }).collect::<Vec<f32>>();
+    let batch = wide_vector_batch(Arc::clone(&schema), "id", &ids, &d0, &d1);
+    let mut writer = ArrowWriter::try_new(File::create(&path).expect("create Parquet fixture"), schema, None)
+        .expect("create Parquet writer");
+    writer.write(&batch).expect("write Parquet fixture");
+    writer.close().expect("finish Parquet fixture");
+    ctx.register_parquet("shared_points", path.to_str().expect("UTF-8 Parquet path"), ParquetReadOptions::default())
+        .await
+        .expect("register shared points");
+}
+
+fn shared_cte_rows(batches: &[RecordBatch]) -> Vec<(i64, f64, f64)> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let members = batch.column(0).as_any().downcast_ref::<Int64Array>().expect("member count");
+            let first = batch.column(1).as_any().downcast_ref::<Float64Array>().expect("first total");
+            let second = batch.column(2).as_any().downcast_ref::<Float64Array>().expect("second total");
+            (0..batch.num_rows())
+                .map(|row| (members.value(row), first.value(row), second.value(row)))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Runs `sql` natively and returns its rows, the largest number of units
+/// that read one shared producer, and the Parquet file scans it made.
+async fn run_shared_cte_natively(sql: &str, dir: &std::path::Path) -> (Vec<(i64, f64, f64)>, usize, usize) {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_shared_points(&ctx, dir).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).expect("begin cuVS attempt");
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, sql).await.expect("plan the shared CTE");
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
+    let shared_consumers = rendered
+        .split("shared_consumers=")
+        .skip(1)
+        .filter_map(|tail| tail.split(',').next()?.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).expect("execute the shared CTE");
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.expect("shared CTE batch"));
+    }
+    drop(stream);
+    let _report = completion.await;
+    let parquet_files =
+        attempt.sealed_native_execution_snapshot().expect("sealed native execution snapshot").metrics.parquet_files;
+    drop(attempt);
+    close_cuvs_test_backend(backend, ctx);
+    (shared_cte_rows(&batches), shared_consumers, parquet_files)
+}
+
+/// Runs `sql` with only GPU functions native: DataFusion computes the CTE
+/// once for each reader.
+async fn run_shared_cte_functions_only(sql: &str, dir: &std::path::Path) -> Vec<(i64, f64, f64)> {
+    let (backend, ctx) = cuvs_bounded_context_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
+    register_shared_points(&ctx, dir).await;
+    let batches = collect(plan_sql(&ctx, sql).await, ctx.task_ctx()).await.expect("functions-only run");
+    close_cuvs_test_backend(backend, ctx);
+    shared_cte_rows(&batches)
+}
+
+#[tokio::test]
+async fn cte_aggregate_read_by_gpu_function_inputs_and_joins_is_computed_once() {
+    let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
+
+    // The root and the K-means input read one aggregate of the points, so
+    // the file is scanned once.
+    let (rows, shared_consumers, parquet_files) = run_shared_cte_natively(KMEANS_JOIN_SQL, temp_dir.path()).await;
+    assert_eq!((shared_consumers, parquet_files), (2, 1));
+    assert_eq!(rows, [(4, 0.0, 8.0), (4, 80.0, 88.0)]);
+    assert_eq!(run_shared_cte_functions_only(KMEANS_JOIN_SQL, temp_dir.path()).await, rows);
+
+    // Both K-means inputs and the top-k input read one aggregate inside
+    // nested units; the final join's own copy is the second scan.
+    let (rows, shared_consumers, parquet_files) = run_shared_cte_natively(NESTED_PERSONAS_SQL, temp_dir.path()).await;
+    assert_eq!((shared_consumers, parquet_files), (3, 2));
+    assert_eq!(rows, [(4, 8.0, 2.0), (4, 8.0, 22.0)]);
+    assert_eq!(run_shared_cte_functions_only(NESTED_PERSONAS_SQL, temp_dir.path()).await, rows);
+}
+
 fn cuvs_test_backend_with_mode(mode: AlgeonGpuExecutionMode) -> AlgeonGpuBackend {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });

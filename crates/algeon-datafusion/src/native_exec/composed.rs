@@ -35,6 +35,7 @@ use super::{
     metrics::AlgeonNativeMetrics,
     prepare_gpu_resident_producer_for_execution,
     producer::prepared_gpu_resident_producer_admission_tickets,
+    shared_resident::task_context_with_shared_resident_results,
 };
 use crate::{
     error::{Error, ErrorCode, Result},
@@ -432,8 +433,9 @@ impl AlgeonNativeExec {
                     "algeon_datafusion.native_composed.gpu_execution_pool",
                     move |gpu_stream_scope| async move {
                         let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
-                        let execution_task_context =
-                            context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
+                        let execution_task_context = task_context_with_shared_resident_results(
+                            context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context)),
+                        );
                         let mut input_map = GpuResidentInputMap::new();
                         for (input_index, child) in prepared_gpu_inputs.into_iter().enumerate() {
                             let (input_name, handle) = execute_gpu_resident_producer_with_context(

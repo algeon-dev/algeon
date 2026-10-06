@@ -435,7 +435,9 @@ pub enum SubgraphInvariantKind {
     SharedResidentSubplan,
     /// A scalar aggregate can consume a shared resident producer only when every
     /// aggregate expression derives from columns produced by that same shared
-    /// node after transparent projections are peeled.
+    /// node after transparent projections are peeled. An expression computed
+    /// from those columns, in the aggregate or in a peeled projection, derives
+    /// from them; a literal argument such as the `1` of `COUNT(*)` reads none.
     AggregateDerivesFromSharedProducer,
     /// A final ordering barrier consumes the resident input after all upstream
     /// producers are complete and does not feed back into its input.

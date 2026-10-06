@@ -178,7 +178,8 @@ fn format_shared_resident_extraction_candidate(candidate: &SharedResidentExtract
         candidate.consumer_occurrences.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
     };
     format!(
-        "node_id={},subplan_fingerprint={},consumer_occurrences={},decision={:?},reason={:?},resident_input_name={}",
+        "attempt_fragment={},node_id={},subplan_fingerprint={},consumer_occurrences={},decision={:?},reason={:?},resident_input_name={}",
+        candidate.attempt_fragment.map_or_else(|| "none".to_string(), |fragment| fragment.to_string()),
         candidate.node_id,
         candidate.subplan_fingerprint,
         consumers,

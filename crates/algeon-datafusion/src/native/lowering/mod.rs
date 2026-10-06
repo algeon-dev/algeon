@@ -162,11 +162,17 @@ fn lower_literal_source_input(
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
     let (source_schema, batches, fetch) = match source {
+        // DataFusion fills every declared column of a placeholder row with
+        // untyped nulls, so the row itself is its only value. The aggregate
+        // statistics rule projects literals over a placeholder that keeps the
+        // replaced aggregate's schema. The placeholder lowers to the
+        // zero-column row while its parent reads none of its columns.
         super::normalize::NormalizedNativeLiteralSource::PlaceholderRow(placeholder) => {
-            if !placeholder.schema().fields().is_empty() {
+            if !required_output_fields.requested_indices(placeholder.schema().fields().len())?.is_empty() {
                 return Err(CapabilityReason::UnsupportedOperator.into());
             }
-            (placeholder.schema(), NativeLiteralBatchSource::placeholder_row().batches, None)
+            let row = NativeLiteralBatchSource::placeholder_row();
+            (row.schema, row.batches, None)
         },
         super::normalize::NormalizedNativeLiteralSource::Empty(empty) => {
             let schema = empty.schema();

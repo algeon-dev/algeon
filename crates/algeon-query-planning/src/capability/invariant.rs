@@ -8,7 +8,7 @@ use super::{
     ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan,
     edge::{edge_consumer_fact, node_operator_fact},
     graph::{consumer_nodes, peel_projection_chain_for_capability, peel_resident_unary_chain_for_capability},
-    lineage::{OutputLineage, expression_lineage_for_input, output_lineage},
+    lineage::{OutputLineage, expression_read_lineages, output_lineage},
     model::{
         CapabilityDecision, EdgeConsumer, EdgeContract, InvariantId, ResidentResource, ScheduleConstraint,
         SubgraphInvariant, SubgraphInvariantKind,
@@ -284,11 +284,11 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
         Err(decision) => return decision,
     };
     for (aggr_index, expr) in aggregate.spec.aggr_exprs.iter().enumerate() {
-        let input_lineage = match expression_lineage_for_input(plan, aggregate.input, &expr.expr) {
-            Ok(lineage) => lineage,
+        let read_lineages = match expression_read_lineages(plan, aggregate.input, &expr.expr) {
+            Ok(lineages) => lineages,
             Err(decision) => return decision,
         };
-        if !producer_lineages.contains(&input_lineage) {
+        if !read_lineages.iter().all(|lineage| producer_lineages.contains(lineage)) {
             return CapabilityDecision::rejected(
                 Reason::AggregateSharedProducerRequiresInputLineage,
                 [

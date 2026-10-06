@@ -176,16 +176,12 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 /// can overflow on large multi-join TPC-DS plans; native source planning
 /// reads row-group metadata directly from Parquet footers instead of
 /// relying on those table estimates.
-/// DataFusion defaults uncorrelated scalar subqueries to `ScalarSubqueryExec`;
-/// native TPC-DS report/admission contracts require the relationalized join form
-/// the native IR can lower.
 pub fn tpcds_native_report_session_config() -> SessionConfig {
     native_tpcds_session_config(tpcds_report_session_config())
 }
 
 fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
     config.options_mut().execution.collect_statistics = false;
-    config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config
 }
 

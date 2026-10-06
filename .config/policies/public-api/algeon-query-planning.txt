@@ -1324,11 +1324,11 @@ pub query_planning::optimizer::SharedResidentExtractionDecision::Rejected
 pub query_planning::optimizer::SharedResidentExtractionDecision::Skipped
 pub enum query_planning::optimizer::SharedResidentExtractionReason
 pub query_planning::optimizer::SharedResidentExtractionReason::ContainsGpuResidentSource
-pub query_planning::optimizer::SharedResidentExtractionReason::DynamicFilterRoutesUnremappable
 pub query_planning::optimizer::SharedResidentExtractionReason::Extracted
 pub query_planning::optimizer::SharedResidentExtractionReason::NestedUnderSelectedSubplan
 pub query_planning::optimizer::SharedResidentExtractionReason::NotRepeated
-pub query_planning::optimizer::SharedResidentExtractionReason::ResidentRowBoundUnavailable
+pub query_planning::optimizer::SharedResidentExtractionReason::ResidentPlanNotAdmitted
+pub query_planning::optimizer::SharedResidentExtractionReason::RootDoesNotReduceRows
 pub query_planning::optimizer::SharedResidentExtractionReason::SubplanNotClosed
 pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
@@ -1631,6 +1631,7 @@ pub fn query_planning::optimizer::SemijoinReductionOptions::validate(&self) -> q
 impl core::default::Default for query_planning::optimizer::SemijoinReductionOptions
 pub fn query_planning::optimizer::SemijoinReductionOptions::default() -> Self
 pub struct query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics
+pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::attempt_fragment: core::option::Option<usize>
 pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::consumer_occurrences: alloc::vec::Vec<query_planning::plan::NodeId>
 pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::decision: query_planning::optimizer::SharedResidentExtractionDecision
 pub query_planning::optimizer::SharedResidentExtractionCandidateDiagnostics::node_id: query_planning::plan::NodeId

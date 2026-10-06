@@ -43,6 +43,7 @@ mod attempt;
 mod capability_envelope;
 mod fragment;
 mod invocation;
+mod shared_resident;
 
 use attempt::{
     NativeCostSelection, NativeOptimizationAttempt, NativeReplacementSink, optimize_count_only_native_plan,

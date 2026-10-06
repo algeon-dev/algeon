@@ -24,7 +24,7 @@ use std::sync::Arc;
 use datafusion::execution::SessionState;
 use datafusion::{
     catalog::Session,
-    common::{DataFusionError, Result as DataFusionResult},
+    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
     execution::SessionStateBuilder,
     logical_expr::planner::RelationPlanner,
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
@@ -43,7 +43,9 @@ use crate::{
     gpu_coverage::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionAvailability, GpuFunctionCatalog, GpuFunctionFamily, install_gpu_function_family},
     native_exec::AlgeonNativeExecutionConfig,
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::Invocation},
+    planner::{
+        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::Invocation,
+    },
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
@@ -68,6 +70,11 @@ pub trait AlgeonSessionStateBuilderExt {
     /// can already be bound to its backend. For canonical production
     /// installation, use
     /// [`AlgeonGpuBackend::install_on`](crate::backend::AlgeonGpuBackend::install_on).
+    ///
+    /// Unless the execution mode is `FunctionsOnly`, it also sets
+    /// `datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery` to
+    /// `false` in the builder's config, so DataFusion plans an uncorrelated
+    /// scalar subquery as a join. A later `with_config` replaces that config.
     fn with_algeon_native(self, config: AlgeonNativeOptimizerConfig) -> Self;
 
     /// Install relation-aware cuVS SQL, metadata, and typed physical planning.
@@ -107,6 +114,10 @@ pub trait AlgeonSessionStateBuilderExt {
 impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
     fn with_algeon_native(mut self, config: AlgeonNativeOptimizerConfig) -> Self {
         install_gpu_coverage_table_function(&mut self);
+        apply_algeon_option_overrides(
+            self.config().get_or_insert_with(Default::default).options_mut(),
+            config.execution_mode(),
+        );
         let mut rules = take_physical_optimizer_rules(&mut self);
         install_algeon_native_rules(&mut rules, Arc::new(AlgeonNativePhysicalOptimizerRule::new(config)));
         self.with_physical_optimizer_rules(rules)
@@ -159,6 +170,23 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 gpu_family: Arc::new(CugraphGpuFunctionFamily::new(config)),
             },
         )
+    }
+}
+
+/// Sets the DataFusion options an Algeon session overrides for `mode`.
+///
+/// [`AlgeonSessionStateBuilderExt::with_algeon_native`] applies it to the
+/// session config, and a plain DataFusion context that models the plans an
+/// Algeon session lowers applies it to its own options, so both plan the same
+/// physical shapes.
+#[doc(hidden)]
+pub fn apply_algeon_option_overrides(options: &mut ConfigOptions, mode: AlgeonGpuExecutionMode) {
+    // DataFusion plans an uncorrelated scalar subquery as a
+    // `ScalarSubqueryExec` by default, which native lowering has no
+    // counterpart for. Disabling it makes DataFusion rewrite the subquery
+    // into a join with its one-row aggregate, a shape native lowering covers.
+    if mode.rewrites_relational_plans() {
+        options.optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     }
 }
 
@@ -352,7 +380,6 @@ fn install_algeon_native_rules(
 mod tests {
     use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use datafusion::{
-        common::config::ConfigOptions,
         datasource::MemTable,
         physical_plan::{ExecutionPlan, empty::EmptyExec, union::UnionExec},
         prelude::{SessionConfig, SessionContext},
@@ -360,10 +387,7 @@ mod tests {
     use futures::executor::block_on;
 
     use super::*;
-    use crate::{
-        backend::InstalledTestGpuBackend, error::DataFusionErrorExt, native_exec::QueryAdmissionSource,
-        planner::AlgeonGpuExecutionMode,
-    };
+    use crate::{backend::InstalledTestGpuBackend, error::DataFusionErrorExt, native_exec::QueryAdmissionSource};
 
     /// Native lowering rejects struct columns, so this plan stays on DataFusion.
     fn cpu_only_plan(schema: SchemaRef) -> Arc<dyn ExecutionPlan> {
@@ -408,6 +432,25 @@ mod tests {
         let backend_source = admission_source(&backend);
         assert!(first_source.same_backend(&second_source));
         assert!(first_source.same_backend(&backend_source));
+    }
+
+    /// `FunctionsOnly` leaves relational SQL to DataFusion's own planning, so
+    /// only the modes that lower relational SQL replace `ScalarSubqueryExec`
+    /// with DataFusion's join rewrite.
+    #[test]
+    fn only_relational_native_modes_plan_uncorrelated_scalar_subqueries_as_joins() {
+        let physical_scalar_subquery = |mode| {
+            SessionStateBuilder::new()
+                .with_algeon_native(AlgeonNativeOptimizerConfig::default().with_execution_mode(mode))
+                .build()
+                .config()
+                .options()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery
+        };
+        assert!(physical_scalar_subquery(AlgeonGpuExecutionMode::FunctionsOnly));
+        assert!(!physical_scalar_subquery(AlgeonGpuExecutionMode::NativePreferred));
+        assert!(!physical_scalar_subquery(AlgeonGpuExecutionMode::NativeRequired));
     }
 
     /// A cuGraph input subplan is a child of the query root, so its final
