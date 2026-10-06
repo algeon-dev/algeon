@@ -17,8 +17,7 @@
     }
   },
   "result": {
-    "modularity": 0.4155982732772827,
-    "partition": [
+    "community": [
       0,
       0,
       0,
@@ -54,6 +53,7 @@
       1,
       1
     ],
+    "modularity": 0.4155982732772827,
     "vertex": [
       0,
       1,

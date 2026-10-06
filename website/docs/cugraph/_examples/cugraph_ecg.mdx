@@ -27,15 +27,15 @@ JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
 WITH labeled AS (
-  SELECT 'louvain' AS algorithm, c."partition" AS community, p.primary_fos
+  SELECT 'louvain' AS algorithm, c.community, p.primary_fos
   FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges)) c
   JOIN papers p ON p.paper_id = c.vertex
   UNION ALL
-  SELECT 'leiden', c."partition", p.primary_fos
+  SELECT 'leiden', c.community, p.primary_fos
   FROM cugraph_leiden(edges => (SELECT src, dst FROM ai_edges)) c
   JOIN papers p ON p.paper_id = c.vertex
   UNION ALL
-  SELECT 'ecg', c."partition", p.primary_fos
+  SELECT 'ecg', c.community, p.primary_fos
   FROM cugraph_ecg(edges => (SELECT src, dst FROM ai_edges)) c
   JOIN papers p ON p.paper_id = c.vertex),
 counts AS (

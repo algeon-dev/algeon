@@ -419,7 +419,6 @@ impl CugraphAlgorithmParams {
             NativeGraphAlgorithmParams::Leiden(params) => Self::Leiden(CugraphLeidenParams {
                 max_level: params.max_level,
                 resolution: params.resolution,
-                theta: params.theta,
                 seed: params.seed,
             }),
             NativeGraphAlgorithmParams::Ecg(params) => Self::Ecg(CugraphEcgParams {
@@ -435,9 +434,6 @@ impl CugraphAlgorithmParams {
                     n_clusters: params.n_clusters,
                     n_eigenvectors: params.n_eigenvectors,
                     evs_tolerance: params.evs_tolerance,
-                    evs_max_iterations: params.evs_max_iterations,
-                    k_means_tolerance: params.k_means_tolerance,
-                    k_means_max_iterations: params.k_means_max_iterations,
                     seed: params.seed,
                 })
             },
@@ -714,6 +710,13 @@ impl CugraphVertexIdDomain {
             Self::StringLogical => DataType::Utf8,
         }
     }
+
+    /// Whether the per-call codebook must map this domain to the algorithm's
+    /// native vertex ids: string domains always, numeric domains when the
+    /// native graph type cannot index them.
+    pub(crate) fn requires_mapping(&self, algorithm: CugraphAlgorithm) -> bool {
+        !algorithm.native_algorithm().vertex_id_type_support().accepts_arrow_data_type(&self.output_data_type())
+    }
 }
 
 pub(crate) fn vertex_id_domain_for_call(
@@ -765,12 +768,6 @@ pub(crate) fn vertex_id_domain_for_call(
                 algorithm.function_name()
             )));
         }
-        if algorithm.definition().logical_string_output_columns().is_none() {
-            return Err(unsupported_vertex_dtype_error(format!(
-                "cuGraph {} does not support logical string vertex mapping",
-                algorithm.function_name()
-            )));
-        }
         return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
@@ -803,33 +800,6 @@ pub(crate) fn vertex_id_domain_for_call(
         DataType::Int64 => Ok(CugraphVertexIdDomain::Int64),
         _ => unreachable!("numeric vertex dtype checked above"),
     }
-}
-
-pub(crate) fn validate_vertex_id_domain_support_for_call(
-    algorithm: CugraphAlgorithm,
-    vertex_domain: &CugraphVertexIdDomain,
-) -> Result<()> {
-    let data_type = match vertex_domain {
-        CugraphVertexIdDomain::Int32 => DataType::Int32,
-        CugraphVertexIdDomain::Int64 => DataType::Int64,
-        CugraphVertexIdDomain::StringLogical => return Ok(()),
-    };
-    let support = algorithm.native_algorithm().vertex_id_type_support();
-    if support.accepts_arrow_data_type(&data_type) {
-        return Ok(());
-    }
-    Err(Error::new(
-        ErrorCode::RequiredGpuOperationUnsupported,
-        "algeon_datafusion.cugraph_sql.vertex_id_type.preflight",
-        format!(
-            "cuGraph {} vertex columns have unsupported dtype {data_type:?}; supported vertex dtypes: {}",
-            algorithm.function_name(),
-            support.supported_dtypes_label()
-        ),
-    )
-    .with_fact("algorithm", algorithm.function_name())
-    .with_fact("vertex_dtype", format!("{data_type:?}"))
-    .with_fact("supported_vertex_dtypes", support.supported_dtypes_label()))
 }
 
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
@@ -1185,16 +1155,15 @@ pub struct CugraphLeidenParams {
     pub max_level: u32,
     /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
     pub resolution: f64,
-    /// Modularity-gain scaling for the refinement stage. Must be > 0.
-    pub theta: f64,
-    /// RNG seed. Default 0 gives a deterministic run.
+    /// RNG seed for the random choices in the refinement step. The same seed
+    /// does not guarantee identical communities across runs.
     pub seed: u64,
 }
 
 impl Default for CugraphLeidenParams {
     fn default() -> Self {
         // Matches query_planning::plan::GraphLeidenParams::default().
-        Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
+        Self { max_level: 100, resolution: 1.0, seed: 0 }
     }
 }
 
@@ -1207,9 +1176,9 @@ pub struct CugraphEcgParams {
     pub ensemble_size: u32,
     /// Maximum hierarchy depth for final Louvain. Must be >= 1.
     pub max_level: u32,
-    /// Convergence threshold for final Louvain. Must be >= 0.
+    /// Convergence threshold for final Louvain. Must be in (0, 1].
     pub threshold: f64,
-    /// Resolution parameter in the modularity formula. Must be > 0.
+    /// Resolution parameter in the modularity formula. Must be in (0, 1].
     pub resolution: f64,
     /// RNG seed. Default 0 gives a deterministic run.
     pub seed: u64,
@@ -1225,18 +1194,14 @@ impl Default for CugraphEcgParams {
 /// Parameters for spectral modularity maximization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphSpectralClusteringParams {
-    /// Desired number of clusters. Must be >= 1.
+    /// Desired number of clusters. Must be in `[2, i32::MAX]`.
     pub n_clusters: u32,
-    /// Number of eigenvectors to use. Must be >= 1.
+    /// Number of eigenvectors to use. Must be in `[2, i32::MAX]` and must not
+    /// exceed `n_clusters`. The first eigenvector is constant, so one
+    /// eigenvector would give k-means a constant embedding.
     pub n_eigenvectors: u32,
-    /// Eigenvalue-solver tolerance. Must be >= 0.
+    /// Eigenvalue-solver tolerance. Must be in `[0, 1)`.
     pub evs_tolerance: f64,
-    /// Eigenvalue-solver maximum iteration count. Must be in `[1, i32::MAX]`.
-    pub evs_max_iterations: u32,
-    /// k-means tolerance. Must be >= 0.
-    pub k_means_tolerance: f64,
-    /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
-    pub k_means_max_iterations: u32,
     /// RNG seed. Default 0.
     ///
     /// The seed only fixes the random initialization (Lanczos start vector
@@ -1250,15 +1215,7 @@ pub struct CugraphSpectralClusteringParams {
 impl Default for CugraphSpectralClusteringParams {
     fn default() -> Self {
         // Matches query_planning::plan::GraphSpectralClusteringParams::default().
-        Self {
-            n_clusters: 2,
-            n_eigenvectors: 2,
-            evs_tolerance: 0.01,
-            evs_max_iterations: 500,
-            k_means_tolerance: 0.001,
-            k_means_max_iterations: 100,
-            seed: 0,
-        }
+        Self { n_clusters: 2, n_eigenvectors: 2, evs_tolerance: 0.01, seed: 0 }
     }
 }
 

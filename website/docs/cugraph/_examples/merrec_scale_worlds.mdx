@@ -1,0 +1,84 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Which shopping worlds do shared fans reveal across official categories?
+
+Mercari files every listing under one of 17 top-level categories. Shoppers
+do not browse that way. This statement chains two graph algorithms. First,
+Jaccard scores the 12.5 million pairs among the 5,000 brands with the most
+fans, using distinct user-brand likes as the graph. Pairs with a score of
+at least 0.02 become a weighted brand graph, and Leiden partitions it at
+resolution 3. SQL then counts each world's brands and returns the five
+most-liked brands of every world with at least 15 brands.
+
+```sql
+WITH fans AS (
+  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
+  GROUP BY e.user_id, i.brand_id
+), top_brands AS (
+  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000
+), worlds AS (
+  SELECT vertex AS brand_id, community AS world
+  FROM cugraph_leiden(
+    edges => (
+      SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight
+      FROM cugraph_jaccard(
+        edges => (SELECT src, dst FROM fans),
+        vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second
+                         FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),
+        directed => false)
+      WHERE similarity >= 0.02),
+    directed => false, resolution => 3, seed => 42)
+), members AS (
+  SELECT w.world, n.brand_name, t.fans
+  FROM worlds w
+  JOIN top_brands t ON t.brand_id = w.brand_id
+  JOIN (SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
+        FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id
+), ranked AS (
+  SELECT world, brand_name, fans,
+         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk
+  FROM members
+), sizes AS (
+  SELECT world, COUNT(*) AS brands, SUM(fans) AS fan_links FROM members GROUP BY world
+)
+SELECT s.world, s.brands, s.fan_links, r.rk, r.brand_name, r.fans
+FROM ranked r JOIN sizes s ON s.world = r.world
+WHERE r.rk <= 5 AND s.brands >= 15
+ORDER BY s.fan_links DESC, r.rk
+;
+```
+
+The query returns 190 rows. The table below shows
+a selection of worlds, with their five most-liked brands in fan order.
+
+| World (editorial label) | Brands | Five most-liked brands |
+|---|---:|---|
+| Mainstream marketplace | 185 | Nike, Handmade, Disney, Nintendo, Gildan |
+| Anime, K-pop and gaming | 448 | Bandai, Microsoft, BTS, PlayStation, Manga |
+| Kids and baby clothing | 394 | Carter's, little sleepies, Wonder Nation, Pottery Barn Kids, OshKosh B'gosh |
+| Vintage home and kitchen | 362 | Authentic Original Vintage Style, Walmart, Threshold, Tupperware, MCM |
+| Luxury fashion | 207 | Chanel, Burberry, Prada, Christian Dior, Dior |
+| Makeup | 415 | MAC Cosmetics, Too Faced, ColourPop Cosmetics, Tarte, Urban Decay |
+| Sports cards and fan gear | 157 | Topps, Panini, Tommy Hilfiger, MLB, NBA |
+| Teen trend fashion | 110 | Kim Kardashian, Brandy Melville, PacSun, Princess Polly, Windsor |
+| Streetwear | 59 | Yeezy, Supreme, True Religion, Bape, Off-White |
+| Power tools and kitchen appliances | 101 | Milwaukee, DeWALT, Mainstays, Ninja, KitchenAid |
+| Cameras | 113 | Canon, Fujifilm, Nikon, Polaroid, Panasonic |
+| Golf | 74 | Lauren Ralph Lauren, Callaway, TaylorMade, Titleist, Mizuno |
+| Bridal and formal wear | 89 | David's Bridal, Adrianna Papell, Speechless, AZAZIE, Lulu |
+| Medical scrubs | 66 | Dickies, Cherokee, Sketchers, Grey's Anatomy, Koi |
+
+Several worlds cut across the official taxonomy. The five most-liked brands
+of the medical scrubs world are filed mostly under Men (Dickies), Kids
+(Cherokee), Women (Sketchers, Koi) and Other (Grey's Anatomy).
+Power tools sit with kitchen appliances (Milwaukee, DeWALT, Ninja,
+KitchenAid). Golf, cameras, bridal wear and streetwear each form their own
+world. A merchandising team could start navigation collections or campaign
+audiences from these groups. The world numbers in the capture are labels
+from this Leiden fit; three runs returned the same partition. The names in the table are editorial summaries
+of each world's top brands.
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 9.41 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-shopping-worlds.json) with the executed SQL, query IDs, timings, and all result rows.

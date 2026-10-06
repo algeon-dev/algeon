@@ -391,7 +391,7 @@ def validate_graph_probes(
                 component_size[vertex] = size
         rows = table_records(table)
         actual_ids = [product_to_id[row["product_id"]] for row in rows]
-        label_column = "component_label" if "component_label" in table.column_names else "label"
+        label_column = "component_label" if "component_label" in table.column_names else "component"
         labels = [row[label_column] for row in rows]
         size_column = "component_size"
         size_matches = [

@@ -148,8 +148,8 @@ pub enum WindowFunction {
         output: Field,
     },
     /// SQL `row_number()` over the ordered window partition. Its output is a
-    /// non-nullable UInt64; internal dense-id mapping may request Int64 for
-    /// downstream native consumers.
+    /// non-nullable UInt64; internal dense-id mapping may request Int32 or
+    /// Int64 for downstream native consumers.
     RowNumber {
         /// Output field.
         output: Field,
@@ -226,6 +226,12 @@ impl WindowFunction {
     /// Create a one-based `row_number()` with an Int64 output.
     pub fn row_number_i64(alias: impl Into<String>) -> Self {
         Self::RowNumber { output: Field::new(alias, DataType::Int64, false) }
+    }
+
+    /// Create a one-based `row_number()` with an Int32 output. Execution fails
+    /// with a size error when the input has more than `i32::MAX` rows.
+    pub fn row_number_i32(alias: impl Into<String>) -> Self {
+        Self::RowNumber { output: Field::new(alias, DataType::Int32, false) }
     }
 
     /// Create a `LAG(expr, offset, default)` window function.

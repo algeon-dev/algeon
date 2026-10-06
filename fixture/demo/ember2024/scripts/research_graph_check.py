@@ -453,8 +453,8 @@ def run() -> dict:
 
     components = {}
     for result_name, label_col, expected_groups in [
-        ("84_cugraph_strongly_connected_components", "label", nx.strongly_connected_components(knn_directed)),
-        ("86_cugraph_weakly_connected_components", "label", nx.weakly_connected_components(knn_directed)),
+        ("84_cugraph_strongly_connected_components", "component", nx.strongly_connected_components(knn_directed)),
+        ("86_cugraph_weakly_connected_components", "component", nx.weakly_connected_components(knn_directed)),
     ]:
         table = read_table(result_name)
         result_vertices, result_groups = group_partition(table, "vertex", label_col)
@@ -831,7 +831,7 @@ def run() -> dict:
     }
     edge_bc_table = read_table("66_cugraph_edge_betweenness_centrality")
     actual_edge_bc = {
-        (int(row["source"]), int(row["destination"])): float(row["score"])
+        (int(row["src"]), int(row["dst"])): float(row["value"])
         for row in edge_bc_table.to_pylist()
     }
     edge_bc_error = max_abs_map_error(actual_edge_bc, expected_edge_bc)
@@ -858,8 +858,8 @@ def run() -> dict:
         "82_cugraph_spectral_modularity_maximization",
     ]:
         table = read_table(name)
-        vertices, groups = group_partition(table, "vertex", "partition")
-        labels = {int(row["vertex"]): int(row["partition"]) for row in table.to_pylist()}
+        vertices, groups = group_partition(table, "vertex", "community")
+        labels = {int(row["vertex"]): int(row["community"]) for row in table.to_pylist()}
         community_values = [set(group) for group in groups]
         modularity = float(nx.algorithms.community.modularity(knn_affinity, community_values, weight="weight"))
         community_sizes = sorted((len(group) for group in groups), reverse=True)

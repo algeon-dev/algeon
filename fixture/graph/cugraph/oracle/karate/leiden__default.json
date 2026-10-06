@@ -6,8 +6,7 @@
     "params": {
       "max_level": 100,
       "resolution": 1.0,
-      "seed": 0,
-      "theta": 1.0
+      "seed": 0
     },
     "seed": null,
     "versions": {
@@ -18,7 +17,7 @@
     }
   },
   "result": {
-    "partition": [
+    "community": [
       0,
       0,
       0,

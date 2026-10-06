@@ -150,7 +150,7 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_edge_normalize_inserted: true,
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
-            sql: "SELECT vertex, partition \
+            sql: "SELECT vertex, community \
                   FROM cugraph_louvain(edges => (SELECT src, dst FROM graph_edges), directed => false) \
                   ORDER BY vertex",
         },
@@ -160,7 +160,7 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_edge_normalize_inserted: matches!(execution_mode, AlgeonGpuExecutionMode::FunctionsOnly),
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
-            sql: "SELECT vertex, partition \
+            sql: "SELECT vertex, community \
                   FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false) \
                   ORDER BY vertex",
         },
@@ -170,7 +170,7 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_edge_normalize_inserted: false,
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
-            sql: "SELECT vertex, partition \
+            sql: "SELECT vertex, community \
                   FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false, \
                                        construction_policy => 'raw_libcugraph') \
                   ORDER BY vertex",

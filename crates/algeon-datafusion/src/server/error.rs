@@ -496,12 +496,14 @@ pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Opt
 
 fn client_status_message(error: &Error) -> String {
     match error.code() {
+        // The native layer that knows the algorithm names the parameters to change in `remedy`.
         ErrorCode::AlgorithmDidNotConverge => format!(
-            "{} did not converge after {} iterations (max_iterations={}, epsilon={}); change the convergence parameters and retry",
+            "{} did not converge after {} iterations (max_iterations={}, epsilon={}); {} and retry",
             error.fact_value("algorithm").unwrap_or("native algorithm"),
             error.fact_value("iterations").unwrap_or("unknown"),
             error.fact_value("max_iterations").unwrap_or("unknown"),
             error.fact_value("epsilon").unwrap_or("unknown"),
+            error.fact_value("remedy").unwrap_or("change the convergence parameters"),
         ),
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
@@ -1241,6 +1243,40 @@ mod tests {
         assert_metadata_value(&status, MAX_ITERATIONS_METADATA_KEY, "200");
         assert_metadata_value(&status, EPSILON_METADATA_KEY, "0.00000001");
         assert!(status.metadata().get("x-algeon-native-secret").is_none());
+    }
+
+    #[test]
+    fn algorithm_nonconvergence_names_the_native_remedy() {
+        for (algorithm, remedy) in [
+            (
+                "katz_centrality",
+                "lower alpha (currently 0.5) below 1/lambda_max, the reciprocal of the largest eigenvalue of the adjacency matrix, or raise max_iterations",
+            ),
+            ("hits", "raise max_iterations or epsilon"),
+        ] {
+            let error = Error::new(
+                ErrorCode::AlgorithmDidNotConverge,
+                "algeon_datafusion.cugraph_sql.execute_gpu",
+                "native cuGraph SQL GPU-resident query execution failed",
+            )
+            .with_fact("algorithm", algorithm)
+            .with_fact("iterations", "100")
+            .with_fact("max_iterations", "100")
+            .with_fact("epsilon", "0.00001")
+            .with_fact("remedy", remedy);
+
+            let status = adapter_error_to_status(&error);
+
+            assert_eq!(status.code(), Code::FailedPrecondition, "{algorithm}");
+            assert_eq!(
+                status.message(),
+                format!(
+                    "{algorithm} did not converge after 100 iterations (max_iterations=100, epsilon=0.00001); {remedy} and retry"
+                )
+            );
+            assert_metadata_value(&status, ALGORITHM_METADATA_KEY, algorithm);
+            assert_metadata_value(&status, MAX_ITERATIONS_METADATA_KEY, "100");
+        }
     }
 
     #[test]

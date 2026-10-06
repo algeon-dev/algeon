@@ -23,7 +23,7 @@ pub(crate) use family::GpuFunctionFamily;
 pub(crate) use input_ordering::{
     fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions, resolve_input_ordering,
 };
-pub(crate) use named_args::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
+pub(crate) use named_args::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments, unknown_name_message};
 pub(crate) use registration::install_gpu_function_family;
 pub(crate) use table_functions::gpu_metadata_table_functions;
 #[cfg(feature = "server")]

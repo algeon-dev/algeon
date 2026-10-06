@@ -14,28 +14,30 @@ use crate::{
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
-    params::{IterationCount, NonNegativeF64},
+    params::{ClusterCount, HalfOpenUnitF64},
     random::RngState,
     structure::VertexIds,
     types::{CugraphElement, to_bool_t},
 };
+
+/// libcugraph's legacy spectral clustering accepts the eigensolver and k-means
+/// iteration limits but ignores both, so the wrapper passes fixed values.
+const IGNORED_ITERATION_LIMIT: i32 = 100;
+
+/// libcugraph range-checks the k-means tolerance to `[0, 1)` and never reads it
+/// afterwards, so the wrapper passes a fixed value.
+const IGNORED_K_MEANS_TOLERANCE: f64 = 0.001;
 
 /// Parameters shared by legacy spectral clustering algorithms.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct SpectralClusteringParams {
     /// Desired number of clusters.
-    pub n_clusters: NonZeroUsize,
+    pub n_clusters: ClusterCount,
     /// Number of eigenvectors to use.
     pub n_eigenvectors: NonZeroUsize,
     /// Eigenvalue-solver tolerance.
-    pub evs_tolerance: NonNegativeF64,
-    /// Eigenvalue-solver maximum iteration count.
-    pub evs_max_iterations: IterationCount,
-    /// k-means tolerance.
-    pub k_means_tolerance: NonNegativeF64,
-    /// k-means maximum iteration count.
-    pub k_means_max_iterations: IterationCount,
+    pub evs_tolerance: HalfOpenUnitF64,
     /// Whether to run expensive input validation checks in the C library.
     pub do_expensive_check: bool,
 }
@@ -43,12 +45,9 @@ pub struct SpectralClusteringParams {
 impl Default for SpectralClusteringParams {
     fn default() -> Self {
         Self {
-            n_clusters: NonZeroUsize::new(2).expect("literal is non-zero"),
+            n_clusters: ClusterCount::new(2).expect("literal is at least 2"),
             n_eigenvectors: NonZeroUsize::new(2).expect("literal is non-zero"),
-            evs_tolerance: NonNegativeF64::new(0.01).expect("literal is non-negative"),
-            evs_max_iterations: IterationCount::new(500).expect("literal is non-zero"),
-            k_means_tolerance: NonNegativeF64::new(0.001).expect("literal is non-negative"),
-            k_means_max_iterations: IterationCount::new(100).expect("literal is non-zero"),
+            evs_tolerance: HalfOpenUnitF64::new(0.01).expect("literal is in [0, 1)"),
             do_expensive_check: false,
         }
     }
@@ -211,8 +210,6 @@ fn run_clustering(
     function: ClusteringFn,
     operation: &'static str,
 ) -> Result<*mut cugraph_clustering_result_t> {
-    let evs_max_iterations = i32::try_from(params.evs_max_iterations)?;
-    let k_means_max_iterations = i32::try_from(params.k_means_max_iterations)?;
     let mut result: *mut cugraph_clustering_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let graph_ptr = graph.as_ptr(handle, operation)?;
@@ -227,9 +224,9 @@ fn run_clustering(
             params.n_clusters.get(),
             params.n_eigenvectors.get(),
             params.evs_tolerance.get(),
-            evs_max_iterations,
-            params.k_means_tolerance.get(),
-            k_means_max_iterations,
+            IGNORED_ITERATION_LIMIT,
+            IGNORED_K_MEANS_TOLERANCE,
+            IGNORED_ITERATION_LIMIT,
             to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,

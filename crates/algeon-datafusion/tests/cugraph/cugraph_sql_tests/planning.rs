@@ -302,37 +302,30 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
 }
 
 #[tokio::test]
-async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorithms() {
+async fn cugraph_table_function_scan_plans_int64_and_string_vertices_for_legacy_int32_algorithms() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_algeon_native(AlgeonNativeOptimizerConfig::default())
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
-    register_edge_memtable(&ctx, "edges_i64", DataType::Int64, DataType::Int64, DataType::Float64);
     register_edge_memtable(&ctx, "edges_i32", DataType::Int32, DataType::Int32, DataType::Float64);
+    register_edge_memtable(&ctx, "edges_i64", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "edges_utf8", DataType::Utf8, DataType::Utf8, DataType::Float64);
 
-    for (int64_sql, int32_sql, expected_algorithm) in [
-        (
-            "SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM edges_i64))",
-            "SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM edges_i32))",
-            "cugraph_minimum_spanning_tree",
-        ),
-        (
-            "SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM edges_i64))",
-            "SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM edges_i32))",
-            "cugraph_spectral_modularity_maximization",
-        ),
+    for (algorithm, columns, vertex_columns) in [
+        (CugraphAlgorithm::MinimumSpanningTree, "src, dst, weight", ["src", "dst"].as_slice()),
+        (CugraphAlgorithm::SpectralModularityMaximization, "src, dst", ["vertex"].as_slice()),
     ] {
-        let error = ctx.sql(int64_sql).await.unwrap_err();
-        let algeon = typed_algeon_error(&error);
-        assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
-        assert_eq!(algeon.fact_value("algorithm"), Some(expected_algorithm));
-        assert_eq!(algeon.fact_value("vertex_dtype"), Some("Int64"));
-        assert_eq!(algeon.fact_value("supported_vertex_dtypes"), Some("Int32"));
-
-        let int32_df = ctx.sql(int32_sql).await.unwrap();
-        int32_df.create_physical_plan().await.unwrap();
+        for (table, vertex_type) in
+            [("edges_i32", DataType::Int32), ("edges_i64", DataType::Int64), ("edges_utf8", DataType::Utf8)]
+        {
+            let sql = format!("SELECT * FROM {}(edges => (SELECT {columns} FROM {table}))", algorithm.function_name());
+            assert_sql_schema_with_vertex_type(&ctx, &sql, algorithm, &vertex_type, vertex_columns).await;
+            ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap_or_else(|error| {
+                panic!("{} over {vertex_type:?} vertices must plan natively: {error}", algorithm.function_name())
+            });
+        }
     }
 
     let malformed = ctx
@@ -340,6 +333,48 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
         .await
         .unwrap_err();
     assert!(malformed.to_string().contains("missing_src"));
+}
+
+#[tokio::test]
+async fn cugraph_result_columns_follow_the_documented_naming_in_descriptors_and_planned_schemas() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let cases: [(&str, &[&str]); 8] = [
+        ("cugraph_louvain", &["vertex", "community"]),
+        ("cugraph_leiden", &["vertex", "community"]),
+        ("cugraph_ecg", &["vertex", "community"]),
+        ("cugraph_spectral_modularity_maximization", &["vertex", "community"]),
+        ("cugraph_weakly_connected_components", &["vertex", "component"]),
+        ("cugraph_strongly_connected_components", &["vertex", "component"]),
+        ("cugraph_edge_betweenness_centrality", &["src", "dst", "value"]),
+        ("cugraph_pagerank", &["vertex", "value"]),
+    ];
+    for (function, expected) in cases {
+        let sql = format!("SELECT * FROM {function}(edges => (SELECT src, dst FROM graph_edges))");
+        let planned = ctx.sql(&sql).await.unwrap();
+        assert_eq!(schema_field_names(planned.schema().inner()), expected, "{function} planned schema");
+
+        let batches = ctx
+            .sql(&format!("SELECT result_schemas_json FROM gpu_describe_function('{function}')"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let schemas = json_value(string_value(single_batch(&batches), 0, 0));
+        let described = schemas["schemas"]["default"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(described, expected, "{function} described schema");
+    }
 }
 
 #[tokio::test]
@@ -714,7 +749,7 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
     );
     assert_eq!(
         schema_fields(CugraphAlgorithm::Louvain),
-        vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false),],
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("community", DataType::Int64, false),],
     );
     assert_eq!(
         schema_fields(CugraphAlgorithm::EigenvectorCentrality),
@@ -758,11 +793,11 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
     );
     assert_eq!(
         schema_fields(CugraphAlgorithm::WeaklyConnectedComponents),
-        vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)],
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("component", DataType::Int64, false)],
     );
     assert_eq!(
         schema_fields(CugraphAlgorithm::StronglyConnectedComponents),
-        vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)],
+        vec![Field::new("vertex", DataType::Int64, false), Field::new("component", DataType::Int64, false)],
     );
     assert_eq!(
         schema_fields(CugraphAlgorithm::TriangleCountAll),
@@ -788,8 +823,8 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
     {
         assert_eq!(
             schema_fields(algorithm),
-            vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)],
-            "community algorithm {algorithm:?} must expose vertex + partition schema",
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("community", DataType::Int64, false)],
+            "community algorithm {algorithm:?} must expose vertex + community schema",
         );
     }
     assert_eq!(
@@ -813,7 +848,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 
     let df = ctx
         .sql(
-            "SELECT vertex, partition \
+            "SELECT vertex, community \
              FROM cugraph_louvain(edges => (SELECT src, dst, weight FROM tiny_communities), directed => false) \
              ORDER BY vertex",
         )
@@ -822,7 +857,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
     let plan = df.create_physical_plan().await.unwrap();
     assert_eq!(
         plan.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        vec!["vertex", "partition"]
+        vec!["vertex", "community"]
     );
     let plan_display = displayable(plan.as_ref()).indent(false).to_string();
     assert!(
@@ -836,7 +871,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 
     let raw_df = ctx
         .sql(
-            "SELECT vertex, partition \
+            "SELECT vertex, community \
              FROM cugraph_louvain(\
                   edges => (SELECT src, dst, weight FROM tiny_communities),\
                   directed => false, construction_policy => 'raw_libcugraph') \
@@ -1017,7 +1052,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
     let undirected_df = ctx
         .sql(
-            "SELECT vertex, partition \
+            "SELECT vertex, community \
              FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false) \
              ORDER BY vertex",
         )
@@ -1112,7 +1147,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
     let filtered_reverse_df = ctx
         .sql(
-            "SELECT vertex, partition \
+            "SELECT vertex, community \
              FROM cugraph_louvain(edges => (SELECT src, dst FROM filtered_reverse_expansion_edges), directed => false) \
              ORDER BY vertex",
         )
@@ -1127,7 +1162,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
     let mixed_memory_df = ctx
         .sql(
-            "SELECT vertex, partition \
+            "SELECT vertex, community \
              FROM cugraph_louvain(edges => (SELECT src, dst FROM mixed_memory_reverse_edges), directed => false) \
              ORDER BY vertex",
         )

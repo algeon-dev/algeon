@@ -180,7 +180,8 @@ pub enum GraphVertexIdTypeSupport {
     /// The operation accepts Int32 and Int64 vertex id columns.
     Int32OrInt64,
     /// cuGraph C API operation whose edge type dispatch only supports
-    /// Int32 vertex id columns.
+    /// Int32 vertex id columns. The graph node validates Int32 columns; the
+    /// SQL adapter maps other vertex domains to Int32 ids before the node.
     Int32OnlyLegacyEdgeType,
 }
 
@@ -386,7 +387,7 @@ impl GraphOperationDefinition {
         match self.algorithm {
             GraphAlgorithm::Bfs => &["vertex", "predecessor", "source", "target"],
             GraphAlgorithm::Sssp => &["vertex", "predecessor"],
-            GraphAlgorithm::EdgeBetweennessCentrality => &["source", "destination"],
+            GraphAlgorithm::EdgeBetweennessCentrality => &["src", "dst"],
             GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => &["src", "dst"],
             GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
                 &["first", "second"]

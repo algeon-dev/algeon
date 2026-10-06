@@ -1,0 +1,1569 @@
+{
+ "name": "09_shopping_worlds",
+ "sql_file": "fixture/demo/merrec/scripts/scale/09_shopping_worlds.sql",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000\n), worlds AS (\n  SELECT vertex AS brand_id, community AS world\n  FROM cugraph_leiden(\n    edges => (\n      SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight\n      FROM cugraph_jaccard(\n        edges => (SELECT src, dst FROM fans),\n        vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                         FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n        directed => false)\n      WHERE similarity >= 0.02),\n    directed => false, resolution => 3, seed => 42)\n), members AS (\n  SELECT w.world, n.brand_name, t.fans\n  FROM worlds w\n  JOIN top_brands t ON t.brand_id = w.brand_id\n  JOIN (SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n        FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id\n), ranked AS (\n  SELECT world, brand_name, fans,\n         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk\n  FROM members\n), sizes AS (\n  SELECT world, COUNT(*) AS brands, SUM(fans) AS fan_links FROM members GROUP BY world\n)\nSELECT s.world, s.brands, s.fan_links, r.rk, r.brand_name, r.fans\nFROM ranked r JOIN sizes s ON s.world = r.world\nWHERE r.rk <= 5 AND s.brands >= 15\nORDER BY s.fan_links DESC, r.rk\n;\n",
+ "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "09_shopping_worlds_r1",
+   "query_id": "36020d1a-0908-4b3a-a0f2-32b11e290fbe",
+   "elapsed_s": 9.463069404941052,
+   "native_fragments": 4,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58471525743,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "09_shopping_worlds_r2",
+   "query_id": "9f7b5324-056f-4af4-8aac-eeff7e6ca50c",
+   "elapsed_s": 9.394511334015988,
+   "native_fragments": 4,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58471525743,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "09_shopping_worlds_r3",
+   "query_id": "3d6faf61-694f-4282-934a-757d6c8f3334",
+   "elapsed_s": 9.41788225399796,
+   "native_fragments": 4,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58471525743,
+   "query_limit_bytes": 96636764160
+  }
+ ],
+ "median_elapsed_s_after_first": 9.406196794006974,
+ "rows": 190,
+ "identical_results_across_runs": true,
+ "schema": [
+  "world: int64",
+  "brands: int64",
+  "fan_links: int64",
+  "rk: uint64",
+  "brand_name: string_view",
+  "fans: int64"
+ ],
+ "records": [
+  {
+   "world": 2,
+   "brands": 185,
+   "fan_links": 11422796,
+   "rk": 1,
+   "brand_name": "Nike",
+   "fans": 507979
+  },
+  {
+   "world": 2,
+   "brands": 185,
+   "fan_links": 11422796,
+   "rk": 2,
+   "brand_name": "Handmade",
+   "fans": 397593
+  },
+  {
+   "world": 2,
+   "brands": 185,
+   "fan_links": 11422796,
+   "rk": 3,
+   "brand_name": "Disney",
+   "fans": 364888
+  },
+  {
+   "world": 2,
+   "brands": 185,
+   "fan_links": 11422796,
+   "rk": 4,
+   "brand_name": "Nintendo",
+   "fans": 251624
+  },
+  {
+   "world": 2,
+   "brands": 185,
+   "fan_links": 11422796,
+   "rk": 5,
+   "brand_name": "Gildan",
+   "fans": 240895
+  },
+  {
+   "world": 1,
+   "brands": 448,
+   "fan_links": 2705416,
+   "rk": 1,
+   "brand_name": "Bandai",
+   "fans": 70021
+  },
+  {
+   "world": 1,
+   "brands": 448,
+   "fan_links": 2705416,
+   "rk": 2,
+   "brand_name": "Microsoft",
+   "fans": 68969
+  },
+  {
+   "world": 1,
+   "brands": 448,
+   "fan_links": 2705416,
+   "rk": 3,
+   "brand_name": "BTS",
+   "fans": 61458
+  },
+  {
+   "world": 1,
+   "brands": 448,
+   "fan_links": 2705416,
+   "rk": 4,
+   "brand_name": "PlayStation",
+   "fans": 50216
+  },
+  {
+   "world": 1,
+   "brands": 448,
+   "fan_links": 2705416,
+   "rk": 5,
+   "brand_name": "Manga",
+   "fans": 48494
+  },
+  {
+   "world": 3,
+   "brands": 394,
+   "fan_links": 1321372,
+   "rk": 1,
+   "brand_name": "Carter's",
+   "fans": 70873
+  },
+  {
+   "world": 3,
+   "brands": 394,
+   "fan_links": 1321372,
+   "rk": 2,
+   "brand_name": "little sleepies",
+   "fans": 33246
+  },
+  {
+   "world": 3,
+   "brands": 394,
+   "fan_links": 1321372,
+   "rk": 3,
+   "brand_name": "Wonder Nation",
+   "fans": 26428
+  },
+  {
+   "world": 3,
+   "brands": 394,
+   "fan_links": 1321372,
+   "rk": 4,
+   "brand_name": "Pottery Barn Kids",
+   "fans": 24541
+  },
+  {
+   "world": 3,
+   "brands": 394,
+   "fan_links": 1321372,
+   "rk": 5,
+   "brand_name": "OshKosh B'gosh",
+   "fans": 24113
+  },
+  {
+   "world": 0,
+   "brands": 362,
+   "fan_links": 1284264,
+   "rk": 1,
+   "brand_name": "Authentic Original Vintage Style",
+   "fans": 34928
+  },
+  {
+   "world": 0,
+   "brands": 362,
+   "fan_links": 1284264,
+   "rk": 2,
+   "brand_name": "Walmart",
+   "fans": 22097
+  },
+  {
+   "world": 0,
+   "brands": 362,
+   "fan_links": 1284264,
+   "rk": 3,
+   "brand_name": "Threshold",
+   "fans": 20336
+  },
+  {
+   "world": 0,
+   "brands": 362,
+   "fan_links": 1284264,
+   "rk": 4,
+   "brand_name": "Tupperware",
+   "fans": 19952
+  },
+  {
+   "world": 0,
+   "brands": 362,
+   "fan_links": 1284264,
+   "rk": 5,
+   "brand_name": "MCM",
+   "fans": 17806
+  },
+  {
+   "world": 7,
+   "brands": 207,
+   "fan_links": 1202806,
+   "rk": 1,
+   "brand_name": "Chanel",
+   "fans": 50223
+  },
+  {
+   "world": 7,
+   "brands": 207,
+   "fan_links": 1202806,
+   "rk": 2,
+   "brand_name": "Burberry",
+   "fans": 43660
+  },
+  {
+   "world": 7,
+   "brands": 207,
+   "fan_links": 1202806,
+   "rk": 3,
+   "brand_name": "Prada",
+   "fans": 39695
+  },
+  {
+   "world": 7,
+   "brands": 207,
+   "fan_links": 1202806,
+   "rk": 4,
+   "brand_name": "Christian Dior",
+   "fans": 38883
+  },
+  {
+   "world": 7,
+   "brands": 207,
+   "fan_links": 1202806,
+   "rk": 5,
+   "brand_name": "Dior",
+   "fans": 37626
+  },
+  {
+   "world": 15,
+   "brands": 415,
+   "fan_links": 1126677,
+   "rk": 1,
+   "brand_name": "MAC Cosmetics",
+   "fans": 23971
+  },
+  {
+   "world": 15,
+   "brands": 415,
+   "fan_links": 1126677,
+   "rk": 2,
+   "brand_name": "Too Faced",
+   "fans": 21313
+  },
+  {
+   "world": 15,
+   "brands": 415,
+   "fan_links": 1126677,
+   "rk": 3,
+   "brand_name": "ColourPop Cosmetics",
+   "fans": 17834
+  },
+  {
+   "world": 15,
+   "brands": 415,
+   "fan_links": 1126677,
+   "rk": 4,
+   "brand_name": "Tarte",
+   "fans": 17620
+  },
+  {
+   "world": 15,
+   "brands": 415,
+   "fan_links": 1126677,
+   "rk": 5,
+   "brand_name": "Urban Decay",
+   "fans": 15239
+  },
+  {
+   "world": 6,
+   "brands": 157,
+   "fan_links": 840385,
+   "rk": 1,
+   "brand_name": "Topps",
+   "fans": 36718
+  },
+  {
+   "world": 6,
+   "brands": 157,
+   "fan_links": 840385,
+   "rk": 2,
+   "brand_name": "Panini",
+   "fans": 36503
+  },
+  {
+   "world": 6,
+   "brands": 157,
+   "fan_links": 840385,
+   "rk": 3,
+   "brand_name": "Tommy Hilfiger",
+   "fans": 35362
+  },
+  {
+   "world": 6,
+   "brands": 157,
+   "fan_links": 840385,
+   "rk": 4,
+   "brand_name": "MLB",
+   "fans": 30139
+  },
+  {
+   "world": 6,
+   "brands": 157,
+   "fan_links": 840385,
+   "rk": 5,
+   "brand_name": "NBA",
+   "fans": 27170
+  },
+  {
+   "world": 12,
+   "brands": 110,
+   "fan_links": 553627,
+   "rk": 1,
+   "brand_name": "Kim Kardashian",
+   "fans": 33846
+  },
+  {
+   "world": 12,
+   "brands": 110,
+   "fan_links": 553627,
+   "rk": 2,
+   "brand_name": "Brandy Melville",
+   "fans": 31416
+  },
+  {
+   "world": 12,
+   "brands": 110,
+   "fan_links": 553627,
+   "rk": 3,
+   "brand_name": "PacSun",
+   "fans": 23961
+  },
+  {
+   "world": 12,
+   "brands": 110,
+   "fan_links": 553627,
+   "rk": 4,
+   "brand_name": "Princess Polly",
+   "fans": 23294
+  },
+  {
+   "world": 12,
+   "brands": 110,
+   "fan_links": 553627,
+   "rk": 5,
+   "brand_name": "Windsor",
+   "fans": 18651
+  },
+  {
+   "world": 8,
+   "brands": 139,
+   "fan_links": 432756,
+   "rk": 1,
+   "brand_name": "Avon",
+   "fans": 28523
+  },
+  {
+   "world": 8,
+   "brands": 139,
+   "fan_links": 432756,
+   "rk": 2,
+   "brand_name": "Stampd",
+   "fans": 26522
+  },
+  {
+   "world": 8,
+   "brands": 139,
+   "fan_links": 432756,
+   "rk": 3,
+   "brand_name": "Silver",
+   "fans": 16971
+  },
+  {
+   "world": 8,
+   "brands": 139,
+   "fan_links": 432756,
+   "rk": 4,
+   "brand_name": "Macy's",
+   "fans": 12993
+  },
+  {
+   "world": 8,
+   "brands": 139,
+   "fan_links": 432756,
+   "rk": 5,
+   "brand_name": "Swarovski",
+   "fans": 12682
+  },
+  {
+   "world": 25,
+   "brands": 37,
+   "fan_links": 426072,
+   "rk": 1,
+   "brand_name": "Express",
+   "fans": 44879
+  },
+  {
+   "world": 25,
+   "brands": 37,
+   "fan_links": 426072,
+   "rk": 2,
+   "brand_name": "GUESS",
+   "fans": 35894
+  },
+  {
+   "world": 25,
+   "brands": 37,
+   "fan_links": 426072,
+   "rk": 3,
+   "brand_name": "Wild Fable",
+   "fans": 29556
+  },
+  {
+   "world": 25,
+   "brands": 37,
+   "fan_links": 426072,
+   "rk": 4,
+   "brand_name": "Nine West",
+   "fans": 23708
+  },
+  {
+   "world": 25,
+   "brands": 37,
+   "fan_links": 426072,
+   "rk": 5,
+   "brand_name": "Jessica Simpson",
+   "fans": 23230
+  },
+  {
+   "world": 14,
+   "brands": 81,
+   "fan_links": 366264,
+   "rk": 1,
+   "brand_name": "Lucky Brand",
+   "fans": 35181
+  },
+  {
+   "world": 14,
+   "brands": 81,
+   "fan_links": 366264,
+   "rk": 2,
+   "brand_name": "Banana Republic",
+   "fans": 34843
+  },
+  {
+   "world": 14,
+   "brands": 81,
+   "fan_links": 366264,
+   "rk": 3,
+   "brand_name": "LOFT",
+   "fans": 25211
+  },
+  {
+   "world": 14,
+   "brands": 81,
+   "fan_links": 366264,
+   "rk": 4,
+   "brand_name": "Lands' End",
+   "fans": 20752
+  },
+  {
+   "world": 14,
+   "brands": 81,
+   "fan_links": 366264,
+   "rk": 5,
+   "brand_name": "Sonoma",
+   "fans": 18950
+  },
+  {
+   "world": 9,
+   "brands": 135,
+   "fan_links": 358029,
+   "rk": 1,
+   "brand_name": "Miss Me",
+   "fans": 15860
+  },
+  {
+   "world": 9,
+   "brands": 135,
+   "fan_links": 358029,
+   "rk": 2,
+   "brand_name": "KILLSTAR",
+   "fans": 12259
+  },
+  {
+   "world": 9,
+   "brands": 135,
+   "fan_links": 358029,
+   "rk": 3,
+   "brand_name": "Spencer's",
+   "fans": 12248
+  },
+  {
+   "world": 9,
+   "brands": 135,
+   "fan_links": 358029,
+   "rk": 4,
+   "brand_name": "Ed Hardy",
+   "fans": 11232
+  },
+  {
+   "world": 9,
+   "brands": 135,
+   "fan_links": 358029,
+   "rk": 5,
+   "brand_name": "ROMWE",
+   "fans": 9516
+  },
+  {
+   "world": 4,
+   "brands": 155,
+   "fan_links": 326197,
+   "rk": 1,
+   "brand_name": "Provo Craft/ Cricut",
+   "fans": 12769
+  },
+  {
+   "world": 4,
+   "brands": 155,
+   "fan_links": 326197,
+   "rk": 2,
+   "brand_name": "Barnes & Noble",
+   "fans": 12675
+  },
+  {
+   "world": 4,
+   "brands": 155,
+   "fan_links": 326197,
+   "rk": 3,
+   "brand_name": "illumicrate",
+   "fans": 12207
+  },
+  {
+   "world": 4,
+   "brands": 155,
+   "fan_links": 326197,
+   "rk": 4,
+   "brand_name": "HarperCollins Publishers",
+   "fans": 9815
+  },
+  {
+   "world": 4,
+   "brands": 155,
+   "fan_links": 326197,
+   "rk": 5,
+   "brand_name": "The Happy Planner",
+   "fans": 7869
+  },
+  {
+   "world": 20,
+   "brands": 153,
+   "fan_links": 317471,
+   "rk": 1,
+   "brand_name": "Madden Girl",
+   "fans": 11394
+  },
+  {
+   "world": 20,
+   "brands": 153,
+   "fan_links": 317471,
+   "rk": 2,
+   "brand_name": "JustFab",
+   "fans": 8396
+  },
+  {
+   "world": 20,
+   "brands": 153,
+   "fan_links": 317471,
+   "rk": 3,
+   "brand_name": "Franco Sarto",
+   "fans": 8269
+  },
+  {
+   "world": 20,
+   "brands": 153,
+   "fan_links": 317471,
+   "rk": 4,
+   "brand_name": "Dolce Vita",
+   "fans": 8218
+  },
+  {
+   "world": 20,
+   "brands": 153,
+   "fan_links": 317471,
+   "rk": 5,
+   "brand_name": "Soda",
+   "fans": 6924
+  },
+  {
+   "world": 43,
+   "brands": 59,
+   "fan_links": 296787,
+   "rk": 1,
+   "brand_name": "Yeezy",
+   "fans": 41811
+  },
+  {
+   "world": 43,
+   "brands": 59,
+   "fan_links": 296787,
+   "rk": 2,
+   "brand_name": "Supreme",
+   "fans": 21808
+  },
+  {
+   "world": 43,
+   "brands": 59,
+   "fan_links": 296787,
+   "rk": 3,
+   "brand_name": "True Religion",
+   "fans": 16470
+  },
+  {
+   "world": 43,
+   "brands": 59,
+   "fan_links": 296787,
+   "rk": 4,
+   "brand_name": "Bape",
+   "fans": 13245
+  },
+  {
+   "world": 43,
+   "brands": 59,
+   "fan_links": 296787,
+   "rk": 5,
+   "brand_name": "Off-White",
+   "fans": 12709
+  },
+  {
+   "world": 33,
+   "brands": 137,
+   "fan_links": 295377,
+   "rk": 1,
+   "brand_name": "Reformation",
+   "fans": 9996
+  },
+  {
+   "world": 33,
+   "brands": 137,
+   "fan_links": 295377,
+   "rk": 2,
+   "brand_name": "Everlane",
+   "fans": 9120
+  },
+  {
+   "world": 33,
+   "brands": 137,
+   "fan_links": 295377,
+   "rk": 3,
+   "brand_name": "Boden",
+   "fans": 7391
+  },
+  {
+   "world": 33,
+   "brands": 137,
+   "fan_links": 295377,
+   "rk": 4,
+   "brand_name": "Farm Rio",
+   "fans": 6467
+  },
+  {
+   "world": 33,
+   "brands": 137,
+   "fan_links": 295377,
+   "rk": 5,
+   "brand_name": "LoveShackFancy",
+   "fans": 6244
+  },
+  {
+   "world": 46,
+   "brands": 73,
+   "fan_links": 289886,
+   "rk": 1,
+   "brand_name": "HP",
+   "fans": 21728
+  },
+  {
+   "world": 46,
+   "brands": 73,
+   "fan_links": 289886,
+   "rk": 2,
+   "brand_name": "Beats by Dr. Dre",
+   "fans": 18814
+  },
+  {
+   "world": 46,
+   "brands": 73,
+   "fan_links": 289886,
+   "rk": 3,
+   "brand_name": "Logitech",
+   "fans": 14273
+  },
+  {
+   "world": 46,
+   "brands": 73,
+   "fan_links": 289886,
+   "rk": 4,
+   "brand_name": "ASUS",
+   "fans": 13160
+  },
+  {
+   "world": 46,
+   "brands": 73,
+   "fan_links": 289886,
+   "rk": 5,
+   "brand_name": "Dell",
+   "fans": 13126
+  },
+  {
+   "world": 11,
+   "brands": 86,
+   "fan_links": 273689,
+   "rk": 1,
+   "brand_name": "Fila",
+   "fans": 14828
+  },
+  {
+   "world": 11,
+   "brands": 86,
+   "fan_links": 273689,
+   "rk": 2,
+   "brand_name": "All In Motion",
+   "fans": 14196
+  },
+  {
+   "world": 11,
+   "brands": 86,
+   "fan_links": 273689,
+   "rk": 3,
+   "brand_name": "Athletic Works",
+   "fans": 9851
+  },
+  {
+   "world": 11,
+   "brands": 86,
+   "fan_links": 273689,
+   "rk": 4,
+   "brand_name": "Avia",
+   "fans": 8593
+  },
+  {
+   "world": 11,
+   "brands": 86,
+   "fan_links": 273689,
+   "rk": 5,
+   "brand_name": "Zyia Active",
+   "fans": 8336
+  },
+  {
+   "world": 5,
+   "brands": 101,
+   "fan_links": 270253,
+   "rk": 1,
+   "brand_name": "Milwaukee",
+   "fans": 12156
+  },
+  {
+   "world": 5,
+   "brands": 101,
+   "fan_links": 270253,
+   "rk": 2,
+   "brand_name": "DeWALT",
+   "fans": 10183
+  },
+  {
+   "world": 5,
+   "brands": 101,
+   "fan_links": 270253,
+   "rk": 3,
+   "brand_name": "Mainstays",
+   "fans": 10007
+  },
+  {
+   "world": 5,
+   "brands": 101,
+   "fan_links": 270253,
+   "rk": 4,
+   "brand_name": "Ninja",
+   "fans": 9640
+  },
+  {
+   "world": 5,
+   "brands": 101,
+   "fan_links": 270253,
+   "rk": 5,
+   "brand_name": "KitchenAid",
+   "fans": 9192
+  },
+  {
+   "world": 26,
+   "brands": 191,
+   "fan_links": 263338,
+   "rk": 1,
+   "brand_name": "Avenue",
+   "fans": 4956
+  },
+  {
+   "world": 26,
+   "brands": 191,
+   "fan_links": 263338,
+   "rk": 2,
+   "brand_name": "Dress Barn",
+   "fans": 4181
+  },
+  {
+   "world": 26,
+   "brands": 191,
+   "fan_links": 263338,
+   "rk": 3,
+   "brand_name": "Kim Rogers",
+   "fans": 3973
+  },
+  {
+   "world": 26,
+   "brands": 191,
+   "fan_links": 263338,
+   "rk": 4,
+   "brand_name": "Christopher & Banks",
+   "fans": 3873
+  },
+  {
+   "world": 26,
+   "brands": 191,
+   "fan_links": 263338,
+   "rk": 5,
+   "brand_name": "Karen Scott",
+   "fans": 3810
+  },
+  {
+   "world": 44,
+   "brands": 113,
+   "fan_links": 254664,
+   "rk": 1,
+   "brand_name": "Canon",
+   "fans": 33919
+  },
+  {
+   "world": 44,
+   "brands": 113,
+   "fan_links": 254664,
+   "rk": 2,
+   "brand_name": "Fujifilm",
+   "fans": 17998
+  },
+  {
+   "world": 44,
+   "brands": 113,
+   "fan_links": 254664,
+   "rk": 3,
+   "brand_name": "Nikon",
+   "fans": 13770
+  },
+  {
+   "world": 44,
+   "brands": 113,
+   "fan_links": 254664,
+   "rk": 4,
+   "brand_name": "Polaroid",
+   "fans": 10753
+  },
+  {
+   "world": 44,
+   "brands": 113,
+   "fan_links": 254664,
+   "rk": 5,
+   "brand_name": "Panasonic",
+   "fans": 9477
+  },
+  {
+   "world": 40,
+   "brands": 186,
+   "fan_links": 234773,
+   "rk": 1,
+   "brand_name": "Iris",
+   "fans": 3468
+  },
+  {
+   "world": 40,
+   "brands": 186,
+   "fan_links": 234773,
+   "rk": 2,
+   "brand_name": "POL",
+   "fans": 3399
+  },
+  {
+   "world": 40,
+   "brands": 186,
+   "fan_links": 234773,
+   "rk": 3,
+   "brand_name": "Sincerely Jules",
+   "fans": 3275
+  },
+  {
+   "world": 40,
+   "brands": 186,
+   "fan_links": 234773,
+   "rk": 4,
+   "brand_name": "Flying Tomato",
+   "fans": 2725
+  },
+  {
+   "world": 40,
+   "brands": 186,
+   "fan_links": 234773,
+   "rk": 5,
+   "brand_name": "Tobi",
+   "fans": 2673
+  },
+  {
+   "world": 16,
+   "brands": 86,
+   "fan_links": 206164,
+   "rk": 1,
+   "brand_name": "Thirty-One",
+   "fans": 12620
+  },
+  {
+   "world": 16,
+   "brands": 86,
+   "fan_links": 206164,
+   "rk": 2,
+   "brand_name": "Brahmin",
+   "fans": 9032
+  },
+  {
+   "world": 16,
+   "brands": 86,
+   "fan_links": 206164,
+   "rk": 3,
+   "brand_name": "Patricia Nash",
+   "fans": 8166
+  },
+  {
+   "world": 16,
+   "brands": 86,
+   "fan_links": 206164,
+   "rk": 4,
+   "brand_name": "Rebecca Minkoff",
+   "fans": 8023
+  },
+  {
+   "world": 16,
+   "brands": 86,
+   "fan_links": 206164,
+   "rk": 5,
+   "brand_name": "Herschel Supply Co.",
+   "fans": 6508
+  },
+  {
+   "world": 27,
+   "brands": 77,
+   "fan_links": 165136,
+   "rk": 1,
+   "brand_name": "Venus",
+   "fans": 9027
+  },
+  {
+   "world": 27,
+   "brands": 77,
+   "fan_links": 165136,
+   "rk": 2,
+   "brand_name": "Cacique",
+   "fans": 8505
+  },
+  {
+   "world": 27,
+   "brands": 77,
+   "fan_links": 165136,
+   "rk": 3,
+   "brand_name": "Auden",
+   "fans": 7927
+  },
+  {
+   "world": 27,
+   "brands": 77,
+   "fan_links": 165136,
+   "rk": 4,
+   "brand_name": "Adore Me",
+   "fans": 6798
+  },
+  {
+   "world": 27,
+   "brands": 77,
+   "fan_links": 165136,
+   "rk": 5,
+   "brand_name": "Savage X Fenty",
+   "fans": 6710
+  },
+  {
+   "world": 30,
+   "brands": 40,
+   "fan_links": 161338,
+   "rk": 1,
+   "brand_name": "Clarks",
+   "fans": 16913
+  },
+  {
+   "world": 30,
+   "brands": 40,
+   "fan_links": 161338,
+   "rk": 2,
+   "brand_name": "Sam Edelman",
+   "fans": 16831
+  },
+  {
+   "world": 30,
+   "brands": 40,
+   "fan_links": 161338,
+   "rk": 3,
+   "brand_name": "Lane Bryant",
+   "fans": 16813
+  },
+  {
+   "world": 30,
+   "brands": 40,
+   "fan_links": 161338,
+   "rk": 4,
+   "brand_name": "Croft & Barrow",
+   "fans": 11040
+  },
+  {
+   "world": 30,
+   "brands": 40,
+   "fan_links": 161338,
+   "rk": 5,
+   "brand_name": "St. John's Bay",
+   "fans": 9303
+  },
+  {
+   "world": 10,
+   "brands": 74,
+   "fan_links": 159261,
+   "rk": 1,
+   "brand_name": "Lauren Ralph Lauren",
+   "fans": 21633
+  },
+  {
+   "world": 10,
+   "brands": 74,
+   "fan_links": 159261,
+   "rk": 2,
+   "brand_name": "Callaway",
+   "fans": 10082
+  },
+  {
+   "world": 10,
+   "brands": 74,
+   "fan_links": 159261,
+   "rk": 3,
+   "brand_name": "TaylorMade",
+   "fans": 8476
+  },
+  {
+   "world": 10,
+   "brands": 74,
+   "fan_links": 159261,
+   "rk": 4,
+   "brand_name": "Titleist",
+   "fans": 7499
+  },
+  {
+   "world": 10,
+   "brands": 74,
+   "fan_links": 159261,
+   "rk": 5,
+   "brand_name": "Mizuno",
+   "fans": 6360
+  },
+  {
+   "world": 41,
+   "brands": 89,
+   "fan_links": 145792,
+   "rk": 1,
+   "brand_name": "David's Bridal",
+   "fans": 10634
+  },
+  {
+   "world": 41,
+   "brands": 89,
+   "fan_links": 145792,
+   "rk": 2,
+   "brand_name": "Adrianna Papell",
+   "fans": 6046
+  },
+  {
+   "world": 41,
+   "brands": 89,
+   "fan_links": 145792,
+   "rk": 3,
+   "brand_name": "Speechless",
+   "fans": 4123
+  },
+  {
+   "world": 41,
+   "brands": 89,
+   "fan_links": 145792,
+   "rk": 4,
+   "brand_name": "AZAZIE",
+   "fans": 4097
+  },
+  {
+   "world": 41,
+   "brands": 89,
+   "fan_links": 145792,
+   "rk": 5,
+   "brand_name": "Lulu",
+   "fans": 3567
+  },
+  {
+   "world": 18,
+   "brands": 66,
+   "fan_links": 135277,
+   "rk": 1,
+   "brand_name": "Dickies",
+   "fans": 15896
+  },
+  {
+   "world": 18,
+   "brands": 66,
+   "fan_links": 135277,
+   "rk": 2,
+   "brand_name": "Cherokee",
+   "fans": 14254
+  },
+  {
+   "world": 18,
+   "brands": 66,
+   "fan_links": 135277,
+   "rk": 3,
+   "brand_name": "Sketchers",
+   "fans": 9391
+  },
+  {
+   "world": 18,
+   "brands": 66,
+   "fan_links": 135277,
+   "rk": 4,
+   "brand_name": "Grey's Anatomy",
+   "fans": 5676
+  },
+  {
+   "world": 18,
+   "brands": 66,
+   "fan_links": 135277,
+   "rk": 5,
+   "brand_name": "Koi",
+   "fans": 4298
+  },
+  {
+   "world": 17,
+   "brands": 55,
+   "fan_links": 133442,
+   "rk": 1,
+   "brand_name": "BKE",
+   "fans": 10128
+  },
+  {
+   "world": 17,
+   "brands": 55,
+   "fan_links": 133442,
+   "rk": 2,
+   "brand_name": "Rock Revival",
+   "fans": 8986
+  },
+  {
+   "world": 17,
+   "brands": 55,
+   "fan_links": 133442,
+   "rk": 3,
+   "brand_name": "7 For All Mankind",
+   "fans": 6268
+  },
+  {
+   "world": 17,
+   "brands": 55,
+   "fan_links": 133442,
+   "rk": 4,
+   "brand_name": "Silver Jeans Co.",
+   "fans": 5115
+  },
+  {
+   "world": 17,
+   "brands": 55,
+   "fan_links": 133442,
+   "rk": 5,
+   "brand_name": "Seven7",
+   "fans": 4756
+  },
+  {
+   "world": 37,
+   "brands": 27,
+   "fan_links": 132924,
+   "rk": 1,
+   "brand_name": "Ulta",
+   "fans": 26418
+  },
+  {
+   "world": 37,
+   "brands": 27,
+   "fan_links": 132924,
+   "rk": 2,
+   "brand_name": "OtterBox",
+   "fans": 15375
+  },
+  {
+   "world": 37,
+   "brands": 27,
+   "fan_links": 132924,
+   "rk": 3,
+   "brand_name": "Tahari",
+   "fans": 12615
+  },
+  {
+   "world": 37,
+   "brands": 27,
+   "fan_links": 132924,
+   "rk": 4,
+   "brand_name": "Casetify",
+   "fans": 11548
+  },
+  {
+   "world": 37,
+   "brands": 27,
+   "fan_links": 132924,
+   "rk": 5,
+   "brand_name": "Cato",
+   "fans": 10069
+  },
+  {
+   "world": 21,
+   "brands": 49,
+   "fan_links": 130491,
+   "rk": 1,
+   "brand_name": "Gianni Bini",
+   "fans": 9404
+  },
+  {
+   "world": 21,
+   "brands": 49,
+   "fan_links": 130491,
+   "rk": 2,
+   "brand_name": "Buckle",
+   "fans": 8118
+  },
+  {
+   "world": 21,
+   "brands": 49,
+   "fan_links": 130491,
+   "rk": 3,
+   "brand_name": "Justin Boots",
+   "fans": 7651
+  },
+  {
+   "world": 21,
+   "brands": 49,
+   "fan_links": 130491,
+   "rk": 4,
+   "brand_name": "Umgee",
+   "fans": 6450
+  },
+  {
+   "world": 21,
+   "brands": 49,
+   "fan_links": 130491,
+   "rk": 5,
+   "brand_name": "Myra Bag",
+   "fans": 5755
+  },
+  {
+   "world": 24,
+   "brands": 33,
+   "fan_links": 119893,
+   "rk": 1,
+   "brand_name": "Rue21",
+   "fans": 18575
+  },
+  {
+   "world": 24,
+   "brands": 33,
+   "fan_links": 119893,
+   "rk": 2,
+   "brand_name": "Boohoo",
+   "fans": 10515
+  },
+  {
+   "world": 24,
+   "brands": 33,
+   "fan_links": 119893,
+   "rk": 3,
+   "brand_name": "Mossimo Supply Co.",
+   "fans": 9729
+  },
+  {
+   "world": 24,
+   "brands": 33,
+   "fan_links": 119893,
+   "rk": 4,
+   "brand_name": "Volcom",
+   "fans": 8415
+  },
+  {
+   "world": 24,
+   "brands": 33,
+   "fan_links": 119893,
+   "rk": 5,
+   "brand_name": "Zumiez",
+   "fans": 7658
+  },
+  {
+   "world": 45,
+   "brands": 60,
+   "fan_links": 110824,
+   "rk": 1,
+   "brand_name": "Matchbox",
+   "fans": 8883
+  },
+  {
+   "world": 45,
+   "brands": 60,
+   "fan_links": 110824,
+   "rk": 2,
+   "brand_name": "Thomas & Friends",
+   "fans": 6619
+  },
+  {
+   "world": 45,
+   "brands": 60,
+   "fan_links": 110824,
+   "rk": 3,
+   "brand_name": "Ford",
+   "fans": 5074
+  },
+  {
+   "world": 45,
+   "brands": 60,
+   "fan_links": 110824,
+   "rk": 4,
+   "brand_name": "Ertl",
+   "fans": 4646
+  },
+  {
+   "world": 45,
+   "brands": 60,
+   "fan_links": 110824,
+   "rk": 5,
+   "brand_name": "Maisto",
+   "fans": 4327
+  },
+  {
+   "world": 13,
+   "brands": 32,
+   "fan_links": 108737,
+   "rk": 1,
+   "brand_name": "Chaps",
+   "fans": 9761
+  },
+  {
+   "world": 13,
+   "brands": 32,
+   "fan_links": 108737,
+   "rk": 2,
+   "brand_name": "George",
+   "fans": 8889
+  },
+  {
+   "world": 13,
+   "brands": 32,
+   "fan_links": 108737,
+   "rk": 3,
+   "brand_name": "Levi Strauss & Co.",
+   "fans": 8115
+  },
+  {
+   "world": 13,
+   "brands": 32,
+   "fan_links": 108737,
+   "rk": 4,
+   "brand_name": "IZOD",
+   "fans": 7719
+  },
+  {
+   "world": 13,
+   "brands": 32,
+   "fan_links": 108737,
+   "rk": 5,
+   "brand_name": "Kenneth Cole New York",
+   "fans": 7609
+  },
+  {
+   "world": 22,
+   "brands": 44,
+   "fan_links": 106073,
+   "rk": 1,
+   "brand_name": "Roxy",
+   "fans": 14057
+  },
+  {
+   "world": 22,
+   "brands": 44,
+   "fan_links": 106073,
+   "rk": 2,
+   "brand_name": "O'Neill",
+   "fans": 8235
+  },
+  {
+   "world": 22,
+   "brands": 44,
+   "fan_links": 106073,
+   "rk": 3,
+   "brand_name": "RCA",
+   "fans": 8208
+  },
+  {
+   "world": 22,
+   "brands": 44,
+   "fan_links": 106073,
+   "rk": 4,
+   "brand_name": "Capitol Records",
+   "fans": 4966
+  },
+  {
+   "world": 22,
+   "brands": 44,
+   "fan_links": 106073,
+   "rk": 5,
+   "brand_name": "One Direction",
+   "fans": 4213
+  },
+  {
+   "world": 34,
+   "brands": 24,
+   "fan_links": 71778,
+   "rk": 1,
+   "brand_name": "Time and Tru",
+   "fans": 23811
+  },
+  {
+   "world": 34,
+   "brands": 24,
+   "fan_links": 71778,
+   "rk": 2,
+   "brand_name": "Others Follow",
+   "fans": 6473
+  },
+  {
+   "world": 34,
+   "brands": 24,
+   "fan_links": 71778,
+   "rk": 3,
+   "brand_name": "Easton",
+   "fans": 4890
+  },
+  {
+   "world": 34,
+   "brands": 24,
+   "fan_links": 71778,
+   "rk": 4,
+   "brand_name": "Derek Heart",
+   "fans": 4483
+  },
+  {
+   "world": 34,
+   "brands": 24,
+   "fan_links": 71778,
+   "rk": 5,
+   "brand_name": "Monteau",
+   "fans": 3933
+  },
+  {
+   "world": 19,
+   "brands": 25,
+   "fan_links": 52786,
+   "rk": 1,
+   "brand_name": "Secret Treasures",
+   "fans": 10504
+  },
+  {
+   "world": 19,
+   "brands": 25,
+   "fan_links": 52786,
+   "rk": 2,
+   "brand_name": "Bark",
+   "fans": 5961
+  },
+  {
+   "world": 19,
+   "brands": 25,
+   "fan_links": 52786,
+   "rk": 3,
+   "brand_name": "PetSmart",
+   "fans": 4996
+  },
+  {
+   "world": 19,
+   "brands": 25,
+   "fan_links": 52786,
+   "rk": 4,
+   "brand_name": "Petco",
+   "fans": 4391
+  },
+  {
+   "world": 19,
+   "brands": 25,
+   "fan_links": 52786,
+   "rk": 5,
+   "brand_name": "Top Paw",
+   "fans": 3215
+  },
+  {
+   "world": 31,
+   "brands": 28,
+   "fan_links": 52544,
+   "rk": 1,
+   "brand_name": "Shade & Shore",
+   "fans": 6991
+  },
+  {
+   "world": 31,
+   "brands": 28,
+   "fan_links": 52544,
+   "rk": 2,
+   "brand_name": "Kona Sol",
+   "fans": 6395
+  },
+  {
+   "world": 31,
+   "brands": 28,
+   "fan_links": 52544,
+   "rk": 3,
+   "brand_name": "Cushe",
+   "fans": 5250
+  },
+  {
+   "world": 31,
+   "brands": 28,
+   "fan_links": 52544,
+   "rk": 4,
+   "brand_name": "Bar III",
+   "fans": 3783
+  },
+  {
+   "world": 31,
+   "brands": 28,
+   "fan_links": 52544,
+   "rk": 5,
+   "brand_name": "Catalina",
+   "fans": 3022
+  }
+ ]
+}

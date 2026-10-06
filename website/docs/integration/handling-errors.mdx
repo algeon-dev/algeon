@@ -260,7 +260,11 @@ One code-specific exception: a non-converged native algorithm
 actionable message naming the algorithm, the iterations reached, and the
 configured limits, plus matching `algorithm`, `iterations`,
 `max_iterations`, and `epsilon` metadata. It is a parameter problem to fix,
-not a condition to blindly retry.
+not a condition to blindly retry. The message ends with the parameters that
+make the algorithm converge, taken from the native layer's `remedy` fact:
+Katz centrality asks for a lower `alpha` (below 1/lambda_max, the reciprocal
+of the largest adjacency eigenvalue) or a higher `max_iterations`; HITS and
+eigenvector centrality ask for a higher `max_iterations` or `epsilon`.
 
 Every status created from an adapter `Error` includes these metadata fields:
 
@@ -283,7 +287,9 @@ fact that is not a number is omitted. `native_message` is projected only for cli
 validation kinds (cancellation, not-found, permission, auth, planning,
 invalid-input, unsupported): internal, dependency, invariant, and execution
 failures never carry raw native text in metadata, however their status
-message reads. Query and correlation identifiers are added by the statement
+message reads. A cuGraph precondition failure is invalid input, and its
+`native_message` ends with libcugraph's reason without source location, for
+example `SSSP source vertex is not in the graph`. Query and correlation identifiers are added by the statement
 boundary. The source chain is retained locally, not emitted as metadata.
 Client-visible fact selection is independent of `with_log_safe_fact`. Attach
 `native_message` as a trusted in-process diagnostic whose content is already

@@ -1,4 +1,11 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecScaleSessions from './merrec_scale_sessions.mdx';
+
 {/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
+
+<Tabs queryString="dataset">
+<TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -15,18 +22,18 @@ calculation and paper lookup use matching labels.
 
 ```sql
 CREATE OR REPLACE TABLE wcc_snapshot AS
-SELECT vertex, label
+SELECT vertex, component
 FROM cugraph_weakly_connected_components(
   edges => (SELECT src, dst FROM citation_edges), directed => false);
 
 WITH sizes AS (
-  SELECT label, COUNT(*) AS members FROM wcc_snapshot
-  GROUP BY label ORDER BY members DESC LIMIT 3 OFFSET 1),
+  SELECT component, COUNT(*) AS members FROM wcc_snapshot
+  GROUP BY component ORDER BY members DESC LIMIT 3 OFFSET 1),
 detail AS (
   SELECT s.members, p.year, p.venue, p.title,
-         ROW_NUMBER() OVER (PARTITION BY s.label ORDER BY p.n_citation DESC) AS rn
+         ROW_NUMBER() OVER (PARTITION BY s.component ORDER BY p.n_citation DESC) AS rn
   FROM sizes s
-  JOIN wcc_snapshot c ON c.label = s.label
+  JOIN wcc_snapshot c ON c.component = s.component
   JOIN papers p ON p.paper_id = c.vertex)
 SELECT members, year, venue, title
 FROM detail WHERE rn = 1
@@ -43,3 +50,12 @@ The displayed groups have no citation links to the main component in this
 snapshot. Their representative papers suggest subject areas for a separate
 search. Missing links in this corpus do not establish that the research fields
 are disconnected in the wider literature.
+
+</TabItem>
+
+<TabItem value="merrec" label="MerRec marketplace">
+
+<MerRecScaleSessions />
+
+</TabItem>
+</Tabs>

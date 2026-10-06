@@ -9,11 +9,14 @@
 //! | Type | Constraint | Use Cases |
 //! |------|-----------|-----------|
 //! | [`IterationCount`] | `> 0` (u32) | `max_iter`, `max_iterations` |
-//! | [`BfsDepthLimit`] | `> 0` (usize) | BFS `depth_limit` |
+//! | [`BfsDepthLimit`] | `>= 0` (usize) | BFS `depth_limit` |
 //! | [`PositiveF64`] | `> 0.0`, finite | `scaling_ratio` |
 //! | [`UnitF64`] | `∈ (0.0, 1.0)`, finite | *(currently unused: kept for future algorithms)* |
 //! | [`NonNegativeF64`] | `>= 0.0`, finite | `epsilon`, `edge_weight_influence`, `gravity`, `jitter_tolerance` |
 //! | [`ClosedUnitF64`] | `∈ [0.0, 1.0]`, finite | `alpha` (damping factor), `barnes_hut_theta` |
+//! | [`FractionF64`] | `∈ (0.0, 1.0]`, finite | ECG `threshold` and `resolution` |
+//! | [`HalfOpenUnitF64`] | `∈ [0.0, 1.0)`, finite | spectral `evs_tolerance` |
+//! | [`ClusterCount`] | `>= 2` (usize) | spectral `n_clusters` |
 //!
 //! # Examples
 //!
@@ -30,15 +33,12 @@
 //! assert_eq!(alpha.get(), 0.85);
 //! ```
 
-use std::{
-    fmt,
-    num::{NonZeroU32, NonZeroUsize},
-};
+use std::{fmt, num::NonZeroU32};
 
 use crate::error::{Error, ErrorKind, Result};
 
 pub(crate) mod defaults {
-    use super::{ClosedUnitF64, IterationCount, NonNegativeF64, NonZeroU32, PositiveF64};
+    use super::{ClosedUnitF64, FractionF64, IterationCount, NonNegativeF64, NonZeroU32, PositiveF64};
 
     pub(crate) const PAGERANK_ALPHA: ClosedUnitF64 = ClosedUnitF64(0.85);
     pub(crate) const PAGERANK_EPSILON: NonNegativeF64 = NonNegativeF64(1e-5);
@@ -55,6 +55,9 @@ pub(crate) mod defaults {
     pub(crate) const LOUVAIN_MAX_LEVEL: IterationCount = IterationCount(NonZeroU32::new(100).unwrap());
     pub(crate) const LOUVAIN_THRESHOLD: NonNegativeF64 = NonNegativeF64(1e-7);
     pub(crate) const LOUVAIN_RESOLUTION: PositiveF64 = PositiveF64(1.0);
+
+    pub(crate) const ECG_THRESHOLD: FractionF64 = FractionF64(1e-7);
+    pub(crate) const ECG_RESOLUTION: FractionF64 = FractionF64(1.0);
 }
 
 /// A strictly positive iteration count.
@@ -173,50 +176,34 @@ impl TryFrom<usize> for IterationCount {
     }
 }
 
-/// A strictly positive BFS depth limit.
+/// A BFS depth limit: the number of hops to expand from the sources.
 ///
-/// Wraps a [`NonZeroUsize`] to guarantee that bounded BFS traversals run for
-/// at least one iteration when a limit is provided. Use `None` at the API
-/// boundary to request unlimited traversal.
+/// `0` expands no hops and reaches only the sources. Use `None` at the API
+/// boundary to request unlimited traversal. A limit larger than the graph's
+/// vertex type can index behaves as unlimited.
 ///
 /// # Construction
 ///
 /// ```
 /// use cugraph::params::BfsDepthLimit;
 ///
-/// let limit = BfsDepthLimit::new(3).unwrap();
+/// let limit = BfsDepthLimit::new(3);
 /// assert_eq!(limit.get(), 3);
 ///
-/// assert!(BfsDepthLimit::new(0).is_err());
+/// assert_eq!(BfsDepthLimit::new(0).get(), 0);
+/// assert!(BfsDepthLimit::try_from(-1i32).is_err());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BfsDepthLimit(NonZeroUsize);
+pub struct BfsDepthLimit(usize);
 
 impl BfsDepthLimit {
     /// Create a new `BfsDepthLimit` from a `usize`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorKind::InvalidInput`] if `value` is zero.
-    pub fn new(value: usize) -> Result<Self> {
-        NonZeroUsize::new(value).map(BfsDepthLimit).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::new")
-                .with_message("BFS depth limit must be greater than zero")
-        })
-    }
-
-    /// Create a `BfsDepthLimit` from [`NonZeroUsize`] (infallible).
-    pub const fn from_non_zero(value: NonZeroUsize) -> Self {
+    pub const fn new(value: usize) -> Self {
         BfsDepthLimit(value)
     }
 
     /// Get the underlying value as `usize`.
     pub const fn get(self) -> usize {
-        self.0.get()
-    }
-
-    /// Get the underlying [`NonZeroUsize`].
-    pub const fn into_inner(self) -> NonZeroUsize {
         self.0
     }
 }
@@ -233,18 +220,14 @@ impl From<BfsDepthLimit> for usize {
     }
 }
 
-impl TryFrom<usize> for BfsDepthLimit {
-    type Error = Error;
-
-    fn try_from(value: usize) -> Result<Self> {
+impl From<usize> for BfsDepthLimit {
+    fn from(value: usize) -> Self {
         Self::new(value)
     }
 }
 
-impl TryFrom<u32> for BfsDepthLimit {
-    type Error = Error;
-
-    fn try_from(value: u32) -> Result<Self> {
+impl From<u32> for BfsDepthLimit {
+    fn from(value: u32) -> Self {
         Self::new(value as usize)
     }
 }
@@ -253,12 +236,11 @@ impl TryFrom<i32> for BfsDepthLimit {
     type Error = Error;
 
     fn try_from(value: i32) -> Result<Self> {
-        if value <= 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::try_from<i32>")
-                .with_message("BFS depth limit must be greater than zero")
-                .with_context("value", value.to_string()));
-        }
-        Self::new(value as usize)
+        usize::try_from(value).map(Self::new).map_err(|_| {
+            Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::try_from<i32>")
+                .with_message("BFS depth limit must not be negative")
+                .with_context("value", value.to_string())
+        })
     }
 }
 
@@ -516,6 +498,186 @@ impl TryFrom<f64> for ClosedUnitF64 {
     }
 }
 
+/// A finite `f64` value in the half-open interval `(0.0, 1.0]`.
+///
+/// Used for parameters libcugraph requires to be positive and at most one,
+/// such as the ECG convergence `threshold` and `resolution`.
+///
+/// # Construction
+///
+/// ```
+/// use cugraph::params::FractionF64;
+///
+/// assert_eq!(FractionF64::new(1.0).unwrap().get(), 1.0);
+///
+/// // Zero and values above one are rejected:
+/// assert!(FractionF64::new(0.0).is_err());
+/// assert!(FractionF64::new(1.5).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct FractionF64(f64);
+
+impl FractionF64 {
+    /// Create a new `FractionF64` from an `f64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the interval
+    /// `(0.0, 1.0]` or is not finite.
+    pub fn new(value: f64) -> Result<Self> {
+        if !(value > 0.0 && value <= 1.0) {
+            return Err(Error::new(ErrorKind::InvalidInput, "FractionF64::new")
+                .with_message("value must be in the interval (0.0, 1.0]")
+                .with_context("value", format!("{value}")));
+        }
+        Ok(FractionF64(value))
+    }
+
+    /// Get the underlying `f64` value.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl fmt::Display for FractionF64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<FractionF64> for f64 {
+    fn from(val: FractionF64) -> f64 {
+        val.get()
+    }
+}
+
+impl TryFrom<f64> for FractionF64 {
+    type Error = Error;
+
+    fn try_from(value: f64) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+/// A finite `f64` value in the half-open interval `[0.0, 1.0)`.
+///
+/// Used for solver tolerances libcugraph requires to be non-negative and
+/// below one, such as the spectral clustering eigensolver and k-means
+/// tolerances.
+///
+/// # Construction
+///
+/// ```
+/// use cugraph::params::HalfOpenUnitF64;
+///
+/// assert_eq!(HalfOpenUnitF64::new(0.0).unwrap().get(), 0.0);
+///
+/// // One and values above it are rejected:
+/// assert!(HalfOpenUnitF64::new(1.0).is_err());
+/// assert!(HalfOpenUnitF64::new(-0.1).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct HalfOpenUnitF64(f64);
+
+impl HalfOpenUnitF64 {
+    /// Create a new `HalfOpenUnitF64` from an `f64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the interval
+    /// `[0.0, 1.0)` or is not finite.
+    pub fn new(value: f64) -> Result<Self> {
+        if !(0.0..1.0).contains(&value) {
+            return Err(Error::new(ErrorKind::InvalidInput, "HalfOpenUnitF64::new")
+                .with_message("value must be in the interval [0.0, 1.0)")
+                .with_context("value", format!("{value}")));
+        }
+        Ok(HalfOpenUnitF64(value))
+    }
+
+    /// Get the underlying `f64` value.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl fmt::Display for HalfOpenUnitF64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<HalfOpenUnitF64> for f64 {
+    fn from(val: HalfOpenUnitF64) -> f64 {
+        val.get()
+    }
+}
+
+impl TryFrom<f64> for HalfOpenUnitF64 {
+    type Error = Error;
+
+    fn try_from(value: f64) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+/// A cluster count of at least two.
+///
+/// libcugraph's spectral clustering rejects a single cluster, so the smallest
+/// valid partition count is two.
+///
+/// # Construction
+///
+/// ```
+/// use cugraph::params::ClusterCount;
+///
+/// assert_eq!(ClusterCount::new(2).unwrap().get(), 2);
+/// assert!(ClusterCount::new(1).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClusterCount(usize);
+
+impl ClusterCount {
+    /// Create a new `ClusterCount` from a `usize`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] if `value` is below two.
+    pub fn new(value: usize) -> Result<Self> {
+        if value < 2 {
+            return Err(Error::new(ErrorKind::InvalidInput, "ClusterCount::new")
+                .with_message("cluster count must be at least 2")
+                .with_context("value", value.to_string()));
+        }
+        Ok(ClusterCount(value))
+    }
+
+    /// Get the underlying value as `usize`.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for ClusterCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<ClusterCount> for usize {
+    fn from(count: ClusterCount) -> usize {
+        count.get()
+    }
+}
+
+impl TryFrom<usize> for ClusterCount {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,62 +776,33 @@ mod tests {
     }
 
     #[test]
-    fn bfs_depth_limit_accepts_positive_values() {
-        assert_eq!(BfsDepthLimit::new(1).unwrap().get(), 1);
-        assert_eq!(BfsDepthLimit::new(100).unwrap().get(), 100);
+    fn bfs_depth_limit_accepts_zero_as_the_sources_only_limit() {
+        assert_eq!(BfsDepthLimit::new(0).get(), 0);
+        assert_eq!(BfsDepthLimit::new(100).get(), 100);
     }
 
     #[test]
-    fn bfs_depth_limit_rejects_zero() {
-        let err = BfsDepthLimit::new(0).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.message().contains("greater than zero"));
-    }
-
-    #[test]
-    fn bfs_depth_limit_try_from_i32() {
+    fn bfs_depth_limit_try_from_i32_rejects_negative_values() {
         let limit: BfsDepthLimit = 7i32.try_into().unwrap();
         assert_eq!(limit.get(), 7);
-
-        let err = BfsDepthLimit::try_from(0i32).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert_eq!(BfsDepthLimit::try_from(0i32).unwrap().get(), 0);
 
         let err = BfsDepthLimit::try_from(-1i32).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
     }
 
     #[test]
-    fn bfs_depth_limit_try_from_usize() {
-        let limit: BfsDepthLimit = 9usize.try_into().unwrap();
-        assert_eq!(limit.get(), 9);
-
-        assert!(BfsDepthLimit::try_from(0usize).is_err());
-    }
-
-    #[test]
-    fn bfs_depth_limit_from_non_zero() {
-        let nz = NonZeroUsize::new(5).unwrap();
-        let limit = BfsDepthLimit::from_non_zero(nz);
-        assert_eq!(limit.get(), 5);
-    }
-
-    #[test]
     fn bfs_depth_limit_into_primitives() {
-        let limit = BfsDepthLimit::new(42).unwrap();
+        let limit = BfsDepthLimit::new(42);
         assert_eq!(usize::from(limit), 42);
+        assert_eq!(BfsDepthLimit::from(9usize).get(), 9);
+        assert_eq!(BfsDepthLimit::from(5u32).get(), 5);
     }
 
     #[test]
     fn bfs_depth_limit_display() {
-        let limit = BfsDepthLimit::new(12).unwrap();
+        let limit = BfsDepthLimit::new(12);
         assert_eq!(limit.to_string(), "12");
-    }
-
-    #[test]
-    fn bfs_depth_limit_into_inner() {
-        let limit = BfsDepthLimit::new(3).unwrap();
-        let nz: NonZeroUsize = limit.into_inner();
-        assert_eq!(nz.get(), 3);
     }
 
     #[test]
@@ -873,5 +1006,43 @@ mod tests {
     fn closed_unit_f64_display() {
         let val = ClosedUnitF64::new(0.5).unwrap();
         assert_eq!(val.to_string(), "0.5");
+    }
+
+    #[test]
+    fn fraction_f64_accepts_the_upper_bound_but_not_zero() {
+        assert_eq!(FractionF64::new(1.0).unwrap().get(), 1.0);
+        assert_eq!(FractionF64::new(f64::MIN_POSITIVE).unwrap().get(), f64::MIN_POSITIVE);
+        assert!(FractionF64::new(0.0).is_err());
+    }
+
+    #[test]
+    fn fraction_f64_rejects_out_of_range_and_non_finite_values() {
+        assert!(FractionF64::new(-0.1).is_err());
+        assert!(FractionF64::new(1.0 + f64::EPSILON).is_err());
+        assert!(FractionF64::new(f64::NAN).is_err());
+        assert!(FractionF64::new(f64::INFINITY).is_err());
+        assert_eq!(FractionF64::new(2.0).unwrap_err().kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn half_open_unit_f64_accepts_zero_but_not_one() {
+        assert_eq!(HalfOpenUnitF64::new(0.0).unwrap().get(), 0.0);
+        assert_eq!(HalfOpenUnitF64::new(0.999).unwrap().get(), 0.999);
+        assert!(HalfOpenUnitF64::new(1.0).is_err());
+    }
+
+    #[test]
+    fn half_open_unit_f64_rejects_out_of_range_and_non_finite_values() {
+        assert!(HalfOpenUnitF64::new(-f64::MIN_POSITIVE).is_err());
+        assert!(HalfOpenUnitF64::new(f64::NAN).is_err());
+        assert!(HalfOpenUnitF64::new(f64::INFINITY).is_err());
+        assert_eq!(HalfOpenUnitF64::new(2.0).unwrap_err().kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn cluster_count_requires_at_least_two_clusters() {
+        assert_eq!(ClusterCount::new(2).unwrap().get(), 2);
+        assert!(ClusterCount::new(1).is_err());
+        assert_eq!(ClusterCount::new(0).unwrap_err().kind(), ErrorKind::InvalidInput);
     }
 }

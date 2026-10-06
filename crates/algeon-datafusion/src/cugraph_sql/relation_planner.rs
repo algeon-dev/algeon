@@ -18,10 +18,11 @@ use super::{
     CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex, CugraphLogicalNode, CugraphRelationRole,
     CugraphSqlConfig,
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
+    error::invalid_option,
     plan,
 };
 use crate::{
-    error::Result,
+    error::{Error, Result},
     gpu_functions::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments},
 };
 
@@ -101,40 +102,55 @@ impl RelationPlanner for CugraphRelationPlanner {
         if matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp)
             && let Some(expression) = arguments.take_value("source_vertex")
         {
-            let expression = fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?)?;
-            source = parse_named_source(expression, algorithm)?;
+            let expression =
+                fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?, "source_vertex")?;
+            source = parse_named_source(expression, algorithm)
+                .map_err(|error| error.with_log_safe_fact("argument", "source_vertex"))?;
             if source.is_none() {
-                return Err(plan(format!(
-                    "{} source_vertex must be a non-null scalar vertex",
-                    algorithm.function_name()
-                ))
+                return Err(invalid_argument(
+                    "source_vertex",
+                    format!("{} source_vertex must be a non-null scalar vertex", algorithm.function_name()),
+                )
                 .into());
             }
             if algorithm == CugraphAlgorithm::Bfs && !matches!(source, Some(CugraphBfsSource::Scalar(_))) {
-                return Err(plan("cugraph_bfs source_vertex must be a non-null scalar vertex").into());
+                return Err(invalid_argument(
+                    "source_vertex",
+                    "cugraph_bfs source_vertex must be a non-null scalar vertex",
+                )
+                .into());
             }
         }
         if algorithm == CugraphAlgorithm::Bfs
             && let Some(expression) = arguments.take_value("source_vertices")
         {
             if source.is_some() {
-                return Err(
-                    plan("cugraph_bfs source_vertex, source_vertices, and sources are mutually exclusive").into()
-                );
+                return Err(invalid_argument(
+                    "source_vertices",
+                    "cugraph_bfs source_vertex, source_vertices, and sources are mutually exclusive",
+                )
+                .into());
             }
-            let expression = fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?)?;
-            let parsed = parse_named_source(expression, algorithm)?;
+            let expression =
+                fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?, "source_vertices")?;
+            let parsed = parse_named_source(expression, algorithm)
+                .map_err(|error| error.with_log_safe_fact("argument", "source_vertices"))?;
             if !matches!(parsed, Some(CugraphBfsSource::LiteralList(_))) {
-                return Err(plan("cugraph_bfs source_vertices must be a non-empty typed array").into());
+                return Err(invalid_argument(
+                    "source_vertices",
+                    "cugraph_bfs source_vertices must be a non-empty typed array",
+                )
+                .into());
             }
             source = parsed;
         }
         if algorithm == CugraphAlgorithm::Bfs {
             let relation_source = roles.contains(&CugraphRelationRole::Sources);
             if usize::from(source.is_some()) + usize::from(relation_source) != 1 {
-                return Err(
-                    plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources").into()
-                );
+                return Err(invalid_option(
+                    "cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources",
+                )
+                .into());
             }
         }
 
@@ -207,38 +223,59 @@ fn argument_definitions(algorithm: CugraphAlgorithm) -> Vec<NamedArgumentDefinit
 /// Reduces `CAST(<literal> AS type)`, negated numeric literals, and
 /// `make_array(...)` of those to plain literals so typed literal arguments bind
 /// like untyped ones.
-fn fold_literal(expression: Expr) -> DataFusionResult<Expr> {
+fn fold_literal(expression: Expr, name: &str) -> DataFusionResult<Expr> {
     Ok(match expression {
-        Expr::Cast(cast) => match fold_literal(*cast.expr)? {
+        Expr::Cast(cast) => match fold_literal(*cast.expr, name)? {
             Expr::Literal(value, _) => Expr::Literal(value.cast_to(cast.field.data_type())?, None),
-            _ => return Err(plan("cuGraph literal cast must contain a literal").into()),
+            _ => {
+                return Err(
+                    invalid_argument(name, format!("cuGraph argument '{name}' cast must contain a literal")).into()
+                );
+            },
         },
-        Expr::Negative(inner) => match fold_literal(*inner)? {
+        Expr::Negative(inner) => match fold_literal(*inner, name)? {
             Expr::Literal(value, _) => Expr::Literal(value.arithmetic_negate()?, None),
-            _ => return Err(plan("cuGraph negated literal must contain a numeric literal").into()),
+            _ => {
+                return Err(invalid_argument(
+                    name,
+                    format!("cuGraph argument '{name}' negation must contain a numeric literal"),
+                )
+                .into());
+            },
         },
         Expr::ScalarFunction(mut function) if function.name().eq_ignore_ascii_case("make_array") => {
-            function.args = function.args.into_iter().map(fold_literal).collect::<DataFusionResult<Vec<_>>>()?;
+            function.args = function
+                .args
+                .into_iter()
+                .map(|argument| fold_literal(argument, name))
+                .collect::<DataFusionResult<Vec<_>>>()?;
             Expr::ScalarFunction(function)
         },
         other => other,
     })
 }
 
+/// A literal-shape or value rejection for the declared argument `name`.
+fn invalid_argument(name: &str, message: impl Into<String>) -> Error {
+    invalid_option(message).with_log_safe_fact("argument", name)
+}
+
 fn literal_json(expression: Expr, name: &str) -> DataFusionResult<Value> {
     match expression {
         Expr::Literal(value, _) => scalar_json(value, name),
         Expr::Negative(inner) => match literal_json(*inner, name)? {
-            Value::Number(value) => value
-                .as_f64()
-                .and_then(|value| Number::from_f64(-value))
-                .map(Value::Number)
-                .ok_or_else(|| plan(format!("cuGraph argument '{name}' is not a finite numeric literal")).into()),
-            _ => Err(plan(format!("cuGraph argument '{name}' must be a numeric literal")).into()),
+            Value::Number(value) => {
+                value.as_f64().and_then(|value| Number::from_f64(-value)).map(Value::Number).ok_or_else(|| {
+                    invalid_argument(name, format!("cuGraph argument '{name}' is not a finite numeric literal")).into()
+                })
+            },
+            _ => Err(invalid_argument(name, format!("cuGraph argument '{name}' must be a numeric literal")).into()),
         },
         Expr::Cast(cast) => {
             let Expr::Literal(value, _) = *cast.expr else {
-                return Err(plan(format!("cuGraph argument '{name}' cast must contain a literal")).into());
+                return Err(
+                    invalid_argument(name, format!("cuGraph argument '{name}' cast must contain a literal")).into()
+                );
             };
             scalar_json(value.cast_to(cast.field.data_type())?, name)
         },
@@ -248,7 +285,10 @@ fn literal_json(expression: Expr, name: &str) -> DataFusionResult<Value> {
             .map(|argument| literal_json(argument, name))
             .collect::<DataFusionResult<Vec<_>>>()
             .map(Value::Array),
-        _ => Err(plan(format!("cuGraph argument '{name}' must be a scalar or typed-array literal")).into()),
+        _ => {
+            Err(invalid_argument(name, format!("cuGraph argument '{name}' must be a scalar or typed-array literal"))
+                .into())
+        },
     }
 }
 
@@ -280,16 +320,20 @@ fn scalar_json(value: ScalarValue, name: &str) -> DataFusionResult<Value> {
         ScalarValue::UInt64(Some(value)) => Value::Number(value.into()),
         ScalarValue::Float32(Some(value)) => Number::from_f64(f64::from(value))
             .map(Value::Number)
-            .ok_or_else(|| plan(format!("cuGraph argument '{name}' must be finite")))?,
+            .ok_or_else(|| invalid_argument(name, format!("cuGraph argument '{name}' must be finite")))?,
         ScalarValue::Float64(Some(value)) => Number::from_f64(value)
             .map(Value::Number)
-            .ok_or_else(|| plan(format!("cuGraph argument '{name}' must be finite")))?,
+            .ok_or_else(|| invalid_argument(name, format!("cuGraph argument '{name}' must be finite")))?,
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
             Value::String(value)
         },
         ScalarValue::List(values) => {
             if values.len() != 1 || values.is_null(0) {
-                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")).into());
+                return Err(invalid_argument(
+                    name,
+                    format!("cuGraph argument '{name}' must contain one non-null array literal"),
+                )
+                .into());
             }
             let array = values.value(0);
             let mut result = Vec::with_capacity(array.len());
@@ -300,7 +344,11 @@ fn scalar_json(value: ScalarValue, name: &str) -> DataFusionResult<Value> {
         },
         ScalarValue::LargeList(values) => {
             if values.len() != 1 || values.is_null(0) {
-                return Err(plan(format!("cuGraph argument '{name}' must contain one non-null array literal")).into());
+                return Err(invalid_argument(
+                    name,
+                    format!("cuGraph argument '{name}' must contain one non-null array literal"),
+                )
+                .into());
             }
             let array = values.value(0);
             let mut result = Vec::with_capacity(array.len());
@@ -309,7 +357,11 @@ fn scalar_json(value: ScalarValue, name: &str) -> DataFusionResult<Value> {
             }
             Value::Array(result)
         },
-        _ => return Err(plan(format!("cuGraph argument '{name}' has an unsupported literal type")).into()),
+        _ => {
+            return Err(
+                invalid_argument(name, format!("cuGraph argument '{name}' has an unsupported literal type")).into()
+            );
+        },
     };
     Ok(value)
 }
@@ -325,7 +377,7 @@ fn parse_named_source(expression: Expr, algorithm: CugraphAlgorithm) -> Result<O
                 Ok(Some(CugraphBfsSource::LiteralList(source_list_values(values.as_ref())?)))
             },
             ScalarValue::List(_) | ScalarValue::LargeList(_) => {
-                Err(plan("source_vertices is supported only by cugraph_bfs"))
+                Err(invalid_option("cugraph_sssp source_vertex must be a scalar vertex, not an array"))
             },
             _ => literal_source_vertex_value(&value, algorithm).map(|value| value.map(CugraphBfsSource::Scalar)),
         },
@@ -334,22 +386,24 @@ fn parse_named_source(expression: Expr, algorithm: CugraphAlgorithm) -> Result<O
         {
             Ok(Some(CugraphBfsSource::LiteralList(source_make_array_values(&function.args, algorithm)?)))
         },
-        _ if algorithm == CugraphAlgorithm::Bfs => Err(plan("source_vertex or source_vertices must be a literal")),
-        _ => Err(plan("source_vertex must be a literal")),
+        _ if algorithm == CugraphAlgorithm::Bfs => {
+            Err(invalid_option("source_vertex or source_vertices must be a literal"))
+        },
+        _ => Err(invalid_option("source_vertex must be a literal")),
     }
 }
 
 fn source_make_array_values(args: &[Expr], algorithm: CugraphAlgorithm) -> Result<Vec<CugraphBfsSourceVertex>> {
     if args.is_empty() {
-        return Err(plan("source_vertices must not be empty"));
+        return Err(invalid_option("source_vertices must not be empty"));
     }
     let mut values = Vec::with_capacity(args.len());
     for arg in args {
         let Expr::Literal(value, _) = arg else {
-            return Err(plan("source_vertices elements must be literals"));
+            return Err(invalid_option("source_vertices elements must be literals"));
         };
         let Some(value) = literal_source_vertex_value(value, algorithm)? else {
-            return Err(plan("source_vertices must not contain null elements"));
+            return Err(invalid_option("source_vertices must not contain null elements"));
         };
         values.push(value);
     }
@@ -358,25 +412,25 @@ fn source_make_array_values(args: &[Expr], algorithm: CugraphAlgorithm) -> Resul
 
 fn source_list_values(array: &dyn Array) -> Result<Vec<CugraphBfsSourceVertex>> {
     if array.len() != 1 || array.is_null(0) {
-        return Err(plan("source_vertices must be one non-null array literal"));
+        return Err(invalid_option("source_vertices must be one non-null array literal"));
     }
     let values = match array.data_type() {
         DataType::List(_) => array.as_list::<i32>().value(0),
         DataType::LargeList(_) => array.as_list::<i64>().value(0),
-        other => return Err(plan(format!("source_vertices has unsupported array type {other:?}"))),
+        other => return Err(invalid_option(format!("source_vertices has unsupported array type {other:?}"))),
     };
     if values.is_empty() {
-        return Err(plan("source_vertices must not be empty"));
+        return Err(invalid_option("source_vertices must not be empty"));
     }
     let mut parsed = Vec::with_capacity(values.len());
     for row in 0..values.len() {
         if values.is_null(row) {
-            return Err(plan("source_vertices must not contain null elements"));
+            return Err(invalid_option("source_vertices must not contain null elements"));
         }
         let value = ScalarValue::try_from_array(values.as_ref(), row)
-            .map_err(|error| plan(format!("failed to read source_vertices element {row}: {error}")))?;
+            .map_err(|error| invalid_option(format!("failed to read source_vertices element {row}: {error}")))?;
         let Some(value) = literal_source_vertex_value(&value, CugraphAlgorithm::Bfs)? else {
-            return Err(plan("source_vertices must not contain null elements"));
+            return Err(invalid_option("source_vertices must not contain null elements"));
         };
         parsed.push(value);
     }
@@ -385,11 +439,11 @@ fn source_list_values(array: &dyn Array) -> Result<Vec<CugraphBfsSourceVertex>> 
 
 fn validate_source_list_values(values: Vec<CugraphBfsSourceVertex>) -> Result<Vec<CugraphBfsSourceVertex>> {
     if values.is_empty() {
-        return Err(plan("source_vertices must not be empty"));
+        return Err(invalid_option("source_vertices must not be empty"));
     }
     let first_is_utf8 = values.first().is_some_and(CugraphBfsSourceVertex::is_utf8);
     if values.iter().any(|value| value.is_utf8() != first_is_utf8) {
-        return Err(plan("source_vertices must not mix integer and string elements"));
+        return Err(invalid_option("source_vertices must not mix integer and string elements"));
     }
     Ok(values)
 }
@@ -409,7 +463,7 @@ fn literal_source_vertex_value(
         ScalarValue::UInt32(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
         ScalarValue::UInt64(Some(value)) => i64::try_from(*value)
             .map(|value| Some(CugraphBfsSourceVertex::Int64(value)))
-            .map_err(|_| plan("source_vertex exceeds i64::MAX")),
+            .map_err(|_| invalid_option("source_vertex exceeds i64::MAX")),
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value))
             if matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) =>
         {
@@ -426,6 +480,6 @@ fn literal_source_vertex_value(
         | ScalarValue::Utf8(None)
         | ScalarValue::LargeUtf8(None)
         | ScalarValue::Utf8View(None) => Ok(None),
-        _ => Err(plan("source_vertex must be a non-null integer or string literal")),
+        _ => Err(invalid_option("source_vertex must be a non-null integer or string literal")),
     }
 }

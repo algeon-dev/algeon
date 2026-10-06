@@ -1260,11 +1260,11 @@ fn validate_window_capability(window: &WindowNode) -> Result<()> {
             },
             WindowFunction::RowNumber { .. } => {
                 let output_type = field.data_type();
-                if !matches!(output_type, ArrowDataType::UInt64 | ArrowDataType::Int64) {
+                if !matches!(output_type, ArrowDataType::UInt64 | ArrowDataType::Int64 | ArrowDataType::Int32) {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "query_engine.window.validate",
-                        "native row_number output must be UInt64 or Int64",
+                        "native row_number output must be UInt64, Int64, or Int32",
                     )
                     .with_fact("field", field.name())
                     .with_fact("data_type", format!("{output_type:?}")));

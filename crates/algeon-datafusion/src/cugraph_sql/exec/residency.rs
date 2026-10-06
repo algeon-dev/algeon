@@ -6,8 +6,8 @@ use super::{
     CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
     CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec, GraphConstructionOptions,
     GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
-    GraphSourceFingerprintBypassReason, Result, Schema, graph_residency_descriptor_for_edge_plan,
-    is_logical_vertex_type, lowered_native_edge_plan, native_algorithm,
+    GraphSourceFingerprintBypassReason, Result, Schema, SchemaRef, graph_residency_descriptor_for_edge_plan,
+    graph_uses_logical_mapping, lowered_native_edge_plan, native_algorithm,
 };
 use crate::native::{
     FooterScope, ParquetReadStrategyConfig, graph_residency_descriptor_for_datafusion_local_parquet_scan,
@@ -20,21 +20,18 @@ pub(super) fn cugraph_graph_residency_descriptor(
     edge_normalize_inserted: bool,
     source_reads: &ParquetReadStrategyConfig,
 ) -> Result<Option<GraphResidencyDescriptor>> {
-    if cugraph_spec_uses_logical_vertex_mapping(spec, edge_source.schema().as_ref()) {
+    if cugraph_spec_uses_logical_vertex_mapping(spec, &edge_source.schema()) {
         return Ok(None);
     }
     let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
     Ok(cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec, source_reads)?.descriptor().cloned())
 }
 
-pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
-    let Ok(source_field) = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN) else {
-        return true;
-    };
-    let Ok(destination_field) = edge_schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN) else {
-        return true;
-    };
-    is_logical_vertex_type(source_field.data_type()) || is_logical_vertex_type(destination_field.data_type())
+/// A mapped call builds its native graph from per-call codebook ids, so no
+/// resident graph descriptor of the source edges can describe it. An edge
+/// schema that cannot name its vertex domain is treated as mapped.
+pub(super) fn cugraph_spec_uses_logical_vertex_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> bool {
+    graph_uses_logical_mapping(spec, edge_schema).unwrap_or(true)
 }
 
 pub(super) fn cugraph_graph_residency_analysis(

@@ -14,6 +14,7 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
     let input_schema = input.schema();
     let mut output_fields = input_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
     output_fields.push(Field::new("rn", DataType::UInt64, false));
+    output_fields.push(Field::new("rn_i32", DataType::Int32, false));
     let output_schema = Arc::new(Schema::new(output_fields));
     let mut builder = QueryPlanBuilder::new();
     let source = builder
@@ -25,7 +26,7 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
             WindowSpec::new(
                 Vec::new(),
                 vec![SortExpr::new(Expr::column("key"), false, false)],
-                vec![WindowFunction::row_number("rn")],
+                vec![WindowFunction::row_number("rn"), WindowFunction::row_number_i32("rn_i32")],
             ),
         )
         .unwrap();
@@ -50,6 +51,7 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
     assert_eq!(batch.schema(), output_schema);
     assert_basic_list_payload_rows(batch, 0, 2, &[1, 2, 3, 4]);
     assert_eq!(batch.column(6).as_primitive::<UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(int32_array(batch, 7).values().as_ref(), &[1, 2, 3, 4]);
     admitted.finish();
 }
 
@@ -363,7 +365,11 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
             WindowSpec::new(
                 vec![Expr::column("grp")],
                 vec![SortExpr::new(Expr::column("ord"), false, false)],
-                vec![WindowFunction::row_number("rn"), WindowFunction::row_number_i64("rn_i64")],
+                vec![
+                    WindowFunction::row_number("rn"),
+                    WindowFunction::row_number_i64("rn_i64"),
+                    WindowFunction::row_number_i32("rn_i32"),
+                ],
             ),
         )
         .unwrap();
@@ -390,6 +396,7 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     assert_eq!(uint64_array(batch, 3).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     assert_eq!(int64_array(batch, 4).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
+    assert_eq!(int32_array(batch, 5).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     admitted.finish();
 }
 

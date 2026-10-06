@@ -305,7 +305,7 @@ async fn cugraph_validation_requires_flat_common_options() {
     .await;
 
     assert!(!bool_value(&batch, 0, 0));
-    assert_eq!(string_value(&batch, 1, 0), "unsupported_option");
+    assert_eq!(string_value(&batch, 1, 0), "unknown_option");
     assert!(string_value(&batch, 2, 0).contains("unknown option 'options'"));
 }
 
@@ -321,8 +321,10 @@ async fn cugraph_validation_rejects_sssp_source_vertices_list() {
     let batch = validate(&ctx, "cugraph_sssp", "edges", serde_json::json!({ "source_vertices": [1, 2] })).await;
 
     assert!(!bool_value(&batch, 0, 0));
-    assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
-    assert!(string_value(&batch, 2, 0).contains("source_vertices is supported only by cugraph_bfs"));
+    assert_eq!(string_value(&batch, 1, 0), "unknown_option");
+    let message = string_value(&batch, 2, 0);
+    assert!(message.contains("unknown option 'source_vertices'"), "{message}");
+    assert!(message.contains("Did you mean 'source_vertex'?"), "{message}");
 }
 
 #[tokio::test]
@@ -575,17 +577,37 @@ async fn cugraph_vertex_id_descriptors_match_registry_string_contracts() {
         let batch = single_batch(&batches);
         let relations = json_value(string_value(batch, 0, 0));
         let contract = &relations[0]["vertex_id_contract"];
-        let string_capable = definition.supports_logical_string_vertices();
+        let legacy_int32 = matches!(
+            definition.algorithm,
+            CugraphAlgorithm::MinimumSpanningTree | CugraphAlgorithm::SpectralModularityMaximization
+        );
+        assert_eq!(
+            contract["numeric_endpoint_types"],
+            serde_json::json!(["Int32", "Int64"]),
+            "{}",
+            definition.sql_function_name
+        );
         assert_eq!(
             contract["logical_string_endpoint_types"],
-            if string_capable { serde_json::json!(["Utf8", "LargeUtf8", "Utf8View"]) } else { serde_json::json!([]) },
+            serde_json::json!(["Utf8", "LargeUtf8", "Utf8View"]),
             "{}",
             definition.sql_function_name
         );
         assert_eq!(contract["call_specific_authority"], "gpu_validate_call");
         assert_eq!(contract["edge_id_supported_for_logical_string"], false);
-        assert_eq!(contract["logical_string_output_type"].is_string(), string_capable);
-        assert_eq!(contract["native_logical_mapping_type"].as_str(), string_capable.then_some("Int64"));
+        assert_eq!(contract["logical_string_output_type"], "Utf8");
+        assert_eq!(
+            contract["native_logical_mapping_type"],
+            if legacy_int32 { "Int32" } else { "Int64" },
+            "{}",
+            definition.sql_function_name
+        );
+        assert_eq!(
+            contract["mapped_numeric_endpoint_types"],
+            if legacy_int32 { serde_json::json!(["Int64"]) } else { serde_json::json!([]) },
+            "{}",
+            definition.sql_function_name
+        );
 
         let result_schemas = json_value(string_value(batch, 1, 0));
         let has_logical_output = result_schemas["schemas"]
@@ -594,7 +616,7 @@ async fn cugraph_vertex_id_descriptors_match_registry_string_contracts() {
             .values()
             .flat_map(|schema| schema["fields"].as_array().unwrap())
             .any(|field| field["data_type"] == "Int64|Utf8");
-        assert_eq!(has_logical_output, string_capable, "{}", definition.sql_function_name);
+        assert!(has_logical_output, "{}", definition.sql_function_name);
     }
 }
 
@@ -780,7 +802,7 @@ async fn cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas(
     let cases = [
         ("cugraph_sssp", serde_json::json!({"source_vertex": "alice"}), vec!["vertex", "predecessor"]),
         ("cugraph_betweenness_centrality", serde_json::json!({"seeds": ["alice", "carol"]}), vec!["vertex"]),
-        ("cugraph_edge_betweenness_centrality", serde_json::json!({"seeds": ["alice"]}), vec!["source", "destination"]),
+        ("cugraph_edge_betweenness_centrality", serde_json::json!({"seeds": ["alice"]}), vec!["src", "dst"]),
     ];
     for (function, options, identity_columns) in cases {
         let batch = validate(&ctx, function, "string_edges", options).await;

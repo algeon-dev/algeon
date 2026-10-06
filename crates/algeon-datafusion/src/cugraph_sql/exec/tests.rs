@@ -951,6 +951,85 @@ fn m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path() {
     }
 }
 
+/// MST and spectral modularity maximization run on libcugraph's legacy Int32
+/// graph types. Int64 and string vertices reach them through a codebook whose
+/// logical column keeps the input vertex type and whose native ids are Int32.
+#[test]
+fn legacy_int32_algorithms_map_int64_and_string_vertices_through_an_int32_codebook() {
+    for algorithm in [CugraphAlgorithm::MinimumSpanningTree, CugraphAlgorithm::SpectralModularityMaximization] {
+        let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None).expect("native defaults are total");
+        let graph_options = algorithm.effective_default_graph_options(&CugraphGraphOptions::default());
+        let has_weight = algorithm == CugraphAlgorithm::MinimumSpanningTree;
+
+        for (domain, vertex_type) in [
+            (CugraphVertexIdDomain::Int32, DataType::Int32),
+            (CugraphVertexIdDomain::Int64, DataType::Int64),
+            (CugraphVertexIdDomain::StringLogical, DataType::Utf8),
+        ] {
+            let mut fields =
+                vec![Field::new("src", vertex_type.clone(), false), Field::new("dst", vertex_type.clone(), false)];
+            if has_weight {
+                fields.push(Field::new("weight", DataType::Float64, false));
+            }
+            let definition = CugraphPlanDefinition {
+                spec: CugraphAlgorithmSpec {
+                    algorithm,
+                    has_weight,
+                    has_edge_id: false,
+                    graph_options: graph_options.clone(),
+                    params: params.clone(),
+                    output_schema: result_schema_for_vertex_domain(algorithm, &params, Some(&domain)),
+                },
+                edge_schema: Arc::new(Schema::new(fields)),
+                predicate_schemas: Vec::new(),
+                predicate_row_upper_bounds: Vec::new(),
+                result_options: CugraphResultPlanOptions::default(),
+                edge_normalize_inserted: false,
+                edge_row_upper_bound: Some(3),
+                edge_vertex_upper_bound: None,
+            };
+            let case = format!("{} over {vertex_type:?} vertices", algorithm.function_name());
+
+            preflight_cugraph_query_plan(&definition).unwrap_or_else(|error| panic!("{case} preflight: {error}"));
+            let plan = cugraph_schema_query_plan(&definition).unwrap_or_else(|error| panic!("{case} plan: {error}"));
+            let graph = plan
+                .nodes()
+                .iter()
+                .find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
+                .unwrap_or_else(|| panic!("{case} must contain the native graph node"));
+            let codebook_row_number = plan.nodes().iter().find_map(|node| match &node.kind {
+                PlanNode::Window(window) => window.spec.functions.iter().find_map(|function| match function {
+                    WindowFunction::RowNumber { output } => Some(output.data_type().clone()),
+                    _ => None,
+                }),
+                _ => None,
+            });
+
+            for column in algorithm.definition().vertex_output_columns() {
+                assert_eq!(
+                    graph.output_schema().field_with_name(column.name).unwrap().data_type(),
+                    &DataType::Int32,
+                    "{case}: native {}",
+                    column.name,
+                );
+                assert_eq!(
+                    plan.output_schema().field_with_name(column.name).unwrap().data_type(),
+                    &vertex_type,
+                    "{case}: decoded {}",
+                    column.name,
+                );
+            }
+            if domain == CugraphVertexIdDomain::Int32 {
+                assert_eq!(codebook_row_number, None, "{case} needs no codebook");
+                assert!(matches!(plan.root_node().kind, PlanNode::GraphAlgorithm(_)), "{case}");
+            } else {
+                assert_eq!(codebook_row_number, Some(DataType::Int32), "{case} numbers its codebook as Int32");
+                assert!(matches!(plan.root_node().kind, PlanNode::Join(_)), "{case} decodes through a join");
+            }
+        }
+    }
+}
+
 #[test]
 fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_outputs() {
     let mut cases = Vec::new();
@@ -975,7 +1054,7 @@ fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_o
         unreachable!()
     };
     params.seeds = Some(CugraphBetweennessSeeds { vertices: vec![CugraphVertexSelector::Utf8("alice".to_string())] });
-    cases.push((edge_betweenness, vec![("source", false), ("destination", false)]));
+    cases.push((edge_betweenness, vec![("src", false), ("dst", false)]));
 
     for (spec, decoded_columns) in cases {
         let algorithm = spec.algorithm;

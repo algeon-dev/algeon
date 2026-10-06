@@ -399,12 +399,12 @@ fn compare_numeric(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Resu
 
 fn compare_edge_betweenness(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Result<(), String> {
     let keyed_scores = |table: &Table| -> Result<BTreeMap<(i64, i64), f64>, String> {
-        let sources = table.integer_column("source")?;
-        let destinations = table.integer_column("destination")?;
-        let scores = table.column("score")?;
+        let sources = table.integer_column("src")?;
+        let destinations = table.integer_column("dst")?;
+        let scores = table.column("value")?;
         if sources.len() != destinations.len() || sources.len() != scores.len() {
             return Err(format!(
-                "edge betweenness output has mismatched column lengths: source={}, destination={}, score={}",
+                "edge betweenness output has mismatched column lengths: src={}, dst={}, value={}",
                 sources.len(),
                 destinations.len(),
                 scores.len()
@@ -413,7 +413,7 @@ fn compare_edge_betweenness(actual: &Table, expected: &Table, abs: f64, rel: f64
         let mut keyed = BTreeMap::new();
         for (row, ((source, destination), score)) in sources.into_iter().zip(destinations).zip(scores).enumerate() {
             let key = (source, destination);
-            let score = score.number("score", row)?;
+            let score = score.number("value", row)?;
             if keyed.insert(key, score).is_some() {
                 return Err(format!("edge betweenness output contains duplicate edge {key:?}"));
             }
@@ -793,7 +793,10 @@ fn compare_assignment_quality(
 
 fn partition_assignments(table: &Table) -> Result<BTreeMap<i64, i64>, String> {
     let vertices = table.integer_column("vertex")?;
-    let label_name = if table.columns.contains_key("partition") { "partition" } else { "label" };
+    let label_name = ["community", "component"]
+        .into_iter()
+        .find(|name| table.columns.contains_key(*name))
+        .ok_or_else(|| "partition result has neither a 'community' nor a 'component' column".to_string())?;
     let labels = table.integer_column(label_name)?;
     if vertices.len() != labels.len() {
         return Err(format!(
@@ -826,8 +829,8 @@ fn ecg_resolution(spec: &ParitySpec) -> Result<f64, String> {
         .get("resolution")
         .and_then(Value::as_f64)
         .ok_or_else(|| "ECG parity spec is missing a numeric resolution".to_string())?;
-    if !resolution.is_finite() || resolution <= 0.0 {
-        return Err(format!("ECG parity spec resolution must be finite and positive, got {resolution}"));
+    if !(resolution > 0.0 && resolution <= 1.0) {
+        return Err(format!("ECG parity spec resolution must be in (0, 1], got {resolution}"));
     }
     Ok(resolution)
 }
@@ -994,7 +997,7 @@ mod tests {
     fn partition_batches(vertices: Vec<i64>, labels: Vec<i64>) -> Vec<RecordBatch> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("vertex", DataType::Int64, false),
-            Field::new("partition", DataType::Int64, false),
+            Field::new("community", DataType::Int64, false),
         ]));
         vec![
             RecordBatch::try_new(
@@ -1007,8 +1010,15 @@ mod tests {
 
     #[test]
     fn partition_comparison_ignores_label_renaming() {
-        let actual = partition_table(vec![0, 1, 2, 3], vec![7, 7, 9, 9], "partition");
-        let expected = partition_table(vec![0, 1, 2, 3], vec![2, 2, 1, 1], "partition");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![7, 7, 9, 9], "community");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![2, 2, 1, 1], "community");
+        compare_partitions(&actual, &expected).unwrap();
+    }
+
+    #[test]
+    fn partition_comparison_reads_connected_component_ids() {
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 2, 2], "component");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![5, 5, 8, 8], "component");
         compare_partitions(&actual, &expected).unwrap();
     }
 
@@ -1018,8 +1028,8 @@ mod tests {
         // proves the ECG comparator deliberately accepts an equally good
         // partition rather than treating the oracle's labels as a golden
         // cross-build result.
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 1, destination: 2, weight: 1.0 },
@@ -1031,8 +1041,8 @@ mod tests {
 
     #[test]
     fn ecg_quality_comparison_rejects_low_modularity_partition() {
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
@@ -1043,8 +1053,8 @@ mod tests {
 
     #[test]
     fn ecg_quality_comparison_accepts_higher_modularity_than_the_oracle() {
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "partition");
-        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "community");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
@@ -1054,8 +1064,8 @@ mod tests {
 
     #[test]
     fn ecg_quality_comparison_rejects_unreasonable_community_count() {
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 2, 3], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 2, 3], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
@@ -1066,8 +1076,8 @@ mod tests {
 
     #[test]
     fn ecg_quality_comparison_rejects_incomplete_vertex_coverage() {
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let actual = partition_table(vec![0, 1, 2], vec![0, 0, 1], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let actual = partition_table(vec![0, 1, 2], vec![0, 0, 1], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
@@ -1097,7 +1107,7 @@ mod tests {
         // into the "no registry rows" error arm.
         let spec = spectral_quality_spec(0.0);
         let actual = partition_batches(vec![0, 1, 2, 3], vec![0, 1, 1, 0]);
-        let oracle = serde_json::json!({"result": {"vertex": [0, 1, 2, 3], "partition": [0, 0, 1, 1]}});
+        let oracle = serde_json::json!({"result": {"vertex": [0, 1, 2, 3], "community": [0, 0, 1, 1]}});
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 1, destination: 2, weight: 1.0 },
@@ -1111,9 +1121,9 @@ mod tests {
     fn spectral_quality_comparison_accepts_equal_quality_partition() {
         // The two ways to split a four-cycle both have modularity zero, so
         // relabeling and the alternate split are equally valid results.
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let relabeled = partition_table(vec![0, 1, 2, 3], vec![5, 5, 7, 7], "partition");
-        let alternate = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let relabeled = partition_table(vec![0, 1, 2, 3], vec![5, 5, 7, 7], "community");
+        let alternate = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 1, destination: 2, weight: 1.0 },
@@ -1126,8 +1136,8 @@ mod tests {
 
     #[test]
     fn spectral_quality_comparison_rejects_low_modularity_partition() {
-        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
-        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "partition");
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "community");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "community");
         let edges = [
             ParityEdge { source: 0, destination: 1, weight: 1.0 },
             ParityEdge { source: 2, destination: 3, weight: 1.0 },
@@ -1273,9 +1283,9 @@ mod tests {
         let table = |sources: Vec<i64>, destinations: Vec<i64>, scores: Vec<f64>| Table {
             rows: sources.len(),
             columns: BTreeMap::from([
-                ("source".to_string(), sources.into_iter().map(Cell::Int).collect()),
-                ("destination".to_string(), destinations.into_iter().map(Cell::Int).collect()),
-                ("score".to_string(), scores.into_iter().map(Cell::Float).collect()),
+                ("src".to_string(), sources.into_iter().map(Cell::Int).collect()),
+                ("dst".to_string(), destinations.into_iter().map(Cell::Int).collect()),
+                ("value".to_string(), scores.into_iter().map(Cell::Float).collect()),
             ]),
         };
         let expected = table(vec![0, 1], vec![1, 2], vec![0.5, 0.25]);

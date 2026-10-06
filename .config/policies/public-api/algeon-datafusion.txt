@@ -413,7 +413,6 @@ pub struct algeon_datafusion::cugraph_sql::CugraphLeidenParams
 pub algeon_datafusion::cugraph_sql::CugraphLeidenParams::max_level: u32
 pub algeon_datafusion::cugraph_sql::CugraphLeidenParams::resolution: f64
 pub algeon_datafusion::cugraph_sql::CugraphLeidenParams::seed: u64
-pub algeon_datafusion::cugraph_sql::CugraphLeidenParams::theta: f64
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphLeidenParams
 pub fn algeon_datafusion::cugraph_sql::CugraphLeidenParams::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphLouvainParams
@@ -426,8 +425,6 @@ pub struct algeon_datafusion::cugraph_sql::CugraphMstParams
 pub struct algeon_datafusion::cugraph_sql::CugraphOperationDefinition
 pub algeon_datafusion::cugraph_sql::CugraphOperationDefinition::algorithm: algeon_datafusion::cugraph_sql::CugraphAlgorithm
 pub algeon_datafusion::cugraph_sql::CugraphOperationDefinition::sql_function_name: &'static str
-impl algeon_datafusion::cugraph_sql::CugraphOperationDefinition
-pub const fn algeon_datafusion::cugraph_sql::CugraphOperationDefinition::supports_logical_string_vertices(&self) -> bool
 pub struct algeon_datafusion::cugraph_sql::CugraphOutDegreesAllParams
 pub struct algeon_datafusion::cugraph_sql::CugraphPageRankParams
 pub algeon_datafusion::cugraph_sql::CugraphPageRankParams::alpha: f64
@@ -445,10 +442,7 @@ pub struct algeon_datafusion::cugraph_sql::CugraphSccParams
 pub struct algeon_datafusion::cugraph_sql::CugraphSimilarityParams
 pub algeon_datafusion::cugraph_sql::CugraphSimilarityParams::vertex_pairs: algeon_datafusion::cugraph_sql::CugraphVertexPairTable
 pub struct algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams
-pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::evs_max_iterations: u32
 pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::evs_tolerance: f64
-pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::k_means_max_iterations: u32
-pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::k_means_tolerance: f64
 pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::n_clusters: u32
 pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::n_eigenvectors: u32
 pub algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams::seed: u64

@@ -4,7 +4,9 @@
 //! deliberately keeps native parameter defaults behind typed resolvers so the
 //! metadata and binder surfaces do not copy numbers from the native defaults.
 
-use serde_json::{Value, json};
+use std::fmt;
+
+use serde_json::{Number, Value, json};
 
 use super::{
     CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
@@ -39,9 +41,48 @@ pub enum CugraphValueRange {
     MinExclusiveF64(f64),
     ClosedF64 { min: f64, max: f64 },
     OpenClosedF64 { min: f64, max: f64 },
+    ClosedOpenF64 { min: f64, max: f64 },
     MinInclusiveI64(i64),
     MinInclusiveU64(u64),
     ClosedU64 { min: u64, max: u64 },
+}
+
+impl CugraphValueRange {
+    /// Whether `value` satisfies the declared bounds, compared in the kind the
+    /// range bounds: `f64` for float ranges, exact integers for integer ranges.
+    /// `None` when `value` is not of that kind (a fractional number for an
+    /// integer range), which the typed parser rejects with its own error.
+    pub(super) fn contains(self, value: &Number) -> Option<bool> {
+        let integer = || value.as_i64().map(i128::from).or_else(|| value.as_u64().map(i128::from));
+        Some(match self {
+            Self::MinInclusiveF64(min) => value.as_f64()? >= min,
+            Self::MinExclusiveF64(min) => value.as_f64()? > min,
+            Self::ClosedF64 { min, max } => (min..=max).contains(&value.as_f64()?),
+            Self::OpenClosedF64 { min, max } => {
+                let value = value.as_f64()?;
+                value > min && value <= max
+            },
+            Self::ClosedOpenF64 { min, max } => (min..max).contains(&value.as_f64()?),
+            Self::MinInclusiveI64(min) => integer()? >= i128::from(min),
+            Self::MinInclusiveU64(min) => integer()? >= i128::from(min),
+            Self::ClosedU64 { min, max } => (i128::from(min)..=i128::from(max)).contains(&integer()?),
+        })
+    }
+}
+
+impl fmt::Display for CugraphValueRange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MinInclusiveF64(min) => write!(formatter, ">= {min}"),
+            Self::MinExclusiveF64(min) => write!(formatter, "> {min}"),
+            Self::ClosedF64 { min, max } => write!(formatter, "in [{min}, {max}]"),
+            Self::OpenClosedF64 { min, max } => write!(formatter, "in ({min}, {max}]"),
+            Self::ClosedOpenF64 { min, max } => write!(formatter, "in [{min}, {max})"),
+            Self::MinInclusiveI64(min) => write!(formatter, ">= {min}"),
+            Self::MinInclusiveU64(min) => write!(formatter, ">= {min}"),
+            Self::ClosedU64 { min, max } => write!(formatter, "in [{min}, {max}]"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,16 +141,12 @@ pub enum CugraphNativeDefault {
     ExactVertexThreshold,
     Cutoff,
     DegreeType,
-    Theta,
     Seed,
     MinWeight,
     EnsembleSize,
     NClusters,
     NEigenvectors,
     EvsTolerance,
-    EvsMaxIterations,
-    KMeansTolerance,
-    KMeansMaxIterations,
     MaxIter,
     OutboundAttractionDistribution,
     LinLogMode,
@@ -523,6 +560,8 @@ const ARG_ALPHA: CugraphArgumentDefinition = value_arg(
     EMPTY_ALLOWED,
     "PageRank damping factor in [0, 1]",
 );
+// libcugraph accepts alpha in [0, 1]. Zero is excluded because it degenerates
+// Katz centrality to the constant `beta` vector.
 const ARG_KATZ_ALPHA: CugraphArgumentDefinition = value_arg(
     "alpha",
     CugraphArgumentType::Float64,
@@ -532,6 +571,11 @@ const ARG_KATZ_ALPHA: CugraphArgumentDefinition = value_arg(
     EMPTY_ALLOWED,
     "Katz alpha in (0, 1]",
 );
+// libcugraph accepts epsilon = 0, but eigenvector, Katz and HITS test a sum of
+// absolute differences against a bound proportional to epsilon. At zero that
+// test never passes, so the call burns `max_iterations` of GPU work and then
+// fails. PageRank shares the descriptor; at zero it runs every iteration
+// without converging.
 const ARG_EPSILON: CugraphArgumentDefinition = value_arg(
     "epsilon",
     CugraphArgumentType::Float64,
@@ -557,7 +601,7 @@ const ARG_DEPTH_LIMIT: CugraphArgumentDefinition = value_arg(
     CugraphDefaultValue::Native(CugraphNativeDefault::DepthLimit),
     Some(CugraphValueRange::MinInclusiveI64(0)),
     EMPTY_ALLOWED,
-    "optional non-negative BFS depth limit",
+    "number of hops to expand; 0 reaches only the sources, and null or absent is unlimited; limits above the vertex type's maximum are unlimited",
 );
 const ARG_OUTPUT_MODE: CugraphArgumentDefinition = value_arg(
     "output_mode",
@@ -609,6 +653,29 @@ const ARG_RESOLUTION: CugraphArgumentDefinition = value_arg(
     EMPTY_ALLOWED,
     "positive community resolution",
 );
+// libcugraph's ECG requires threshold and resolution in (0, 1]
+// (`ecg_impl.cuh`), unlike Louvain and Leiden, so it cannot share
+// `ARG_THRESHOLD` or `ARG_RESOLUTION`.
+const ARG_ECG_THRESHOLD: CugraphArgumentDefinition = value_arg(
+    "threshold",
+    CugraphArgumentType::Float64,
+    false,
+    CugraphDefaultValue::Native(CugraphNativeDefault::Threshold),
+    Some(CugraphValueRange::OpenClosedF64 { min: 0.0, max: 1.0 }),
+    EMPTY_ALLOWED,
+    "convergence threshold in (0, 1]",
+);
+const ARG_ECG_RESOLUTION: CugraphArgumentDefinition = value_arg(
+    "resolution",
+    CugraphArgumentType::Float64,
+    false,
+    CugraphDefaultValue::Native(CugraphNativeDefault::Resolution),
+    Some(CugraphValueRange::OpenClosedF64 { min: 0.0, max: 1.0 }),
+    EMPTY_ALLOWED,
+    "community resolution in (0, 1]",
+);
+// With beta = 0 and no initial guess every Katz score stays 0, and libcugraph
+// then fails its positive L2 norm check.
 const ARG_BETA: CugraphArgumentDefinition = value_arg(
     "beta",
     CugraphArgumentType::Float64,
@@ -748,15 +815,6 @@ const ARG_SEED: CugraphArgumentDefinition = value_arg(
     EMPTY_ALLOWED,
     "random initialization seed",
 );
-const ARG_THETA: CugraphArgumentDefinition = value_arg(
-    "theta",
-    CugraphArgumentType::Float64,
-    false,
-    CugraphDefaultValue::Native(CugraphNativeDefault::Theta),
-    Some(CugraphValueRange::MinExclusiveF64(0.0)),
-    EMPTY_ALLOWED,
-    "positive Leiden refinement scale",
-);
 const ARG_MIN_WEIGHT: CugraphArgumentDefinition = value_arg(
     "min_weight",
     CugraphArgumentType::Float64,
@@ -780,54 +838,29 @@ const ARG_N_CLUSTERS: CugraphArgumentDefinition = value_arg(
     CugraphArgumentType::UInt32,
     false,
     CugraphDefaultValue::Native(CugraphNativeDefault::NClusters),
-    Some(CugraphValueRange::MinInclusiveU64(1)),
+    Some(CugraphValueRange::ClosedU64 { min: 2, max: i32::MAX as u64 }),
     EMPTY_ALLOWED,
-    "number of spectral clusters",
+    "number of spectral clusters, at least 2",
 );
+// cuVS spectral clustering keeps the trivial eigenvector (`drop_first = false`), so
+// a single eigenvector gives k-means a constant embedding and one community.
 const ARG_N_EIGENVECTORS: CugraphArgumentDefinition = value_arg(
     "n_eigenvectors",
     CugraphArgumentType::UInt32,
     false,
     CugraphDefaultValue::Native(CugraphNativeDefault::NEigenvectors),
-    Some(CugraphValueRange::MinInclusiveU64(1)),
+    Some(CugraphValueRange::ClosedU64 { min: 2, max: i32::MAX as u64 }),
     EMPTY_ALLOWED,
-    "number of spectral eigenvectors",
+    "number of smallest-eigenvalue Laplacian eigenvectors in the embedding, from 2 to n_clusters; the first is constant on a connected graph",
 );
 const ARG_EVS_TOLERANCE: CugraphArgumentDefinition = value_arg(
     "evs_tolerance",
     CugraphArgumentType::Float64,
     false,
     CugraphDefaultValue::Native(CugraphNativeDefault::EvsTolerance),
-    Some(CugraphValueRange::MinInclusiveF64(0.0)),
+    Some(CugraphValueRange::ClosedOpenF64 { min: 0.0, max: 1.0 }),
     EMPTY_ALLOWED,
-    "non-negative eigenvalue solver tolerance",
-);
-const ARG_EVS_MAX_ITERATIONS: CugraphArgumentDefinition = value_arg(
-    "evs_max_iterations",
-    CugraphArgumentType::UInt32,
-    false,
-    CugraphDefaultValue::Native(CugraphNativeDefault::EvsMaxIterations),
-    Some(CugraphValueRange::ClosedU64 { min: 1, max: i32::MAX as u64 }),
-    EMPTY_ALLOWED,
-    "eigenvalue solver iteration limit",
-);
-const ARG_K_MEANS_TOLERANCE: CugraphArgumentDefinition = value_arg(
-    "k_means_tolerance",
-    CugraphArgumentType::Float64,
-    false,
-    CugraphDefaultValue::Native(CugraphNativeDefault::KMeansTolerance),
-    Some(CugraphValueRange::MinInclusiveF64(0.0)),
-    EMPTY_ALLOWED,
-    "non-negative k-means tolerance",
-);
-const ARG_K_MEANS_MAX_ITERATIONS: CugraphArgumentDefinition = value_arg(
-    "k_means_max_iterations",
-    CugraphArgumentType::UInt32,
-    false,
-    CugraphDefaultValue::Native(CugraphNativeDefault::KMeansMaxIterations),
-    Some(CugraphValueRange::ClosedU64 { min: 1, max: i32::MAX as u64 }),
-    EMPTY_ALLOWED,
-    "k-means iteration limit",
+    "eigenvalue solver tolerance in [0, 1)",
 );
 const ARG_MAX_ITER: CugraphArgumentDefinition = value_arg(
     "max_iter",
@@ -1087,16 +1120,8 @@ const K_CORE_ARGUMENTS: &[CugraphArgumentDefinition] =
     &[ARG_EDGES, ARG_DIRECTED_FALSE, ARG_RENUMBER, ARG_CONSTRUCTION_POLICY, ARG_K_CORE, ARG_DEGREE_TYPE];
 const MST_ARGUMENTS: &[CugraphArgumentDefinition] =
     &[ARG_EDGES_WEIGHTED, ARG_DIRECTED_FALSE, ARG_RENUMBER, ARG_CONSTRUCTION_POLICY];
-const LEIDEN_ARGUMENTS: &[CugraphArgumentDefinition] = &[
-    ARG_EDGES,
-    ARG_DIRECTED_FALSE,
-    ARG_RENUMBER,
-    ARG_CONSTRUCTION_POLICY,
-    ARG_MAX_LEVEL,
-    ARG_RESOLUTION,
-    ARG_THETA,
-    ARG_SEED,
-];
+const LEIDEN_ARGUMENTS: &[CugraphArgumentDefinition] =
+    &[ARG_EDGES, ARG_DIRECTED_FALSE, ARG_RENUMBER, ARG_CONSTRUCTION_POLICY, ARG_MAX_LEVEL, ARG_RESOLUTION, ARG_SEED];
 const ECG_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_EDGES,
     ARG_DIRECTED_FALSE,
@@ -1105,8 +1130,8 @@ const ECG_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_MIN_WEIGHT,
     ARG_ENSEMBLE_SIZE,
     ARG_MAX_LEVEL,
-    ARG_THRESHOLD,
-    ARG_RESOLUTION,
+    ARG_ECG_THRESHOLD,
+    ARG_ECG_RESOLUTION,
     ARG_SEED,
 ];
 const SPECTRAL_ARGUMENTS: &[CugraphArgumentDefinition] = &[
@@ -1117,9 +1142,6 @@ const SPECTRAL_ARGUMENTS: &[CugraphArgumentDefinition] = &[
     ARG_N_CLUSTERS,
     ARG_N_EIGENVECTORS,
     ARG_EVS_TOLERANCE,
-    ARG_EVS_MAX_ITERATIONS,
-    ARG_K_MEANS_TOLERANCE,
-    ARG_K_MEANS_MAX_ITERATIONS,
     ARG_SEED,
 ];
 const FORCE_ATLAS2_ARGUMENTS: &[CugraphArgumentDefinition] = &[
@@ -1344,7 +1366,6 @@ fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> R
         (CugraphNativeDefault::Cutoff, Sssp(params)) => json!(params.cutoff),
         (CugraphNativeDefault::DegreeType, CoreNumber(params)) => json!(params.degree_type.as_str()),
         (CugraphNativeDefault::DegreeType, KCore(params)) => json!(params.degree_type.as_str()),
-        (CugraphNativeDefault::Theta, Leiden(params)) => json!(params.theta),
         (CugraphNativeDefault::Seed, Leiden(params)) => json!(params.seed),
         (CugraphNativeDefault::Seed, Ecg(params)) => json!(params.seed),
         (CugraphNativeDefault::Seed, SpectralModularityMaximization(params)) => json!(params.seed),
@@ -1354,15 +1375,6 @@ fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> R
         (CugraphNativeDefault::NClusters, SpectralModularityMaximization(params)) => json!(params.n_clusters),
         (CugraphNativeDefault::NEigenvectors, SpectralModularityMaximization(params)) => json!(params.n_eigenvectors),
         (CugraphNativeDefault::EvsTolerance, SpectralModularityMaximization(params)) => json!(params.evs_tolerance),
-        (CugraphNativeDefault::EvsMaxIterations, SpectralModularityMaximization(params)) => {
-            json!(params.evs_max_iterations)
-        },
-        (CugraphNativeDefault::KMeansTolerance, SpectralModularityMaximization(params)) => {
-            json!(params.k_means_tolerance)
-        },
-        (CugraphNativeDefault::KMeansMaxIterations, SpectralModularityMaximization(params)) => {
-            json!(params.k_means_max_iterations)
-        },
         (CugraphNativeDefault::MaxIter, ForceAtlas2(params)) => json!(params.max_iter),
         (CugraphNativeDefault::OutboundAttractionDistribution, ForceAtlas2(params)) => {
             json!(params.outbound_attraction_distribution)

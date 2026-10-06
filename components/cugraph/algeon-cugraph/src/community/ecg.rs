@@ -9,7 +9,7 @@ use crate::{
     error::{Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::EnteredContext,
-    params::{IterationCount, NonNegativeF64, PositiveF64, defaults},
+    params::{FractionF64, IterationCount, NonNegativeF64, defaults},
     random::RngState,
     types::to_bool_t,
 };
@@ -24,10 +24,11 @@ pub struct EcgParams {
     pub ensemble_size: IterationCount,
     /// Maximum hierarchy depth for final Louvain (default: `100`).
     pub max_level: IterationCount,
-    /// Convergence threshold for final Louvain (default: `1e-7`).
-    pub threshold: NonNegativeF64,
-    /// Resolution parameter (`gamma`) in the modularity formula (default: `1.0`).
-    pub resolution: PositiveF64,
+    /// Convergence threshold for final Louvain, in `(0.0, 1.0]` (default: `1e-7`).
+    pub threshold: FractionF64,
+    /// Resolution parameter (`gamma`) in the modularity formula, in `(0.0, 1.0]`
+    /// (default: `1.0`).
+    pub resolution: FractionF64,
     /// Whether to run expensive input validation checks in the C library
     /// (default: `false`).
     pub do_expensive_check: bool,
@@ -39,8 +40,8 @@ impl Default for EcgParams {
             min_weight: NonNegativeF64::new(0.001).expect("literal is non-negative"),
             ensemble_size: IterationCount::new(10).expect("literal is non-zero"),
             max_level: defaults::LOUVAIN_MAX_LEVEL,
-            threshold: defaults::LOUVAIN_THRESHOLD,
-            resolution: defaults::LOUVAIN_RESOLUTION,
+            threshold: defaults::ECG_THRESHOLD,
+            resolution: defaults::ECG_RESOLUTION,
             do_expensive_check: false,
         }
     }

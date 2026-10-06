@@ -144,9 +144,6 @@ cuGraph UDTFs have a narrower edge-table contract:
   string types differ. Vertex-identity output columns are canonicalized to
   `Utf8`; numeric scores, distances, counts, coordinates, and opaque labels
   keep their UDTF-defined numeric types.
-- Some legacy cuGraph dispatch paths remain `Int32`-only. The generated
-  matrix is the source for that per-UDTF distinction; this overview does
-  not maintain a second algorithm inventory.
 - Edge weight columns, when supplied, must be `Float32` or `Float64`.
 - `edge_id_col`, when supplied for a numeric graph, must use the same numeric
   vertex-id domain as the edge endpoints. Logical string vertex mapping does

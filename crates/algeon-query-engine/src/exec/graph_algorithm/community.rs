@@ -4,7 +4,7 @@ use query_planning::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     ecg_params, leiden_params, louvain_params, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
-    run_with_cugraph_graph, spectral_clustering_params, table_graph_options,
+    rename_result_columns, run_with_cugraph_graph, spectral_clustering_params, table_graph_options,
 };
 
 pub(super) fn execute_louvain(
@@ -41,6 +41,11 @@ pub(super) fn execute_louvain(
                 "query_engine.graph_algorithm.louvain_result",
                 "failed to convert cuGraph Louvain result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("partition", "community")],
+                "query_engine.graph_algorithm.louvain_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
@@ -89,6 +94,11 @@ pub(super) fn execute_leiden(
                 "query_engine.graph_algorithm.leiden_result",
                 "failed to convert cuGraph Leiden result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("partition", "community")],
+                "query_engine.graph_algorithm.leiden_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
@@ -137,6 +147,8 @@ pub(super) fn execute_ecg(
                 "query_engine.graph_algorithm.ecg_result",
                 "failed to convert cuGraph ECG result to cudf DataFrame",
             ))?;
+            let frame =
+                rename_result_columns(frame, &[("partition", "community")], "query_engine.graph_algorithm.ecg_result")?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
@@ -188,6 +200,11 @@ pub(super) fn execute_spectral_modularity_maximization(
                 "query_engine.graph_algorithm.spectral_modularity_maximization_result",
                 "failed to convert cuGraph SpectralModularityMaximization result to cudf DataFrame",
             ))?;
+            let frame = rename_result_columns(
+                frame,
+                &[("partition", "community")],
+                "query_engine.graph_algorithm.spectral_modularity_maximization_result",
+            )?;
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,

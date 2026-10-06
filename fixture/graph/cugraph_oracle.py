@@ -247,7 +247,7 @@ def _louvain(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "partition": [int(v) for v in df["partition"].to_pandas().tolist()],
+        "community": [int(v) for v in df["partition"].to_pandas().tolist()],
         "modularity": float(modularity),
     }
 
@@ -369,15 +369,15 @@ def _edge_betweenness_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> 
         k=k,
         normalized=normalized,
     )
-    df = df.rename(columns={"src": "source", "dst": "destination", "betweenness_centrality": "score"})
-    df["source"] = df["source"].astype("int64")
-    df["destination"] = df["destination"].astype("int64")
-    df["score"] = df["score"].astype("float64")
-    df = df.sort_values(["source", "destination"]).reset_index(drop=True)
+    df = df.rename(columns={"betweenness_centrality": "value"})
+    df["src"] = df["src"].astype("int64")
+    df["dst"] = df["dst"].astype("int64")
+    df["value"] = df["value"].astype("float64")
+    df = df.sort_values(["src", "dst"]).reset_index(drop=True)
     return {
-        "source": [int(v) for v in df["source"].to_pandas().tolist()],
-        "destination": [int(v) for v in df["destination"].to_pandas().tolist()],
-        "score": [float(v) for v in df["score"].to_pandas().tolist()],
+        "src": [int(v) for v in df["src"].to_pandas().tolist()],
+        "dst": [int(v) for v in df["dst"].to_pandas().tolist()],
+        "value": [float(v) for v in df["value"].to_pandas().tolist()],
     }
 
 
@@ -471,7 +471,7 @@ def _weakly_connected_components(cugraph_mod, graph, params: Dict[str, Any]) -> 
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "label": [int(l) for l in df["labels"].to_pandas().tolist()],
+        "component": [int(l) for l in df["labels"].to_pandas().tolist()],
     }
 
 
@@ -483,7 +483,7 @@ def _strongly_connected_components(cugraph_mod, graph, params: Dict[str, Any]) -
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "label": [int(l) for l in df["labels"].to_pandas().tolist()],
+        "component": [int(l) for l in df["labels"].to_pandas().tolist()],
     }
 
 
@@ -571,15 +571,12 @@ def _leiden(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     # Python cuGraph uses `max_iter` (not `max_level`) and `random_state` (not `seed`).
     max_iter = int(params.get("max_level", 100))
     resolution = float(params.get("resolution", 1.0))
-    theta = float(params.get("theta", 1.0))
     random_state = int(params.get("seed", 0))
-    df, modularity = cugraph_mod.leiden(
-        graph, max_iter=max_iter, resolution=resolution, theta=theta, random_state=random_state
-    )
+    df, modularity = cugraph_mod.leiden(graph, max_iter=max_iter, resolution=resolution, random_state=random_state)
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "partition": [int(v) for v in df["partition"].to_pandas().tolist()],
+        "community": [int(v) for v in df["partition"].to_pandas().tolist()],
     }
 
 
@@ -603,37 +600,33 @@ def _ecg(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "partition": [int(v) for v in df["partition"].to_pandas().tolist()],
+        "community": [int(v) for v in df["partition"].to_pandas().tolist()],
     }
 
 
 def _spectral_modularity_maximization(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    # Python cuGraph uses `num_clusters` (positional), `num_eigen_vects`, `evs_max_iter`,
-    # `kmean_max_iter`, and `random_state` (not `seed`). Requires int32 vertices.
+    # Python cuGraph uses `num_clusters` (positional), `num_eigen_vects`, and
+    # `random_state` (not `seed`). Requires int32 vertices. libcugraph ignores
+    # the iteration limits and the k-means tolerance, so they keep the Python
+    # defaults.
     n_clusters = int(params.get("n_clusters", 2))
     n_eigenvectors = int(params.get("n_eigenvectors", 2))
     evs_tolerance = float(params.get("evs_tolerance", 0.01))
-    evs_max_iterations = int(params.get("evs_max_iterations", 500))
-    k_means_tolerance = float(params.get("k_means_tolerance", 0.001))
-    k_means_max_iterations = int(params.get("k_means_max_iterations", 100))
     random_state = int(params.get("seed", 0))
     df = cugraph_mod.spectralModularityMaximizationClustering(
         graph,
         n_clusters,
         num_eigen_vects=n_eigenvectors,
         evs_tolerance=evs_tolerance,
-        evs_max_iter=evs_max_iterations,
-        kmean_tolerance=k_means_tolerance,
-        kmean_max_iter=k_means_max_iterations,
         random_state=random_state,
     )
     df = df.sort_values("vertex").reset_index(drop=True)
-    # Python cuGraph returns "cluster" column; stable schema uses "partition".
+    # Python cuGraph returns a "cluster" column; the stable schema emits it as "community".
     if "cluster" in df.columns and "partition" not in df.columns:
         df = df.rename(columns={"cluster": "partition"})
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "partition": [int(v) for v in df["partition"].to_pandas().tolist()],
+        "community": [int(v) for v in df["partition"].to_pandas().tolist()],
     }
 
 

@@ -1,4 +1,9 @@
-use std::{fs, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    sync::Arc,
+    time::Duration,
+};
 
 use algeon_datafusion::{
     attempt::AttemptOptions,
@@ -1933,6 +1938,71 @@ async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() 
     }
 }
 
+/// `depth_limit` is the number of hops to expand: 0 reaches only the source,
+/// absent is unlimited, and a limit beyond what the Int32 vertex type can index
+/// behaves as unlimited instead of wrapping to a negative limit.
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_depth_limit_counts_hops_and_clamps_to_the_vertex_type() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_legacy_edges(&ctx, "hop_edges", &DataType::Int32);
+    let everything = (0..=5).collect::<Vec<_>>();
+
+    for (depth_limit, reached) in [
+        (Some(0_i64), vec![0]),
+        (Some(1), vec![0, 1, 2]),
+        (Some(2), vec![0, 1, 2, 3]),
+        (Some(LEGACY_INT64_OFFSET), everything.clone()),
+        (None, everything.clone()),
+    ] {
+        let depth = depth_limit.map(|limit| format!(", depth_limit => {limit}")).unwrap_or_default();
+        let batches = ctx
+            .sql(&format!(
+                "SELECT vertex, reachable FROM cugraph_bfs(\
+                 edges => (SELECT src, dst FROM hop_edges), source_vertex => 0, output_mode => 'normalized'{depth})"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut actual = Vec::new();
+        for batch in &batches {
+            let vertices = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            let reachable = batch.column(1).as_any().downcast_ref::<BooleanArray>().unwrap();
+            actual.extend((0..batch.num_rows()).filter(|row| reachable.value(*row)).map(|row| vertices.value(row)));
+        }
+        actual.sort_unstable();
+        assert_eq!(actual, reached, "depth {depth_limit:?}");
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_output_treats_an_oversized_depth_limit_as_unlimited() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let batches = ctx
+        .sql(&format!(
+            "SELECT path_index, vertex FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+             construction_policy => 'raw_libcugraph', depth_limit => {i64_max}, output_mode => 'path',\
+             target_vertices => (SELECT vertex_id AS vertex FROM targets)) ORDER BY path_index",
+            i64_max = i64::MAX,
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
+    assert_eq!(int64_column(batch, 1)[0], 0);
+    assert_eq!(int64_column(batch, 1)[2], 3);
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
@@ -2102,6 +2172,36 @@ async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_absent_traversal_sources_reach_the_client_as_invalid_input() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_directed_bfs_edges(&ctx, "raw_edges");
+
+    for (sql, native_reason) in [
+        (
+            "SELECT vertex FROM cugraph_sssp(edges => (SELECT src, dst FROM raw_edges), source_vertex => 99)",
+            "SSSP source vertex is not in the graph",
+        ),
+        (
+            "SELECT vertex FROM cugraph_sssp(edges => (SELECT src, dst FROM raw_edges), source_vertex => -5)",
+            "SSSP source vertex -5 is negative; SSSP requires a non-negative vertex id",
+        ),
+        (
+            "SELECT vertex FROM cugraph_bfs(edges => (SELECT src, dst FROM raw_edges), source_vertex => 99)",
+            "BFS sources contain a vertex that is not in the graph",
+        ),
+    ] {
+        let error = ctx.sql(sql).await.unwrap().collect().await.unwrap_err();
+        let algeon = typed_algeon_error(&error);
+        assert_eq!(algeon.code(), ErrorCode::CudfInvalidInput, "{sql}");
+        let native_message = algeon.fact_value("native_message").expect("native message fact");
+        assert!(native_message.ends_with(native_reason), "{sql}: {native_message}");
+        // The client status of an invalid-input error carries the adapter message verbatim.
+        assert!(algeon.message().contains(native_reason), "{sql}: {}", algeon.message());
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
@@ -2216,6 +2316,161 @@ async fn cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_c
         let numeric_rows = identity_rows(&ctx, &template.replace("{table}", "numeric_edges"), 1).await;
         assert_eq!(string_rows, numeric_rows, "{label} logical string vertex coverage");
         assert_eq!(string_rows, vec![vec![1], vec![2], vec![3], vec![4]], "{label} vertex set");
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+/// Two weighted triangles (vertices 0..=2 and 3..=5) joined by one edge.
+/// Weights are distinct, so the minimum spanning tree is unique. libcugraph's
+/// spectral clustering splits only some clique pairs cleanly (a pair of
+/// triangles is one), which keeps the expected partition unambiguous.
+fn legacy_edges() -> Vec<(i64, i64, f64)> {
+    let mut edges = Vec::new();
+    for first in [0_i64, 3] {
+        for src in first..first + 3 {
+            for dst in src + 1..first + 3 {
+                edges.push((src, dst, 1.0 + edges.len() as f64 * 0.5));
+            }
+        }
+    }
+    edges.push((2, 3, 1000.0));
+    edges
+}
+const LEGACY_INT64_OFFSET: i64 = 1 << 40;
+
+fn register_legacy_edges(ctx: &SessionContext, table_name: &str, vertex_type: &DataType) {
+    let edges = legacy_edges();
+    let column = |select: fn(&(i64, i64, f64)) -> i64| -> ArrayRef {
+        let ids = edges.iter().map(select);
+        match vertex_type {
+            DataType::Int32 => Arc::new(Int32Array::from(ids.map(|id| id as i32).collect::<Vec<_>>())),
+            DataType::Int64 => Arc::new(Int64Array::from(ids.map(|id| id + LEGACY_INT64_OFFSET).collect::<Vec<_>>())),
+            DataType::Utf8 => Arc::new(StringArray::from(ids.map(|id| format!("v{id}")).collect::<Vec<_>>())),
+            other => panic!("unsupported legacy test vertex type {other:?}"),
+        }
+    };
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", vertex_type.clone(), false),
+        Field::new("dst", vertex_type.clone(), false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            column(|edge| edge.0),
+            column(|edge| edge.1),
+            Arc::new(Float64Array::from(edges.iter().map(|edge| edge.2).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+/// The Int32 vertex number behind a result value of the legacy test graph.
+fn legacy_vertex_number(array: &dyn Array, row: usize) -> i64 {
+    match array.data_type() {
+        DataType::Int32 => i64::from(array.as_any().downcast_ref::<Int32Array>().unwrap().value(row)),
+        DataType::Int64 => array.as_any().downcast_ref::<Int64Array>().unwrap().value(row) - LEGACY_INT64_OFFSET,
+        DataType::Utf8 => {
+            array.as_any().downcast_ref::<StringArray>().unwrap().value(row).trim_start_matches('v').parse().unwrap()
+        },
+        other => panic!("unexpected legacy vertex dtype {other:?}"),
+    }
+}
+
+/// Rows of a legacy-algorithm result: the first `vertex_columns` columns carry
+/// vertices in `vertex_type` and are mapped back to vertex numbers, the rest
+/// are Int64.
+async fn legacy_result_rows(
+    ctx: &SessionContext,
+    sql: &str,
+    vertex_type: &DataType,
+    vertex_columns: usize,
+) -> Vec<Vec<i64>> {
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        for column in 0..vertex_columns {
+            assert_eq!(batch.schema().field(column).data_type(), vertex_type, "{sql}");
+        }
+        for row in 0..batch.num_rows() {
+            rows.push(
+                (0..batch.num_columns())
+                    .map(|column| {
+                        let values = batch.column(column);
+                        if column < vertex_columns {
+                            legacy_vertex_number(values.as_ref(), row)
+                        } else {
+                            values.as_any().downcast_ref::<Int64Array>().unwrap().value(row)
+                        }
+                    })
+                    .collect(),
+            );
+        }
+    }
+    rows
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_legacy_int32_algorithms_accept_int64_and_string_vertices() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let domains = [("legacy_i32", DataType::Int32), ("legacy_i64", DataType::Int64), ("legacy_utf8", DataType::Utf8)];
+    for (table, vertex_type) in &domains {
+        register_legacy_edges(&ctx, table, vertex_type);
+    }
+
+    let mut expected_tree = None;
+    for (table, vertex_type) in &domains {
+        let sql = format!(
+            "SELECT src, dst FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM {table}))"
+        );
+        // The undirected graph reports each tree edge in both directions.
+        let tree = legacy_result_rows(&ctx, &sql, vertex_type, 2)
+            .await
+            .into_iter()
+            .map(|edge| (edge[0].min(edge[1]), edge[0].max(edge[1])))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(tree.len(), 5, "{table}: a spanning tree of 6 vertices has 5 edges");
+        assert!(tree.contains(&(2, 3)), "{table}: the bridge is the only connection between the triangles");
+        assert_eq!(expected_tree.get_or_insert_with(|| tree.clone()), &tree, "{table}: MST edges");
+    }
+
+    let two_triangles = BTreeSet::from([BTreeSet::from([0, 1, 2]), BTreeSet::from([3, 4, 5])]);
+    for (table, vertex_type) in &domains {
+        let sql = format!(
+            "SELECT vertex, community FROM cugraph_spectral_modularity_maximization(\
+             edges => (SELECT src, dst FROM {table}), n_clusters => 2, seed => 7)"
+        );
+        let mut groups = BTreeMap::<i64, BTreeSet<i64>>::new();
+        for row in legacy_result_rows(&ctx, &sql, vertex_type, 1).await {
+            groups.entry(row[1]).or_default().insert(row[0]);
+        }
+        assert_eq!(groups.into_values().collect::<BTreeSet<_>>(), two_triangles, "{table}: spectral communities");
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_result_batches_use_the_documented_column_names() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_legacy_edges(&ctx, "named_edges", &DataType::Int64);
+
+    for (function, expected) in [
+        ("cugraph_louvain", ["vertex", "community"].as_slice()),
+        ("cugraph_leiden", &["vertex", "community"]),
+        ("cugraph_weakly_connected_components", &["vertex", "component"]),
+        ("cugraph_strongly_connected_components", &["vertex", "component"]),
+        ("cugraph_edge_betweenness_centrality", &["src", "dst", "value"]),
+    ] {
+        let batches = ctx
+            .sql(&format!("SELECT * FROM {function}(edges => (SELECT src, dst FROM named_edges))"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert!(!batches.is_empty(), "{function} must return rows");
+        assert_eq!(schema_field_names(batches[0].schema().as_ref()), expected, "{function}");
     }
     drop_session_context_on_blocking_thread(ctx).await;
 }
@@ -2438,8 +2693,8 @@ async fn cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows() {
         ),
         (
             "edge betweenness",
-            "SELECT source, destination FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM string_edges), seeds => ['a', 'c'])",
-            "SELECT source, destination FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM numeric_edges), seeds => [1, 3])",
+            "SELECT src, dst FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM string_edges), seeds => ['a', 'c'])",
+            "SELECT src, dst FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM numeric_edges), seeds => [1, 3])",
             2,
         ),
     ];

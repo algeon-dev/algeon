@@ -14,6 +14,10 @@ use crate::{
     types::to_bool_t,
 };
 
+/// `cugraph_leiden` accepts a refinement `theta` and drops it (`c_api/leiden.cpp`),
+/// so the wrapper passes a fixed value instead of exposing a parameter with no effect.
+const LIBCUGRAPH_IGNORED_THETA: f64 = 1.0;
+
 /// Parameters for the Leiden community-detection algorithm.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
@@ -22,9 +26,6 @@ pub struct LeidenParams {
     pub max_level: IterationCount,
     /// Resolution parameter (`gamma`) in the modularity formula (default: `1.0`).
     pub resolution: PositiveF64,
-    /// Modularity-gain scaling parameter for the Leiden refinement phase
-    /// (default: `1.0`).
-    pub theta: PositiveF64,
     /// Whether to run expensive input validation checks in the C library
     /// (default: `false`).
     pub do_expensive_check: bool,
@@ -35,7 +36,6 @@ impl Default for LeidenParams {
         Self {
             max_level: defaults::LOUVAIN_MAX_LEVEL,
             resolution: defaults::LOUVAIN_RESOLUTION,
-            theta: PositiveF64::new(1.0).expect("literal is positive"),
             do_expensive_check: false,
         }
     }
@@ -62,7 +62,7 @@ pub(crate) fn leiden(
             graph_ptr,
             usize::from(params.max_level),
             params.resolution.get(),
-            params.theta.get(),
+            LIBCUGRAPH_IGNORED_THETA,
             to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,

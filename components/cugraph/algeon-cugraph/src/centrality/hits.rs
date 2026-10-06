@@ -2,9 +2,9 @@
 
 use std::ptr;
 
-use cugraph_sys::{cugraph_error_t, cugraph_hits, cugraph_hits_result_t};
+use cugraph_sys::{cugraph_error_t, cugraph_hits_allow_nonconvergence, cugraph_hits_result_t};
 
-use super::HitsResult;
+use super::{HitsResult, non_convergence_error};
 use crate::{
     array::DeviceArrayView,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
@@ -84,7 +84,7 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
     // libcugraph validation so out-of-range vertices cannot drive unchecked
     // native indexing. `result`/`error` are valid out-pointers.
     unsafe {
-        let code = cugraph_hits(
+        let code = cugraph_hits_allow_nonconvergence(
             handle.handle_ptr(),
             graph_ptr,
             params.epsilon.get(),
@@ -101,5 +101,16 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
 
     let result = require_non_null(result, "hits", "hits_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { HitsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    let result = unsafe { HitsResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
+    if !result.converged()? {
+        // HITS stops once the hub-score change falls below the vertex count times epsilon.
+        return Err(non_convergence_error(
+            "hits",
+            result.number_of_iterations(),
+            params.max_iterations,
+            params.epsilon,
+            "raise max_iterations or epsilon".to_string(),
+        ));
+    }
+    Ok(result)
 }
