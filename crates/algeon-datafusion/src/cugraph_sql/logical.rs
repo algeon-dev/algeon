@@ -94,6 +94,12 @@ impl CugraphLogicalNode {
     pub(crate) fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
     }
+
+    /// The relation each logical input supplies, in input order.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn roles(&self) -> &[CugraphRelationRole] {
+        &self.roles
+    }
 }
 
 fn validated_spec(

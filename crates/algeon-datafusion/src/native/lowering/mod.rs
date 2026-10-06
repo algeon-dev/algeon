@@ -121,6 +121,14 @@ fn lower_native_input(
         NormalizedNativeInput::Aggregate(aggregate) => {
             aggregate::lower_aggregate_input(aggregate, builder, fields, source_reads)
         },
+        // A sort that keeps every row only orders them, so a parent that does
+        // not read row order gets nothing from it. DataFusion places such a
+        // sort below a join when it pushes a window's ordering requirement
+        // through the join's probe side; the native join does not keep that
+        // order.
+        NormalizedNativeInput::Sort(sort) if sort.fetch.is_none() && !demand.ordered => {
+            lower_native_input(&sort.input, builder, demand, source_reads)
+        },
         NormalizedNativeInput::Sort(sort) => window::lower_sort_input(sort, builder, fields, source_reads),
         NormalizedNativeInput::Window(window) => window::lower_window_input(window, builder, fields, source_reads),
         NormalizedNativeInput::HashJoin(join) => join::lower_hash_join_input(join, builder, fields, source_reads),

@@ -703,6 +703,7 @@ mod cugraph {
         assert_eq!(plan_cov.native_fragment_count(), 1);
         assert_eq!(plan_cov.explicit_gpu_island_count(), 1);
         assert_eq!(plan_cov.datafusion_boundary_count(), 0);
+        assert!(coverage.cugraph_calls[0].inputs_native);
     }
 
     #[test]
@@ -726,6 +727,9 @@ mod cugraph {
         assert_eq!(plan_cov.native_fragment_count(), 1);
         assert_eq!(plan_cov.explicit_gpu_island_count(), 1);
         assert!(plan_cov.datafusion_boundary_count() > 0);
+        let call = &coverage.cugraph_calls[0];
+        assert!(!call.inputs_native, "{call:?}");
+        assert!(call.notes.iter().any(|note| note.contains("host Arrow")), "{call:?}");
     }
 
     #[test]

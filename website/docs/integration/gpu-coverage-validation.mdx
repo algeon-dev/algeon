@@ -127,6 +127,23 @@ allowed each supported subtree below it runs as a native fragment if its
 DataFusion parent keeps its input contracts. The final disposition is `mixed`
 when a fragment is kept and `datafusion` otherwise.
 
+## cuGraph input relations
+
+A cuGraph function plans each input relation in its own nested session, so the
+relation's candidate is reported with the function and the relation it feeds,
+such as `cugraph_pagerank.edges`, `cugraph_bfs.sources` or
+`cugraph_bfs.include_edges`. The label wraps the candidate shape in
+`candidate_shape` (`cugraph_pagerank.edges(ProjectionExec(FilterExec(...)))`),
+and `candidate_family` describes the shape under the label. When a relation
+cannot lower, its `not_supported` row follows the outer candidate and names the
+blocking subject, and a `NativeRequired` error names the same subject.
+
+Each entry of `coverage_json.cugraph_calls` has `algorithm`, `statically_valid`,
+`notes`, and `inputs_native`. `inputs_native` is `true` when every input
+relation reaches the graph as a native GPU-resident producer. It is `false`
+when at least one input runs on DataFusion and is staged through host Arrow;
+the labelled candidate rows give the reason.
+
 ## Candidate outcomes are diagnostics, not the final plan
 
 `coverage_json.candidate_outcomes` retains relational candidate-selection

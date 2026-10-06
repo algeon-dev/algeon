@@ -21,7 +21,7 @@ use query_planning::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{
         Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
-        SortExpr as NativeSortExpr,
+        SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
     },
     plan::{
         QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection,
@@ -131,24 +131,91 @@ pub(super) fn lower_window_input(
             (lower_native_input(input, builder, &Demand { ordered: true, ..Demand::all() }, source_reads)?, Vec::new())
         },
     };
-    let prepared = materialize_window_key_expressions(
+    let mut prepared = materialize_window_key_expressions(
         builder,
         window.window.window_expr(),
         &window_input_schema,
         input,
         &sorted_keys,
     )?;
+    if window_needs_ordered_input(window.window.window_expr(), &prepared.keys)
+        && !input_keeps_row_order(window.input.as_ref())
+    {
+        prepared = sort_window_input(builder, prepared)?;
+    }
     let (output_schema, output_bindings) = native_window_output_schema_and_bindings(&prepared.input, &window_schema)?;
     let spec = lower_window_spec(
         window.window.window_expr(),
         &window_input_schema,
-        &prepared.input,
         &output_bindings,
         &output_schema,
         &prepared.keys,
     )?;
     let window_node = builder.add_window(prepared.input.node, spec)?;
     project_required_output_columns(builder, window_node, output_schema, output_bindings, required_output_fields)
+}
+
+/// Whether the window reads rows in window order: it orders them, or numbers
+/// them by position inside each partition. The other window functions only
+/// return rows in the order they read them, which DataFusion reports as the
+/// plan's ordering.
+fn window_needs_ordered_input(window_exprs: &[Arc<dyn WindowExpr>], keys: &[PreparedWindowKeys]) -> bool {
+    let Some(keys) = keys.first() else {
+        return false;
+    };
+    let numbers_rows = window_exprs.iter().any(|window_expr| {
+        window_expr.as_any().downcast_ref::<StandardWindowExpr>().is_some_and(|standard| {
+            standard_window_kind(standard).is_ok_and(|kind| kind == StandardWindowKind::RowNumber)
+        })
+    });
+    !keys.order_by.is_empty() || (numbers_rows && !keys.partition_by.is_empty())
+}
+
+/// Whether the native plan lowered from `input` returns the rows in the order
+/// DataFusion reports for it. A sort, or a source read in its declared order,
+/// establishes the order; filters, projections and windows keep it; joins,
+/// aggregates, unions and GPU-resident inputs do not, and a limit keeps it
+/// only over an input that establishes or keeps it without a limit of its
+/// own. `native_plan_reproduces_declared_output_ordering` applies the same
+/// rule to the optimized native plan.
+fn input_keeps_row_order(input: &NormalizedNativeInput<'_>) -> bool {
+    match input {
+        NormalizedNativeInput::Source(_) | NormalizedNativeInput::LiteralSource(_) | NormalizedNativeInput::Sort(_) => {
+            true
+        },
+        NormalizedNativeInput::Filter(filter) => input_keeps_row_order(&filter.input),
+        NormalizedNativeInput::Projection(projection) => input_keeps_row_order(&projection.input),
+        NormalizedNativeInput::Window(window) => input_keeps_row_order(&window.input),
+        NormalizedNativeInput::Limit(limit) => match limit.input.as_ref() {
+            NormalizedNativeInput::Limit(_) => false,
+            input => input_keeps_row_order(input),
+        },
+        NormalizedNativeInput::GpuResidentSource(_)
+        | NormalizedNativeInput::Aggregate(_)
+        | NormalizedNativeInput::HashJoin(_)
+        | NormalizedNativeInput::CrossJoin(_)
+        | NormalizedNativeInput::NestedLoopJoin(_)
+        | NormalizedNativeInput::Union(_) => false,
+    }
+}
+
+/// Orders the window input by the partition keys, then the order keys, which
+/// is the ordering the compiled window contract recognizes. An order key that
+/// repeats a partition key is constant inside a partition and adds nothing.
+fn sort_window_input(
+    builder: &mut NativeQueryPlanBuilder,
+    prepared: PreparedWindowInput,
+) -> Result<PreparedWindowInput, LoweringFailure> {
+    let keys = prepared.keys.first().ok_or(CapabilityReason::UnsupportedExpression)?;
+    let expressions = keys
+        .partition_by
+        .iter()
+        .map(|key| NativeSortExpr::new(key.clone(), false, false))
+        .chain(keys.order_by.iter().filter(|key| !keys.partition_by.contains(&key.expr)).cloned())
+        .collect::<Vec<_>>();
+    let node = builder.add_sort(prepared.input.node, NativeSortSpec::new(expressions))?;
+    let input = LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.input.bindings);
+    Ok(PreparedWindowInput { input, keys: prepared.keys })
 }
 
 fn validate_window_exprs(
@@ -529,6 +596,9 @@ struct PreparedWindowInput {
 struct PreparedWindowKeys {
     partition_by: Vec<NativeExpr>,
     order_by: Vec<NativeSortExpr>,
+    /// The column a window aggregate or LAG / LEAD reads; `None` for ranking
+    /// functions.
+    argument: Option<NativeExpr>,
 }
 
 /// Expression keys of the sort directly below a window, each with the column
@@ -572,7 +642,12 @@ fn materialize_window_key_expressions(
                 ))
             })
             .collect::<Result<Vec<_>, LoweringFailure>>()?;
-        prepared_keys.push(PreparedWindowKeys { partition_by, order_by });
+        let argument = window_function_argument(window_expr.as_ref(), input_schema)?
+            .map(|argument| {
+                window_key_expr(&argument, input_schema, &input, sorted_keys, &mut used_names, &mut materialized_keys)
+            })
+            .transpose()?;
+        prepared_keys.push(PreparedWindowKeys { partition_by, order_by, argument });
     }
 
     if materialized_keys.is_empty() {
@@ -596,6 +671,27 @@ fn materialize_window_key_expressions(
         input: LoweredNativeInput::with_bindings(node, schema, input.bindings),
         keys: prepared_keys,
     })
+}
+
+/// The expression a window aggregate or LAG / LEAD reads for each row. The
+/// native window kernel reads columns, so a computed argument such as the
+/// `1` of `COUNT(*)` or `x + 1` is materialized like a computed key.
+fn window_function_argument(
+    window_expr: &dyn WindowExpr,
+    input_schema: &SchemaRef,
+) -> Result<Option<Arc<dyn PhysicalExpr>>, LoweringFailure> {
+    if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
+        return match plain.get_aggregate_expr().expressions().as_slice() {
+            [argument] => Ok(Some(Arc::clone(argument))),
+            _ => Ok(None),
+        };
+    }
+    if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>()
+        && matches!(standard_window_kind(standard)?, StandardWindowKind::Lag | StandardWindowKind::Lead)
+    {
+        return Ok(Some(parse_lag_lead_args(standard, input_schema)?.value_expr));
+    }
+    Ok(None)
 }
 
 struct MaterializedWindowKey {
@@ -648,7 +744,6 @@ fn unique_window_key_name(index: usize, used_names: &BTreeSet<String>) -> String
 fn lower_window_spec(
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
-    input: &LoweredNativeInput,
     output_bindings: &[FieldBinding],
     output_schema: &SchemaRef,
     prepared_keys: &[PreparedWindowKeys],
@@ -685,17 +780,28 @@ fn lower_window_spec(
             .clone();
         if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
             let aggregate = plain.get_aggregate_expr();
-            let expressions = aggregate.expressions();
-            let [arg] = expressions.as_slice() else {
-                return Err(CapabilityReason::UnsupportedExpression.into());
+            let argument_count = aggregate.expressions().len();
+            let expr = match &keys.argument {
+                Some(argument) if argument_count == 1 => argument.clone(),
+                _ => {
+                    return Err(aggregate_blocked(
+                        CapabilityReason::UnsupportedExpression,
+                        aggregate.fun().name(),
+                        AggregateDefect::ArgumentCount(argument_count),
+                    )
+                    .into());
+                },
             };
-            let expr = lower_physical_expr_with_bindings(arg, input_schema, Some(&input.bindings))?;
             let frame = if is_whole_partition_frame(plain.get_window_frame()) {
                 NativeWindowFrame::WholePartition
             } else if is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame()) {
                 NativeWindowFrame::RowsUnboundedPrecedingToCurrent
             } else {
-                return Err(CapabilityReason::UnsupportedOperator.into());
+                return Err(window_blocked(
+                    CapabilityReason::UnsupportedOperator,
+                    aggregate.fun().name(),
+                    WindowDefect::UnsupportedFrame(Box::new(WindowFrame::clone(plain.get_window_frame()))),
+                ));
             };
             functions.push(NativeWindowFunction::Aggregate {
                 function: lower_native_aggregate_function(aggregate.fun())?,
@@ -715,8 +821,7 @@ fn lower_window_spec(
                         NativeShiftDirection::Lead
                     };
                     let args = parse_lag_lead_args(standard, input_schema)?;
-                    let lowered_value =
-                        lower_physical_expr_with_bindings(&args.value_expr, input_schema, Some(&input.bindings))?;
+                    let lowered_value = keys.argument.clone().ok_or(CapabilityReason::UnsupportedExpression)?;
                     functions.push(NativeWindowFunction::LagLead {
                         expr: lowered_value,
                         offset: args.offset,

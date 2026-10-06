@@ -311,6 +311,10 @@ impl QueryGpuRemedy {
 pub struct QueryGpuCugraphCall {
     pub algorithm: String,
     pub statically_valid: bool,
+    /// Whether every input relation reaches the graph as a native GPU-resident
+    /// producer. `false` means at least one input runs on DataFusion and is
+    /// staged through host Arrow.
+    pub inputs_native: bool,
     pub notes: Vec<String>,
 }
 
@@ -319,6 +323,7 @@ impl QueryGpuCugraphCall {
         json!({
             "algorithm": self.algorithm,
             "statically_valid": self.statically_valid,
+            "inputs_native": self.inputs_native,
             "notes": self.notes,
         })
     }

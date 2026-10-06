@@ -10,7 +10,7 @@ use crate::report::UNSUPPORTED_NATIVE_PLAN_OPERATOR;
 /// any other body is `other`. `input` names the joins the shape covers, or
 /// else a union, or else the kind of its leaf sources.
 pub(crate) fn candidate_shape_family(candidate: &GpuCandidate) -> String {
-    let shape = &candidate.shape;
+    let shape = candidate.shape.without_relation_input_label();
     if shape.operator() == UNSUPPORTED_NATIVE_PLAN_OPERATOR {
         return NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN.to_string();
     }
@@ -147,5 +147,22 @@ mod tests {
             )),
             "global_cross_join_aggregate"
         );
+    }
+
+    #[test]
+    fn relation_input_label_is_not_an_operator() {
+        let inner = unary("ProjectionExec", unary("AggregateExec", CandidateShape::leaf("LocalParquetScan")));
+        let labelled = CandidateShape::relation_input("cugraph_pagerank.edges", inner.clone());
+
+        assert_eq!(family(labelled.clone()), family(inner.clone()));
+        assert_eq!(
+            family(CandidateShape::relation_input(
+                "cugraph_pagerank.edges",
+                CandidateShape::leaf(UNSUPPORTED_NATIVE_PLAN_OPERATOR)
+            )),
+            NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN
+        );
+        assert_eq!(labelled.to_string(), "cugraph_pagerank.edges(ProjectionExec(AggregateExec(LocalParquetScan)))");
+        assert_eq!(labelled.operator_count(), inner.operator_count());
     }
 }

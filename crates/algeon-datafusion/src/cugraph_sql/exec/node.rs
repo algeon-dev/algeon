@@ -40,6 +40,7 @@ use crate::{
         gpu_function_occurrence_from_task_context,
     },
     planner::native::Invocation,
+    report::PlanningReport,
 };
 
 #[derive(Clone, Debug)]
@@ -57,6 +58,9 @@ pub struct CugraphAlgoExec {
     pub(super) edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     pub(super) graph_residency: Option<GraphResidencyDescriptor>,
     pub(super) gpu_result_input_name: String,
+    /// Planning outcomes of the input relations, decided in nested sessions
+    /// before this node existed, labelled `<function>.<relation>`.
+    pub(super) input_planning: PlanningReport,
     pub(super) metrics: ExecutionPlanMetricsSet,
     pub(super) cache: Arc<PlanProperties>,
 }
@@ -225,6 +229,7 @@ impl CugraphAlgoExec {
             edge_source_canonical_facts,
             graph_residency,
             gpu_result_input_name,
+            input_planning: PlanningReport::new(),
             metrics: ExecutionPlanMetricsSet::new(),
             cache: Arc::new(PlanProperties::new(
                 equivalence_properties,
@@ -241,6 +246,19 @@ impl CugraphAlgoExec {
 
     pub(crate) fn coverage_algorithm_name(&self) -> &'static str {
         self.spec.algorithm.function_name()
+    }
+
+    /// This node carrying the planning outcomes of its input relations.
+    #[must_use]
+    pub(crate) fn with_input_planning_report(mut self, input_planning: PlanningReport) -> Self {
+        self.input_planning = input_planning;
+        self
+    }
+
+    /// The planning outcomes of the input relations, labelled with this
+    /// function and the relation each supplies.
+    pub(crate) fn input_planning_report(&self) -> &PlanningReport {
+        &self.input_planning
     }
 
     /// Returns the one post-seal attempt projection target for this cuGraph
@@ -974,7 +992,9 @@ impl GpuResidentProducer for CugraphAlgoExec {
             self.host_boundary_config,
             self.gpu_result_input_name.clone(),
         )
-        .map(|producer| Some(Arc::new(producer) as Arc<dyn ExecutionPlan>))
+        .map(|producer| {
+            Some(Arc::new(producer.with_input_planning_report(self.input_planning.clone())) as Arc<dyn ExecutionPlan>)
+        })
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
@@ -1205,15 +1225,18 @@ impl ExecutionPlan for CugraphAlgoExec {
         let mut children = children.into_iter();
         let edge_source = children.next().expect("child count checked above");
         let predicate_sources = children.collect();
-        Ok(Arc::new(Self::try_new_with_result_options(
-            self.spec.clone(),
-            edge_source,
-            predicate_sources,
-            self.result_options.clone(),
-            self.native_execution_config.clone(),
-            self.host_boundary_config,
-            self.gpu_result_input_name.clone(),
-        )?))
+        Ok(Arc::new(
+            Self::try_new_with_result_options(
+                self.spec.clone(),
+                edge_source,
+                predicate_sources,
+                self.result_options.clone(),
+                self.native_execution_config.clone(),
+                self.host_boundary_config,
+                self.gpu_result_input_name.clone(),
+            )?
+            .with_input_planning_report(self.input_planning.clone()),
+        ))
     }
 
     fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
