@@ -67,7 +67,7 @@ impl std::fmt::Display for SourceChunkPlanningMode {
 fn validate_nonzero_policy_field(field: &'static str, is_zero: bool) -> Result<()> {
     if is_zero {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.memory_policy.validate",
             "bounded memory-control policy fields must be greater than zero",
         )

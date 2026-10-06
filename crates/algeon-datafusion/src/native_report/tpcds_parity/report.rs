@@ -545,8 +545,7 @@ fn parity_row_for_item(
         native_planning_failure_message,
     ) = match &item.native_planning {
         NativeTpcdsParityNativePlanningOutcome::Planned { accepted, planned_plan, diagnostics } => {
-            let (outcome, reason_code, unsupported_category) =
-                planning_outcome_diagnostics(planned_plan.as_ref(), diagnostics, *accepted);
+            let (outcome, reason_code, unsupported_category) = planning_outcome_diagnostics(diagnostics, *accepted);
             let coverage = post_native_plan_coverage(planned_plan.as_ref());
             (
                 outcome,
@@ -700,7 +699,6 @@ fn summarize_external_output(
 }
 
 fn planning_outcome_diagnostics(
-    plan: &dyn ExecutionPlan,
     diagnostics: &NativePlanningDiagnostics,
     accepted: bool,
 ) -> (Option<CandidateOutcomeKind>, Option<String>, Option<String>) {
@@ -710,11 +708,11 @@ fn planning_outcome_diagnostics(
     for outcome in diagnostics.report.outcomes() {
         match outcome {
             CandidateOutcome::Selected { .. } => {},
-            CandidateOutcome::NotSupported { candidate, capability_reason, detail } => {
+            CandidateOutcome::NotSupported { capability_reason, detail, .. } => {
                 return (
                     Some(CandidateOutcomeKind::NotSupported),
                     Some(capability_reason.code().to_string()),
-                    unsupported_category(plan, candidate, *capability_reason, detail.expression.as_ref()),
+                    Some(unsupported_category(*capability_reason, detail)),
                 );
             },
             CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {

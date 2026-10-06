@@ -34,7 +34,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringFailure, ParquetReadStrategyConfig,
+        ExpressionRejection, LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::validate_join_residual,
         normalize::{
             NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeLiteralSource,
@@ -228,7 +228,7 @@ fn prepare_join_key_expr(
     if let Some(column) = expr.downcast_ref::<Column>() {
         let field = input_schema.fields().get(column.index()).ok_or(CapabilityReason::UnsupportedExpression)?;
         if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
-            return Err(CapabilityReason::UnsupportedType.into());
+            return Err(ExpressionRejection::unsupported_value_type(expr, field.data_type().clone()).into());
         }
         required.insert(column.index());
         return Ok(PreparedJoinKeyExpr { column_index: Some(column.index()), synthetic_alias: None });
@@ -238,7 +238,7 @@ fn prepare_join_key_expr(
     let alias = unique_synthetic_join_key_alias(side, key_index, input_schema, materializations);
     let field = physical_expr_field(expr, input_schema, alias.as_str())?;
     if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
-        return Err(CapabilityReason::UnsupportedType.into());
+        return Err(ExpressionRejection::unsupported_value_type(expr, field.data_type().clone()).into());
     }
     materializations.push(JoinKeyMaterialization { expr: Arc::clone(expr), alias: alias.clone(), field });
     Ok(PreparedJoinKeyExpr { column_index: None, synthetic_alias: Some(alias) })

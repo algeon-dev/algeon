@@ -24,6 +24,7 @@ use crate::{
     },
     physical_plan::cpu_physical_boundary,
     planner::FinalPlanDisposition,
+    report::Blocking,
 };
 
 /// Return the metadata UDTF that exposes [`validate_query`].
@@ -85,8 +86,8 @@ impl TableProvider for GpuCoverageProvider {
 /// Shared Arrow schema for `algeon_explain_coverage` and Flight SQL `EXPLAIN GPU`.
 ///
 /// The summary row carries complete machine-readable evidence in
-/// `coverage_json`; every candidate row promotes its reason and remedy into
-/// first-class columns for tabular clients.
+/// `coverage_json`; every candidate row promotes its reason, remedy, and
+/// blocking subject into first-class columns for tabular clients.
 pub fn coverage_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("query_id", DataType::Utf8, true),
@@ -104,6 +105,7 @@ pub fn coverage_schema() -> SchemaRef {
         Field::new("remedy_code", DataType::Utf8, true),
         Field::new("remedy_kind", DataType::Utf8, true),
         Field::new("remedy", DataType::Utf8, true),
+        Field::new("blocking", DataType::Utf8, true),
         Field::new("detail_json", DataType::Utf8, true),
         Field::new("coverage_json", DataType::Utf8, true),
     ]))
@@ -174,6 +176,7 @@ pub fn coverage_batch(
     let mut remedy_code = vec![None];
     let mut remedy_kind = vec![None];
     let mut remedy = vec![None];
+    let mut blocking = vec![None];
     let mut detail_json = vec![Some(summary_detail)];
     let mut coverage_json = vec![Some(coverage.to_json().to_string())];
 
@@ -194,9 +197,11 @@ pub fn coverage_batch(
             remedy_code.push(candidate.remedy.map(|remedy| remedy.code.to_string()));
             remedy_kind.push(candidate.remedy.map(|remedy| remedy.kind.as_str().to_string()));
             remedy.push(candidate.remedy.map(|remedy| remedy.guidance.to_string()));
+            blocking.push(candidate.blocking.as_ref().map(|blocking| blocking.text().to_string()));
             detail_json.push(Some(
                 serde_json::json!({
                     "detail": candidate.detail,
+                    "blocking": candidate.blocking.as_ref().map(Blocking::to_json),
                     "cost_evidence": candidate.cost_evidence.as_ref().map(|evidence| evidence.to_json()),
                 })
                 .to_string(),
@@ -223,6 +228,7 @@ pub fn coverage_batch(
             optional_strings(remedy_code),
             optional_strings(remedy_kind),
             optional_strings(remedy),
+            optional_strings(blocking),
             optional_strings(detail_json),
             optional_strings(coverage_json),
         ],
@@ -338,7 +344,7 @@ mod tests {
 
         let batches = ctx
             .sql(
-                "SELECT row_kind, reason_code, remedy_code, remedy_kind, remedy \
+                "SELECT row_kind, reason_code, remedy_code, remedy_kind, remedy, blocking, detail_json \
                  FROM algeon_explain_coverage('SELECT random() AS r') \
                  WHERE row_kind = 'candidate' AND reason_code = 'unsupported_expression'",
             )
@@ -354,6 +360,11 @@ mod tests {
         assert_eq!(string_value(batch, 2, 0), "rewrite_expression");
         assert_eq!(string_value(batch, 3, 0), "user_action");
         assert!(!string_value(batch, 4, 0).is_empty());
+        assert_eq!(string_value(batch, 5, 0), "scalar function random in `random()`");
+        let detail: serde_json::Value = serde_json::from_str(string_value(batch, 6, 0)).unwrap();
+        assert_eq!(detail["blocking"]["kind"], "scalar_function");
+        assert_eq!(detail["blocking"]["function"], "random");
+        assert_eq!(detail["blocking"]["expression"], "random()");
     }
 
     #[tokio::test]

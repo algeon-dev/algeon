@@ -17,11 +17,11 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
     server::{
-        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ERROR_CODE_METADATA_KEY,
-        ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, REASON_METADATA_KEY, ServerConfig,
-        ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
-        UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, backend_from_server_config, build_session_context_with_backend,
-        serve_with_listener,
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, BLOCKING_KIND_METADATA_KEY,
+        BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        FlightSqlServer, REASON_METADATA_KEY, ServerConfig, ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY,
+        UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, backend_from_server_config,
+        build_session_context_with_backend, serve_with_listener,
     },
 };
 use arrow::{
@@ -58,6 +58,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     sql::sqlparser::ast::TableFactor,
 };
+use query_planning::error::bytes_with_gib;
 use tokio::time::{sleep, timeout};
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {

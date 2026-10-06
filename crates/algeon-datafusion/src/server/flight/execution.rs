@@ -262,6 +262,8 @@ impl DatafusionAlgeonFlightSqlService {
         let ticket_kind = match StatementTicketKind::from_code(kind) {
             Ok(ticket_kind) => ticket_kind,
             Err(status) => {
+                let status =
+                    status_with_query_id_and_correlation_id(status, &query_id, request_correlation_id.as_deref());
                 let captured = CapturedError::from_status(&status);
                 execution_lease.finish_captured("ticket", &status, captured);
                 return Err(status);

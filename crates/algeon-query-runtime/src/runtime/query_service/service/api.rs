@@ -209,6 +209,7 @@ impl QueryAdmissionOutcome {
             | QueryErrorCode::CudfUnsupported => Self::CapabilityRejected,
             QueryErrorCode::InvalidPlan
             | QueryErrorCode::InvalidAttemptCorrelation
+            | QueryErrorCode::InvalidConfiguration
             | QueryErrorCode::GraphInputInvalid
             | QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
             QueryErrorCode::Cancelled => Self::Cancelled,
@@ -304,6 +305,7 @@ mod outcome_tests {
             (QueryErrorCode::QueryBudgetUnavailable, "budget_unavailable"),
             (QueryErrorCode::UnsupportedPipelineContract, "capability"),
             (QueryErrorCode::InvalidPlan, "invalid"),
+            (QueryErrorCode::InvalidConfiguration, "invalid"),
             (QueryErrorCode::Cancelled, "cancelled"),
             (QueryErrorCode::CudfInvariantViolation, "execution"),
         ];

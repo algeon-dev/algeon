@@ -675,6 +675,8 @@ pub fn algeon_datafusion::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<
 pub type algeon_datafusion::cuvs_sql::CuvsAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuvs_sql::exec::node::CuvsRelationFunctionSpec>
 pub mod algeon_datafusion::error
 pub enum algeon_datafusion::error::ClientDetail
+pub algeon_datafusion::error::ClientDetail::BlockingSubject
+pub algeon_datafusion::error::ClientDetail::BlockingSubject::text: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::Column
 pub algeon_datafusion::error::ClientDetail::Column::name: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::Field
@@ -717,6 +719,7 @@ pub algeon_datafusion::error::ErrorCode::HostStagingLimitExceeded
 pub algeon_datafusion::error::ErrorCode::Internal
 pub algeon_datafusion::error::ErrorCode::InternalInvariantViolation
 pub algeon_datafusion::error::ErrorCode::InvalidChildCount
+pub algeon_datafusion::error::ErrorCode::InvalidConfiguration
 pub algeon_datafusion::error::ErrorCode::InvalidExecutionPlan
 pub algeon_datafusion::error::ErrorCode::InvalidRequest
 pub algeon_datafusion::error::ErrorCode::MemoryReservationFailed
@@ -883,6 +886,7 @@ pub const fn algeon_datafusion::gpu_coverage::FinalPlanCoverage::has_gpu_runtime
 pub const fn algeon_datafusion::gpu_coverage::FinalPlanCoverage::host_materialization_count(&self) -> usize
 pub const fn algeon_datafusion::gpu_coverage::FinalPlanCoverage::native_fragment_count(&self) -> usize
 pub struct algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome
+pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::blocking: core::option::Option<algeon_datafusion::report::Blocking>
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::candidate_family: alloc::string::String
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::category: core::option::Option<alloc::string::String>
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::cost_evidence: core::option::Option<algeon_datafusion::report::NativeCandidateCostEvidence>
@@ -1882,6 +1886,11 @@ impl algeon_datafusion::report::CandidateOutcomeKind
 pub const fn algeon_datafusion::report::CandidateOutcomeKind::as_str(self) -> &'static str
 impl core::fmt::Display for algeon_datafusion::report::CandidateOutcomeKind
 pub fn algeon_datafusion::report::CandidateOutcomeKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct algeon_datafusion::report::Blocking
+impl algeon_datafusion::report::Blocking
+pub const fn algeon_datafusion::report::Blocking::kind(&self) -> &'static str
+pub fn algeon_datafusion::report::Blocking::text(&self) -> &str
+pub fn algeon_datafusion::report::Blocking::to_json(&self) -> serde_json::value::Value
 pub struct algeon_datafusion::report::CandidateShape
 impl algeon_datafusion::report::CandidateShape
 pub fn algeon_datafusion::report::CandidateShape::contains_operator(&self, &str) -> bool
@@ -1930,6 +1939,8 @@ pub algeon_datafusion::report::NativeCandidateCostEvidence::source_count: usize
 pub struct algeon_datafusion::report::NotSupportedDetail
 impl algeon_datafusion::report::NotSupportedDetail
 pub fn algeon_datafusion::report::NotSupportedDetail::admission_rejection(&self) -> core::option::Option<&query_planning::capability::rejection::Rejection>
+impl algeon_datafusion::report::NotSupportedDetail
+pub fn algeon_datafusion::report::NotSupportedDetail::blocking(&self) -> core::option::Option<algeon_datafusion::report::Blocking>
 pub struct algeon_datafusion::report::PlanningReport
 impl algeon_datafusion::report::PlanningReport
 pub fn algeon_datafusion::report::PlanningReport::data_layout_fixable_not_supported(&self) -> core::option::Option<algeon_datafusion::report::DataLayoutFixableNotSupported<'_>>
@@ -2094,6 +2105,8 @@ pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV
 pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_CATALOG_ENV: &str
 pub const algeon_datafusion::server::ALGEON_SERVER_WORKSPACE_SCHEMA_ENV: &str
+pub const algeon_datafusion::server::BLOCKING_KIND_METADATA_KEY: &str
+pub const algeon_datafusion::server::BLOCKING_SUBJECT_METADATA_KEY: &str
 pub const algeon_datafusion::server::ERROR_CODE_METADATA_KEY: &str
 pub const algeon_datafusion::server::ERROR_KIND_METADATA_KEY: &str
 pub const algeon_datafusion::server::ERROR_OPERATION_METADATA_KEY: &str

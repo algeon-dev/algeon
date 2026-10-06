@@ -39,7 +39,7 @@ pub use query_runtime::{
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::GraphBfsSingleflightSnapshot;
 use crate::{
-    error::{Error, ErrorCode, Result},
+    error::{Error, Result},
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
     observability::{
         BackendDiagnostics, BackendMetricsSnapshot, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot,
@@ -406,7 +406,6 @@ fn validated_backend_construction(
     }
     let core_config = core_config.validate().map_err(|error| {
         backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
-            .with_code(ErrorCode::InvalidRequest)
     })?;
     Ok(ValidatedBackendConstruction { optimizer_config, queue_policy, core_config })
 }

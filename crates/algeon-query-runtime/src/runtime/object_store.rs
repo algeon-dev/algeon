@@ -264,7 +264,7 @@ impl SourceObjectStoreRegistry {
         for profile in profiles {
             if profile.id().trim().is_empty() {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.source_object_store.profile",
                     "source storage profile id must not be empty",
                 )
@@ -272,7 +272,7 @@ impl SourceObjectStoreRegistry {
             }
             if !profile_ids.insert(profile.id()) {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.source_object_store.profile",
                     "source storage profile ids must be unique",
                 )
@@ -500,7 +500,7 @@ mod tests {
         let profile = SourceStorageProfile::s3("same", S3SourceStorageProfile::default_chain());
         let error = SourceObjectStoreRegistry::with_profiles([profile.clone(), profile]).unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("reason"), Some("duplicate_profile_id"));
         assert_eq!(error.fact_value("storage_profile_id"), Some("same"));
     }
@@ -510,7 +510,7 @@ mod tests {
         let profile = SourceStorageProfile::s3("  ", S3SourceStorageProfile::default_chain());
         let error = SourceObjectStoreRegistry::with_profiles([profile]).unwrap_err();
 
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("reason"), Some("empty_profile_id"));
     }
 

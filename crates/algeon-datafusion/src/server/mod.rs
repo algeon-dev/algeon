@@ -76,10 +76,10 @@ pub use config::{
     ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
 };
 pub use error::{
-    ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-    NATIVE_MESSAGE_METADATA_KEY, PREDICATE_ROLE_METADATA_KEY, REASON_METADATA_KEY, REQUIRED_OPTION_METADATA_KEY,
-    Result, ServerError, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
-    UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
+    BLOCKING_KIND_METADATA_KEY, BLOCKING_SUBJECT_METADATA_KEY, ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY,
+    ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY, NATIVE_MESSAGE_METADATA_KEY, PREDICATE_ROLE_METADATA_KEY,
+    REASON_METADATA_KEY, REQUIRED_OPTION_METADATA_KEY, Result, ServerError, UNSUPPORTED_COLUMN_METADATA_KEY,
+    UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
 };
 pub use session::build_session_context_with_backend;
 
@@ -91,7 +91,17 @@ pub fn backend_from_server_config(config: &ServerConfig) -> Result<AlgeonGpuBack
         .devices(devices)
         .queue_policy(admission::server_queue_policy(config))
         .build()
-        .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+        .map_err(backend_build_error)
+}
+
+/// A rejected configuration keeps its setting, value, and accepted range in
+/// the server message. The startup log line prints the message in full, while
+/// it bounds the cause chain.
+fn backend_build_error(error: adapter_error::Error) -> ServerError {
+    if error.code() == adapter_error::ErrorCode::InvalidConfiguration {
+        return ServerError::session(format!("invalid server configuration: {}", error.message()), error);
+    }
+    ServerError::session("failed to initialize query service admission", error)
 }
 
 /// Flight SQL server shutdown source.

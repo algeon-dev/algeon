@@ -11,6 +11,7 @@ mod lowering;
 #[cfg(test)]
 mod lowering_tests;
 mod normalize;
+mod operator_support;
 mod pruning;
 mod source;
 mod table_format_pruning_policy;
@@ -25,13 +26,21 @@ pub(crate) use footers::{FooterCache, FooterScope};
 
 /// Rejection raised while lowering a normalized candidate.
 ///
-/// `reason` is the public classification. `expression` is present when the
-/// shared expression contract rejected the candidate; it names the capability
-/// and types that planning reports project the unsupported category from.
+/// `reason` is the public classification. `cause` names what rejected the
+/// candidate when the rejecting site knows: the shared expression contract,
+/// whose capability and types planning reports project the unsupported
+/// category from, or the operator, function, or ordering that blocked it. It
+/// is boxed so a `Result` carrying a rejection stays small.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoweringRejection {
     reason: CapabilityReason,
-    expression: Option<ExpressionRejection>,
+    cause: Option<Box<RejectionCause>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RejectionCause {
+    Expression(ExpressionRejection),
+    Blocker(PlanBlocker),
 }
 
 impl LoweringRejection {
@@ -39,20 +48,33 @@ impl LoweringRejection {
         self.reason
     }
 
-    pub(crate) fn into_expression(self) -> Option<ExpressionRejection> {
-        self.expression
+    /// A rejection of `reason` caused by `blocker`.
+    pub(crate) fn blocked_by(reason: CapabilityReason, blocker: PlanBlocker) -> Self {
+        Self { reason, cause: Some(Box::new(RejectionCause::Blocker(blocker))) }
+    }
+
+    /// The reason and the evidence this rejection carries, with the unsupported
+    /// `column` the caller found in the plan schemas.
+    pub(crate) fn into_detail(self, column: Option<UnsupportedColumnDetail>) -> (CapabilityReason, NotSupportedDetail) {
+        let mut detail = NotSupportedDetail { column, ..NotSupportedDetail::default() };
+        match self.cause.map(|cause| *cause) {
+            Some(RejectionCause::Expression(expression)) => detail.expression = Some(Box::new(expression)),
+            Some(RejectionCause::Blocker(blocker)) => detail.blocker = Some(Box::new(blocker)),
+            None => {},
+        }
+        (self.reason, detail)
     }
 }
 
 impl From<CapabilityReason> for LoweringRejection {
     fn from(reason: CapabilityReason) -> Self {
-        Self { reason, expression: None }
+        Self { reason, cause: None }
     }
 }
 
 impl From<ExpressionRejection> for LoweringRejection {
     fn from(rejection: ExpressionRejection) -> Self {
-        Self { reason: rejection.capability_reason(), expression: Some(rejection) }
+        Self { reason: rejection.capability_reason(), cause: Some(Box::new(RejectionCause::Expression(rejection))) }
     }
 }
 
@@ -65,6 +87,24 @@ pub(crate) enum LoweringFailure {
     /// invariants. That is an adapter defect, reported as an error rather
     /// than a fallback.
     Invalid(QueryError),
+}
+
+impl LoweringFailure {
+    /// Names `blocker` for a rejection that names no more specific cause.
+    pub(crate) fn blocked_by_if_unnamed(self, blocker: impl FnOnce() -> PlanBlocker) -> Self {
+        match self {
+            Self::Rejected(rejection) if rejection.cause.is_none() => {
+                Self::Rejected(LoweringRejection::blocked_by(rejection.reason, blocker()))
+            },
+            other => other,
+        }
+    }
+
+    /// Names the operator whose lowering failed, for a rejection that names no
+    /// more specific cause.
+    pub(crate) fn within_operator(self, operator: impl FnOnce() -> String) -> Self {
+        self.blocked_by_if_unnamed(|| PlanBlocker::Operator(operator()))
+    }
 }
 
 impl From<LoweringRejection> for LoweringFailure {
@@ -108,6 +148,7 @@ use arrow::datatypes::{FieldRef as ArrowFieldRef, SchemaRef as ArrowSchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
 use datafusion::{
     physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, expressions::Column},
+    physical_expr_common::physical_expr::fmt_sql,
     physical_plan::ExecutionPlan,
 };
 use lowering::lower_normalized_plan;
@@ -115,6 +156,7 @@ use normalize::{
     NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
     make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
 };
+pub(crate) use operator_support::{first_join_operator, first_operator_without_native_counterpart};
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_planning::{
     datatypes::diagnostic_arrow_type,
@@ -137,7 +179,7 @@ use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 use crate::{
     capability::CapabilityReason,
     error::{Error, Result},
-    report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
+    report::{GpuCandidate, NotSupportedDetail, PlanBlocker, PlanningReport, UnsupportedColumnDetail},
 };
 
 pub(in crate::native) const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
@@ -226,7 +268,14 @@ fn lower_physical_plan_to_native_with_mode(
                 }) =>
         {
             let mut report = PlanningReport::new();
-            report.push_not_supported(normalized.candidate.clone(), CapabilityReason::UnsupportedOperator);
+            report.push_not_supported_with_detail(
+                normalized.candidate.clone(),
+                CapabilityReason::UnsupportedOperator,
+                NotSupportedDetail {
+                    blocker: Some(Box::new(PlanBlocker::Operator(plan.name().to_string()))),
+                    ..NotSupportedDetail::default()
+                },
+            );
             Ok(NativeLoweringResult {
                 plan: None,
                 report,
@@ -241,12 +290,10 @@ fn lower_physical_plan_to_native_with_mode(
                     error,
                 )),
                 Err(LoweringFailure::Rejected(rejection)) => {
-                    let reason = rejection.reason();
-                    let column = (reason == CapabilityReason::UnsupportedType)
+                    let column = (rejection.reason() == CapabilityReason::UnsupportedType)
                         .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
                         .flatten();
-                    let detail =
-                        NotSupportedDetail { column, expression: rejection.into_expression(), admission: None };
+                    let (reason, detail) = rejection.into_detail(column);
                     let mut report = PlanningReport::new();
                     report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
                     Ok(NativeLoweringResult {
@@ -283,7 +330,7 @@ fn lower_physical_plan_to_native_with_mode(
             report.push_not_supported_with_detail(
                 rejection.candidate,
                 rejection.reason,
-                NotSupportedDetail { column, expression: None, admission: None },
+                NotSupportedDetail { column, blocker: Some(rejection.blocker), ..NotSupportedDetail::default() },
             );
             Ok(NativeLoweringResult { plan: None, report, source_diagnostics: Vec::new() })
         },
@@ -397,9 +444,9 @@ fn unsupported_column_detail(field: &ArrowFieldRef, role: &'static str) -> Unsup
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
     ordering: Option<&LexOrdering>,
-) -> std::result::Result<(NativeQueryPlan, bool), CapabilityReason> {
+) -> std::result::Result<(NativeQueryPlan, bool), LoweringRejection> {
     if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
-        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(unreproducible_ordering("window input ordering", None));
     }
     let Some(ordering) = ordering else {
         return Ok((native_plan, false));
@@ -408,7 +455,7 @@ pub(crate) fn reestablish_declared_output_ordering_if_needed(
         return Ok((native_plan, false));
     }
     if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
-        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(unreproducible_ordering(DECLARED_OUTPUT_ORDERING, Some(ordering)));
     }
     let sort_spec = declared_output_ordering_sort_spec(ordering, native_plan.root_node())?;
     Ok((native_plan.with_appended_sort(sort_spec), true))
@@ -421,15 +468,15 @@ pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCa
 fn declared_output_ordering_sort_spec(
     ordering: &LexOrdering,
     output_node: &QueryNode,
-) -> std::result::Result<NativeSortSpec, CapabilityReason> {
+) -> std::result::Result<NativeSortSpec, LoweringRejection> {
     if ordering.is_empty() {
-        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(unreproducible_ordering(DECLARED_OUTPUT_ORDERING, Some(ordering)));
     }
     let output_schema = output_node.output_schema();
-    validate_sort_ordering(ordering, output_schema).map_err(|rejection| rejection.reason())?;
+    validate_sort_ordering(ordering, output_schema)?;
     let expressions = ordering
         .iter()
-        .map(|sort_expr| declared_output_ordering_sort_expr(sort_expr, output_schema))
+        .map(|sort_expr| declared_output_ordering_sort_expr(sort_expr, output_schema, ordering))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(NativeSortSpec::new(expressions))
 }
@@ -437,14 +484,41 @@ fn declared_output_ordering_sort_spec(
 fn declared_output_ordering_sort_expr(
     sort_expr: &PhysicalSortExpr,
     output_schema: &ArrowSchemaRef,
-) -> std::result::Result<NativeSortExpr, CapabilityReason> {
-    let column = sort_expr.expr.downcast_ref::<Column>().ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
-    let field = output_schema.fields().get(column.index()).ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
+    ordering: &LexOrdering,
+) -> std::result::Result<NativeSortExpr, LoweringRejection> {
+    let unreproducible = || unreproducible_ordering(DECLARED_OUTPUT_ORDERING, Some(ordering));
+    let column = sort_expr.expr.downcast_ref::<Column>().ok_or_else(unreproducible)?;
+    let field = output_schema.fields().get(column.index()).ok_or_else(unreproducible)?;
     Ok(NativeSortExpr::new(
         NativeExpr::column(field.name().as_str()),
         sort_expr.options.descending,
         sort_expr.options.nulls_first,
     ))
+}
+
+const DECLARED_OUTPUT_ORDERING: &str = "declared output ordering";
+
+fn unreproducible_ordering(required_by: &'static str, ordering: Option<&LexOrdering>) -> LoweringRejection {
+    LoweringRejection::blocked_by(
+        CapabilityReason::NativeOrderedOutputUnsupported,
+        PlanBlocker::Ordering { required_by, ordering: ordering.map(render_ordering) },
+    )
+}
+
+/// The ordering as SQL, such as `a ASC NULLS LAST, b DESC NULLS FIRST`.
+fn render_ordering(ordering: &LexOrdering) -> String {
+    ordering
+        .iter()
+        .map(|sort_expr| {
+            format!(
+                "{} {} NULLS {}",
+                fmt_sql(sort_expr.expr.as_ref()),
+                if sort_expr.options.descending { "DESC" } else { "ASC" },
+                if sort_expr.options.nulls_first { "FIRST" } else { "LAST" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourceDiagnostics> {
@@ -677,6 +751,24 @@ mod tests {
     }
 
     #[test]
+    fn declared_output_ordering_that_a_union_breaks_names_the_ordering() {
+        let plan = union_plan();
+        let schema = plan.output_schema();
+        let ordering =
+            LexOrdering::new([PhysicalSortExpr::new(col("key", schema).unwrap(), ArrowSortOptions::new(false, false))])
+                .expect("test ordering should be non-empty");
+
+        let rejection = reestablish_declared_output_ordering_if_needed(plan, Some(&ordering))
+            .expect_err("a union cannot take an appended sort");
+        let (reason, detail) = rejection.into_detail(None);
+        let blocking = detail.blocking().expect("the rejection names its ordering");
+
+        assert_eq!(reason, CapabilityReason::NativeOrderedOutputUnsupported);
+        assert_eq!(blocking.kind(), "ordering");
+        assert_eq!(blocking.text(), "declared output ordering `key ASC NULLS LAST`");
+    }
+
+    #[test]
     fn order_reproduction_audit_accepts_literal_batch_source() {
         let schema = key_schema();
         let batch = RecordBatch::new_empty(Arc::clone(&schema));
@@ -704,10 +796,10 @@ mod tests {
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
         let plan = builder.finish_with_host_sink(source).unwrap();
 
-        let reason = declared_output_ordering_sort_spec(&ordering, plan.root_node())
+        let rejection = declared_output_ordering_sort_spec(&ordering, plan.root_node())
             .expect_err("timestamp-with-timezone keys must stay rejected for appended declared-output ordering sorts");
 
-        assert_eq!(reason, CapabilityReason::UnsupportedType);
+        assert_eq!(rejection.reason(), CapabilityReason::UnsupportedType);
     }
 
     #[test]

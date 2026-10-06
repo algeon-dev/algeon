@@ -143,7 +143,7 @@ pub(crate) fn claim_live_backend(device_ordinals: &[usize]) -> Result<LiveBacken
 pub(crate) fn normalize_device_ordinals(device_ordinals: &[usize]) -> Result<Vec<usize>> {
     if device_ordinals.is_empty() {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             CLAIM_OPERATION,
             "GPU backend requires at least one explicit CUDA device ordinal",
         )
@@ -155,7 +155,7 @@ pub(crate) fn normalize_device_ordinals(device_ordinals: &[usize]) -> Result<Vec
     normalized.sort_unstable();
     if let Some(duplicate) = normalized.windows(2).find_map(|pair| (pair[0] == pair[1]).then_some(pair[0])) {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             CLAIM_OPERATION,
             "GPU backend device ordinals must be unique",
         )

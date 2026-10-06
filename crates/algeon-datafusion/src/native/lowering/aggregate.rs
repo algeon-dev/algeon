@@ -27,8 +27,11 @@ use crate::{
         LoweringFailure, ParquetReadStrategyConfig,
         expression_contract::{native_aggregate_function_kind, validate_physical_expr_contract},
         normalize::NormalizedNativeAggregate,
-        validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
+        validate::{
+            aggregate_blocked, aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema,
+        },
     },
+    report::AggregateDefect,
 };
 
 mod synthetic;
@@ -209,7 +212,11 @@ pub(super) fn lower_aggregate_spec(
         .map(|(index, expr)| {
             let expressions = expr.expressions();
             let [arg] = expressions.as_slice() else {
-                return Err(LoweringFailure::from(CapabilityReason::UnsupportedExpression));
+                return Err(LoweringFailure::from(aggregate_blocked(
+                    CapabilityReason::UnsupportedExpression,
+                    expr.fun().name(),
+                    AggregateDefect::ArgumentCount(expressions.len()),
+                )));
             };
             let lowered_arg = prepared.arg_aliases.get(index).and_then(Option::as_ref).map_or_else(
                 || lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&prepared.input.bindings)),
@@ -300,7 +307,10 @@ pub(super) fn lower_zero_column_count_aggregate_spec(
 }
 
 pub(super) fn lower_native_aggregate_function(fun: &AggregateUDF) -> Result<NativeAggregateFunction, LoweringFailure> {
-    native_aggregate_function_kind(fun).ok_or_else(|| CapabilityReason::UnsupportedOperator.into())
+    native_aggregate_function_kind(fun).ok_or_else(|| {
+        aggregate_blocked(CapabilityReason::UnsupportedOperator, fun.name(), AggregateDefect::UnsupportedFunction)
+            .into()
+    })
 }
 
 fn lower_native_aggregate_expr_function(

@@ -78,7 +78,7 @@ pub(crate) fn final_plan_requirement_error(
     report: Option<&PlanningReport>,
 ) -> Error {
     let rejection = report.and_then(first_native_not_supported);
-    let message = rejection.and_then(|(_, _, detail)| detail.column.as_ref()).map_or_else(
+    let message = rejection.and_then(|(_, _, detail)| detail.blocking_column()).map_or_else(
         || "exact final physical plan does not satisfy the configured GPU execution requirement".to_string(),
         |column| format!("GPU execution does not support a {} column with an unsupported Arrow type", column.role),
     );
@@ -107,18 +107,24 @@ pub(crate) fn final_plan_requirement_error(
                 error = error.with_fact(key, value);
             }
         }
-        if let Some(detail) = detail.column.as_ref() {
-            // `reason` is bounded operational classification and may be
-            // logged. The column name, Arrow type, and role name the query
-            // caller's own schema, so they travel as client detail, out of
-            // `message()`, which the server logs verbatim.
-            error = error.with_log_safe_fact("reason", capability_reason.code()).with_client_detail(
-                ClientDetail::UnsupportedColumn {
-                    name: detail.name.clone(),
-                    data_type: detail.data_type.clone(),
-                    role: detail.role,
+        if let Some(blocking) = detail.blocking() {
+            // `reason` and the blocking kind are bounded operational
+            // classification and may be logged. The column name, Arrow type,
+            // and role, like the cast, function, or expression text, quote
+            // the query caller's own schema and SQL, so they travel as client
+            // detail, out of `message()`, which the server logs verbatim.
+            let client_detail = match detail.blocking_column() {
+                Some(column) => ClientDetail::UnsupportedColumn {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    role: column.role,
                 },
-            );
+                None => ClientDetail::BlockingSubject { text: blocking.text().to_string() },
+            };
+            error = error
+                .with_log_safe_fact("reason", capability_reason.code())
+                .with_log_safe_fact("blocking_kind", blocking.kind())
+                .with_client_detail(client_detail);
         }
     }
     error
@@ -774,8 +780,7 @@ mod tests {
             CapabilityReason::UnsupportedType,
             NotSupportedDetail {
                 column: Some(UnsupportedColumnDetail::new("訂單明細", "List(Int64)", "projected")),
-                expression: None,
-                admission: None,
+                ..NotSupportedDetail::default()
             },
         );
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));

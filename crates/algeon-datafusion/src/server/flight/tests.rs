@@ -28,7 +28,7 @@ use crate::{
         coordinator::QueryTerminalOutcome,
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-            REASON_METADATA_KEY,
+            MASKED_INTERNAL_ERROR_MESSAGE, REASON_METADATA_KEY,
         },
     },
     session::AlgeonSessionStateBuilderExt,
@@ -641,7 +641,7 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
 
     assert_eq!(status.code(), Code::Internal);
     assert_status_metadata(&status, "internal", "internal", "permanent");
-    assert_eq!(status.message(), "internal server error while processing the request");
+    assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
     assert!(!status.message().contains("glue.algeon_graph"), "status={status:?}");
     let payload = String::from_utf8(
         service.coordinator.query_stats(&query_id).expect("failed DDL update should retain query stats").to_vec(),
@@ -780,6 +780,124 @@ async fn prepared_update_shutdown_promotion_preserves_operation_and_request_meta
         Some(correlation_id.as_str())
     );
     assert_eq!(service.coordinator.terminal(&query_id), Some(QueryTerminalOutcome::Cancelled));
+}
+
+fn assert_masked_status_points_at_query_id(status: &Status, query_id: &str) {
+    assert_eq!(status.code(), Code::Internal, "{status:?}");
+    assert_eq!(status.message(), MASKED_INTERNAL_ERROR_MESSAGE);
+    assert_eq!(
+        status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some(query_id),
+        "the metadata value the message points at must be present: {status:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn masked_internal_failures_carry_the_query_id_on_every_statement_path() {
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["not a time"]))]).unwrap();
+    service.ctx.register_table("caller_rows", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    let sql = "SELECT to_timestamp(s) FROM caller_rows";
+
+    async fn failed_do_get(service: &DatafusionAlgeonFlightSqlService, query_id: String) -> Status {
+        let stream = service.execute_ticket(query_id, None).await.expect("DoGet returns a lazy stream").into_inner();
+        let error = FlightRecordBatchStream::new_from_flight_data(stream.map_err(FlightError::from))
+            .try_collect::<Vec<_>>()
+            .await
+            .expect_err("parsing the caller's value must fail the stream");
+        let FlightError::Tonic(status) = error else { panic!("DoGet must fail with a gRPC status: {error}") };
+        *status
+    }
+
+    let statement = issue_statement_ticket(&service, sql).await.expect("a timestamp parse plans");
+    let statement_id = query_id_from_flight_info(&statement);
+    assert_masked_status_points_at_query_id(&failed_do_get(&service, statement_id.clone()).await, &statement_id);
+
+    let prepared = service
+        .do_action_create_prepared_statement(
+            ActionCreatePreparedStatementRequest { query: sql.to_string(), transaction_id: None },
+            Request::new(arrow_flight::Action::new("CreatePreparedStatement", Vec::<u8>::new())),
+        )
+        .await
+        .expect("a timestamp parse prepares");
+    let prepared_info = service
+        .get_flight_info_prepared_statement(
+            CommandPreparedStatementQuery { prepared_statement_handle: prepared.prepared_statement_handle },
+            Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+        )
+        .await
+        .expect("a prepared timestamp parse plans");
+    let prepared_id = query_id_from_flight_info(&prepared_info);
+    assert_masked_status_points_at_query_id(&failed_do_get(&service, prepared_id.clone()).await, &prepared_id);
+
+    let ctx = Arc::new(SessionContext::new_with_config(
+        SessionConfig::new().with_default_catalog_and_schema("glue", "algeon_graph"),
+    ));
+    ctx.register_catalog(
+        "glue",
+        Arc::new(ReadOnlyCatalog::new("algeon_graph", [("edges_by_src", read_only_edge_table())])),
+    );
+    let update_service =
+        DatafusionAlgeonFlightSqlService::new(ctx, Arc::new(QueryAdmission::new_for_tests()), Duration::from_secs(30));
+    for (kind, query_id) in [
+        (UpdateStatementKind::Statement, "masked-update-statement"),
+        (UpdateStatementKind::PreparedStatement, "masked-update-prepared"),
+    ] {
+        let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
+        let planning_lease = update_service.register_query(query_id.to_string(), sql.clone(), None).unwrap();
+        let status = update_service
+            .execute_update_sql(planning_lease, sql, None, kind, None)
+            .await
+            .expect_err("read-only source schema should reject DDL registration");
+        assert_masked_status_points_at_query_id(&status, query_id);
+    }
+}
+
+#[tokio::test]
+async fn invalid_ticket_kind_status_carries_the_query_id_and_correlation_id() {
+    let service = DatafusionAlgeonFlightSqlService::new(
+        Arc::new(SessionContext::new()),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+    );
+    let query_id = "invalid-ticket-kind".to_string();
+    let planning_lease = service.register_query(query_id.clone(), "SELECT 1".to_string(), None).unwrap();
+    let now = Instant::now();
+    planning_lease
+        .issue_ticket(CoordinatorTicketPayload {
+            sql: "SELECT 1".to_string(),
+            correlation_id: None,
+            prepared_handle: None,
+            kind: u8::MAX,
+            execution_domain: StatementExecutionDomain::Data,
+            attempt: None,
+            started_at: now,
+            deadline: now + Duration::from_secs(30),
+            forest_model_digests: Vec::new(),
+        })
+        .expect("ticket issues");
+
+    let status = service
+        .execute_ticket(query_id.clone(), Some("request-correlation".to_string()))
+        .await
+        .err()
+        .expect("a ticket kind outside the coordinator contract must fail DoGet");
+
+    assert_eq!(status.code(), Code::Internal);
+    assert_eq!(
+        status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some(query_id.as_str())
+    );
+    assert_eq!(
+        status.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("request-correlation")
+    );
 }
 
 async fn issue_statement_ticket(

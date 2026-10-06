@@ -232,12 +232,16 @@ Native support requires a correct kernel, supported types and correct semantics.
 An operator missing any of these is structured unsupported. `PlanningReport`
 records each candidate once as selected, unsupported with the first unmet
 contract, or supported but not selected by cost, with structured reasons.
+An unsupported candidate also names the [element that blocked it](../integration/gpu-coverage-validation.mdx#what-blocked-a-candidate),
+such as one cast between two types, a scalar or aggregate function, or an
+operator, at the site that rejected it.
 A missing memory estimate cannot reject a candidate. Allocation limits are
 enforced during [execution](./admission.mdx#allocation-enforcement).
 
 ## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 
-`NativeRequired` rejects a completed plan containing DataFusion CPU operators.
+`NativeRequired` rejects a completed plan containing DataFusion CPU operators,
+and its error names the blocking element of the first unsupported candidate.
 `FunctionsOnly` retains CPU relational processing around explicit GPU
 functions. The default, `NativePreferred`, permits a CPU or mixed plan.
 These modes classify DataFusion plan nodes. CPU orchestration and I/O metadata

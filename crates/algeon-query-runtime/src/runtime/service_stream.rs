@@ -201,7 +201,7 @@ impl ServiceStreamPool {
         for (field, capacity) in [("root_capacity", root_capacity), ("aux_capacity", aux_capacity)] {
             if capacity == 0 {
                 return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
+                    QueryErrorCode::InvalidConfiguration,
                     "query_engine.service_stream_pool",
                     "service stream pool permit-class capacity must be greater than zero",
                 )
@@ -1212,7 +1212,7 @@ impl AttemptWorkLease {
 pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> {
     if pool_size == 0 {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.service_stream_pool.validate",
             "service stream pool size must be greater than zero",
         )
@@ -1241,7 +1241,7 @@ mod tests {
     #[test]
     fn zero_capacity_rejects_before_runtime_initialization() {
         let error = validate_service_stream_pool_size(0).unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.operation(), "query_engine.service_stream_pool.validate");
         assert_eq!(error.fact_value("field"), Some("service_stream_pool_size"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
@@ -2025,7 +2025,7 @@ mod permit_class_tests {
     #[test]
     fn zero_class_capacity_is_rejected() {
         let error = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 2, 0, 1).unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
         assert_eq!(error.fact_value("field"), Some("root_capacity"));
         let error = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 2, 1, 0).unwrap_err();
         assert_eq!(error.fact_value("field"), Some("aux_capacity"));

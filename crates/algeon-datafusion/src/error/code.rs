@@ -67,6 +67,12 @@ error_codes! {
     SqlParse => "sql_parse", InvalidInput, Permanent;
     /// The server request envelope or handle was invalid for the operation.
     InvalidRequest => "invalid_request", InvalidInput, Permanent;
+    /// A server, backend, or device configuration value is invalid or
+    /// inconsistent with the discovered hardware.
+    ///
+    /// The same configuration fails again until it changes; the message names
+    /// the setting, its value, and the largest accepted value when one exists.
+    InvalidConfiguration => "invalid_configuration", InvalidInput, Permanent;
     /// DataFusion rejected the query during logical or physical planning.
     DataFusionPlanning => "datafusion_planning", Planning, Permanent;
     /// Adapter-owned planning exceeded its configured time budget.
@@ -295,6 +301,7 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
         QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
         QueryErrorCode::InvalidAttemptCorrelation => ErrorCode::InvalidRequest,
+        QueryErrorCode::InvalidConfiguration => ErrorCode::InvalidConfiguration,
         QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
         QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
         QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,

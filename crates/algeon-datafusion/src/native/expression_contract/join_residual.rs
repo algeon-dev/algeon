@@ -65,14 +65,18 @@ pub(in crate::native) fn validate_join_residual<'a>(
 ) -> Result<ValidatedJoinResidual<'a>, ExpressionRejection> {
     let expression = validate_physical_expr_contract(filter.expression(), filter.schema())?;
     validate_join_residual_expr(filter.expression(), filter)?;
-    validate_join_residual_side_indices(filter.expression(), filter, left_schema, right_schema)?;
+    let residual = filter.expression();
+    validate_join_residual_side_indices(residual, filter, left_schema, right_schema)
+        .map_err(|rejection| rejection.at_expression(residual))?;
 
     let mut side = None;
     let mut saw_left = false;
     let mut saw_right = false;
-    collect_join_filter_expr_sides(filter.expression(), filter, &mut side, &mut saw_left, &mut saw_right, false)?;
+    collect_join_filter_expr_sides(residual, filter, &mut side, &mut saw_left, &mut saw_right, false)
+        .map_err(|rejection| rejection.at_expression(residual))?;
     if !saw_left || !saw_right {
-        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualSides));
+        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::JoinResidualSides)
+            .at_expression(residual));
     }
 
     Ok(ValidatedJoinResidual {
@@ -141,6 +145,10 @@ pub(in crate::native) fn validate_join_residual_scalar_function(
 }
 
 fn validate_join_residual_expr(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilter) -> Result<(), ExpressionRejection> {
+    validate_join_residual_shape(expr, filter).map_err(|rejection| rejection.at_expression(expr))
+}
+
+fn validate_join_residual_shape(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilter) -> Result<(), ExpressionRejection> {
     if expr.downcast_ref::<Column>().is_some() || expr.downcast_ref::<Literal>().is_some() {
         return Ok(());
     }

@@ -76,6 +76,10 @@ pub enum ClientDetail {
     Column { name: String },
     /// An input ORDER BY key that is not an output column of its input.
     OrderingKey { name: String },
+    /// The plan element that keeps the configured GPU execution requirement
+    /// from holding, as one line that can quote the caller's SQL and
+    /// identifiers.
+    BlockingSubject { text: String },
 }
 
 impl ClientDetail {
@@ -94,6 +98,7 @@ impl ClientDetail {
             Self::Field { name } => vec![("field", name.as_str())],
             Self::Column { name } => vec![("column", name.as_str())],
             Self::OrderingKey { name } => vec![("key", name.as_str())],
+            Self::BlockingSubject { text } => vec![("blocking_subject", text.as_str())],
         }
     }
 
@@ -113,6 +118,7 @@ impl fmt::Debug for ClientDetail {
             Self::Field { .. } => f.debug_struct("Field").finish_non_exhaustive(),
             Self::Column { .. } => f.debug_struct("Column").finish_non_exhaustive(),
             Self::OrderingKey { .. } => f.debug_struct("OrderingKey").finish_non_exhaustive(),
+            Self::BlockingSubject { .. } => f.debug_struct("BlockingSubject").finish_non_exhaustive(),
         }
     }
 }
@@ -687,14 +693,6 @@ impl Error {
     #[must_use]
     pub fn with_log_safe_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.facts.insert_log_safe(key, value.to_string());
-        self
-    }
-
-    /// Replaces the code for a boundary that classifies a converted native
-    /// error differently from the native code mapping.
-    #[must_use]
-    pub(crate) fn with_code(mut self, code: ErrorCode) -> Self {
-        self.code = code;
         self
     }
 

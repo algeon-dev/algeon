@@ -601,7 +601,7 @@ fn invalid_dynamic_filter_execution_option(
     reason: &'static str,
 ) -> QueryError {
     QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::InvalidConfiguration,
         "query_engine.dynamic_filter.execution_options.validate",
         "dynamic-filter execution option is inconsistent with another policy field",
     )
@@ -619,7 +619,7 @@ fn invalid_dynamic_filter_execution_option_max(
     reason: &'static str,
 ) -> QueryError {
     QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::InvalidConfiguration,
         "query_engine.dynamic_filter.execution_options.validate",
         "dynamic-filter execution option exceeds its valid maximum",
     )

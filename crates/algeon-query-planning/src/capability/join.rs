@@ -158,7 +158,7 @@ fn validate_keyed_hash_join_threshold_order(
 ) -> Result<()> {
     if large_value != 0 && small_value != 0 && large_value < small_value {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.keyed_hash_join_strategy_options.validate",
             "keyed hash-join strategy threshold ordering is inconsistent",
         )

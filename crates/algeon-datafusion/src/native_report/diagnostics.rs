@@ -3,22 +3,22 @@
 //! Walks DataFusion physical plans to derive native fragment coverage, join
 //! and source diagnostics summaries, and stable unsupported-category labels
 //! used by the planning/execution/fallback-pressure surfaces.
-use std::sync::Arc;
-
 use super::{
-    AggregateExec, BoundedWindowAggExec, CandidateShape, CapabilityReason, CrossJoinExec, DataSourceExec, EmptyExec,
-    ExecutionPlan, GpuCandidate, HashJoinExec, MemorySourceConfig,
+    CandidateShape, CapabilityReason, CrossJoinExec, ExecutionPlan, GpuCandidate, HashJoinExec,
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeJoinDiagnosticSummary,
-    NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NestedLoopJoinExec, PlaceholderRowExec,
-    PlainAggregateWindowExpr, ScalarValue, SlidingAggregateWindowExpr, StandardWindowExpr, WindowAggExec, WindowExpr,
-    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowUDFExpr, is_supported_arrow_type,
+    NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NestedLoopJoinExec, ScalarValue, WindowFrame,
+    WindowFrameBound,
 };
-use crate::{final_plan_observation::observe_final_plan, native::ExpressionRejection, planner::FinalPlanCoverage};
+use crate::{
+    final_plan_observation::observe_final_plan,
+    planner::FinalPlanCoverage,
+    report::{AggregateDefect, NotSupportedDetail, PlanBlocker, WindowDefect},
+};
 
 mod expressions;
 mod shape_family;
 
-use expressions::{expression_rejection_category, stable_data_type_identifier};
+use expressions::expression_rejection_category;
 pub(crate) use shape_family::candidate_shape_family;
 
 pub(super) use crate::physical_plan::physical_plan_shape;
@@ -115,82 +115,48 @@ fn stable_debug_value(value: &impl std::fmt::Debug) -> String {
     format!("{value:?}").to_ascii_lowercase()
 }
 
-pub(super) fn unsupported_category(
-    plan: &dyn ExecutionPlan,
-    candidate: &GpuCandidate,
-    reason: CapabilityReason,
-    expression_rejection: Option<&ExpressionRejection>,
-) -> Option<String> {
-    if let Some(rejection) = expression_rejection {
-        return Some(expression_rejection_category(rejection));
+/// The unsupported category of a not-supported candidate, read from the
+/// subject its producing site carried. A candidate whose site named nothing
+/// that refines its reason reports the category its reason's table row carries.
+pub(super) fn unsupported_category(reason: CapabilityReason, detail: &NotSupportedDetail) -> String {
+    if let Some(rejection) = &detail.expression {
+        return expression_rejection_category(rejection);
     }
-    // Categories refined from plan content stay in this projection; every
-    // other reason reports the table's default category.
-    let refined = match reason {
-        CapabilityReason::UnsupportedExpression => first_aggregate_category(plan).filter(|category| {
-            matches!(
-                category.as_str(),
-                "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by" | "aggregate_argument_count"
-            )
-        }),
-        CapabilityReason::UnsupportedOperator => first_aggregate_category(plan)
-            .or_else(|| first_window_category(plan))
-            .or_else(|| first_unsupported_operator_category(plan, &candidate.shape))
-            .or_else(|| first_global_aggregate_category(plan)),
-        CapabilityReason::UnsupportedType => first_literal_source_type_category(plan),
-        CapabilityReason::NativeDistributedAggregateUnsupported => first_aggregate_category(plan),
-        CapabilityReason::NativeBoundedJoinUnsupported => first_join_operator_category(plan),
+    let refined = detail.blocker.as_deref().and_then(|blocker| match (reason, blocker) {
+        (CapabilityReason::UnsupportedOperator | CapabilityReason::NativeBoundedJoinUnsupported, _)
+        | (
+            CapabilityReason::UnsupportedExpression | CapabilityReason::NativeDistributedAggregateUnsupported,
+            PlanBlocker::Aggregate { .. },
+        ) => plan_blocker_category(blocker),
         _ => None,
-    };
-    Some(refined.unwrap_or_else(|| reason.facts().tsv_category.to_string()))
+    });
+    refined.unwrap_or_else(|| reason.facts().tsv_category.to_string())
 }
 
-fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape: &CandidateShape) -> Option<String> {
-    let name = plan.name();
-    if !native_report_operator_is_supported(name, candidate_shape) {
-        return Some(format!("operator_{}", stable_operator_identifier(name)));
+fn plan_blocker_category(blocker: &PlanBlocker) -> Option<String> {
+    match blocker {
+        PlanBlocker::Operator(name) => Some(format!("operator_{}", stable_operator_identifier(name))),
+        PlanBlocker::Aggregate { function, defect } => Some(match defect {
+            AggregateDefect::Distinct => "aggregate_distinct".to_string(),
+            AggregateDefect::OrderBy => "aggregate_order_by".to_string(),
+            AggregateDefect::Filter => "aggregate_filter".to_string(),
+            AggregateDefect::ArgumentCount(_) => "aggregate_argument_count".to_string(),
+            AggregateDefect::PartitionedInput => "aggregate_partitioned_input".to_string(),
+            AggregateDefect::UnsupportedFunction
+            | AggregateDefect::PartialStage
+            | AggregateDefect::MedianWithStatistical
+            | AggregateDefect::GroupingSets => format!("aggregate_{}", stable_identifier(function)),
+        }),
+        PlanBlocker::Window { function, defect } => match defect {
+            WindowDefect::UnsupportedFunction => Some(format!("window_function_{}", stable_identifier(function))),
+            WindowDefect::MissingOrderBy => {
+                Some(format!("window_function_{}_without_order", stable_identifier(function)))
+            },
+            WindowDefect::UnsupportedFrame(frame) => Some(format!("window_frame_{}", window_frame_identifier(frame))),
+            WindowDefect::Arguments => None,
+        },
+        PlanBlocker::ParentOperator(_) | PlanBlocker::DistributedAggregate(_) | PlanBlocker::Ordering { .. } => None,
     }
-    for child in plan.children() {
-        if let Some(category) = first_unsupported_operator_category(child.as_ref(), candidate_shape) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn first_join_operator_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if plan.downcast_ref::<HashJoinExec>().is_some() {
-        return Some("operator_hashjoin".to_string());
-    }
-    if plan.downcast_ref::<NestedLoopJoinExec>().is_some() {
-        return Some("operator_nestedloopjoin".to_string());
-    }
-    for child in plan.children() {
-        if let Some(category) = first_join_operator_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn native_report_operator_is_supported(name: &str, candidate_shape: &CandidateShape) -> bool {
-    if name == "SortExec" || name.starts_with("SortExec(") {
-        return true;
-    }
-    matches!(
-        name,
-        "DataSourceExec"
-            | "FilterExec"
-            | "ProjectionExec"
-            | "AggregateExec"
-            | "LocalLimitExec"
-            | "GlobalLimitExec"
-            | "CoalescePartitionsExec"
-            | "AlgeonNativeExec"
-            | "AlgeonNativeComposedExec"
-            | "AlgeonNativeGpuProducerExec"
-            | "NativeAdmissionExec"
-    ) || (name == "RepartitionExec" && candidate_shape.contains_operator("RepartitionExec"))
 }
 
 fn stable_operator_identifier(name: &str) -> String {
@@ -199,191 +165,6 @@ fn stable_operator_identifier(name: &str) -> String {
         return "sort_topk".to_string();
     }
     stable.strip_suffix("exec").map_or(stable.clone(), ToString::to_string)
-}
-
-fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
-        && let Some(category) = aggregate_semantic_modifier_category(aggregate)
-    {
-        return Some(category);
-    }
-
-    for child in plan.children() {
-        if let Some(category) = first_aggregate_category(child.as_ref())
-            && matches!(category.as_str(), "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by")
-        {
-            return Some(category);
-        }
-    }
-
-    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
-        for expr in aggregate.aggr_expr() {
-            let function = stable_identifier(expr.fun().name());
-            if !matches!(
-                function.as_str(),
-                "sum"
-                    | "min"
-                    | "max"
-                    | "count"
-                    | "avg"
-                    | "stddev"
-                    | "stddev_samp"
-                    | "stddev_pop"
-                    | "var_samp"
-                    | "var_sample"
-                    | "var"
-                    | "variance"
-                    | "var_pop"
-                    | "var_population"
-            ) {
-                return Some(format!("aggregate_{function}"));
-            }
-            if expr.expressions().len() != 1 {
-                return Some("aggregate_argument_count".to_string());
-            }
-        }
-    }
-
-    for child in plan.children() {
-        if let Some(category) = first_aggregate_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn first_global_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
-        && aggregate.group_expr().expr().is_empty()
-    {
-        return Some("aggregate_global".to_string());
-    }
-    for child in plan.children() {
-        if let Some(category) = first_global_aggregate_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<String> {
-    if aggregate.filter_expr().iter().flatten().next().is_some() {
-        return Some("aggregate_filter".to_string());
-    }
-    for expr in aggregate.aggr_expr() {
-        if expr.is_distinct() {
-            return Some("aggregate_distinct".to_string());
-        }
-        if !expr.order_bys().is_empty() {
-            return Some("aggregate_order_by".to_string());
-        }
-    }
-    None
-}
-
-fn first_window_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(window) = plan.downcast_ref::<WindowAggExec>()
-        && let Some(category) = window_expr_category(window.window_expr())
-    {
-        return Some(category);
-    }
-    if let Some(window) = plan.downcast_ref::<BoundedWindowAggExec>()
-        && let Some(category) = window_expr_category(window.window_expr())
-    {
-        return Some(category);
-    }
-    for child in plan.children() {
-        if let Some(category) = first_window_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn window_expr_category(window_exprs: &[Arc<dyn WindowExpr>]) -> Option<String> {
-    for window_expr in window_exprs {
-        if let Some(category) = single_window_expr_category(window_expr) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn single_window_expr_category(window_expr: &Arc<dyn WindowExpr>) -> Option<String> {
-    if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
-        return aggregate_window_category(plain.get_aggregate_expr().fun().name(), plain.get_window_frame());
-    }
-    if let Some(sliding) = window_expr.as_any().downcast_ref::<SlidingAggregateWindowExpr>() {
-        return aggregate_window_category(sliding.get_aggregate_expr().fun().name(), sliding.get_window_frame());
-    }
-    if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
-        let function = standard_window_function_identifier(standard);
-        if !matches!(function.as_str(), "rank" | "row_number") {
-            return Some(format!("window_function_{function}"));
-        }
-        if function == "rank" && standard.order_by().is_empty() {
-            return Some("window_function_rank_without_order".to_string());
-        }
-        return unsupported_window_frame_category(standard.get_window_frame(), true);
-    }
-    Some(format!("window_function_{}", stable_identifier(window_expr.name())))
-}
-
-fn aggregate_window_category(function: &str, frame: &WindowFrame) -> Option<String> {
-    let function = stable_identifier(function);
-    if !matches!(
-        function.as_str(),
-        "sum"
-            | "min"
-            | "max"
-            | "count"
-            | "avg"
-            | "stddev"
-            | "stddev_samp"
-            | "stddev_pop"
-            | "var_samp"
-            | "var_sample"
-            | "var"
-            | "variance"
-            | "var_pop"
-            | "var_population"
-    ) {
-        return Some(format!("aggregate_{function}"));
-    }
-    unsupported_window_frame_category(frame, false)
-}
-
-fn standard_window_function_identifier(standard: &StandardWindowExpr) -> String {
-    let function = standard.get_standard_func_expr();
-    stable_identifier(
-        function
-            .as_any()
-            .downcast_ref::<WindowUDFExpr>()
-            .map_or_else(|| function.name().to_string(), |expr| expr.fun().name().to_string())
-            .as_str(),
-    )
-}
-
-fn unsupported_window_frame_category(frame: &WindowFrame, standard_function: bool) -> Option<String> {
-    let whole_partition = is_whole_partition_window_frame(frame);
-    let cumulative = is_rows_unbounded_preceding_to_current_window_frame(frame);
-    let supported = if standard_function { true } else { whole_partition || cumulative };
-    if supported {
-        return None;
-    }
-    Some(format!("window_frame_{}", window_frame_identifier(frame)))
-}
-
-fn is_whole_partition_window_frame(frame: &WindowFrame) -> bool {
-    matches!(frame.units, WindowFrameUnits::Rows | WindowFrameUnits::Range)
-        && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if value.is_null())
-        && matches!(&frame.end_bound, WindowFrameBound::Following(value) if value.is_null())
-}
-
-fn is_rows_unbounded_preceding_to_current_window_frame(frame: &WindowFrame) -> bool {
-    frame.units == WindowFrameUnits::Rows
-        && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if value.is_null())
-        && matches!(frame.end_bound, WindowFrameBound::CurrentRow)
 }
 
 fn window_frame_identifier(frame: &WindowFrame) -> String {
@@ -417,30 +198,6 @@ fn scalar_window_bound_identifier(value: &ScalarValue) -> String {
         ScalarValue::UInt64(Some(value)) => value.to_string(),
         _ => stable_identifier(format!("{value:?}").as_str()).trim_matches('_').to_string(),
     }
-}
-
-fn first_literal_source_type_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if literal_source_plan(plan) {
-        for field in plan.schema().fields() {
-            if !is_supported_arrow_type(field.data_type()) {
-                return Some(format!("literal_source_type_{}", stable_data_type_identifier(field.data_type())));
-            }
-        }
-    }
-    for child in plan.children() {
-        if let Some(category) = first_literal_source_type_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
-}
-
-fn literal_source_plan(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<PlaceholderRowExec>().is_some()
-        || plan.downcast_ref::<EmptyExec>().is_some()
-        || plan
-            .downcast_ref::<DataSourceExec>()
-            .is_some_and(|source| source.data_source().downcast_ref::<MemorySourceConfig>().is_some())
 }
 
 fn stable_identifier(value: &str) -> String {

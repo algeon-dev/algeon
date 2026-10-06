@@ -168,7 +168,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("cost_threshold_multiplier"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
@@ -178,7 +178,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("small_build_side_bytes"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
@@ -188,7 +188,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("small_build_side_rows"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
@@ -201,7 +201,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("max_dimension_rows"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
@@ -214,7 +214,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     }
     .validate()
     .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidConfiguration);
     assert_eq!(error.fact_value("field"), Some("max_variant_selected_bytes"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }

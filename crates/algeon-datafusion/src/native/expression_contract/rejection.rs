@@ -68,6 +68,14 @@ pub(crate) enum ExpressionRejectionSubject {
         left: DataType,
         right: DataType,
     },
+    /// Unary operator spelling and the operand type the contract refused.
+    UnaryOperator {
+        operator: &'static str,
+        operand: DataType,
+    },
+    /// The type of an expression that the operator it feeds (an aggregate,
+    /// sort, window, or join key) cannot accept.
+    ValueType(DataType),
 }
 
 /// Structured rejection emitted by the shared expression contract.
@@ -97,6 +105,13 @@ impl ExpressionRejection {
             subject: ExpressionRejectionSubject::Unnamed,
             sql: None,
         }
+    }
+
+    /// Rejects `expr`, whose `data_type` the operator it feeds cannot accept.
+    pub(in crate::native) fn unsupported_value_type(expr: &Arc<dyn PhysicalExpr>, data_type: DataType) -> Self {
+        Self::unsupported_type(ExpressionCapability::PhysicalExpression)
+            .with_subject(ExpressionRejectionSubject::ValueType(data_type))
+            .at_expression(expr)
     }
 
     pub(super) fn with_subject(mut self, subject: ExpressionRejectionSubject) -> Self {
@@ -147,6 +162,10 @@ impl ExpressionRejection {
 
     pub(crate) const fn subject(&self) -> &ExpressionRejectionSubject {
         &self.subject
+    }
+
+    pub(crate) fn sql(&self) -> Option<&str> {
+        self.sql.as_deref()
     }
 }
 

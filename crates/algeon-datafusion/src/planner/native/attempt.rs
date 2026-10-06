@@ -32,10 +32,10 @@ use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode, Result},
     native::{
-        FooterScope, NativeLoweringResult, floating_statistical_aggregate_input_is_partitioned,
-        lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
-        native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
-        wrap_candidate_with_declared_output_ordering_sort,
+        FooterScope, NativeLoweringResult, first_join_operator, first_operator_without_native_counterpart,
+        floating_statistical_aggregate_input_is_partitioned, lower_count_only_physical_plan_to_native,
+        lower_physical_plan_to_native, native_plan_reproduces_declared_output_ordering,
+        reestablish_declared_output_ordering_if_needed, wrap_candidate_with_declared_output_ordering_sort,
     },
     native_exec::{
         AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, gpu_resident_producer,
@@ -289,20 +289,16 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
         plan.properties().output_ordering(),
     ) {
         Ok(native_plan) => native_plan,
-        Err(reason) => {
+        Err(rejection) => {
             let candidate = if ordered_output_sort_needed {
                 wrap_candidate_with_declared_output_ordering_sort(candidate_before_declared_output_sort)
             } else {
                 candidate_before_declared_output_sort
             };
+            let (reason, detail) = rejection.into_detail(None);
             return Ok(NativeOptimizationAttempt {
                 plan,
-                report: native_execution_rejection_report_for_candidate(
-                    candidate,
-                    reason,
-                    NotSupportedDetail::default(),
-                    &lowering.report,
-                ),
+                report: native_execution_rejection_report_for_candidate(candidate, reason, detail, &lowering.report),
                 native_optimizer,
                 source_diagnostics: lowering.source_diagnostics,
                 capability_contract: NativeCapabilityContractDiagnostics::default(),
@@ -346,14 +342,14 @@ pub(super) fn replace_lowered_root_or_keep_plan_for_sink(
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
 
     if native_execution_config.statistical_aggregate_execution_mode().is_datafusion_exact()
-        && floating_statistical_aggregate_input_is_partitioned(plan.as_ref())
+        && let Some(blocker) = floating_statistical_aggregate_input_is_partitioned(plan.as_ref())
     {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: native_execution_rejection_report_for_candidate(
                 candidate,
                 CapabilityReason::NativeExactStatisticalInputPartitioned,
-                NotSupportedDetail::default(),
+                NotSupportedDetail { blocker: Some(Box::new(blocker)), ..NotSupportedDetail::default() },
                 &lowering.report,
             ),
             native_optimizer,
@@ -424,10 +420,25 @@ fn rejected_attempt(
     lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let reason = rejection_capability_reason(rejected_plan, rejection);
+    // The admission rejection names a contract rule on the native plan. The
+    // DataFusion operator that has no counterpart names where in the query it
+    // arose.
+    let blocker = match reason {
+        CapabilityReason::NativeBoundedJoinUnsupported => first_join_operator(plan.as_ref()),
+        CapabilityReason::UnsupportedOperator => {
+            first_operator_without_native_counterpart(plan.as_ref(), &candidate.shape)
+        },
+        _ => None,
+    };
     let report = native_execution_rejection_report_for_candidate(
         candidate.clone(),
-        rejection_capability_reason(rejected_plan, rejection),
-        NotSupportedDetail { admission: Some(rejection.rejection().clone()), ..NotSupportedDetail::default() },
+        reason,
+        NotSupportedDetail {
+            blocker: blocker.map(Box::new),
+            admission: Some(rejection.rejection().clone()),
+            ..NotSupportedDetail::default()
+        },
         &lowering.report,
     );
     Ok(NativeOptimizationAttempt {
@@ -825,8 +836,8 @@ mod tests {
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
-        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
         assert_eq!(error.fact_value("reason"), Some("range_producer_rows_exceeds_runtime_build_cap"));
     }
@@ -842,8 +853,8 @@ mod tests {
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
-        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
         assert_eq!(error.fact_value("reason"), Some("large_threshold_below_small_threshold"));
     }
@@ -860,8 +871,8 @@ mod tests {
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
-        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("field"), Some("encoded_key_partial_low_cardinality_threshold_ppm"));
         assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
     }
@@ -876,8 +887,8 @@ mod tests {
         let error =
             native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
-        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
@@ -893,8 +904,8 @@ mod tests {
 
         let error = native_optimizer_options_for_execution(&optimizer_options, &execution_config).unwrap_err();
 
-        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_configuration"));
         assert_eq!(error.fact_value("field"), Some("cost_threshold_multiplier"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }

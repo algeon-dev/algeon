@@ -16,7 +16,12 @@ enum GpuGapFeature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExpectedGpuCoverageOutcome {
     Selected,
-    NotSupported { reason: CapabilityReason, unsupported_category: &'static str },
+    /// `blocking` is the kind and one-line text of what blocked the candidate.
+    NotSupported {
+        reason: CapabilityReason,
+        unsupported_category: &'static str,
+        blocking: (&'static str, &'static str),
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,15 +50,28 @@ const AGGREGATE_FILTER_CASES: &[GpuGapCase] = &[
     },
 ];
 
-const AGGREGATE_FUNCTION_CASES: &[GpuGapCase] = &[GpuGapCase {
-    id: "aggregate_approx_distinct",
-    feature: GpuGapFeature::AggregateFunction,
-    sql: "SELECT APPROX_DISTINCT(name) AS distinct_names FROM bench",
-    expected: ExpectedGpuCoverageOutcome::NotSupported {
-        reason: CapabilityReason::UnsupportedOperator,
-        unsupported_category: "aggregate_approx_distinct",
+const AGGREGATE_FUNCTION_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
+        id: "aggregate_approx_distinct",
+        feature: GpuGapFeature::AggregateFunction,
+        sql: "SELECT APPROX_DISTINCT(name) AS distinct_names FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "aggregate_approx_distinct",
+            blocking: ("aggregate_function", "aggregate function approx_distinct"),
+        },
     },
-}];
+    GpuGapCase {
+        id: "aggregate_approx_percentile_cont",
+        feature: GpuGapFeature::AggregateFunction,
+        sql: "SELECT APPROX_PERCENTILE_CONT(score, 0.5) AS median_score FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "aggregate_approx_percentile_cont",
+            blocking: ("aggregate_function", "aggregate function approx_percentile_cont"),
+        },
+    },
+];
 
 const WINDOW_CASES: &[GpuGapCase] = &[
     GpuGapCase {
@@ -88,6 +106,27 @@ const WINDOW_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedOperator,
             unsupported_category: "window_frame_rows_1_preceding_to_current_row",
+            blocking: ("window_function", "window function sum over frame ROWS BETWEEN 1 PRECEDING AND CURRENT ROW"),
+        },
+    },
+    GpuGapCase {
+        id: "window_lag_without_order_by",
+        feature: GpuGapFeature::Window,
+        sql: "SELECT id, LAG(payload) OVER (PARTITION BY key) AS prev_payload FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "window_function_lag_without_order",
+            blocking: ("window_function", "window function lag without ORDER BY"),
+        },
+    },
+    GpuGapCase {
+        id: "window_dense_rank",
+        feature: GpuGapFeature::Window,
+        sql: "SELECT id, DENSE_RANK() OVER (PARTITION BY key ORDER BY payload) AS r FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "window_function_dense_rank",
+            blocking: ("window_function", "window function dense_rank"),
         },
     },
 ];
@@ -112,6 +151,7 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedExpression,
             unsupported_category: "expression_try_cast_utf8view_to_float64",
+            blocking: ("cast", "try cast from Utf8View to Float64 in `TRY_CAST(name AS Float64)`"),
         },
     },
     // TRY_CAST whose source is not a string column (here a numeric column)
@@ -124,6 +164,18 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedExpression,
             unsupported_category: "expression_try_cast_int64_to_int16",
+            blocking: ("cast", "try cast from Int64 to Int16 in `TRY_CAST(payload AS Int16)`"),
+        },
+    },
+    // Casting a float to text has no native conversion.
+    GpuGapCase {
+        id: "float_to_string_cast",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, CAST(score AS VARCHAR) AS score_text FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedType,
+            unsupported_category: "type_cast_float64_to_utf8view",
+            blocking: ("cast", "cast from Float64 to Utf8View in `CAST(score AS Utf8View)`"),
         },
     },
     GpuGapCase {
@@ -193,6 +245,10 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedType,
             unsupported_category: "type",
+            blocking: (
+                "binary_operator",
+                "binary operator `%` over Decimal128(18, 2) and Decimal128(18, 2) in `CAST(payload AS Decimal128(18, 2)) % 2.00`",
+            ),
         },
     },
     GpuGapCase {
@@ -229,6 +285,17 @@ const ROOT_SOURCE_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedOperator,
             unsupported_category: "operator_explain",
+            blocking: ("operator", "operator ExplainExec"),
+        },
+    },
+    GpuGapCase {
+        id: "scalar_subquery_in_projection",
+        feature: GpuGapFeature::RootSource,
+        sql: "SELECT id, (SELECT COUNT(*) FROM bench) AS total FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "operator_scalarsubquery",
+            blocking: ("operator", "operator ScalarSubqueryExec"),
         },
     },
     GpuGapCase {
@@ -372,7 +439,7 @@ async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
                 assert_eq!(row.unsupported_category, None, "{}", case.id);
                 assert!(!row.rejected_before_execution, "{}", case.id);
             },
-            ExpectedGpuCoverageOutcome::NotSupported { reason, unsupported_category } => {
+            ExpectedGpuCoverageOutcome::NotSupported { reason, unsupported_category, .. } => {
                 assert_eq!(row.outcome, Some(CandidateOutcomeKind::NotSupported), "{}", case.id);
                 assert_eq!(row.reason_code.as_deref(), Some(reason.code()), "{}", case.id);
                 assert_eq!(row.unsupported_category.as_deref(), Some(unsupported_category), "{}", case.id);
@@ -424,16 +491,17 @@ fn assert_planning_report(case: &GpuGapCase, lowering: &NativeLoweringResult) {
             assert!(lowering.plan.is_some(), "{}", case.id);
             assert!(matches!(lowering.report.outcomes()[0], CandidateOutcome::Selected { .. }), "{}", case.id);
         },
-        ExpectedGpuCoverageOutcome::NotSupported { reason, .. } => {
+        ExpectedGpuCoverageOutcome::NotSupported { reason, blocking, .. } => {
             assert!(lowering.plan.is_none(), "{}", case.id);
             assert_eq!(lowering.selected_count(), 0, "{} outcomes={:?}", case.id, lowering.report.outcomes());
             assert_eq!(lowering.not_selected_count(), 1, "{} outcomes={:?}", case.id, lowering.report.outcomes());
-            assert!(
-                matches!(lowering.report.outcomes()[0], CandidateOutcome::NotSupported { capability_reason: actual, .. } if actual == reason),
-                "{} outcomes={:?}",
-                case.id,
-                lowering.report.outcomes()
-            );
+            let CandidateOutcome::NotSupported { capability_reason, detail, .. } = &lowering.report.outcomes()[0]
+            else {
+                panic!("{} outcomes={:?}", case.id, lowering.report.outcomes());
+            };
+            assert_eq!(*capability_reason, reason, "{} outcomes={:?}", case.id, lowering.report.outcomes());
+            let actual = detail.blocking().unwrap_or_else(|| panic!("{} names no blocking subject", case.id));
+            assert_eq!((actual.kind(), actual.text()), blocking, "{}", case.id);
         },
     }
 }

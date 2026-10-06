@@ -39,7 +39,7 @@ impl SourceSchedulerPolicy {
     pub fn validate(self) -> Result<()> {
         if self.max_source_reads_in_flight == 0 {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.source_scheduler_policy.validate",
                 "source scheduler max_source_reads_in_flight must be greater than zero",
             )

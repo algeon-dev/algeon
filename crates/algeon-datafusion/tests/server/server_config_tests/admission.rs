@@ -94,7 +94,26 @@ fn server_config_rejects_zero_resource_admission_values() {
     for field in [ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV] {
         let env = BTreeMap::from([(field, "0".to_string())]);
         let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration);
         assert!(error.to_string().contains(field), "{error}");
+    }
+}
+
+#[test]
+fn server_config_names_the_device_profile_key_in_configuration_errors() {
+    for (profile, field) in [
+        (
+            "device_ordinal = 0\nmemory_limit_bytes = 0\nbackend_reserve_bytes = 0\n",
+            "admission.device_profiles.memory_limit_bytes",
+        ),
+        ("device_ordinal = 0\nmemory_limit_bytes = 4096\n", "admission.device_profiles.backend_reserve_bytes"),
+        ("device_ordinal = 0\nmax_active_attempts = 0\n", "admission.device_profiles.max_active_attempts"),
+    ] {
+        let (_dir, env) = env_with_server_toml(&format!("[[admission.device_profiles]]\n{profile}"));
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidConfiguration, "{error}");
+        assert_eq!(error.fact_value("config_field"), Some(field), "{error}");
+        assert!(error.message().contains(field), "{error}");
     }
 }
 

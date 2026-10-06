@@ -724,6 +724,7 @@ pub query_planning::error::QueryErrorCode::HostMaterializationLimitExceeded
 pub query_planning::error::QueryErrorCode::Internal
 pub query_planning::error::QueryErrorCode::InternalInvariantViolation
 pub query_planning::error::QueryErrorCode::InvalidAttemptCorrelation
+pub query_planning::error::QueryErrorCode::InvalidConfiguration
 pub query_planning::error::QueryErrorCode::InvalidPlan
 pub query_planning::error::QueryErrorCode::MemoryReservationFailed
 pub query_planning::error::QueryErrorCode::QueryBudgetUnavailable
@@ -830,6 +831,7 @@ pub const fn query_planning::error::ResourceBoundary::new(&'static str, query_pl
 pub const fn query_planning::error::ResourceBoundary::with_resume(self, &'static str) -> Self
 pub const fn query_planning::error::ResourceBoundary::with_side(self, query_planning::plan::JoinSide) -> Self
 pub const fn query_planning::error::ResourceBoundary::with_stage(self, &'static str) -> Self
+pub fn query_planning::error::bytes_with_gib(u64) -> alloc::string::String
 pub fn query_planning::error::redact_uri_tokens(&str) -> alloc::string::String
 pub type query_planning::error::Result<T> = core::result::Result<T, query_planning::error::QueryError>
 pub mod query_planning::execution_contracts

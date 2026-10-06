@@ -32,7 +32,7 @@ impl LakehouseCacheFillConfig {
         }
         if self.acquire_timeout.is_zero() {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.lakehouse_cache.fill_config.validate",
                 "lakehouse cache fill acquire timeout must be greater than zero",
             )
@@ -41,7 +41,7 @@ impl LakehouseCacheFillConfig {
         }
         if self.max_concurrent_ops == 0 {
             return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
+                QueryErrorCode::InvalidConfiguration,
                 "query_engine.lakehouse_cache.fill_config.validate",
                 "lakehouse cache fill max concurrent operations must be greater than zero",
             )
@@ -318,7 +318,7 @@ fn bytes_fit(in_flight_bytes: u64, requested_bytes: u64, budget_bytes: u64) -> b
 fn validate_budget_bytes(budget_bytes: u64) -> Result<()> {
     if budget_bytes == 0 {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.lakehouse_cache.fill_budget.validate",
             "lakehouse cache fill budget bytes must be greater than zero",
         )

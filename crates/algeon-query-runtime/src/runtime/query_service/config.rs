@@ -135,7 +135,7 @@ impl Default for QueryExecutionConfig {
 fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<()> {
     if is_zero {
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            QueryErrorCode::InvalidConfiguration,
             "query_engine.query_service.config.validate",
             "query service config field must be greater than zero",
         )
