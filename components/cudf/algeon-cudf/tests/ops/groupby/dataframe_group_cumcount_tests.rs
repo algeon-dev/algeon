@@ -47,6 +47,24 @@ fn group_cumcount_supports_multi_column_group_keys() {
     assert_eq!(rank.to_vec_strict::<i32>().unwrap(), vec![0, 1, 0, 0, 1, 0]);
 }
 
+fn group_cumcount_treats_repeated_key_names_as_one_group_key() {
+    let runtime = sample_runtime();
+    let df = DataFrame::from_series([
+        ("partition", runtime.series(&[1i32, 1, 1, 2, 2, 3]).unwrap()),
+        ("tier", runtime.series(&["a", "a", "b", "b", "b", "b"]).unwrap()),
+        ("score", runtime.series(&[9.0f32, 8.0, 7.0, 6.0, 5.0, 4.0]).unwrap()),
+    ])
+    .unwrap();
+
+    let once = df.on(Exec::RETAINED).group_cumcount(["partition", "tier"]).unwrap();
+    let repeated = df.on(Exec::RETAINED).group_cumcount(["partition", "tier", "partition", "partition"]).unwrap();
+    let single_repeated = df.on(Exec::RETAINED).group_cumcount(["partition", "partition"]).unwrap();
+
+    assert_eq!(once.to_vec_strict::<i32>().unwrap(), vec![0, 1, 0, 0, 1, 0]);
+    assert_eq!(repeated.to_vec_strict::<i32>().unwrap(), vec![0, 1, 0, 0, 1, 0]);
+    assert_eq!(single_repeated.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 0, 1, 0]);
+}
+
 fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
     let runtime = sample_runtime();
     let df = DataFrame::from_series([
@@ -73,6 +91,10 @@ fn dataframe_group_cumcount_tests_cases() {
             group_cumcount_returns_zero_based_positions_for_each_sorted_group,
         ),
         ("group_cumcount_supports_multi_column_group_keys", group_cumcount_supports_multi_column_group_keys),
+        (
+            "group_cumcount_treats_repeated_key_names_as_one_group_key",
+            group_cumcount_treats_repeated_key_names_as_one_group_key,
+        ),
         (
             "group_cumcount_rejects_empty_group_keys_with_stable_contract",
             group_cumcount_rejects_empty_group_keys_with_stable_contract,

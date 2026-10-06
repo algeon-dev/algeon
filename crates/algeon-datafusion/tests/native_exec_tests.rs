@@ -1401,6 +1401,23 @@ fn row_number_beside_a_partition_aggregate_numbers_each_partition_from_one() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// An order key that repeats a partition key orders nothing inside a
+/// partition: every row of a partition is a peer, so `RANK()` is 1 throughout
+/// and `ROW_NUMBER()` still counts the partition's rows.
+#[test]
+fn rank_and_row_number_accept_an_order_key_that_is_also_the_partition_key() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-repeated-key");
+    for query in [
+        "SELECT p, RANK() OVER (PARTITION BY p ORDER BY p) AS r FROM input ORDER BY p, r",
+        "SELECT p, COUNT(*) AS n, MAX(rn) AS max_rn FROM \
+         (SELECT p, ROW_NUMBER() OVER (PARTITION BY p ORDER BY p) AS rn FROM input) GROUP BY p ORDER BY p",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// DataFusion drops the final sort because the window keeps its input's
 /// order, so the window's own output order is the query's result order.
 #[test]

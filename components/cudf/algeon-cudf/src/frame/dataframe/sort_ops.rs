@@ -374,31 +374,36 @@ impl FrameOps<'_> {
     }
 
     /// Return a zero-based per-group row number for already-sorted rows.
+    ///
+    /// The result depends only on the `keys` columns, so no other column is
+    /// read or copied. A key listed more than once groups as if listed once.
     pub fn group_cumcount<I, S>(&self, keys: I) -> Result<Series>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let operation = "dataframe::group_cumcount";
-        let df = self.df;
         let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
             keys.into_iter().map(|key| key.as_ref().to_string()).collect();
         require_non_empty_group_keys(keys.len(), operation)?;
 
-        let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
-        resolve_column_names(&df.columns, &key_refs, operation)?;
+        let mut key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = SmallVec::new();
+        for key in &keys {
+            if !key_refs.contains(&key.as_str()) {
+                key_refs.push(key.as_str());
+            }
+        }
+        resolve_column_names(&self.df.columns, &key_refs, operation)?;
 
-        let row_idx_name = unique_temp_column_name(df, "__cudf_group_cumcount_row_idx__");
-        let group_start_name = unique_temp_column_name(df, "__cudf_group_cumcount_group_start__");
-        let with_row_idx = self.with_column(&row_idx_name, self.row_positions()?)?;
+        let key_frame = self.df.select(key_refs.iter().copied())?;
+        let key_ops = key_frame.on(self.ctx);
+        let row_idx_name = unique_temp_column_name(&key_frame, "__cudf_group_cumcount_row_idx__");
+        let group_start_name = unique_temp_column_name(&key_frame, "__cudf_group_cumcount_group_start__");
+        let with_row_idx = key_ops.with_column(&row_idx_name, key_ops.row_positions()?)?;
 
         let first_rows = with_row_idx.on(Exec::RETAINED).drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepFirst).build(),
         )?;
-        let mut first_row_columns: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY + 1]> = SmallVec::new();
-        first_row_columns.extend(key_refs.iter().copied());
-        first_row_columns.push(row_idx_name.as_str());
-        let first_rows = first_rows.select(first_row_columns)?;
         let first_rows = first_rows
             .with_column(&group_start_name, first_rows.series(&row_idx_name)?)?
             .without_columns([row_idx_name.as_str()])?;

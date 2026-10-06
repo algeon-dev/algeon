@@ -374,6 +374,13 @@ fn capability_admission_rejects_row_number_over_unordered_input() {
 /// A row-number window over a literal `(p, o)` source, partitioned by `p`,
 /// ordered by `o` when `order_by`, over input sorted by `input_sort` when given.
 fn partitioned_row_number_plan(input_sort: Option<Vec<SortExpr>>, order_by: bool) -> QueryPlan {
+    let order_by = if order_by { vec![SortExpr::new(Expr::column("o"), false, false)] } else { Vec::new() };
+    partitioned_window_plan(input_sort, order_by)
+}
+
+/// A row-number window over a literal `(p, o)` source, partitioned by `p` and
+/// ordered by `order_by`, over input sorted by `input_sort` when given.
+fn partitioned_window_plan(input_sort: Option<Vec<SortExpr>>, order_by: Vec<SortExpr>) -> QueryPlan {
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false), Field::new("o", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(
@@ -391,7 +398,6 @@ fn partitioned_row_number_plan(input_sort: Option<Vec<SortExpr>>, order_by: bool
         Some(keys) => builder.add_sort(source, SortSpec::new(keys)).unwrap(),
         None => source,
     };
-    let order_by = if order_by { vec![SortExpr::new(Expr::column("o"), false, false)] } else { Vec::new() };
     let window = builder
         .add_window(
             input,
@@ -425,6 +431,25 @@ fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_par
         true,
     );
     assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
+}
+
+#[test]
+fn capability_admission_ignores_window_order_keys_that_repeat_a_partition_key() {
+    // `ORDER BY p` inside `PARTITION BY p` orders nothing, so input sorted by
+    // `p` alone is in the window's order, and an order key after it still counts.
+    let by = |column: &str| SortExpr::new(Expr::column(column), false, false);
+    let sorted_by_p = || Some(vec![by("p")]);
+
+    let plan = partitioned_window_plan(sorted_by_p(), vec![by("p")]);
+    assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
+
+    let plan = partitioned_window_plan(Some(vec![by("p"), by("o")]), vec![by("p"), by("o")]);
+    assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
+
+    let plan = partitioned_window_plan(sorted_by_p(), vec![by("p"), by("o")]);
+    let decision = admit_default(&plan).expect("window admission should not error");
+    let projection = decision.rejection().expect("`o` is not carried by input sorted by `p` alone");
+    assert_eq!(projection.reason, Reason::WindowInputOrderingNotEstablished);
 }
 
 #[test]

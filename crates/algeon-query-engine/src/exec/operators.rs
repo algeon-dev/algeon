@@ -348,10 +348,24 @@ fn execute_partition_window_aggregate(
         .iter()
         .map(|expr| lower_column_expr(expr, "query_engine.window.aggregate.merge_key"))
         .collect::<Result<Vec<_>>>()?;
+    let aggregate_aliases = node
+        .spec
+        .functions
+        .iter()
+        .filter_map(|function| match function {
+            WindowFunction::Aggregate { output, frame: WindowFrame::WholePartition, .. } => Some(output.name().clone()),
+            WindowFunction::Aggregate { .. }
+            | WindowFunction::Rank { .. }
+            | WindowFunction::RowNumber { .. }
+            | WindowFunction::LagLead { .. } => None,
+        })
+        .collect::<Vec<_>>();
     let exec_runtime = context.runtime()?;
     let overrides = exec_runtime.exec();
     // The join that broadcasts each partition's aggregate back to its rows
     // emits them in hash-table order, so a row index restores input order.
+    // Only the keys and the row index join, so payload columns are neither
+    // gathered by the join nor reordered by the restoring sort.
     let row_index_name = unique_temp_column_name(&frame, "__algeon_native_window_aggregate_row_index");
     let row_index_series = frame.on(Exec::RETAINED).row_positions().map_err(|error| {
         cudf_query_error(
@@ -360,13 +374,16 @@ fn execute_partition_window_aggregate(
             error,
         )
     })?;
-    let indexed = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
-        cudf_query_error(
-            "query_engine.window.aggregate.row_index",
-            "failed to append partition aggregate window row index",
-            error,
-        )
-    })?;
+    let indexed = frame
+        .select(distinct_names(keys.iter().cloned()))
+        .and_then(|keyed| keyed.with_column(row_index_name.as_str(), row_index_series))
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.window.aggregate.row_index",
+                "failed to append partition aggregate window row index",
+                error,
+            )
+        })?;
     let merged = indexed
         .on(overrides)
         .merge(
@@ -380,17 +397,26 @@ fn execute_partition_window_aggregate(
                 error,
             )
         })?;
-    merged
-        .on(overrides)
-        .sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
-        .and_then(|frame| frame.without_columns([row_index_name.as_str()]))
+    let aligned = merged
+        .select(std::iter::once(row_index_name.as_str()).chain(aggregate_aliases.iter().map(String::as_str)))
+        .and_then(|outputs| {
+            outputs.on(overrides).sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
+        })
         .map_err(|error| {
             cudf_query_error(
                 "query_engine.window.aggregate.restore_order",
                 "failed to restore partition aggregate window input order",
                 error,
             )
-        })
+        })?;
+    attach_window_outputs(
+        frame,
+        &aligned,
+        &aggregate_aliases,
+        overrides,
+        "query_engine.window.aggregate.attach",
+        "failed to attach partition aggregate window outputs to input frame",
+    )
 }
 
 fn window_aggregate_schema(
@@ -444,7 +470,25 @@ fn execute_cumulative_window_aggregate(
     }
 
     let timer = Instant::now();
-    let mut temp_columns = Vec::new();
+    let cumulative = node
+        .spec
+        .functions
+        .iter()
+        .enumerate()
+        .filter_map(|(function_index, function)| match function {
+            WindowFunction::Aggregate {
+                function,
+                expr,
+                output,
+                frame: WindowFrame::RowsUnboundedPrecedingToCurrent,
+            } => Some((function_index, *function, expr, output.name())),
+            WindowFunction::Aggregate { .. }
+            | WindowFunction::Rank { .. }
+            | WindowFunction::RowNumber { .. }
+            | WindowFunction::LagLead { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
     let row_index_name = unique_temp_column_name(&frame, "__algeon_native_window_input_row_index");
     let row_index_series = frame.on(Exec::RETAINED).row_positions().map_err(|error| {
         cudf_query_error(
@@ -453,51 +497,75 @@ fn execute_cumulative_window_aggregate(
             error,
         )
     })?;
-    let mut working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
-        cudf_query_error(
-            "query_engine.window.cumulative.row_index",
-            "failed to append cumulative window row index",
-            error,
-        )
-    })?;
-    temp_columns.push(row_index_name.clone());
+    // The work frame below is dropped after the scans, so a synthesized
+    // global key needs no cleanup.
+    let (keyed, partition_keys) =
+        rank_partition_keys(context, frame.clone(), &node.spec.partition_by, &mut Vec::new())?;
+    let order_names = node
+        .spec
+        .order_by
+        .iter()
+        .map(|sort_expr| lower_column_expr(&sort_expr.expr, "query_engine.window.cumulative.order_key"))
+        .collect::<Result<Vec<_>>>()?;
 
-    let (with_partition_key, partition_keys) =
-        rank_partition_keys(context, working, &node.spec.partition_by, &mut temp_columns)?;
-    working = with_partition_key;
-
-    let mut sort_columns = partition_keys.clone();
-    let mut descending = vec![false; partition_keys.len()];
-    let mut nulls_first = vec![false; partition_keys.len()];
-    for sort_expr in &node.spec.order_by {
-        sort_columns.push(lower_column_expr(&sort_expr.expr, "query_engine.window.cumulative.order_key")?);
-        descending.push(sort_expr.descending);
-        nulls_first.push(sort_expr.nulls_first);
-    }
-    let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
-    working = working.on(overrides).sort_values(sort_columns, sort_options).map_err(|error| {
-        cudf_query_error("query_engine.window.cumulative.sort", "failed to sort cumulative window input", error)
-    })?;
-
-    for (function_index, function) in node.spec.functions.iter().enumerate() {
-        let WindowFunction::Aggregate { function, expr, output, frame: WindowFrame::RowsUnboundedPrecedingToCurrent } =
-            function
-        else {
-            continue;
-        };
-        let alias = output.name();
-        let scan_agg = cumulative_scan_agg(*function)?;
-        let value_name =
-            unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_value_{function_index}"));
-        let value_expr = lower_expr(expr)?.alias(value_name.as_str());
-        working = working.on(overrides).with_columns([value_expr]).map_err(|error| {
+    // The scans read only the keys and the value columns. Evaluating the value
+    // expressions before the sort keeps every payload column of `frame` out of
+    // the sort and the order-restoring sort below.
+    let value_names = cumulative
+        .iter()
+        .map(|(function_index, ..)| {
+            unique_temp_column_name(&keyed, &format!("__algeon_native_window_cumulative_value_{function_index}"))
+        })
+        .collect::<Vec<_>>();
+    let value_exprs = cumulative
+        .iter()
+        .zip(&value_names)
+        .map(|((_, _, expr, _), value_name)| Ok(lower_expr(expr)?.alias(value_name.as_str())))
+        .collect::<Result<Vec<_>>>()?;
+    let input_names =
+        distinct_names(partition_keys.iter().chain(&order_names).cloned().chain(
+            cumulative.iter().flat_map(|(_, _, expr, _)| expr.columns().map(|column| column.name().to_string())),
+        ));
+    let valued = keyed
+        .select(input_names)
+        .and_then(|inputs| inputs.with_column(row_index_name.as_str(), row_index_series))
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.window.cumulative.row_index",
+                "failed to append cumulative window row index",
+                error,
+            )
+        })?
+        .on(overrides)
+        .with_columns(value_exprs)
+        .map_err(|error| {
             cudf_query_error(
                 "query_engine.window.cumulative.value",
                 "failed to materialize cumulative window input expression",
                 error,
             )
         })?;
-        temp_columns.push(value_name.clone());
+
+    let mut sort_columns = partition_keys.clone();
+    let mut descending = vec![false; partition_keys.len()];
+    let mut nulls_first = vec![false; partition_keys.len()];
+    for (name, sort_expr) in order_names.iter().zip(&node.spec.order_by) {
+        sort_columns.push(name.clone());
+        descending.push(sort_expr.descending);
+        nulls_first.push(sort_expr.nulls_first);
+    }
+    let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
+    let sort_names =
+        distinct_names(sort_columns.iter().cloned().chain(value_names.iter().cloned()).chain([row_index_name.clone()]));
+    let mut working = valued
+        .select(sort_names)
+        .and_then(|sort_input| sort_input.on(overrides).sort_values(sort_columns, sort_options))
+        .map_err(|error| {
+            cudf_query_error("query_engine.window.cumulative.sort", "failed to sort cumulative window input", error)
+        })?;
+
+    for ((function_index, function, _, alias), value_name) in cumulative.iter().zip(&value_names) {
+        let scan_agg = cumulative_scan_agg(*function)?;
 
         let scan_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_scan_{function_index}"));
@@ -520,7 +588,6 @@ fn execute_cumulative_window_aggregate(
             )
             .with_fact("scan_column", scan_name.as_str())
         })?;
-        temp_columns.push(scan_name.clone());
 
         let valid_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_valid_{function_index}"));
@@ -532,7 +599,6 @@ fn execute_cumulative_window_aggregate(
                 error,
             )
         })?;
-        temp_columns.push(valid_name.clone());
 
         let seen_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_seen_{function_index}"));
@@ -554,7 +620,6 @@ fn execute_cumulative_window_aggregate(
             )
             .with_fact("seen_column", seen_name.as_str())
         })?;
-        temp_columns.push(seen_name.clone());
 
         let filled_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_filled_{function_index}"));
@@ -576,7 +641,6 @@ fn execute_cumulative_window_aggregate(
             )
             .with_fact("filled_column", filled_name.as_str())
         })?;
-        temp_columns.push(filled_name.clone());
 
         let output_expr = when(col(seen_name.as_str()).gt(0i32))
             .then(col(filled_name.as_str()))
@@ -592,10 +656,12 @@ fn execute_cumulative_window_aggregate(
         })?;
     }
 
-    working = working
-        .on(Exec::RETAINED)
-        .sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
-        .and_then(|frame| frame.without_columns(temp_columns.iter().map(String::as_str)))
+    let aliases = cumulative.iter().map(|(_, _, _, alias)| alias.to_string()).collect::<Vec<_>>();
+    let restored = working
+        .select(std::iter::once(row_index_name.as_str()).chain(aliases.iter().map(String::as_str)))
+        .and_then(|outputs| {
+            outputs.on(Exec::RETAINED).sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
+        })
         .map_err(|error| {
             cudf_query_error(
                 "query_engine.window.cumulative.cleanup",
@@ -603,8 +669,16 @@ fn execute_cumulative_window_aggregate(
                 error,
             )
         })?;
+    let output = attach_window_outputs(
+        frame,
+        &restored,
+        &aliases,
+        overrides,
+        "query_engine.window.cumulative.attach",
+        "failed to attach cumulative window output columns to input frame",
+    )?;
     metrics.add_operator_time(timer.elapsed());
-    Ok(working)
+    Ok(output)
 }
 
 fn cumulative_scan_agg(function: AggregateFunction) -> Result<ScanAgg> {
@@ -650,14 +724,12 @@ fn execute_rank_window(
 
     let partition_rank_name = unique_temp_column_name(&output, "__algeon_native_window_partition_rank");
     let peer_rank_name = unique_temp_column_name(&output, "__algeon_native_window_peer_rank");
-    let partition_rank =
-        output.on(Exec::RETAINED).group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
-            cudf_query_error("query_engine.window.rank.partition", "failed to compute partition row numbers", error)
-        })?;
-    let peer_rank =
-        output.on(Exec::RETAINED).group_cumcount(peer_keys.iter().map(String::as_str)).map_err(|error| {
-            cudf_query_error("query_engine.window.rank.peer", "failed to compute rank peer offsets", error)
-        })?;
+    let partition_rank = output.on(Exec::RETAINED).group_cumcount(&partition_keys).map_err(|error| {
+        cudf_query_error("query_engine.window.rank.partition", "failed to compute partition row numbers", error)
+    })?;
+    let peer_rank = output.on(Exec::RETAINED).group_cumcount(&peer_keys).map_err(|error| {
+        cudf_query_error("query_engine.window.rank.peer", "failed to compute rank peer offsets", error)
+    })?;
     output = output
         .with_column(partition_rank_name.as_str(), partition_rank)
         .and_then(|frame| frame.with_column(peer_rank_name.as_str(), peer_rank))
@@ -727,14 +799,9 @@ fn execute_row_number_window(
     output = with_partition_key;
 
     let partition_rank_name = unique_temp_column_name(&output, "__algeon_native_window_row_number_partition_rank");
-    let partition_rank =
-        output.on(Exec::RETAINED).group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
-            cudf_query_error(
-                "query_engine.window.row_number.partition",
-                "failed to compute partition row numbers",
-                error,
-            )
-        })?;
+    let partition_rank = output.on(Exec::RETAINED).group_cumcount(&partition_keys).map_err(|error| {
+        cudf_query_error("query_engine.window.row_number.partition", "failed to compute partition row numbers", error)
+    })?;
     output = output.with_column(partition_rank_name.as_str(), partition_rank).map_err(|error| {
         cudf_query_error("query_engine.window.row_number.columns", "failed to append row_number work column", error)
     })?;
@@ -799,8 +866,10 @@ fn execute_lag_lead_window(
     })?;
     let output_arrow_dtype = output_field.data_type().clone();
 
-    // 1. Append a stable row_index column so we can recover input row order
-    //    after libcudf's group-defined output order.
+    // The shift reads only the keys, the value expression and a row index, so
+    // the sort below runs on those columns and `frame` keeps its payload
+    // columns untouched. libcudf's grouped shift returns rows in group order;
+    // the row index restores input order.
     let row_index_name = unique_temp_column_name(&frame, "__algeon_native_window_lag_lead_row_index");
     let row_index_series = frame.on(Exec::RETAINED).row_positions().map_err(|error| {
         cudf_query_error(
@@ -809,43 +878,69 @@ fn execute_lag_lead_window(
             error,
         )
     })?;
-    let working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
-        cudf_query_error(
-            "query_engine.window.lag_lead.row_index",
-            "failed to append LAG / LEAD row index column",
-            error,
-        )
-    })?;
 
-    // 2. Materialize partition keys (or a synthesized global key).
-    let mut temp_columns: Vec<String> = Vec::new();
-    let (working, partition_keys) = rank_partition_keys(context, working, &node.spec.partition_by, &mut temp_columns)?;
+    // The work frame is dropped after the shift, so a synthesized global key
+    // needs no cleanup.
+    let (keyed, partition_keys) =
+        rank_partition_keys(context, frame.clone(), &node.spec.partition_by, &mut Vec::new())?;
+    let order_names = node
+        .spec
+        .order_by
+        .iter()
+        .map(|sort_expr| lower_column_expr(&sort_expr.expr, "query_engine.window.lag_lead.order_key"))
+        .collect::<Result<Vec<_>>>()?;
 
-    // 3. Sort working by (partition_keys, order_keys). row_index rides along.
+    let value_name = unique_temp_column_name(&keyed, "__algeon_native_window_lag_lead_value");
+    let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
+    let input_names = distinct_names(
+        partition_keys
+            .iter()
+            .chain(&order_names)
+            .cloned()
+            .chain(value_expr.columns().map(|column| column.name().to_string())),
+    );
+    let valued = keyed
+        .select(input_names)
+        .and_then(|inputs| inputs.with_column(row_index_name.as_str(), row_index_series))
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.window.lag_lead.row_index",
+                "failed to append LAG / LEAD row index column",
+                error,
+            )
+        })?
+        .on(overrides)
+        .with_columns([value_expr_cudf])
+        .map_err(|error| {
+            cudf_query_error(
+                "query_engine.window.lag_lead.value",
+                "failed to materialize LAG / LEAD value column",
+                error,
+            )
+        })?;
+
+    // Sort by (partition_keys, order_keys). row_index rides along.
     let mut sort_columns = partition_keys.clone();
     let mut descending = vec![false; partition_keys.len()];
     let mut nulls_first = vec![false; partition_keys.len()];
-    for sort_expr in &node.spec.order_by {
-        sort_columns.push(lower_column_expr(&sort_expr.expr, "query_engine.window.lag_lead.order_key")?);
+    for (name, sort_expr) in order_names.iter().zip(&node.spec.order_by) {
+        sort_columns.push(name.clone());
         descending.push(sort_expr.descending);
         nulls_first.push(sort_expr.nulls_first);
     }
     let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
-    let sorted = working.on(overrides).sort_values(sort_columns, sort_options).map_err(|error| {
-        cudf_query_error("query_engine.window.lag_lead.sort", "failed to sort LAG / LEAD window input", error)
-    })?;
+    let sort_names = distinct_names(sort_columns.iter().cloned().chain([value_name.clone(), row_index_name.clone()]));
+    let sorted = valued
+        .select(sort_names)
+        .and_then(|sort_input| sort_input.on(overrides).sort_values(sort_columns, sort_options))
+        .map_err(|error| {
+            cudf_query_error("query_engine.window.lag_lead.sort", "failed to sort LAG / LEAD window input", error)
+        })?;
 
-    // 4. Materialize the shifted value column on the sorted frame.
-    let value_name = unique_temp_column_name(&sorted, "__algeon_native_window_lag_lead_value");
-    let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
-    let sorted = sorted.on(overrides).with_columns([value_expr_cudf]).map_err(|error| {
-        cudf_query_error("query_engine.window.lag_lead.value", "failed to materialize LAG / LEAD value column", error)
-    })?;
-
-    // 5. Build fill scalars. The shifted value's fill is the user-supplied
-    //    default (or NULL of the output type). The row_index column is shifted
-    //    by 0, so its fill value is never observed; we still construct a
-    //    matching Int32 scalar so libcudf sees a well-typed pair.
+    // Build fill scalars. The shifted value's fill is the user-supplied
+    // default (or NULL of the output type). The row_index column is shifted
+    // by 0, so its fill value is never observed; we still construct a
+    // matching Int32 scalar so libcudf sees a well-typed pair.
     let value_fill = build_lag_lead_value_fill_scalar(context, default, &output_arrow_dtype)?;
     let row_index_fill = context.runtime()?.scalar(0i32).map_err(|error| {
         cudf_query_error(
@@ -884,8 +979,8 @@ fn execute_lag_lead_window(
         },
     };
 
-    // 6. Per-group shift the value column. The row_index column rides along
-    //    with offset 0 so we can re-sort by it to recover input order.
+    // Per-group shift of the value column. The row_index column rides along
+    // with offset 0 so we can re-sort by it to recover input order.
     //
     // SQL `PARTITION BY` groups NULL keys together, so we have to request
     // `include_null_keys` from cudf explicitly: `DataFrame::groupby`
@@ -906,16 +1001,18 @@ fn execute_lag_lead_window(
                 .with_fact("alias", alias)
         })?;
 
-    // 7. Sort the shift output by the shifted row index to recover input
-    //    row order, then peel off the shifted value column.
+    // Sort the shifted row index and value alone to recover input row order,
+    // then peel off the shifted value column.
     let shifted_row_index_column = format!("{row_index_name}_shift");
     let shifted_value_column = format!("{value_name}_shift");
     let restored = shifted
-        .on(overrides)
-        .sort_values(
-            [shifted_row_index_column.as_str()],
-            CudfSortOptions::new().with_descending(vec![false]).with_nulls_first(vec![false]).with_stable(true),
-        )
+        .select([shifted_row_index_column.as_str(), shifted_value_column.as_str()])
+        .and_then(|outputs| {
+            outputs.on(overrides).sort_values(
+                [shifted_row_index_column.as_str()],
+                CudfSortOptions::new().with_descending(vec![false]).with_nulls_first(vec![false]).with_stable(true),
+            )
+        })
         .map_err(|error| {
             cudf_query_error(
                 "query_engine.window.lag_lead.restore_order",
@@ -927,7 +1024,11 @@ fn execute_lag_lead_window(
         cudf_query_error("query_engine.window.lag_lead.extract", "failed to extract shifted LAG / LEAD column", error)
     })?;
 
-    let result = frame.with_column(alias, shifted_series).map_err(|error| {
+    // The shifted series lives on the runtime's stream and memory resource,
+    // while `frame` keeps the provenance of whatever produced it (a source
+    // chunk read under a stage budget token, for example). `with_column`
+    // without a context rejects that mix.
+    let result = frame.on(overrides).with_column(alias, shifted_series).map_err(|error| {
         cudf_query_error(
             "query_engine.window.lag_lead.attach",
             "failed to attach LAG / LEAD output column to input frame",
@@ -936,7 +1037,6 @@ fn execute_lag_lead_window(
         .with_fact("alias", alias)
     })?;
 
-    let _ = temp_columns;
     metrics.add_operator_time(timer.elapsed());
     Ok(result)
 }
@@ -1027,6 +1127,38 @@ fn rank_partition_keys(
     })?;
     temp_columns.push(key.clone());
     Ok((with_key, vec![key]))
+}
+
+/// Drops repeated names, keeping each first occurrence in place.
+fn distinct_names(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut distinct: Vec<String> = Vec::new();
+    for name in names {
+        if !distinct.contains(&name) {
+            distinct.push(name);
+        }
+    }
+    distinct
+}
+
+/// Adds the `aliases` columns of `outputs`, which must be row-aligned with
+/// `frame`, to `frame`. `frame` can carry a different stream or memory resource
+/// than `outputs` (a source chunk read under a stage budget token, for
+/// example), so the attach goes through the execution context, which moves the
+/// frame's columns into the output domain once.
+fn attach_window_outputs(
+    frame: DataFrame,
+    outputs: &DataFrame,
+    aliases: &[String],
+    overrides: Exec<'_>,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<DataFrame> {
+    aliases.iter().try_fold(frame, |attached, alias| {
+        outputs
+            .series(alias.as_str())
+            .and_then(|series| attached.on(overrides).with_column(alias.as_str(), series))
+            .map_err(|error| cudf_query_error(operation, message, error).with_fact("alias", alias.as_str()))
+    })
 }
 
 fn unique_temp_column_name(frame: &DataFrame, base: &str) -> String {
