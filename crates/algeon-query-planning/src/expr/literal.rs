@@ -132,6 +132,21 @@ impl LiteralValue {
             Self::Null(data_type) => data_type.clone(),
         }
     }
+
+    /// Zero of an integer type, or `None` for any other type.
+    pub(crate) fn integer_zero(data_type: &DataType) -> Option<Self> {
+        match data_type {
+            DataType::Int8 => Some(Self::Int8(0)),
+            DataType::Int16 => Some(Self::Int16(0)),
+            DataType::Int32 => Some(Self::Int32(0)),
+            DataType::Int64 => Some(Self::Int64(0)),
+            DataType::UInt8 => Some(Self::UInt8(0)),
+            DataType::UInt16 => Some(Self::UInt16(0)),
+            DataType::UInt32 => Some(Self::UInt32(0)),
+            DataType::UInt64 => Some(Self::UInt64(0)),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for LiteralValue {

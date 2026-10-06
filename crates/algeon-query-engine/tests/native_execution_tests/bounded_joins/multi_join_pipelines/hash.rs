@@ -1,6 +1,13 @@
 use std::sync::Arc;
 
-use query_planning::expr::ColumnRef;
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::{
+    expr::ColumnRef,
+    optimizer::{
+        DynamicFilterRouteDiscoveryOptions, LocalParquetSourceReuseOptions, LocalParquetSourceReuseRejectedReason,
+        NativeOptimizerOptions, optimize_query_plan,
+    },
+};
 
 use super::*;
 
@@ -184,6 +191,133 @@ fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe
     };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
     assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("east"), Some("east"), Some("west")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_joins_differently_filtered_scans_of_one_source_without_widening_them() {
+    let dir = unique_temp_dir("query-engine-bounded-filtered-scan-branches");
+    let events_path = dir.join("events.parquet");
+    let rows = 2_000_000_i64;
+    let events_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("p1", DataType::Int64, false),
+        Field::new("p2", DataType::Int64, false),
+        Field::new("kind", DataType::Int32, false),
+    ]));
+    let kind_of = |row: i64| match row % 100 {
+        0 => 1,
+        1 => 2,
+        _ => 0,
+    };
+    let batch = RecordBatch::try_new(
+        Arc::clone(&events_schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row % 1000))),
+            Arc::new(Int64Array::from_iter_values(0..rows)),
+            Arc::new(Int64Array::from_iter_values(0..rows)),
+            Arc::new(Int32Array::from_iter_values((0..rows).map(kind_of))),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(&events_path, Arc::clone(&events_schema), batch, 125_000);
+    let dim_schema =
+        Arc::new(Schema::new(vec![Field::new("dk", DataType::Int64, false), Field::new("dw", DataType::Int64, false)]));
+    let output_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false), Field::new("dw", DataType::Int64, true)]));
+
+    // Each branch reads the events with its own reader predicate and joins a
+    // dimension, like two CTEs over one fact table with different filters.
+    let mut builder = QueryPlanBuilder::new();
+    let mut joins = Vec::new();
+    let mut variant_bytes = Vec::new();
+    for kind in [1, 2] {
+        let read_columns = events_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+        let events = LocalParquetSource::from_path(&events_path, Arc::clone(&events_schema), read_columns)
+            .with_reader_predicate(Expr::binary(
+                Expr::column("kind"),
+                BinaryOp::Eq,
+                Expr::literal(LiteralValue::Int32(kind)),
+            ));
+        variant_bytes
+            .push(events.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes()));
+        let events = builder.add_source(SourceNode::LocalParquet(events));
+        let dim_path = dir.join(format!("dim{kind}.parquet"));
+        let dim_batch = RecordBatch::try_new(
+            Arc::clone(&dim_schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..1000)), Arc::new(Int64Array::from_iter_values(0..1000))],
+        )
+        .unwrap();
+        write_record_batch_with_row_group_rows(&dim_path, Arc::clone(&dim_schema), dim_batch, 1000);
+        let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
+            &dim_path,
+            Arc::clone(&dim_schema),
+            vec!["dk".to_string(), "dw".to_string()],
+        )));
+        let join = builder
+            .add_join(
+                events,
+                dim,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "dk", "dk"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "dw", "dw"), "dw"),
+                ])
+                .with_build_side(JoinSide::Right),
+                Arc::clone(&output_schema),
+            )
+            .unwrap();
+        joins.push(join);
+    }
+    let union = builder.add_union(joins, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
+
+    // Merging the branches would read all events once without either reader
+    // predicate. The cap sits below that read, as 500 MiB sits below a
+    // production fact table, so reuse must keep the filtered scans.
+    let cap = 16 * 1024 * 1024;
+    assert!(variant_bytes.iter().all(|bytes| bytes.is_some_and(|bytes| bytes > cap)));
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions {
+            max_variant_selected_bytes: cap,
+            ..LocalParquetSourceReuseOptions::default()
+        },
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
+    let optimized = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+    let reuse = &optimized.diagnostics.local_parquet_source_reuse;
+    assert_eq!(reuse.applied_count, 0);
+    assert!(
+        reuse
+            .candidates
+            .iter()
+            .any(|candidate| candidate.rejected_reason
+                == Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge))
+    );
+
+    // The grant holds the filtered rows but not the decoded events table.
+    let result = execute_query_plan(&backend_context_with_grant(64 * 1024 * 1024), &optimized.plan)
+        .unwrap_or_else(|error| panic!("the filtered branches fit the grant: {error}"));
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let expected_keys = (0..rows).filter(|row| kind_of(*row) != 0).map(|row| row % 1000).collect::<Vec<_>>();
+    let keys = int64_array(batch, 0);
+    let weights = int64_array(batch, 1);
+    assert_eq!(batch.num_rows(), expected_keys.len());
+    assert_eq!(keys.values().iter().sum::<i64>(), expected_keys.iter().sum::<i64>());
+    assert!((0..batch.num_rows()).all(|row| weights.value(row) == keys.value(row)));
 
     fs::remove_dir_all(dir).unwrap();
 }

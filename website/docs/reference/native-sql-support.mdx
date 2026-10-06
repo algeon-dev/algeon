@@ -138,8 +138,21 @@ Native aggregate functions are `sum`, `min`, `max`, `count`, `avg`, `median`,
 distinct aggregates are not. Ordered aggregate arguments are not supported.
 
 Aggregate mode matters. AVG uses explicit sum/count state for partial/final
-execution. Median is single-stage, and plans that mix median with floating
-statistical aggregates are rejected.
+execution and divides as DataFusion does: a `Decimal128` average truncates
+toward zero at its output scale. AVG over a `Decimal128` argument with
+precision above 25 is not native, because DataFusion sums it as `Decimal256`.
+Median is single-stage, and plans that mix median with floating statistical
+aggregates are rejected.
+
+An aggregate containing `COUNT(DISTINCT expression)` reads its whole input
+before grouping, and that input must fit the query's device-memory grant. The
+native optimizer splits such an aggregate when every distinct count reads the
+same expression without `FILTER`, the remaining aggregates are `sum`, `min`,
+`max`, `count` or `avg`, and there are no grouping sets. The first grouping
+uses the keys plus that expression and holds one row for each distinct pair;
+the second uses the keys alone. Both merge state across input chunks, and an
+`avg` keeps its sum and count until the second grouping finishes. A `median`
+or statistical aggregate beside the distinct count keeps the whole-input form.
 
 Floating statistical aggregates (`stddev` and `var` variants) run under the
 GPU-tolerant policy by default, so their results can differ from DataFusion.

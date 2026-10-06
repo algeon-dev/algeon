@@ -2,12 +2,13 @@ use std::time::Instant;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
+use query_planning::prepared::avg_sum_state_type;
 
 use super::{
-    AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
-    Exec, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame, LiteralValue,
-    QueryError, QueryErrorCode, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
-    budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, global_count_star_expr,
+    AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, CudfScalar, DataFrame, Exec,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame, QueryError, QueryErrorCode,
+    ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, budgeted_value,
+    cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, global_count_star_expr,
     global_valid_count_state_alias, lower_column_expr, lower_expr, validate_avg_output_fields,
     validate_global_aggregate_capability,
 };
@@ -17,9 +18,7 @@ mod casts;
 mod count;
 mod state;
 
-pub(in crate::exec) use avg::{
-    avg_sum_state_data_type, finalize_avg_output_columns, finalize_avg_output_columns_with_budget,
-};
+pub(in crate::exec) use avg::{finalize_avg_output_columns, finalize_avg_output_columns_with_budget};
 pub(in crate::exec) use casts::{
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget,
@@ -71,7 +70,7 @@ fn execute_global_aggregate_impl(
                 let state = AvgStateAliases::for_aggregate_index(index);
                 let field = output_schema.field(index);
                 let input_type = global_aggregate_frame_input_data_type(&frame, &expr.expr)?;
-                let sum_state_type = avg_sum_state_data_type(&input_type, field.data_type())?;
+                let sum_state_type = avg_sum_state_type(&input_type, field.data_type())?;
                 columns.push((
                     state.sum().to_string(),
                     reduce_global_aggregate_column_impl(

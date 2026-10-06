@@ -21,12 +21,13 @@
 use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::prepared::{AVG_COUNT_STATE_TYPE, avg_sum_state_type};
 
 use super::{
     AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BoundedExecutionAttempt, Expr,
-    Field, GpuDataFrame, PartialAggregateShape, QueryError, QueryErrorCode, Result, avg_sum_state_data_type,
-    cudf_query_error, execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr,
-    lower_named_column_expr, partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
+    Field, GpuDataFrame, PartialAggregateShape, QueryError, QueryErrorCode, Result, cudf_query_error,
+    execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr, lower_named_column_expr,
+    partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
 };
 use crate::materialization_sizing::JoinOutputColumnUpperBoundInput;
 
@@ -204,12 +205,12 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     .with_fact("arrow_error", error.to_string())
                 })?;
                 columns.push(JoinOutputColumnUpperBoundInput {
-                    data_type: avg_sum_state_data_type(&input_type, output_field.data_type())?,
+                    data_type: avg_sum_state_type(&input_type, output_field.data_type())?,
                     input_max_string_length_bytes: None,
                     input_total_string_bytes: None,
                 });
                 columns.push(JoinOutputColumnUpperBoundInput {
-                    data_type: ArrowDataType::Int64,
+                    data_type: AVG_COUNT_STATE_TYPE,
                     input_max_string_length_bytes: None,
                     input_total_string_bytes: None,
                 });

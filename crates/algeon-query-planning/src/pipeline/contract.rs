@@ -230,8 +230,9 @@ impl ContractGraph<'_> {
     ///
     /// A source that feeds a join, or that applies dynamic-filter routes for
     /// its only consumer, reads as a join leaf. A deferred output stays a
-    /// stream shaped for the join inputs and aggregates it feeds; any other
-    /// source reads into one frame.
+    /// stream shaped for the join inputs and aggregates it feeds. A deferred
+    /// output that reaches neither feeds only unary chains, and the last unary
+    /// stage of each chain settles it. Any other source reads into one frame.
     fn source_read_plan(&self, task: &PipelineTask) -> SourceReadPlan {
         let (Some(node_id), Some(output)) =
             (task.plan_node(), self.single_output(task).and_then(|output| self.resource(output)))
@@ -251,8 +252,10 @@ impl ContractGraph<'_> {
         let routes = self.source_has_dynamic_filter_routes(node_id);
         let (output, prefetch_eligible) = if !deferred && (feeds_join || (routes && !multiple_consumers)) {
             (SourceOutput::JoinLeafFrame { adjacent_stages: join_adjacent }, false)
-        } else if !deferred || (!feeds_join && !feeds_aggregate && !routes) {
+        } else if !deferred {
             (SourceOutput::Frame, false)
+        } else if !feeds_join && !feeds_aggregate {
+            (SourceOutput::UnaryChainStream, false)
         } else {
             let adjacent_stages = join_adjacent || aggregate_adjacent;
             let chunk_hints = AggregateInputHints {
@@ -507,7 +510,7 @@ impl ContractGraph<'_> {
         };
         match producer.kind() {
             PipelineTaskKind::SourceRead if self.deferrable_source_read(producer) => {
-                if self.consumers_accept(resource, AcceptedInputForm::FrameStreamOrSourceStream) {
+                if self.consumers_accept_source_stream(resource) {
                     ResidentDataForm::SourceStream
                 } else {
                     ResidentDataForm::Frame
@@ -515,7 +518,7 @@ impl ContractGraph<'_> {
             },
             PipelineTaskKind::Unary
                 if self.unary_input_form(producer) == ResidentDataForm::SourceStream
-                    && self.consumers_accept(resource, AcceptedInputForm::FrameStreamOrSourceStream) =>
+                    && self.consumers_accept_source_stream(resource) =>
             {
                 ResidentDataForm::SourceStream
             },
@@ -585,15 +588,20 @@ impl ContractGraph<'_> {
         }
     }
 
-    fn consumers_accept(&self, resource: &ResidentResource, form: AcceptedInputForm) -> bool {
+    /// Whether every consumer can take this resource as a deferred source
+    /// stream.
+    ///
+    /// A unary consumer re-stages the stream whatever reads its own output:
+    /// that output stays a source stream only for consumers that pull one,
+    /// and otherwise the unary task reads the source chunk by chunk through
+    /// its stages and keeps only the stage outputs. A deferred read thus
+    /// passes through a chain of filters and projections even when the chain
+    /// ends at a consumer that takes only frames.
+    fn consumers_accept_source_stream(&self, resource: &ResidentResource) -> bool {
         !resource.consumers().is_empty()
             && resource.consumers().iter().all(|consumer| {
-                self.task(*consumer).is_some_and(|consumer| match consumer.kind() {
-                    PipelineTaskKind::Unary => self
-                        .single_output(consumer)
-                        .and_then(|output| self.resource(output))
-                        .is_some_and(|output| self.consumers_accept(output, form)),
-                    _ => consumer.accepted_input_form() >= form,
+                self.task(*consumer).is_some_and(|consumer| {
+                    consumer.accepted_input_form() >= AcceptedInputForm::FrameStreamOrSourceStream
                 })
             })
     }

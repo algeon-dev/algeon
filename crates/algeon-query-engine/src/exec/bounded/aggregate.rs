@@ -231,7 +231,7 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         },
     };
 
-    let (prepared, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
+    let (prepared, spec, prepared_input_schema) = match prepare_aggregate_input_frame(
         execution.context(),
         input.into_frame(),
         input_schema,

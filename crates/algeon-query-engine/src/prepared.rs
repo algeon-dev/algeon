@@ -27,7 +27,8 @@ mod aggregate;
 
 pub(crate) use aggregate::{
     LoweredAggregate, lower_aggregate_function, lower_aggregate_spec, lower_aggregate_spec_keys,
-    lower_final_aggregate_spec, lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec,
+    lower_avg_state_aggregations, lower_final_aggregate_spec, lower_partial_aggregate_spec,
+    lower_single_stage_grouped_aggregate_spec,
 };
 pub(crate) use query_planning::prepared::{
     AvgStateAliases, DataFusionExactHostAccumulator, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,

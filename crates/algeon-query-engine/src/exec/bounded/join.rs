@@ -48,7 +48,8 @@ pub(super) use leaf::{
     BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
     bounded_join_leaf_local_parquet_source_frame_stream, materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
-    plan_bounded_shared_join_aggregate_local_parquet_source_stream, stream_bounded_join_leaf_local_parquet_source,
+    plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+    plan_bounded_unary_chain_local_parquet_source_stream, stream_bounded_join_leaf_local_parquet_source,
     stream_bounded_join_leaf_local_parquet_source_chunks, stream_bounded_join_leaf_local_parquet_source_serial,
     try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };

@@ -49,6 +49,24 @@ impl SourceTaskMemoryModel {
         }
     }
 
+    /// Source -> source-local unary stages -> one frame concatenated from the
+    /// stage outputs, for consumers that take only frames.
+    ///
+    /// The decoded chunk and its stage output are live next to the retained
+    /// stage outputs of earlier chunks, and the final concatenation copies
+    /// those outputs once more. The last two regions grow with the stage
+    /// output rather than the chunk, so their single slots assume stages that
+    /// do not widen their input.
+    pub const fn unary_chain_frame() -> Self {
+        Self {
+            source_read_slots: 1,
+            source_adjacent_operator_slots: 1,
+            downstream_operator_slots: 1,
+            retained_output_slots: 1,
+            source_read_preflight_slack_slots: 1,
+        }
+    }
+
     /// Returns live slots reserved for the source read itself.
     pub const fn source_read_slots(self) -> u64 {
         self.source_read_slots

@@ -1,10 +1,10 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::{
-    AggregateExpr, AggregateFunction, AggregateJoinLineage, AggregateJoinPushdownRejectedReason, AggregateNode,
-    AggregateSpec, CaseWhen, DataType, Expr, Field, JoinNode, JoinSide, JoinType, LiteralValue, NodeId,
-    ProjectionOutput, Schema, SchemaRef, avg_pushdown_sum_state_data_type, join_side_index, join_side_introduces_nulls,
-    simple_projection_column,
+    AVG_COUNT_STATE_TYPE, AggregateExpr, AggregateFunction, AggregateJoinLineage, AggregateJoinPushdownRejectedReason,
+    AggregateNode, AggregateSpec, Expr, Field, JoinNode, JoinSide, JoinType, NodeId, ProjectionOutput, Schema,
+    SchemaRef, avg_declared_sum_state_type, avg_partial_aggregates, join_side_index, join_side_introduces_nulls,
+    simple_projection_column, zero_filled_count_expr,
 };
 
 #[derive(Clone)]
@@ -152,22 +152,23 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn preaggregate_measure_states
                     }]
                 },
                 AggregateFunction::Avg => {
-                    if aliases.len() != 2 {
+                    let [sum_alias, count_alias] = aliases.as_slice() else {
                         return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
-                    }
-                    let sum_alias = aliases[0].clone();
-                    let count_alias = aliases[1].clone();
-                    let sum_type = avg_pushdown_sum_state_data_type(input_field.data_type(), output_field.data_type())?;
+                    };
+                    let sum_type = avg_declared_sum_state_type(input_field.data_type(), output_field.data_type())
+                        .map_err(|_| AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?;
+                    let [sum, count] =
+                        avg_partial_aggregates(&Expr::column(measure_input_alias.as_str()), sum_alias, count_alias);
                     vec![
                         PreAggregateStateColumn {
-                            alias: sum_alias.clone(),
-                            preaggregate_function: AggregateFunction::Sum,
-                            field: Field::new(sum_alias.as_str(), sum_type, true),
+                            field: Field::new(sum.alias.as_str(), sum_type, true),
+                            alias: sum.alias,
+                            preaggregate_function: sum.function,
                         },
                         PreAggregateStateColumn {
-                            alias: count_alias.clone(),
-                            preaggregate_function: AggregateFunction::Count,
-                            field: Field::new(count_alias.as_str(), DataType::Int64, false),
+                            field: Field::new(count.alias.as_str(), AVG_COUNT_STATE_TYPE, false),
+                            alias: count.alias,
+                            preaggregate_function: count.function,
                         },
                     ]
                 },
@@ -337,13 +338,10 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn coalesce_preagg_projection_
     append_group_projection_outputs(&mut outputs, aggregate, aggregate_output_schema)?;
 
     for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
-        let zero = zero_literal_for_data_type(state.field.data_type())?;
         let field = Field::new(state.alias.as_str(), state.field.data_type().clone(), state.field.is_nullable());
-        let coalesced = Expr::case(
-            vec![CaseWhen::new(Expr::is_null(Expr::column(state.alias.as_str())), Expr::literal(zero))],
-            Expr::column(state.alias.as_str()),
-        )
-        .alias(state.alias.as_str());
+        let coalesced = zero_filled_count_expr(Expr::column(state.alias.as_str()), state.field.data_type())
+            .map_err(|_| AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?
+            .alias(state.alias.as_str());
         outputs.push(ProjectionOutput::new(coalesced, field));
     }
     Ok(outputs)
@@ -365,22 +363,6 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn append_group_projection_out
         outputs.push(ProjectionOutput::new(Expr::column(column.name()), field));
     }
     Ok(())
-}
-
-pub(in crate::optimizer::aggregate_join_pushdown) fn zero_literal_for_data_type(
-    data_type: &DataType,
-) -> Result<LiteralValue, AggregateJoinPushdownRejectedReason> {
-    match data_type {
-        DataType::Int8 => Ok(LiteralValue::Int8(0)),
-        DataType::Int16 => Ok(LiteralValue::Int16(0)),
-        DataType::Int32 => Ok(LiteralValue::Int32(0)),
-        DataType::Int64 => Ok(LiteralValue::Int64(0)),
-        DataType::UInt8 => Ok(LiteralValue::UInt8(0)),
-        DataType::UInt16 => Ok(LiteralValue::UInt16(0)),
-        DataType::UInt32 => Ok(LiteralValue::UInt32(0)),
-        DataType::UInt64 => Ok(LiteralValue::UInt64(0)),
-        _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
-    }
 }
 
 pub(in crate::optimizer::aggregate_join_pushdown) fn preaggregate_state_aliases(

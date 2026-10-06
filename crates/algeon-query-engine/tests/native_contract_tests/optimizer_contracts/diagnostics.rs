@@ -6,6 +6,10 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
             considered_count: 1,
             ..Default::default()
         },
+        single_distinct_aggregate_split: SingleDistinctAggregateSplitDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
         projection_simplification: ProjectionSimplificationDiagnostics { considered_count: 1, ..Default::default() },
         semijoin_reduction: SemijoinReductionDiagnostics { considered_count: 1, ..Default::default() },
         outer_join_null_rejection: OuterJoinNullRejectionDiagnostics { considered_count: 1, ..Default::default() },
@@ -21,10 +25,7 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
             considered_count: 1,
             ..Default::default()
         },
-        shared_resident_extraction: SharedResidentExtractionDiagnostics {
-            considered_count: 1,
-            ..Default::default()
-        },
+        shared_resident_extraction: SharedResidentExtractionDiagnostics { considered_count: 1, ..Default::default() },
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryDiagnostics {
             considered_count: 1,
             ..Default::default()
@@ -32,13 +33,14 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
     };
 
     let rows = diagnostics.stable_rule_rows();
-    assert_eq!(rows.len(), 13);
+    assert_eq!(rows.len(), 14);
     let rendered = rows.join(";");
     for rule_name in [
         PROJECTION_SIMPLIFICATION_RULE_NAME,
         SEMIJOIN_REDUCTION_RULE_NAME,
         JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
         COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
+        SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME,
         OUTER_JOIN_NULL_REJECTION_RULE_NAME,
         JOIN_FILTER_REASSOCIATION_RULE_NAME,
         DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
@@ -78,17 +80,19 @@ fn native_optimizer_stable_rule_rows_project_count_non_null_pruning_candidates()
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(estimated_local_source_with_fields("orders", &["o_custkey", "o_orderkey"], 1_024, 10));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("o_custkey")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
-        ),
-        Arc::new(Schema::new(vec![
-            Field::new("o_custkey", DataType::Int32, false),
-            Field::new("c_count", DataType::Int64, false),
-        ])),
-    ).unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("o_custkey")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+            ),
+            Arc::new(Schema::new(vec![
+                Field::new("o_custkey", DataType::Int32, false),
+                Field::new("c_count", DataType::Int64, false),
+            ])),
+        )
+        .unwrap();
 
     let diagnostics = NativeOptimizerDiagnostics {
         count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics {
@@ -120,18 +124,20 @@ fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates(
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source("left", "left_key", 1_024, 10));
     let right = builder.add_source(estimated_local_source("right", "right_key", 1_024, 10));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "left_key", "left_key"),
-                ColumnRef::input(1, "right_key", "right_key"),
-            )],
-        ),
-        schema(&["left_key", "right_key"]),
-    ).unwrap();
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "left_key", "left_key"),
+                    ColumnRef::input(1, "right_key", "right_key"),
+                )],
+            ),
+            schema(&["left_key", "right_key"]),
+        )
+        .unwrap();
 
     let diagnostics = NativeOptimizerDiagnostics {
         aggregate_join_pushdown: AggregateJoinPushdownDiagnostics {
@@ -175,7 +181,7 @@ fn native_optimizer_stable_rule_rows_project_local_source_reuse_options() {
                 branch_filter_count: 1,
                 max_variant_selected_bytes: 500 * 1024 * 1024,
                 applied: false,
-                rejected_reason: Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge),
+                rejected_reason: Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge),
             }],
         },
         ..Default::default()
@@ -184,7 +190,7 @@ fn native_optimizer_stable_rule_rows_project_local_source_reuse_options() {
     assert_eq!(
         diagnostics.stable_rule_rows(),
         vec![
-            "rule=local_parquet_source_reuse,considered_count=1,applied_count=0,candidates=rule=local_parquet_source_reuse,source_node_ids=n0+n1,reuse_count=2,stable_file_ids=orders,superset_read_columns=left_key+right_key,branch_filter_count=1,max_variant_selected_bytes=524288000,applied=false,rejected_reason=VariantTooLarge".to_string()
+            "rule=local_parquet_source_reuse,considered_count=1,applied_count=0,candidates=rule=local_parquet_source_reuse,source_node_ids=n0+n1,reuse_count=2,stable_file_ids=orders,superset_read_columns=left_key+right_key,branch_filter_count=1,max_variant_selected_bytes=524288000,applied=false,rejected_reason=WidenedReadTooLarge".to_string()
         ]
     );
 }

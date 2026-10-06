@@ -363,6 +363,90 @@ pub(super) fn write_nullable_avg_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+/// Keys cover a group whose `x` values are all null, a group whose `y` and `d`
+/// values are all null, a null key, and an `x` value repeated in a later row
+/// group. The `d` averages of keys 1 and 3 and of all rows do not terminate
+/// at the AVG output scale, so they check its truncation toward zero.
+pub(super) fn write_nullable_single_distinct_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, true),
+        Field::new("x", DataType::Int64, true),
+        Field::new("y", DataType::Int64, true),
+        Field::new("d", DataType::Decimal128(9, 2), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(2),
+                Some(2),
+                Some(3),
+                Some(3),
+                Some(3),
+                None,
+                None,
+                Some(1),
+            ])),
+            Arc::new(Int64Array::from(vec![
+                Some(10),
+                Some(10),
+                None,
+                Some(20),
+                None,
+                None,
+                Some(30),
+                Some(31),
+                Some(30),
+                Some(40),
+                Some(40),
+                Some(20),
+            ])),
+            Arc::new(Int64Array::from(vec![
+                Some(5),
+                None,
+                Some(7),
+                Some(1),
+                Some(4),
+                None,
+                None,
+                None,
+                None,
+                Some(2),
+                Some(3),
+                Some(9),
+            ])),
+            Arc::new(
+                Decimal128Array::from(vec![
+                    Some(1_000),
+                    Some(1_001),
+                    None,
+                    Some(1_001),
+                    None,
+                    None,
+                    Some(-1),
+                    Some(-1),
+                    Some(0),
+                    Some(6),
+                    None,
+                    None,
+                ])
+                .with_precision_and_scale(9, 2)
+                .unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(3)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_uneven_avg_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

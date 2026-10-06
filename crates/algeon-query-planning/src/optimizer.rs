@@ -24,6 +24,7 @@ mod projection_simplification;
 mod rewrite;
 mod shared_resident_extraction;
 mod shared_subplan_materialization;
+mod single_distinct_aggregate_split;
 mod source_target_policy;
 mod stream_fanout_replay;
 
@@ -101,6 +102,11 @@ pub use shared_subplan_materialization::{
     SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
     SharedSubplanMaterializationRejectedReason,
 };
+pub use single_distinct_aggregate_split::{
+    SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME, SingleDistinctAggregateSplitCandidateDiagnostics,
+    SingleDistinctAggregateSplitDiagnostics, SingleDistinctAggregateSplitOptions,
+    SingleDistinctAggregateSplitRejectedReason,
+};
 pub use stream_fanout_replay::{
     STREAM_FANOUT_REPLAY_RULE_NAME, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
     StreamFanoutReplayOptions,
@@ -115,6 +121,9 @@ pub struct NativeOptimizerOptions {
     pub aggregate_join_pushdown: AggregateJoinPushdownOptions,
     /// Options for rewriting footer-proven non-null `COUNT(column)` arguments.
     pub count_non_null_column_pruning: CountNonNullColumnPruningOptions,
+    /// Options for splitting exact distinct counts that share one argument into
+    /// two grouped aggregates.
+    pub single_distinct_aggregate_split: SingleDistinctAggregateSplitOptions,
     /// Options for removing redundant identity projections.
     pub projection_simplification: ProjectionSimplificationOptions,
     /// Options for pushing left-semi key filters below eligible joins.
@@ -143,6 +152,7 @@ impl NativeOptimizerOptions {
         Self {
             aggregate_join_pushdown: AggregateJoinPushdownOptions::disabled(),
             count_non_null_column_pruning: CountNonNullColumnPruningOptions::disabled(),
+            single_distinct_aggregate_split: SingleDistinctAggregateSplitOptions::disabled(),
             projection_simplification: ProjectionSimplificationOptions::disabled(),
             semijoin_reduction: SemijoinReductionOptions::disabled(),
             outer_join_null_rejection: OuterJoinNullRejectionOptions::disabled(),
@@ -210,6 +220,8 @@ pub struct NativeOptimizerDiagnostics {
     pub aggregate_join_pushdown: AggregateJoinPushdownDiagnostics,
     /// Diagnostics from the footer-proven count argument pruning pass.
     pub count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics,
+    /// Diagnostics from the single-distinct aggregate split pass.
+    pub single_distinct_aggregate_split: SingleDistinctAggregateSplitDiagnostics,
     /// Diagnostics from the projection-simplification pass.
     pub projection_simplification: ProjectionSimplificationDiagnostics,
     /// Diagnostics from the semijoin-reduction pass.
@@ -239,6 +251,7 @@ impl NativeOptimizerDiagnostics {
     pub fn is_empty(&self) -> bool {
         self.aggregate_join_pushdown.is_empty()
             && self.count_non_null_column_pruning.is_empty()
+            && self.single_distinct_aggregate_split.is_empty()
             && self.projection_simplification.is_empty()
             && self.semijoin_reduction.is_empty()
             && self.outer_join_null_rejection.is_empty()
@@ -256,6 +269,7 @@ impl NativeOptimizerDiagnostics {
     pub fn merge(&mut self, other: Self) {
         self.aggregate_join_pushdown.merge(other.aggregate_join_pushdown);
         self.count_non_null_column_pruning.merge(other.count_non_null_column_pruning);
+        self.single_distinct_aggregate_split.merge(other.single_distinct_aggregate_split);
         self.projection_simplification.merge(other.projection_simplification);
         self.semijoin_reduction.merge(other.semijoin_reduction);
         self.outer_join_null_rejection.merge(other.outer_join_null_rejection);
@@ -281,6 +295,7 @@ enum Pass {
     ScalarAggregateDerivation,
     AggregateJoinPushdown,
     DimensionDerivedRowGroupPruning,
+    SingleDistinctAggregateSplit,
     CountNonNullColumnPruning,
     StreamFanoutReplay,
     SharedSubplanMaterialization,
@@ -298,9 +313,12 @@ enum When {
 
 /// The pass sequence. Aggregate pushdown and dimension pruning can expose new
 /// build-side and null-rejection opportunities, so those passes run again
-/// after either changes the plan. Shared-resident extraction runs after the
-/// table: it splits the plan into producers and a consumer.
-const STEPS: [(Pass, When); 17] = [
+/// after either changes the plan. The single-distinct split runs before count
+/// pruning, which can turn a global `COUNT(column)` into a literal count-star
+/// argument that a grouped partial aggregate cannot read. Shared-resident
+/// extraction runs after the table: it splits the plan into producers and a
+/// consumer.
+const STEPS: [(Pass, When); 18] = [
     (Pass::ProjectionSimplification, When::Always),
     (Pass::SemijoinReduction, When::Always),
     (Pass::JoinFilterReassociation, When::Always),
@@ -312,6 +330,7 @@ const STEPS: [(Pass, When); 17] = [
     (Pass::OuterJoinNullRejection, When::AfterChangeBy(Pass::AggregateJoinPushdown)),
     (Pass::DimensionDerivedRowGroupPruning, When::Always),
     (Pass::JoinBuildSideSelection, When::AfterChangeBy(Pass::DimensionDerivedRowGroupPruning)),
+    (Pass::SingleDistinctAggregateSplit, When::Always),
     (Pass::CountNonNullColumnPruning, When::Always),
     (Pass::StreamFanoutReplay, When::Always),
     (Pass::SharedSubplanMaterialization, When::Always),
@@ -417,6 +436,14 @@ fn run_pass(
                 resolver,
             )?;
             diagnostics.dimension_derived_row_group_pruning.merge(result.diagnostics);
+            (result.plan, result.change)
+        },
+        Pass::SingleDistinctAggregateSplit => {
+            let result = single_distinct_aggregate_split::optimize_single_distinct_aggregate_split(
+                plan,
+                &options.single_distinct_aggregate_split,
+            )?;
+            diagnostics.single_distinct_aggregate_split.merge(result.diagnostics);
             (result.plan, result.change)
         },
         Pass::CountNonNullColumnPruning => {

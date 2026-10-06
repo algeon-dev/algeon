@@ -3,7 +3,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, Expr, LiteralValue,
     QueryError, QueryErrorCode, Result, aggregate_spec_has_avg, aggregate_spec_has_distinct,
-    aggregate_spec_has_floating_statistical_aggregate, lower_column_expr, lower_named_column_expr,
+    aggregate_spec_has_floating_statistical_aggregate, avg_division_type, lower_column_expr, lower_named_column_expr,
 };
 use crate::backend::{AggregateBinding, AnalysisContext};
 
@@ -67,10 +67,7 @@ pub fn validate_avg_output_fields(spec: &AggregateSpec, output_schema: &ArrowSch
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
-        if !matches!(
-            field.data_type(),
-            ArrowDataType::Float32 | ArrowDataType::Float64 | ArrowDataType::Decimal128(_, _)
-        ) {
+        if avg_division_type(field.data_type()).is_none() {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "query_engine.aggregate.validate_avg",

@@ -256,6 +256,93 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
     );
 }
 
+/// A segmented strategy materializes each filtered AVG argument itself. Group
+/// 0 averages `2^53 + 1` and `1`, which sum to `2^53` in the Float64 that
+/// DataFusion accumulates in and to `2^53 + 2` in Int64.
+#[test]
+fn bounded_native_grouped_filtered_integer_avg_segments_sum_in_float64() {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 48 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let row_count = 100_000usize;
+    let schema = Arc::new(
+        Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("payload", DataType::Int64, false),
+            Field::new("flag", DataType::Boolean, false),
+        ])
+        .with_metadata(HashMap::from([(
+            "__algeon_filtered_grouped_segment_target_bytes".to_string(),
+            "1024".to_string(),
+        )])),
+    );
+    let payload = |row: usize| match row {
+        0 => (1i64 << 53) + 1,
+        4 => 1,
+        1 => 3,
+        _ => 0,
+    };
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from_iter_values((0..row_count).map(|row| (row % 4) as i32))),
+            Arc::new(Int64Array::from_iter_values((0..row_count).map(payload))),
+            Arc::new(BooleanArray::from_iter((0..row_count).map(|row| Some(matches!(row, 0 | 1 | 4))))),
+        ],
+    )
+    .unwrap();
+
+    let buckets = 30;
+    let mut fields = vec![Field::new("key", DataType::Int32, false)];
+    let mut aggr_exprs = Vec::new();
+    for bucket in 0..buckets {
+        fields.push(Field::new(format!("avg_payload_{bucket}"), DataType::Float64, true));
+        aggr_exprs.push(
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("payload"), format!("avg_payload_{bucket}"))
+                .with_filter(Some(Expr::column("flag"))),
+        );
+    }
+    let output_schema = Arc::new(Schema::new(fields));
+    let aggregate = AggregateSpec::new(vec![Expr::column("key")], aggr_exprs);
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
+    for bucket in 0..buckets {
+        let avg = float64_array(batch, 1 + bucket);
+        assert_eq!(avg.value(0), (1u64 << 52) as f64);
+        assert_eq!(avg.value(1), 3.0);
+        assert!(avg.is_null(2) && avg.is_null(3));
+    }
+    assert!(
+        result.metrics().aggregate_strategy_decisions.iter().any(|decision| {
+            decision.facts.get("selected_strategy").map(String::as_str) == Some("filtered_grouped_segmented_state")
+        }),
+        "test must exercise the segmented filtered grouped strategy"
+    );
+}
+
 #[test]
 fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_groups() {
     let dir = unique_temp_dir("query-engine-filtered-grouped-high-cardinality");

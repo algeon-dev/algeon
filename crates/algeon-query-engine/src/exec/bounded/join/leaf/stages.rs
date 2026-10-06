@@ -1,3 +1,5 @@
+use query_planning::dynamic_filter::DynamicFilterConsumer;
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamStage, NodeId,
     ProjectionNode, ResidentGpuFrame, Result, execute_filter_with_budget, execute_projection_with_budget,
@@ -20,13 +22,27 @@ pub(super) fn apply_join_leaf_source_stream_stages(
                     input.frame,
                     |context, input, token, metrics| execute_filter_with_budget(context, node, input, token, metrics),
                 )?;
+                // Both route kinds were counted as applied when the stage was
+                // installed; each chunk adds only its row evidence.
                 if let Some(dynamic_filter) = dynamic_filter {
-                    execution.metrics().record_dynamic_filter_source_post_decode_stage(
-                        &dynamic_filter.route,
-                        &dynamic_filter.filter,
-                        Some(rows_before),
-                        Some(output.frame.num_rows() as u64),
-                    );
+                    let rows_after = Some(output.frame.num_rows() as u64);
+                    let metrics = execution.metrics();
+                    match dynamic_filter.route.consumer {
+                        DynamicFilterConsumer::LocalParquetSource { .. } => metrics
+                            .record_dynamic_filter_source_post_decode_stage(
+                                &dynamic_filter.route,
+                                &dynamic_filter.filter,
+                                Some(rows_before),
+                                rows_after,
+                            ),
+                        DynamicFilterConsumer::Filter { .. } | DynamicFilterConsumer::HashJoinProbe { .. } => metrics
+                            .record_dynamic_filter_post_decode_rows(
+                                &dynamic_filter.route,
+                                &dynamic_filter.filter,
+                                Some(rows_before),
+                                rows_after,
+                            ),
+                    }
                 }
                 Ok(output)
             },

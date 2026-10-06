@@ -648,6 +648,37 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(stream)
     }
 
+    /// Appends the routes whose consumer is this filter to a deferred source
+    /// read, ahead of the filter's own stage, where a frame input would apply
+    /// them before the filter.
+    pub(super) fn apply_dynamic_filters_to_filter_source_stream(
+        &mut self,
+        filter_node_id: NodeId,
+        filter: &FilterNode,
+        mut stream: BoundedJoinLeafLocalParquetSourceStream,
+    ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
+        let routes = self.filter_dynamic_filter_routes(filter_node_id);
+        if routes.is_empty() {
+            return Ok(stream);
+        }
+        self.ensure_dynamic_filter_routes_ready(filter_node_id, &routes)?;
+        let input_schema = self.dynamic_filter_consumer_input_schema(filter_node_id, filter.input)?;
+        for route in &routes {
+            let Some((dynamic_filter, predicate)) = self.resolve_dynamic_filter_predicate(route, input_schema.as_ref())
+            else {
+                continue;
+            };
+            stream = stream.with_filter_dynamic_filter_stage(
+                filter_node_id,
+                FilterNode { input: filter.input, predicate },
+                route.clone(),
+                dynamic_filter.clone(),
+            );
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(route, &dynamic_filter, None, None);
+        }
+        Ok(stream)
+    }
+
     pub(super) fn apply_dynamic_filters_to_join_probe_stream(
         &mut self,
         join_node_id: NodeId,

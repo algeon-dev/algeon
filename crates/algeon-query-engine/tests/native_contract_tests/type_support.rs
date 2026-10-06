@@ -760,3 +760,31 @@ fn backend_dtype_rejection_reports_unsupported_type_with_cudf_reason() {
     assert!(error.fact_value("cudf_code").is_some());
     assert_eq!(error.fact_value("cudf_reason"), Some("unsupported_fixed_size_list_child_type"));
 }
+
+#[test]
+fn avg_preflight_rejects_decimal_arguments_datafusion_sums_as_decimal256() {
+    let avg_preflight = |precision: u8| {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, true),
+            Field::new("d", DataType::Decimal128(precision, 2), true),
+        ]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, true),
+            Field::new("avg_d", DataType::Decimal128(precision + 4, 6), true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
+        let spec = AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("d"), "avg_d")],
+        );
+        let aggregate = builder.add_aggregate(source, spec, output_schema).unwrap();
+        preflight_query_plan(&builder.finish_with_host_sink(aggregate).unwrap())
+    };
+
+    avg_preflight(25).expect("DataFusion sums a Decimal128(25, 2) AVG argument as Decimal128(38, 2)");
+    let error = avg_preflight(26).expect_err("DataFusion sums a Decimal128(26, 2) AVG argument as Decimal256");
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "query_engine.aggregate.avg_state_type");
+    assert_eq!(error.fact_value("alias"), Some("avg_d"));
+}

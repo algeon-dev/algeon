@@ -51,7 +51,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_planning::source::SourceDiagnostics;
+use query_planning::{optimizer::NativeOptimizerDiagnostics, source::SourceDiagnostics};
 use tokio::sync::Mutex;
 use workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 
@@ -412,6 +412,49 @@ async fn native_runtime_nullable_distributed_avg_matches_cpu() {
     write_nullable_avg_input_parquet(&path);
 
     assert_default_sql_native_parity(&path, SQL_AVG_BY_KEY_NO_FILTER_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_grouped_single_distinct_split_matches_cpu_with_null_values() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-grouped-single-distinct");
+    let path = dir.join("input.parquet");
+    write_nullable_single_distinct_input_parquet(&path);
+
+    assert_single_distinct_split_parity(&path, SQL_SINGLE_DISTINCT_GROUPED_QUERY).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_global_single_distinct_split_matches_cpu_with_null_values() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-global-single-distinct");
+    let path = dir.join("input.parquet");
+    write_nullable_single_distinct_input_parquet(&path);
+
+    assert_single_distinct_split_parity(&path, SQL_SINGLE_DISTINCT_GLOBAL_QUERY).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_global_single_distinct_split_over_empty_input_matches_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-empty-single-distinct");
+    let path = dir.join("input.parquet");
+    write_nullable_single_distinct_input_parquet(&path);
+
+    assert_single_distinct_split_parity(&path, SQL_SINGLE_DISTINCT_EMPTY_GLOBAL_QUERY).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_global_count_join_pushdown_over_empty_join_matches_cpu() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-empty-join-global-count");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    assert_aggregate_join_pushdown_parity(&dir, SQL_EMPTY_JOIN_GLOBAL_COUNT_QUERY).await;
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -784,6 +827,41 @@ async fn assert_sql_native_parity(
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
     assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
+    assert_batches_equal(&cpu_batches, &native_batches);
+}
+
+/// DataFusion keeps one aggregate for `COUNT(DISTINCT x)` beside `COUNT`, so
+/// the native optimizer must split it for the comparison to cover the split.
+async fn assert_single_distinct_split_parity(path: &std::path::Path, sql: &str) {
+    let cpu_batches = cpu_sql_output(path, sql).await;
+    let optimization = optimize_with_pruning_template_requiring_native(sql_plan(path, SessionConfig::new(), sql).await);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_algeon_native_exec(&optimization.plan, "single-distinct aggregate must rewrite to AlgeonNativeExec");
+    assert_eq!(
+        optimization.native_optimizer.single_distinct_aggregate_split.applied_count, 1,
+        "{:?}",
+        optimization.native_optimizer.single_distinct_aggregate_split
+    );
+
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+}
+
+/// A global aggregate merges the pushed-down partial state over no rows when
+/// the join is empty, which DataFusion answers with zero counts and null sums.
+async fn assert_aggregate_join_pushdown_parity(root: &std::path::Path, sql: &str) {
+    let cpu_batches = cpu_tpch_sql_output(root, sql).await;
+    let optimization =
+        optimize_with_pruning_template_requiring_native(tpch_sql_plan(root, tpch_report_session_config(), sql).await);
+    assert_eq!(optimization.report.selected_count(), 1, "sql={sql} outcomes={:?}", optimization.report.outcomes());
+    assert_algeon_native_exec(&optimization.plan, "aggregate over a join must rewrite to AlgeonNativeExec");
+    assert_eq!(
+        optimization.native_optimizer.aggregate_join_pushdown.applied_count, 1,
+        "sql={sql} {:?}",
+        optimization.native_optimizer.aggregate_join_pushdown
+    );
+
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal(&cpu_batches, &native_batches);
 }
 

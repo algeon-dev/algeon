@@ -45,8 +45,9 @@ pub(in crate::exec::bounded) use join::{
     execute_bounded_compiled_join_probe_from_stream, materialize_bounded_join_leaf_local_parquet_source_stream,
     partitioned_join_build_commitment, plan_bounded_aggregate_input_local_parquet_source_stream,
     plan_bounded_join_leaf_local_parquet_source_stream, plan_bounded_shared_join_aggregate_local_parquet_source_stream,
-    release_bounded_compiled_join_probe_state, stateless_streaming_probe_supported,
-    stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    plan_bounded_unary_chain_local_parquet_source_stream, release_bounded_compiled_join_probe_state,
+    stateless_streaming_probe_supported, stream_bounded_join_leaf_local_parquet_source_chunks,
+    try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 #[cfg(feature = "cugraph")]
 pub(in crate::exec::bounded) use operator::execute_bounded_graph_algorithm_from_inputs;

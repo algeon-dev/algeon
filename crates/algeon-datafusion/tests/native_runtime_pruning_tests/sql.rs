@@ -676,3 +676,31 @@ GROUP BY group_key, tie_key
 ORDER BY avg_m00 ASC NULLS LAST, tie_key DESC
 LIMIT 4
 ";
+
+pub(super) const SQL_SINGLE_DISTINCT_GROUPED_QUERY: &str = "
+SELECT key, COUNT(DISTINCT x) AS distinct_x, SUM(y) AS sum_y, COUNT(y) AS count_y, COUNT(*) AS row_count,
+       MIN(y) AS min_y, MAX(y) AS max_y, AVG(y) AS avg_y, AVG(d) AS avg_d
+FROM bench
+GROUP BY key
+ORDER BY key ASC
+";
+
+pub(super) const SQL_SINGLE_DISTINCT_GLOBAL_QUERY: &str = "
+SELECT COUNT(DISTINCT x) AS distinct_x, SUM(y) AS sum_y, COUNT(y) AS count_y, COUNT(*) AS row_count,
+       MIN(y) AS min_y, MAX(y) AS max_y, AVG(y) AS avg_y, AVG(d) AS avg_d
+FROM bench
+";
+
+pub(super) const SQL_SINGLE_DISTINCT_EMPTY_GLOBAL_QUERY: &str = "
+SELECT COUNT(DISTINCT x) AS distinct_x, SUM(y) AS sum_y, COUNT(y) AS count_y, COUNT(*) AS row_count,
+       MIN(y) AS min_y, MAX(y) AS max_y, AVG(y) AS avg_y, AVG(d) AS avg_d
+FROM bench
+WHERE key > 100
+";
+
+pub(super) const SQL_EMPTY_JOIN_GLOBAL_COUNT_QUERY: &str = "
+SELECT COUNT(l_extendedprice) AS priced, COUNT(l_quantity) AS quantities, SUM(l_extendedprice) AS sum_price
+FROM lineitem
+JOIN orders ON l_orderkey = o_orderkey
+WHERE o_orderpriority = 'NO SUCH PRIORITY'
+";

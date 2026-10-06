@@ -5,7 +5,10 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
-use query_planning::naming::unique_alias_with_suffix;
+use query_planning::{
+    naming::unique_alias_with_suffix,
+    prepared::{AVG_COUNT_STATE_TYPE, avg_sum_state_type},
+};
 
 use super::{
     cudf_query_error,
@@ -752,11 +755,7 @@ fn indexed_partial_global_aggregate_spec(indexed_exprs: &[(usize, AggregateExpr)
             .iter()
             .flat_map(|(index, expr)| match expr.function {
                 AggregateFunction::Avg => {
-                    let state = AvgStateAliases::for_aggregate_index(*index);
-                    vec![
-                        AggregateExpr::new(AggregateFunction::Sum, expr.expr.clone(), state.sum().to_string()),
-                        AggregateExpr::new(AggregateFunction::Count, expr.expr.clone(), state.count().to_string()),
-                    ]
+                    AvgStateAliases::for_aggregate_index(*index).partial_aggregates(&expr.expr).to_vec()
                 },
                 AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => vec![
                     expr.clone(),
@@ -803,12 +802,8 @@ fn indexed_partial_global_aggregate_output_schema(
                     .with_fact("alias", expr.alias.as_str())
                     .with_fact("arrow_error", error.to_string())
                 })?;
-                fields.push(Field::new(
-                    state.sum(),
-                    avg_sum_state_data_type(&input_type, output_field.data_type())?,
-                    true,
-                ));
-                fields.push(Field::new(state.count(), ArrowDataType::Int64, false));
+                fields.push(Field::new(state.sum(), avg_sum_state_type(&input_type, output_field.data_type())?, true));
+                fields.push(Field::new(state.count(), AVG_COUNT_STATE_TYPE, false));
             },
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 fields.push(Field::new(expr.alias.as_str(), ArrowDataType::Int64, false));
