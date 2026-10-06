@@ -1,19 +1,13 @@
 # AGENTS.md
 
-## Working principles
-
-- Fix graph ownership, execution, interop, or native-discovery gaps in the
-  owning layer; do not add algorithm-specific fallback glue.
-- Keep changes scoped and preserve unrelated worktree edits, submodule state,
-  generated build output, and native caches.
-- Before adding a dependency or replacement implementation, check existing
-  capabilities and types.
+Follow the root [AGENTS.md](../../AGENTS.md) for shared development and
+validation rules.
 
 ## Project boundaries
 
 `components/cugraph` provides service-facing Rust graph APIs over libcugraph.
-SQL planning, runtime admission, and query execution follow the root
-`algeon-datafusion` ownership map.
+SQL planning, runtime admission, and query execution follow the
+[module boundaries](../../website/docs/design/index.mdx#crates-and-ownership).
 
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
   `algeon-cugraph/`; bindgen and native contract resolution belong in
@@ -55,14 +49,8 @@ CUVS_INSTALL_DIR="$PWD/target/native/cuvs-install" \
 CUGRAPH_CMAKE_BUILD_DIR="$PWD/target/native/cugraph-build" \
 scripts/build/build_libcugraph.sh
 
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo +nightly fmt --all --check
 cargo nt -E 'package(algeon-cugraph) | package(algeon-cugraph-sys)'
 ```
-
-Run focused checks first, then broaden validation with the change's blast
-radius. Report exact native prefixes, loader paths, and GPU environment for
-native work.
 
 ## Testing and repository policy
 

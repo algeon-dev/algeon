@@ -39,6 +39,14 @@ npm run typecheck
 
 ## Authoring site content
 
+The root [AGENTS.md](../AGENTS.md#contract-sources) routes engineering tasks to
+the contract sections in `docs/`. Maintain those definitions in their owning
+pages and link summaries to them. Contract changes update the documentation,
+implementation and affected tests together. Machine-readable configuration and
+owner-crate declarations supply exact values and API signatures; reconcile any
+disagreement before changing behavior. `draft/`, blog posts and illustrative
+examples do not define implementation contracts.
+
 Content pages are served at the site root, so a file's URL mirrors its source
 tree path unless overridden by a `slug`.
 

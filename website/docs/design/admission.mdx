@@ -23,9 +23,28 @@ admission across sessions, including embedded and server use. The bounded
 queue preserves request order; capacity pressure waits within configured
 deadlines, while missing device capabilities produce a structured error.
 
-All native fragments of an attempt share its grant. A later fragment can join
-only when that device supports its required capabilities. A second admission
-claim cannot acquire another grant for the attempt.
+Every production query-engine execution belongs to an attempt. Plain
+DataFusion execution creates an internal attempt at its execution boundary;
+component runtimes may also be used independently of query-engine.
+
+An attempt owns one admission claim. All its native fragments share the
+resulting grant, including sequential execution of a CTAS input and its result.
+Deferred refinement stays within that grant. A fragment planned after the claim
+joins when the granted device provides all its required capabilities; otherwise
+it returns a typed error. Each fragment runs one compiled schedule.
+
+A second claim returns `AttemptLifecycleError::AdmissionAlreadyClaimed` before
+any queue or ledger mutation. The existing grant and attempt lifecycle remain
+unchanged. The
+[admission claim contract](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-runtime/src/attempt/owner.rs)
+and the
+[release tests](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-query-runtime/src/runtime/query_service/tests/release_commit.rs)
+cover this boundary.
+
+Admission uses operator capability requirements. Customer identity, SQL text,
+names, algorithm allowlists and plan-shape matching cannot substitute for those
+requirements. `query-planning` proves executability; `query-runtime` admits
+the attempt against the selected device's ledger.
 
 Some systems connect GPUs through
 [NVLink](https://www.nvidia.com/en-us/data-center/nvlink/) for peer-device
@@ -34,9 +53,10 @@ does not enlarge that device's grant or ledger capacity.
 
 ## Capacity and allocation {/* #device-profiles-and-grants */}
 
-The device **ledger** accounts for committed grants, cached resident data and
-active-attempt slots. Admission commits the service-configured cap without
-predicting the query's peak. For example, with 16 GiB available for grants
+Each device has one authoritative **ledger** for committed grants, cached
+resident data and active-attempt slots. Its integer accounting does not infer
+which allocations are resident. Admission commits the service-configured cap
+without predicting the query's peak. For example, with 16 GiB available for grants
 and an 8 GiB query cap, memory accounting permits two grants, even when their
 current allocations total only 3 GiB. Other service limits can reduce that
 concurrency. These numbers are illustrative; deployments configure their own
@@ -55,8 +75,9 @@ The grant covers allocations in device VRAM. I/O bounce buffers and other host
 staging occupy system RAM, outside this GPU cap. Pinning a host buffer for DMA
 does not charge it as a device allocation.
 
-All execution lanes share the query cap. There is no separate allocation
-quota for each operator or stream. An allocation exceeding the cap returns
+The query domain's allocator alone enforces the query cap shared by all
+execution lanes. There is no second Rust-side reservation, operator subgrant,
+stream quota or estimate-derived veto. An allocation exceeding the cap returns
 a typed failure at its source. Chunking can reduce live intermediates, but
 an input, hash table or result that cannot fit can still fail. Native execution
 does not provide general disk spilling or CPU replay.
@@ -67,16 +88,25 @@ An output may remain on the GPU for another native consumer. Its resident
 lease retains the backing buffers and completion dependencies through the
 last borrow. Source and graph caches can retain reusable data under their own
 device-ledger charges; cache use does not make those bytes unaccounted for.
+Output and resident facts carry scope, occurrence, schema and provenance.
 
 Cancellation stops further submission while already submitted work is settled.
-An attempt becoming terminal is only part of cleanup: active fragments,
-retained outputs and pending GPU work must also finish before their resources
-can be reused. A failed completion fence or cleanup closes admission on the
-affected device and records the failure.
+The attempt releases its grant once its outcome is terminal and no fragment is
+running; ending one fragment's stream does not release the grant. Retained
+outputs and pending GPU work must settle before their resources can be reused.
+A failed completion fence or cleanup closes admission on the affected device
+and records the failure.
+
+## Runtime observations
 
 Attempt allocation peaks and device pool reservations measure different
-scopes. Reports and DataFusion metrics come from the runtime's observation
-snapshot, allowing failures to be associated with the attempt and its cleanup
-outcome. See [error handling](../integration/handling-errors.mdx) and
+scopes. Reports, TSV, DataFusion metrics and `QueryMetrics` are projections of
+the runtime observation snapshot; they do not maintain a second event store.
+Allocation failures retain their typed source and cleanup disposition in that
+snapshot. Metric names in
+[`NATIVE_ALGEON_DATAFUSION_METRIC_NAMES`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native_exec/metrics/contract.rs)
+describe meaning and unit, and change when either changes.
+
+See [error handling](../integration/handling-errors.mdx) and
 [admission configuration](../integration/configuration.mdx#admission) for the
 operational interfaces.

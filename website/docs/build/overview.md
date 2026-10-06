@@ -25,12 +25,11 @@ Follow the pages in this order:
 
 ## The stack
 
+The [module ownership map](../design/index.mdx#crates-and-ownership) defines the
+adapter, planning, runtime and engine boundaries. Their native dependencies are:
+
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| DataFusion adapter | DataFusion lowering, execution wrappers, report projection, workload contracts, benchmarks, and Flight SQL server | Rust | `crates/algeon-datafusion/src/`, adapter-support crates |
-| `query-planning` | DataFusion-free IR, optimizer, capability, proof, admission contracts, and compiled pipeline | Rust | `crates/algeon-query-planning/` |
-| `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/algeon-query-runtime/` |
-| `query-engine` | Native execution composition over planning and runtime | Rust | `crates/algeon-query-engine/` |
 | `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
 | `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins the [`cuvs` fork](https://github.com/algeon-dev/cuvs) | Rust + C++/CUDA | one component + submodule |
 | `components/cuml` | Safe Rust API over libcuml (`cuml`, `cuml-sys`); pins the cuML submodule | Rust + C++/CUDA | one component + submodule |
@@ -57,6 +56,33 @@ algeon/
     ├── cugraph-build/          # canonical cuGraph CMake build tree
     └── cugraph-install/        # canonical cuGraph install prefix
 ```
+
+## Workspace and publication contracts
+
+The root `.gitmodules`, `Cargo.toml` workspace and `Cargo.lock` are the only
+native source registry, Rust workspace and lockfile. Components share them;
+there are no component-local registries or workspaces. The root manifest's
+`default-members` lists the default build surface; bench, tools and examples
+are explicit non-default members. Platform and toolchain requirements are in
+[Prerequisites](./prerequisites.md).
+
+Published packages use the `algeon-` prefix, and crate directory names match
+package names. `[workspace.dependencies]` retains bare dependency aliases
+through `package = "algeon-…"`; Rust imports and `dep:` features keep those
+identities. Refer to layers by their bare alias. Every renamed crate pins its
+`[lib] name` explicitly to preserve imports and public API snapshot names.
+
+Each crate declares `publish` directly: `publish = ["crates-io"]` for the
+release closure and `publish = false` otherwise. Do not set
+`[workspace.package].publish`. The allowlist and its validation belong to
+[`check_workspace_publication.py`](https://github.com/algeon-dev/algeon/blob/main/scripts/ci/check_workspace_publication.py),
+which rejects undeclared or mismatched publication settings.
+
+[`algeon-build-support`](https://github.com/algeon-dev/algeon/blob/main/components/algeon-build-support/Cargo.toml)
+(library `rapids_build_support`) is the shared build-dependency for packages
+whose build scripts link RAPIDS libraries. It remains std-only and cannot
+depend on crates built after it. Its validation is described in the
+[test harness reference](./tests.md#doctests-and-build-support).
 
 ## Build order
 

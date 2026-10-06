@@ -21,13 +21,16 @@ Before you start:
 
 ## The full gate
 
-Run it bare from the checkout root. Do not wrap it in `flock`: its test phase
-takes `/tmp/cudf-gpu.lock` itself through the same nextest run-wrapper, so an
-outer hold deadlocks it.
+Run it from the checkout root. Do not wrap nextest or the full gate in `flock`;
+the run-wrapper owns test locking. Non-test GPU commands, including benchmarks,
+servers and tools, must take the lock separately.
 
 ```bash
 bash scripts/check_all.sh
 ```
+
+For a run that outlives a terminal or tool call, launch it with `nohup` and
+poll `target/check-all/latest/summary.tsv` for progress and completion.
 
 With no arguments it starts every phase at once, in four groups:
 
@@ -44,7 +47,7 @@ With no arguments it starts every phase at once, in four groups:
 
 Hygiene never blocks tests. Every other Cargo phase uses `--workspace
 --all-features`; feature-isolation and the shipped-server clippy lane are the
-two exceptions, described under [Harness internals](#harness-internals).
+two exceptions, described under [Feature coverage](#feature-coverage).
 
 ### What success looks like
 
@@ -60,6 +63,8 @@ OK: full pre-merge gate passed.
 
 `--fast` ends with `OK: fast checks passed. PARTIAL: this is not full
 pre-merge validation.` and never satisfies the pre-merge requirement.
+Full validation requires one complete gate run on the final source state;
+focused checks and failure-only reruns are partial validation.
 
 ### On failure
 
@@ -96,13 +101,16 @@ bash scripts/check_all.sh --fast
 ```
 
 Any option other than `--fast`, or a duplicate option, exits with status 2.
-Feature selection is not an option: the gate always uses `--all-features`.
+Feature selection is not a command-line option; the harness defines its
+workspace checks and [coverage exceptions](#feature-coverage).
 
 ### Targeted edit loops
 
-`.config/nextest.toml` is the only test-lane source, and every command below
-selects with a `cargo nt` filterset (never `-p`, which resolves features
-differently and rebuilds):
+Ordinary Cargo build, check, lint and test commands use
+`--workspace --all-features`. Run them from the repository root.
+`cargo nt` is the alias for `cargo nextest run --workspace --all-features`
+defined in [`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.cargo/config.toml).
+Select tests with filtersets, never `-p`, to reuse that build configuration:
 
 ```bash
 cargo nt -E 'package(<package>)'                              # what you changed
@@ -111,6 +119,9 @@ cargo nt -E 'binary_id(<package>::<target>) & test(<name>)'   # one test
 cargo nt -E 'not group(gpu) & not group(gpu-exclusive)'       # CPU only
 cargo nt -E '<same filterset>' -R latest                      # rerun only failures
 ```
+
+The non-default bench package uses `cargo nt -E 'package(bench)'`.
+`.config/nextest.toml` defines all [test lanes](#harness-internals).
 
 A rerun must repeat the exact filterset used originally: with a different (or
 missing) `-E`, nextest treats binaries the earlier filter skipped as new and
@@ -152,6 +163,8 @@ cargo run -p algeon-server --all-features --bin algeon_server
 Nothing in the Cargo test targets needs a real dataset, cloud account,
 running catalog, or Python cuGraph. Those are explicit acceptance runs, and
 each takes the GPU lock itself.
+Keep external-service E2E tests outside Cargo test targets; invoke them
+explicitly through `cargo run -p tools --all-features`.
 
 Scale-factor workloads validate their dataset before starting and fail when it
 is incomplete; the TPC-DS report emits one row per attempted query:
@@ -196,9 +209,8 @@ policy, and source chunk profile. See the
 
 ## Maintainer reference
 
-Nothing below is needed to build, validate, or ship a change. It documents
-how the harness reaches its verdicts, for people changing the harness, the
-nextest configuration, or a build script.
+The sections below define maintenance contracts for the harness, nextest
+configuration and build scripts. Routine validation commands are above.
 
 ### Harness internals
 
@@ -210,6 +222,8 @@ files are grouped by responsibility, and the directory map is maintained in
 `scripts/ci/tests/`), and `scripts/dev/` (manually invoked helpers). Policy
 data lives in `.config/policies/`; tool configuration such as
 `.config/nextest.toml` stays at its tool-defined path.
+Component-local umbrella commands must not introduce another full gate or
+duplicate the root source, publication or test-lane registries.
 
 Test scheduling lives entirely in `.config/nextest.toml`:
 
@@ -237,7 +251,7 @@ file's table. Keep a test as its own `#[test]` only when it arms one-shot
 native fault injection, installs process-global or device-safety state, spawns
 threads, is `#[should_panic]`, or uses a device other than 0. A table is run
 like any test, for example
-`cargo nt -E 'binary_id(cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
+`cargo nt -E 'binary_id(algeon-cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
 
 Every test binary lands in exactly one of:
 
@@ -285,9 +299,11 @@ command need recording enabled once per machine in nextest's own user config
 (not this repository's); see
 [Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner).
 
-The two compile-only hygiene phases do not run tests, contact external
-services, or take the GPU lock. `msrv-check` uses the workspace's declared
-Rust version:
+### Feature coverage
+
+The MSRV and feature-isolation phases compile without running tests, contacting
+external services or taking the GPU lock. `msrv-check` uses the workspace's
+declared Rust version:
 
 ```bash
 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo
@@ -311,8 +327,9 @@ unifies dev-dependency features such as `test-hooks` into every build, so it
 never lints the server as packaged. The lane selects only the `algeon_server`
 binary through its manifest, with `--no-default-features` and the packaging
 feature set that `scripts/build/cpu_packaging_policy.py shipped-features`
-reads from `.config/policies/cpu-packaging.toml`, and uses its own target
-directory:
+reads from `server.features` in `.config/policies/cpu-packaging.toml`. Packaging
+uses that same source. The lane selects no tests, examples or all-targets build,
+and keeps its own persistent target directory:
 
 ```bash
 cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
@@ -320,12 +337,17 @@ cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server
   --target-dir target/check-all/shipped-clippy -- -D warnings
 ```
 
+Both coverage exceptions must pass in the full gate. Focused and `--fast`
+runs do not satisfy that requirement.
+
+### Doctests and build support
+
 Doctests run as a separate command through the same GPU lock wrapper, since
 rustdoc does not build through nextest:
 
 ```bash
 NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
-  env LD_LIBRARY_PATH="target/native/cudf-install/lib:target/native/cuvs-install/lib:target/native/cugraph-install/lib:target/native/cugraph-build:target/native/cuml-install/lib" \
+  env LD_LIBRARY_PATH="$PWD/target/native/cudf-install/lib:$PWD/target/native/cuvs-install/lib:$PWD/target/native/cugraph-install/lib:$PWD/target/native/cugraph-build:$PWD/target/native/cuml-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   cargo test --workspace --all-features --doc --no-fail-fast
 ```
 
@@ -336,11 +358,9 @@ absolute native library directories.
 Rustdoc is always strict: the harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, so an earlier `-A warnings` cannot weaken it.
 
-`scripts/build/rapids.rs` is the std-only build-script support included by the
-DataFusion adapter, `query-engine`, server, benchmark, tools, and examples
-packages. Its isolated policy suite runs as part of the policy phase's
-self-test scripts and can be run alone; it neither loads nor modifies the
-real RAPIDS libraries:
+The [shared build-support crate](./overview.md#workspace-and-publication-contracts)
+has an isolated policy suite in the full gate's self-test phase. The suite can
+also run alone, without loading or modifying RAPIDS libraries:
 
 ```bash
 bash scripts/build/check_build_support.sh
@@ -367,7 +387,7 @@ redact them before attaching to an issue. The live fingerprint matrix for
 (requires `CUDF_INSTALL_DIR`, `CC`, and `CXX`), and its static contract is:
 
 ```bash
-cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract
+cargo nt -E 'binary_id(algeon-cudf-sys::fingerprint_matrix_contract)'
 ```
 
 ### Target artifact maintenance
