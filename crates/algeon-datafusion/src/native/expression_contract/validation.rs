@@ -15,8 +15,8 @@ use datafusion::{
     },
 };
 use query_planning::{
-    datatypes::is_timestamp_with_timezone,
-    expr::DatePart as NativeDatePart,
+    datatypes::{cast_can_fail_at_runtime, is_timestamp_with_timezone},
+    expr::{DatePart as NativeDatePart, UnaryMathOp},
     validation::{is_integral_type, is_string_type, substring_stop_position},
 };
 
@@ -284,6 +284,106 @@ fn validate_case_expr(case: &CaseExpr, input_schema: &SchemaRef) -> Result<(), E
     Ok(())
 }
 
+/// The operand that native evaluation of `expr` checks for failing values, or
+/// `None` when `expr` cannot fail on valid input.
+///
+/// That is the divisor of an integer `/` or `%` whose divisor is not a literal
+/// other than 0 and -1, the divisor of a decimal `/`, and the input of a cast
+/// for which `cast_can_fail_at_runtime` holds. A decimal `/` can fail on any
+/// divisor, because scaling the dividend to the result scale can overflow. The
+/// checks skip rows where the operand is NULL, so a lowering that must keep a
+/// row from failing nulls the operand on that row.
+pub(in crate::native) fn fallible_operand<'a>(
+    expr: &'a Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Option<&'a Arc<dyn PhysicalExpr>> {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
+        let integral_division = matches!(binary.op(), Operator::Divide | Operator::Modulo)
+            && physical_expr_data_type(binary.left(), input_schema).is_ok_and(|data_type| is_integral_type(&data_type))
+            && !is_infallible_integral_divisor(binary.right());
+        return (integral_division || is_decimal_division(binary, input_schema)).then(|| binary.right());
+    }
+    let cast = expr.downcast_ref::<CastExpr>()?;
+    physical_expr_data_type(cast.expr(), input_schema)
+        .is_ok_and(|source_type| cast_can_fail_at_runtime(&source_type, cast.cast_type()))
+        .then(|| cast.expr())
+}
+
+/// Whether `binary` is a `/` that native evaluation runs as a decimal division
+/// with a declared output type.
+pub(in crate::native) fn is_decimal_division(binary: &BinaryExpr, input_schema: &SchemaRef) -> bool {
+    matches!(binary.op(), Operator::Divide)
+        && declared_decimal_divide_output_type(binary, input_schema).is_ok_and(|declared| declared.is_some())
+}
+
+/// Whether `expr` or any expression below it has a [`fallible_operand`].
+pub(in crate::native) fn contains_fallible_operation(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> bool {
+    if fallible_operand(expr, input_schema).is_some() {
+        return true;
+    }
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
+        return dynamic_filter.current().is_ok_and(|current| contains_fallible_operation(&current, input_schema));
+    }
+    expr.children().into_iter().any(|child| contains_fallible_operation(child, input_schema))
+}
+
+/// Most nodes the row activations of one lowered expression may add.
+///
+/// An activation embeds the guarded conditions before it, so each `WHEN`
+/// condition that divides or casts doubles the activations that follow it. A
+/// chain of 12 such conditions lowers to 32760 nodes, and the growth is
+/// exponential in the chain length. A chain that exceeds the bound stays on
+/// DataFusion.
+pub(in crate::native) const MAX_ACTIVATION_NODES: usize = 4096;
+
+/// The rejection for the fallible operation `expr` whose activation would
+/// exceed [`MAX_ACTIVATION_NODES`].
+pub(in crate::native) fn oversized_activation_rejection(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> ExpressionRejection {
+    let rejection = ExpressionRejection::unsupported_expression(ExpressionCapability::CaseActivationSize);
+    let rejection = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
+        rejection.named_by_operator(binary_operator_subject(binary, input_schema))
+    } else if let Some(cast) = expr.downcast_ref::<CastExpr>() {
+        physical_expr_data_type(cast.expr(), input_schema).map_or(rejection.clone(), |source| {
+            rejection.with_subject(ExpressionRejectionSubject::Cast { source, target: cast.cast_type().clone() })
+        })
+    } else {
+        rejection
+    };
+    rejection.at_expression(expr)
+}
+
+pub(in crate::native) fn binary_operator_subject(
+    binary: &BinaryExpr,
+    input_schema: &SchemaRef,
+) -> Option<ExpressionRejectionSubject> {
+    Some(ExpressionRejectionSubject::BinaryOperator {
+        operator: *binary.op(),
+        left: physical_expr_data_type(binary.left(), input_schema).ok()?,
+        right: physical_expr_data_type(binary.right(), input_schema).ok()?,
+    })
+}
+
+fn is_infallible_integral_divisor(divisor: &Arc<dyn PhysicalExpr>) -> bool {
+    let Some(literal) = divisor.downcast_ref::<Literal>() else {
+        return false;
+    };
+    let value = match literal.value() {
+        ScalarValue::Int8(Some(value)) => i128::from(*value),
+        ScalarValue::Int16(Some(value)) => i128::from(*value),
+        ScalarValue::Int32(Some(value)) => i128::from(*value),
+        ScalarValue::Int64(Some(value)) => i128::from(*value),
+        ScalarValue::UInt8(Some(value)) => i128::from(*value),
+        ScalarValue::UInt16(Some(value)) => i128::from(*value),
+        ScalarValue::UInt32(Some(value)) => i128::from(*value),
+        ScalarValue::UInt64(Some(value)) => i128::from(*value),
+        _ => return false,
+    };
+    value != 0 && value != -1
+}
+
 fn validate_scalar_function_expr(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
@@ -314,6 +414,9 @@ fn validate_scalar_function_kind(
         ScalarFunctionKind::RegexpReplace => validate_regexp_replace_function(function, input_schema),
         ScalarFunctionKind::Concat => validate_concat_function(function, input_schema),
         ScalarFunctionKind::Abs => validate_abs_function(function, input_schema),
+        ScalarFunctionKind::UnaryMath(UnaryMathOp::Floor | UnaryMathOp::Ceil) => {
+            validate_floor_ceil_function(function, input_schema)
+        },
         ScalarFunctionKind::UnaryMath(_) => validate_unary_math_function(function, input_schema),
         ScalarFunctionKind::Round => validate_round_function(function, input_schema),
         ScalarFunctionKind::NullIf => validate_nullif_function(function, input_schema),
@@ -503,6 +606,23 @@ fn validate_unary_math_function(
     }
 }
 
+fn validate_floor_ceil_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), ExpressionRejection> {
+    let [expr] = function.args() else {
+        return Err(scalar_function_arguments());
+    };
+    validate_physical_expr(expr, input_schema)?;
+    let input_type = physical_expr_data_type(expr, input_schema)?;
+    let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
+    if matches!(input_type, DataType::Float32 | DataType::Float64) && output_type == input_type {
+        Ok(())
+    } else {
+        Err(unsupported_type())
+    }
+}
+
 fn validate_round_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let args = function.args();
     if !(1..=2).contains(&args.len()) {
@@ -602,16 +722,8 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
         validate_string_expr(binary.right(), input_schema)?;
     }
     if matches!(binary.op(), Operator::Modulo) {
-        validate_integral_operand_type(binary.left(), input_schema)?;
-        validate_integral_operand_type(binary.right(), input_schema)?;
-    }
-    // libcudf has no checked integer divide/modulo semantics, so integer `/`
-    // and `%` fall back to CPU; decimal/float division stays admitted.
-    if matches!(binary.op(), Operator::Divide | Operator::Modulo)
-        && is_integral_type(&left_type)
-        && is_integral_type(&right_type)
-    {
-        return Err(unsupported_expression());
+        validate_remainder_operand_type(binary.left(), input_schema)?;
+        validate_remainder_operand_type(binary.right(), input_schema)?;
     }
     if matches!(binary.op(), Operator::Divide) {
         declared_decimal_divide_output_type(binary, input_schema)?;
@@ -659,6 +771,18 @@ fn validate_datetime_interval_operand(
         Ok(())
     } else {
         Err(ExpressionRejection::unsupported_expression(ExpressionCapability::IntervalArithmetic))
+    }
+}
+
+fn validate_remainder_operand_type(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), ExpressionRejection> {
+    let data_type = physical_expr_data_type(expr, input_schema)?;
+    if matches!(data_type, DataType::Float32 | DataType::Float64) {
+        Ok(())
+    } else {
+        validate_integral_operand_type(expr, input_schema)
     }
 }
 

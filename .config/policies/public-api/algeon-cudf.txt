@@ -144,6 +144,7 @@ pub cudf::core::error::code::ErrorCode::ColumnLengthMismatch
 pub cudf::core::error::code::ErrorCode::CrossDeviceInputs
 pub cudf::core::error::code::ErrorCode::CrossProvenanceInputs
 pub cudf::core::error::code::ErrorCode::CudaRuntime
+pub cudf::core::error::code::ErrorCode::DivisionByZero
 pub cudf::core::error::code::ErrorCode::DuplicateColumnName
 pub cudf::core::error::code::ErrorCode::DuplicateKey
 pub cudf::core::error::code::ErrorCode::EmptyConstructionRequiresRuntime
@@ -173,7 +174,7 @@ pub cudf::core::error::code::ErrorCode::UnsupportedLayout
 pub cudf::core::error::code::ErrorCode::UnsupportedOperation
 pub cudf::core::error::code::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::code::ErrorKind
@@ -269,6 +270,7 @@ pub cudf::core::error::ErrorCode::ColumnLengthMismatch
 pub cudf::core::error::ErrorCode::CrossDeviceInputs
 pub cudf::core::error::ErrorCode::CrossProvenanceInputs
 pub cudf::core::error::ErrorCode::CudaRuntime
+pub cudf::core::error::ErrorCode::DivisionByZero
 pub cudf::core::error::ErrorCode::DuplicateColumnName
 pub cudf::core::error::ErrorCode::DuplicateKey
 pub cudf::core::error::ErrorCode::EmptyConstructionRequiresRuntime
@@ -298,7 +300,7 @@ pub cudf::core::error::ErrorCode::UnsupportedLayout
 pub cudf::core::error::ErrorCode::UnsupportedOperation
 pub cudf::core::error::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::ErrorKind
@@ -910,6 +912,7 @@ pub cudf::core::ErrorCode::ColumnLengthMismatch
 pub cudf::core::ErrorCode::CrossDeviceInputs
 pub cudf::core::ErrorCode::CrossProvenanceInputs
 pub cudf::core::ErrorCode::CudaRuntime
+pub cudf::core::ErrorCode::DivisionByZero
 pub cudf::core::ErrorCode::DuplicateColumnName
 pub cudf::core::ErrorCode::DuplicateKey
 pub cudf::core::ErrorCode::EmptyConstructionRequiresRuntime
@@ -939,7 +942,7 @@ pub cudf::core::ErrorCode::UnsupportedLayout
 pub cudf::core::ErrorCode::UnsupportedOperation
 pub cudf::core::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::ErrorKind
@@ -2841,6 +2844,7 @@ pub cudf::ops::expr::Expr::BinaryOpWithType::output_type: cudf::core::types::Dat
 pub cudf::ops::expr::Expr::BinaryOpWithType::rhs: alloc::boxed::Box<cudf::Expr>
 pub cudf::ops::expr::Expr::Cast
 pub cudf::ops::expr::Expr::Cast::input: alloc::boxed::Box<cudf::Expr>
+pub cudf::ops::expr::Expr::Cast::precision: core::option::Option<u8>
 pub cudf::ops::expr::Expr::Cast::target: cudf::core::types::DataType
 pub cudf::ops::expr::Expr::Column(alloc::string::String)
 pub cudf::ops::expr::Expr::DateTimeComponent
@@ -2900,6 +2904,7 @@ pub fn cudf::Expr::alias(self, impl core::convert::Into<alloc::string::String>) 
 pub fn cudf::Expr::bfill(self) -> cudf::Expr
 pub fn cudf::Expr::binary_op_with_type(self, impl cudf::ops::expr::IntoExpr, cudf::ops::binary::BinaryOperator, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
 pub fn cudf::Expr::cast(self, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
+pub fn cudf::Expr::cast_decimal(self, cudf::core::types::DataType, u8) -> cudf::Expr
 pub fn cudf::Expr::ceil(self) -> cudf::Expr
 pub fn cudf::Expr::cummax(self) -> cudf::Expr
 pub fn cudf::Expr::cummin(self) -> cudf::Expr
@@ -3468,6 +3473,7 @@ pub cudf::ops::Expr::BinaryOpWithType::output_type: cudf::core::types::DataType
 pub cudf::ops::Expr::BinaryOpWithType::rhs: alloc::boxed::Box<cudf::Expr>
 pub cudf::ops::Expr::Cast
 pub cudf::ops::Expr::Cast::input: alloc::boxed::Box<cudf::Expr>
+pub cudf::ops::Expr::Cast::precision: core::option::Option<u8>
 pub cudf::ops::Expr::Cast::target: cudf::core::types::DataType
 pub cudf::ops::Expr::Column(alloc::string::String)
 pub cudf::ops::Expr::DateTimeComponent
@@ -3527,6 +3533,7 @@ pub fn cudf::Expr::alias(self, impl core::convert::Into<alloc::string::String>) 
 pub fn cudf::Expr::bfill(self) -> cudf::Expr
 pub fn cudf::Expr::binary_op_with_type(self, impl cudf::ops::expr::IntoExpr, cudf::ops::binary::BinaryOperator, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
 pub fn cudf::Expr::cast(self, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
+pub fn cudf::Expr::cast_decimal(self, cudf::core::types::DataType, u8) -> cudf::Expr
 pub fn cudf::Expr::ceil(self) -> cudf::Expr
 pub fn cudf::Expr::cummax(self) -> cudf::Expr
 pub fn cudf::Expr::cummin(self) -> cudf::Expr
@@ -4288,6 +4295,7 @@ pub cudf::ErrorCode::ColumnLengthMismatch
 pub cudf::ErrorCode::CrossDeviceInputs
 pub cudf::ErrorCode::CrossProvenanceInputs
 pub cudf::ErrorCode::CudaRuntime
+pub cudf::ErrorCode::DivisionByZero
 pub cudf::ErrorCode::DuplicateColumnName
 pub cudf::ErrorCode::DuplicateKey
 pub cudf::ErrorCode::EmptyConstructionRequiresRuntime
@@ -4317,7 +4325,7 @@ pub cudf::ErrorCode::UnsupportedLayout
 pub cudf::ErrorCode::UnsupportedOperation
 pub cudf::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::ErrorKind
@@ -4355,6 +4363,7 @@ pub cudf::Expr::BinaryOpWithType::output_type: cudf::core::types::DataType
 pub cudf::Expr::BinaryOpWithType::rhs: alloc::boxed::Box<cudf::Expr>
 pub cudf::Expr::Cast
 pub cudf::Expr::Cast::input: alloc::boxed::Box<cudf::Expr>
+pub cudf::Expr::Cast::precision: core::option::Option<u8>
 pub cudf::Expr::Cast::target: cudf::core::types::DataType
 pub cudf::Expr::Column(alloc::string::String)
 pub cudf::Expr::DateTimeComponent
@@ -4414,6 +4423,7 @@ pub fn cudf::Expr::alias(self, impl core::convert::Into<alloc::string::String>) 
 pub fn cudf::Expr::bfill(self) -> cudf::Expr
 pub fn cudf::Expr::binary_op_with_type(self, impl cudf::ops::expr::IntoExpr, cudf::ops::binary::BinaryOperator, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
 pub fn cudf::Expr::cast(self, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::Expr
+pub fn cudf::Expr::cast_decimal(self, cudf::core::types::DataType, u8) -> cudf::Expr
 pub fn cudf::Expr::ceil(self) -> cudf::Expr
 pub fn cudf::Expr::cummax(self) -> cudf::Expr
 pub fn cudf::Expr::cummin(self) -> cudf::Expr

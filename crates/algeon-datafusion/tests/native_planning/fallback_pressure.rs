@@ -98,7 +98,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_rewrite", SQL_FILTERED_QUERY),
-        ("integer_modulo_fallback", SQL_MODULO_QUERY),
+        ("integer_modulo_rewrite", SQL_MODULO_QUERY),
+        ("decimal_modulo_fallback", SQL_DECIMAL_MODULO_QUERY),
     ];
     let mut items = Vec::with_capacity(workload.len());
     for (query_id, sql) in workload {
@@ -129,8 +130,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), 12);
-    assert_eq!(report.selected_count(), 9);
+    assert_eq!(report.rows.len(), 13);
+    assert_eq!(report.selected_count(), 10);
     assert_eq!(report.not_selected_count(), 2);
 
     let rewritten = report_row(&report, "sum_rewrite");
@@ -220,12 +221,18 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(distributed_distinct_avg.unsupported_category, None);
     assert!(!distributed_distinct_avg.rejected_before_execution);
 
-    // Integer modulo cannot match DataFusion by-zero errors on GPU, so the
-    // native candidate is left on the executable DataFusion baseline.
-    let modulo = report_row(&report, "integer_modulo_fallback");
-    assert_eq!(modulo.outcome, Some(CandidateOutcomeKind::NotSupported));
-    assert_eq!(modulo.reason_code.as_deref(), Some("unsupported_expression"));
+    let modulo = report_row(&report, "integer_modulo_rewrite");
+    assert_eq!(modulo.outcome, Some(CandidateOutcomeKind::Selected));
+    assert_eq!(modulo.reason_code, None);
+    assert_eq!(modulo.unsupported_category, None);
     assert!(!modulo.rejected_before_execution);
+
+    // Decimal modulo has no native lowering, so the candidate stays on the
+    // executable DataFusion baseline.
+    let decimal_modulo = report_row(&report, "decimal_modulo_fallback");
+    assert_eq!(decimal_modulo.outcome, Some(CandidateOutcomeKind::NotSupported));
+    assert_eq!(decimal_modulo.reason_code.as_deref(), Some("unsupported_type"));
+    assert!(!decimal_modulo.rejected_before_execution);
 
     let planning_failure = report_row(&report, "q00_planning_failure");
     assert_eq!(planning_failure.physical_root, "PlanningFailure");

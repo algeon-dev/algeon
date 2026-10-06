@@ -20,7 +20,8 @@ use datafusion::{
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
 use query_planning::expr::{
-    AggregateFunction as NativeAggregateFunction, BinaryOp as NativeBinaryOp, Expr as NativeExpr, UnaryMathOp,
+    AggregateFunction as NativeAggregateFunction, BinaryOp as NativeBinaryOp, Expr as NativeExpr,
+    LiteralValue as NativeLiteralValue, UnaryMathOp,
 };
 
 use super::{
@@ -225,6 +226,382 @@ fn every_admitted_binary_operator_validates_then_lowers() {
 }
 
 #[test]
+fn floor_and_ceil_admit_only_floating_point_arguments() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("whole", DataType::Int64, true),
+        Field::new("exact", DataType::Decimal128(10, 2), true),
+        Field::new("single", DataType::Float32, true),
+    ]));
+    for (name, function) in [("floor", math::floor()), ("ceil", math::ceil())] {
+        let single =
+            scalar_function(name, Arc::clone(&function), vec![col("single", &schema).unwrap()], DataType::Float32);
+        assert_validation_lowering_parity(name, &single, &schema);
+        let whole = scalar_function(name, Arc::clone(&function), vec![col("whole", &schema).unwrap()], DataType::Int64);
+        assert!(validate_physical_expr_contract(&whole, &schema).is_err(), "{name} over an integer");
+        let exact = scalar_function(name, function, vec![col("exact", &schema).unwrap()], DataType::Decimal128(10, 2));
+        assert!(validate_physical_expr_contract(&exact, &schema).is_err(), "{name} over a decimal");
+    }
+}
+
+#[test]
+fn integer_division_remainder_and_checked_casts_validate_and_lower_inside_case_branches() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("x", DataType::Int64, true),
+        Field::new("y", DataType::Int64, true),
+        Field::new("narrow", DataType::Int32, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let x = || col("x", &schema).unwrap();
+    let y = || col("y", &schema).unwrap();
+    let flag = || col("flag", &schema).unwrap();
+    let zero = || lit(ScalarValue::Int64(Some(0)));
+    let case = |when: Arc<dyn PhysicalExpr>, then: Arc<dyn PhysicalExpr>, otherwise: Arc<dyn PhysicalExpr>| {
+        Arc::new(CaseExpr::try_new(None, vec![(when, then)], Some(otherwise)).unwrap()) as Arc<dyn PhysicalExpr>
+    };
+    let divide = |left, divisor| binary(left, Operator::Divide, divisor, &schema).unwrap();
+    let narrowing = || Arc::new(CastExpr::new(x(), DataType::Int32, None)) as Arc<dyn PhysicalExpr>;
+    let lower = |label: &str, expr: &Arc<dyn PhysicalExpr>| {
+        assert_validation_lowering_parity(label, expr, &schema);
+        lower_physical_expr_for_test(expr, &schema).unwrap()
+    };
+    // The operand that native evaluation checks, which a CASE branch restricts to the rows that reach it.
+    let checked_operand = |expr: &NativeExpr| match expr {
+        NativeExpr::Binary { right, .. } => (**right).clone(),
+        NativeExpr::Cast { expr, .. } => (**expr).clone(),
+        other => panic!("not a division or cast: {other:?}"),
+    };
+    let then_of_first_branch = |expr: &NativeExpr| match expr {
+        NativeExpr::Case { branches, .. } => branches[0].then.clone(),
+        other => panic!("not a CASE: {other:?}"),
+    };
+    let else_of = |expr: &NativeExpr| match expr {
+        NativeExpr::Case { else_expr, .. } => (**else_expr).clone(),
+        other => panic!("not a CASE: {other:?}"),
+    };
+    let is_restricted = |operand: &NativeExpr| matches!(operand, NativeExpr::Case { .. });
+
+    for (label, operator) in [("divide", Operator::Divide), ("modulo", Operator::Modulo)] {
+        let expr = binary(x(), operator, y(), &schema).unwrap();
+        let lowered = lower(label, &expr);
+        assert!(
+            !is_restricted(&checked_operand(&lowered)),
+            "{label} outside CASE evaluates every row, as DataFusion does"
+        );
+    }
+    let to_text: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(x(), DataType::Utf8, None));
+    lower("integer to text", &to_text);
+
+    let divide_in_then = lower("variable divisor in THEN", &case(flag(), divide(x(), y()), zero()));
+    assert!(is_restricted(&checked_operand(&then_of_first_branch(&divide_in_then))));
+    let divide_in_else = lower("variable divisor in ELSE", &case(flag(), zero(), divide(x(), y())));
+    assert!(is_restricted(&checked_operand(&else_of(&divide_in_else))));
+    let cast_in_then = lower("narrowing cast in THEN", &case(flag(), narrowing(), lit(ScalarValue::Int32(Some(0)))));
+    assert!(is_restricted(&checked_operand(&then_of_first_branch(&cast_in_then))));
+
+    let second_when = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(flag(), zero()), (binary(divide(x(), y()), Operator::Gt, zero(), &schema).unwrap(), zero())],
+            Some(zero()),
+        )
+        .unwrap(),
+    ) as Arc<dyn PhysicalExpr>;
+    let lowered = lower("variable divisor in the second WHEN", &second_when);
+    let NativeExpr::Case { branches, .. } = &lowered else { panic!("not a CASE: {lowered:?}") };
+    let NativeExpr::Binary { left: second_quotient, .. } = &branches[1].when else {
+        panic!("not a comparison: {:?}", branches[1].when)
+    };
+    assert!(is_restricted(&checked_operand(second_quotient)));
+
+    let first_when = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(binary(divide(x(), y()), Operator::Gt, zero(), &schema).unwrap(), zero())],
+            Some(zero()),
+        )
+        .unwrap(),
+    ) as Arc<dyn PhysicalExpr>;
+    let lowered = lower("variable divisor in the first WHEN", &first_when);
+    let NativeExpr::Case { branches, .. } = &lowered else { panic!("not a CASE: {lowered:?}") };
+    let NativeExpr::Binary { left: first_quotient, .. } = &branches[0].when else {
+        panic!("not a comparison: {:?}", branches[0].when)
+    };
+    assert!(!is_restricted(&checked_operand(first_quotient)), "the first WHEN is evaluated on every row");
+
+    let literal_divisor =
+        lower("literal divisor in THEN", &case(flag(), divide(x(), lit(ScalarValue::Int64(Some(20)))), zero()));
+    assert!(!is_restricted(&checked_operand(&then_of_first_branch(&literal_divisor))));
+    let widening =
+        case(flag(), Arc::new(CastExpr::new(col("narrow", &schema).unwrap(), DataType::Int64, None)), zero());
+    let lowered = lower("widening cast in THEN", &widening);
+    assert!(!is_restricted(&checked_operand(&then_of_first_branch(&lowered))));
+}
+
+#[test]
+fn a_long_chain_of_fallible_when_conditions_stays_on_datafusion_instead_of_growing_without_bound() {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true), Field::new("y", DataType::Int64, true)]));
+    let zero = || lit(ScalarValue::Int64(Some(0)));
+    let case_of_dividing_conditions = |conditions: usize| -> Arc<dyn PhysicalExpr> {
+        let whens = (0..conditions)
+            .map(|_| {
+                let quotient =
+                    binary(col("x", &schema).unwrap(), Operator::Divide, col("y", &schema).unwrap(), &schema).unwrap();
+                (binary(quotient, Operator::Gt, zero(), &schema).unwrap(), zero())
+            })
+            .collect();
+        Arc::new(CaseExpr::try_new(None, whens, Some(zero())).unwrap())
+    };
+
+    assert_validation_lowering_parity("five dividing conditions", &case_of_dividing_conditions(5), &schema);
+
+    let long_chain = case_of_dividing_conditions(16);
+    validate_physical_expr_contract(&long_chain, &schema).expect("the contract admits the shape");
+    let reason = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().reason();
+    assert_eq!(reason, CapabilityReason::UnsupportedExpression);
+}
+
+fn right_operand(expr: &NativeExpr) -> &NativeExpr {
+    let NativeExpr::Binary { right, .. } = expr else { panic!("not a binary expression: {expr:?}") };
+    right
+}
+
+/// The divisor of the quotient on the left of the comparison `expr`.
+fn compared_quotient_divisor(expr: &NativeExpr) -> &NativeExpr {
+    let NativeExpr::Binary { left: quotient, .. } = expr else { panic!("not a comparison: {expr:?}") };
+    let NativeExpr::Binary { right: divisor, .. } = quotient.as_ref() else { panic!("not a quotient: {quotient:?}") };
+    divisor
+}
+
+/// Splits a divisor that lowering restricted into its activation and the operand it restricts.
+fn restriction_of(divisor: &NativeExpr) -> (&NativeExpr, &NativeExpr) {
+    let NativeExpr::Case { branches, .. } = divisor else { panic!("the divisor is not restricted: {divisor:?}") };
+    let [branch] = branches.as_slice() else { panic!("a restriction has one branch: {divisor:?}") };
+    (&branch.when, &branch.then)
+}
+
+/// Evaluates an activation, which is built from CASE, NOT, boolean literals, and columns, in three-valued logic.
+fn activation_value(activation: &NativeExpr, columns: &[(&str, Option<bool>)]) -> Option<bool> {
+    match activation {
+        NativeExpr::Column(column) => columns.iter().find(|(name, _)| *name == column.name()).expect("column value").1,
+        NativeExpr::Literal(NativeLiteralValue::Boolean(value)) => Some(*value),
+        NativeExpr::Literal(NativeLiteralValue::Null(_)) => None,
+        NativeExpr::Not(inner) => activation_value(inner, columns).map(|value| !value),
+        NativeExpr::Case { branches, else_expr } => branches
+            .iter()
+            .find(|branch| activation_value(&branch.when, columns) == Some(true))
+            .map_or_else(|| activation_value(else_expr, columns), |branch| activation_value(&branch.then, columns)),
+        other => panic!("not an activation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_fallible_right_operand_of_and_or_is_evaluated_only_where_the_left_operand_does_not_decide() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("x", DataType::Int64, true),
+        Field::new("y", DataType::Int64, true),
+        Field::new("flag", DataType::Boolean, true),
+        Field::new("gate", DataType::Boolean, true),
+    ]));
+    let x = || col("x", &schema).unwrap();
+    let y = || col("y", &schema).unwrap();
+    let flag = || col("flag", &schema).unwrap();
+    let gate = || col("gate", &schema).unwrap();
+    let logical = |left, operator, right| binary(left, operator, right, &schema).unwrap();
+    let quotient_exceeds_one = || {
+        let quotient = binary(y(), Operator::Divide, x(), &schema).unwrap();
+        binary(quotient, Operator::Gt, lit(ScalarValue::Int64(Some(1))), &schema).unwrap()
+    };
+    let lower = |label: &str, expr: &Arc<dyn PhysicalExpr>| {
+        assert_validation_lowering_parity(label, expr, &schema);
+        lower_physical_expr_for_test(expr, &schema).unwrap()
+    };
+    let tri = [Some(true), Some(false), None];
+
+    let and = lower("AND", &logical(flag(), Operator::And, quotient_exceeds_one()));
+    let (activation, restricted) = restriction_of(compared_quotient_divisor(right_operand(&and)));
+    assert_eq!(restricted, &NativeExpr::column("x"));
+    for flag_value in tri {
+        // FALSE decides an AND. A NULL left operand leaves the right operand's result open.
+        let expected = flag_value != Some(false);
+        assert_eq!(activation_value(activation, &[("flag", flag_value)]) == Some(true), expected, "AND {flag_value:?}");
+    }
+
+    let or = lower("OR", &logical(flag(), Operator::Or, quotient_exceeds_one()));
+    let (activation, _) = restriction_of(compared_quotient_divisor(right_operand(&or)));
+    for flag_value in tri {
+        let expected = flag_value != Some(true);
+        assert_eq!(activation_value(activation, &[("flag", flag_value)]) == Some(true), expected, "OR {flag_value:?}");
+    }
+
+    let left_division = lower("division on the left", &logical(quotient_exceeds_one(), Operator::And, flag()));
+    let NativeExpr::Binary { left, .. } = &left_division else { panic!("not a binary expression") };
+    assert_eq!(compared_quotient_divisor(left), &NativeExpr::column("x"), "the left operand is evaluated on every row");
+
+    let infallible = lower(
+        "no fallible operation on the right",
+        &logical(flag(), Operator::And, binary(y(), Operator::Gt, lit(ScalarValue::Int64(Some(1))), &schema).unwrap()),
+    );
+    assert!(
+        !infallible.any(|expr| matches!(expr, NativeExpr::Case { .. })),
+        "no activation without a fallible operand"
+    );
+
+    // Inside a CASE branch the right operand also stays inside the branch.
+    let guarded = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(gate(), logical(flag(), Operator::And, quotient_exceeds_one()))],
+            Some(lit(ScalarValue::Boolean(Some(false)))),
+        )
+        .unwrap(),
+    ) as Arc<dyn PhysicalExpr>;
+    let lowered = lower("AND in a CASE branch", &guarded);
+    let NativeExpr::Case { branches, .. } = &lowered else { panic!("not a CASE: {lowered:?}") };
+    let (activation, _) = restriction_of(compared_quotient_divisor(right_operand(&branches[0].then)));
+    for (gate_value, flag_value) in tri.into_iter().flat_map(|gate| tri.into_iter().map(move |flag| (gate, flag))) {
+        let expected = gate_value == Some(true) && flag_value != Some(false);
+        assert_eq!(
+            activation_value(activation, &[("gate", gate_value), ("flag", flag_value)]) == Some(true),
+            expected,
+            "gate {gate_value:?}, flag {flag_value:?}"
+        );
+    }
+
+    // The right operand of an outer AND restricts an inner AND by both left operands.
+    let nested = logical(flag(), Operator::And, logical(gate(), Operator::And, quotient_exceeds_one()));
+    let lowered = lower("AND in the right operand of an AND", &nested);
+    let (activation, _) = restriction_of(compared_quotient_divisor(right_operand(right_operand(&lowered))));
+    for (gate_value, flag_value) in tri.into_iter().flat_map(|gate| tri.into_iter().map(move |flag| (gate, flag))) {
+        let expected = gate_value != Some(false) && flag_value != Some(false);
+        assert_eq!(
+            activation_value(activation, &[("gate", gate_value), ("flag", flag_value)]) == Some(true),
+            expected,
+            "gate {gate_value:?}, flag {flag_value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_long_chain_of_fallible_and_conditions_stays_on_datafusion_instead_of_growing_without_bound() {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true), Field::new("y", DataType::Int64, true)]));
+    let zero = || lit(ScalarValue::Int64(Some(0)));
+    let conjunction_of_guarded_quotients = |conjuncts: usize| -> Arc<dyn PhysicalExpr> {
+        (0..conjuncts)
+            .map(|_| {
+                let guard = binary(col("x", &schema).unwrap(), Operator::NotEq, zero(), &schema).unwrap();
+                let quotient =
+                    binary(col("y", &schema).unwrap(), Operator::Divide, col("x", &schema).unwrap(), &schema).unwrap();
+                let exceeds = binary(quotient, Operator::Gt, zero(), &schema).unwrap();
+                binary(guard, Operator::And, exceeds, &schema).unwrap()
+            })
+            .reduce(|left, right| binary(left, Operator::And, right, &schema).unwrap())
+            .unwrap()
+    };
+
+    assert_validation_lowering_parity("three guarded quotients", &conjunction_of_guarded_quotients(3), &schema);
+
+    let long_chain = conjunction_of_guarded_quotients(16);
+    validate_physical_expr_contract(&long_chain, &schema).expect("the contract admits the shape");
+    let reason = lower_physical_expr_for_test(&long_chain, &schema).unwrap_err().reason();
+    assert_eq!(reason, CapabilityReason::UnsupportedExpression);
+}
+
+#[test]
+fn decimal_division_is_restricted_inside_case_branches_whatever_the_divisor() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Decimal128(10, 2), true),
+        Field::new("b", DataType::Decimal128(10, 2), true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let divisors: [(&str, Arc<dyn PhysicalExpr>); 2] = [
+        ("column divisor", col("b", &schema).unwrap()),
+        ("literal divisor", lit(ScalarValue::Decimal128(Some(250), 10, 2))),
+    ];
+    for (label, divisor) in divisors {
+        let quotient = binary(col("a", &schema).unwrap(), Operator::Divide, divisor, &schema).unwrap();
+        let lowered = lower_physical_expr_for_test(&quotient, &schema).unwrap();
+        assert!(
+            !matches!(right_operand(&lowered), NativeExpr::Case { .. }),
+            "{label}: a division outside CASE evaluates every row, as DataFusion does"
+        );
+
+        let guarded = Arc::new(
+            CaseExpr::try_new(None, vec![(col("flag", &schema).unwrap(), Arc::clone(&quotient))], None).unwrap(),
+        ) as Arc<dyn PhysicalExpr>;
+        assert_validation_lowering_parity(label, &guarded, &schema);
+        let lowered = lower_physical_expr_for_test(&guarded, &schema).unwrap();
+        let NativeExpr::Case { branches, .. } = &lowered else { panic!("not a CASE: {lowered:?}") };
+        assert!(
+            matches!(right_operand(&branches[0].then), NativeExpr::Case { .. }),
+            "{label}: a division in a CASE branch checks only the rows that reach the branch"
+        );
+    }
+}
+
+#[test]
+fn join_residual_rejects_decimal_division_because_it_is_not_restricted_to_the_rows_a_case_guards() {
+    let decimal = || DataType::Decimal128(10, 2);
+    let left_schema = Arc::new(Schema::new(vec![Field::new("l", decimal(), false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("r", decimal(), false)]));
+    let filter_schema =
+        Arc::new(Schema::new(vec![Field::new("l", decimal(), false), Field::new("r", decimal(), false)]));
+    let filter = |expr: Arc<dyn PhysicalExpr>| {
+        JoinFilter::new(
+            expr,
+            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            Arc::clone(&filter_schema),
+        )
+    };
+    let quotient =
+        binary(col("l", &filter_schema).unwrap(), Operator::Divide, col("r", &filter_schema).unwrap(), &filter_schema)
+            .unwrap();
+    let comparison =
+        binary(quotient, Operator::Gt, lit(ScalarValue::Decimal128(Some(100), 10, 2)), &filter_schema).unwrap();
+
+    let rejection = validate_join_residual(&filter(comparison), &left_schema, &right_schema).map(|_| ()).unwrap_err();
+
+    assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape);
+}
+
+#[test]
+fn join_residual_ast_rejects_integer_division_and_casts_that_can_fail() {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("r", DataType::Int64, false)]));
+    let filter_schema =
+        Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, false), Field::new("r", DataType::Int64, false)]));
+    let cast = |name: &str, target: DataType| -> Arc<dyn PhysicalExpr> {
+        Arc::new(CastExpr::new(col(name, &filter_schema).unwrap(), target, None))
+    };
+    let filter = |expr: Arc<dyn PhysicalExpr>| {
+        JoinFilter::new(
+            expr,
+            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            Arc::clone(&filter_schema),
+        )
+    };
+    let validate =
+        |expr: Arc<dyn PhysicalExpr>| validate_join_residual(&filter(expr), &left_schema, &right_schema).map(|_| ());
+
+    let failing_cast =
+        binary(cast("l", DataType::UInt64), Operator::Eq, cast("r", DataType::UInt64), &filter_schema).unwrap();
+    assert_eq!(validate(failing_cast).unwrap_err().capability(), ExpressionCapability::CastPair);
+
+    let safe_cast =
+        binary(cast("l", DataType::Int64), Operator::Eq, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
+    validate(safe_cast).expect("an Int32 to Int64 cast cannot fail");
+
+    for operator in [Operator::Divide, Operator::Modulo] {
+        let arithmetic =
+            binary(cast("l", DataType::Int64), operator, col("r", &filter_schema).unwrap(), &filter_schema).unwrap();
+        let comparison = binary(arithmetic, Operator::Gt, lit(ScalarValue::Int64(Some(1))), &filter_schema).unwrap();
+        let rejection = validate(comparison).unwrap_err();
+        assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualShape, "{operator:?}");
+    }
+}
+
+#[test]
 fn every_supported_scalar_function_kind_validates_then_lowers() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("text", DataType::Utf8, true),
@@ -317,6 +694,14 @@ fn every_supported_scalar_function_kind_validates_then_lowers() {
         (
             ScalarFunctionKind::UnaryMath(UnaryMathOp::Exp),
             scalar_function("exp", math::exp(), vec![number()], DataType::Float64),
+        ),
+        (
+            ScalarFunctionKind::UnaryMath(UnaryMathOp::Floor),
+            scalar_function("floor", math::floor(), vec![number()], DataType::Float64),
+        ),
+        (
+            ScalarFunctionKind::UnaryMath(UnaryMathOp::Ceil),
+            scalar_function("ceil", math::ceil(), vec![number()], DataType::Float64),
         ),
         (
             ScalarFunctionKind::Round,

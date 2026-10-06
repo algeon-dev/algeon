@@ -658,6 +658,18 @@ pub(crate) fn try_to_integers_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+pub(crate) fn from_integers_impl(
+    input: &ColumnView<'_>,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_strings_from_integers_ex(input.raw_handle(), &mut out, exec_options) };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,17 +4,17 @@ use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
 use super::{
     Expr, QueryError, QueryErrorCode, Result,
-    expressions::{validate_column, validate_literal, validate_negation_types},
+    expressions::{validate_column, validate_literal, validate_unary_math_types},
     types::{
-        is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
-        require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
-        require_string, require_timezone_free_operator_key,
+        is_decimal_type, is_integral_type, is_numeric_type, require_arithmetic_type, require_boolean,
+        require_comparable_types, require_compatible_types, require_date_or_timestamp, require_integral_type,
+        require_remainder_type, require_scalar_operator_value, require_string, require_timezone_free_operator_key,
     },
 };
 use crate::{
     backend::AnalysisContext,
     capability::{JoinForm, classify_join},
-    datatypes::is_supported_arrow_cast,
+    datatypes::{cast_can_fail_at_runtime, is_supported_arrow_cast},
     expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue, UnaryMathOp},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId},
 };
@@ -513,12 +513,16 @@ fn validate_join_residual_expr(
                     require_arithmetic_type(&left_type, "join residual arithmetic left operand")?;
                     require_arithmetic_type(&right_type, "join residual arithmetic right operand")?;
                     require_compatible_types(&left_type, &right_type, "join residual arithmetic operands", ctx)?;
+                    if *op == BinaryOp::Divide {
+                        require_no_ast_integer_division(&left_type)?;
+                    }
                     Ok(left_type)
                 },
                 BinaryOp::Modulo => {
                     require_integral_type(&left_type, "join residual modulo left operand")?;
                     require_integral_type(&right_type, "join residual modulo right operand")?;
                     require_compatible_types(&left_type, &right_type, "join residual modulo operands", ctx)?;
+                    require_no_ast_integer_division(&left_type)?;
                     Ok(left_type)
                 },
                 BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
@@ -749,7 +753,7 @@ fn validate_post_join_residual_expr(
                 ctx,
             )?;
             let (input_context, output_context) = post_join_residual_unary_math_type_contexts(*op);
-            validate_negation_types(*op, &data_type, output_type)?;
+            validate_unary_math_types(*op, &data_type, output_type)?;
             require_arithmetic_type(&data_type, input_context)?;
             require_arithmetic_type(output_type, output_context)?;
             Ok(output_type.clone())
@@ -831,8 +835,8 @@ fn validate_post_join_residual_expr(
                     Ok(output_type.clone().unwrap_or(left_type))
                 },
                 BinaryOp::Modulo => {
-                    require_integral_type(&left_type, "post-join residual modulo left operand")?;
-                    require_integral_type(&right_type, "post-join residual modulo right operand")?;
+                    require_remainder_type(&left_type, "post-join residual modulo left operand")?;
+                    require_remainder_type(&right_type, "post-join residual modulo right operand")?;
                     require_compatible_types(&left_type, &right_type, "post-join residual modulo operands", ctx)?;
                     Ok(left_type)
                 },
@@ -1123,6 +1127,21 @@ fn is_supported_join_residual_ast_cast(
     matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
         && (is_numeric_type(source_type) || is_decimal_type(source_type))
         && is_supported_arrow_cast(source_type, target_type, ctx.backend())
+        && !cast_can_fail_at_runtime(source_type, target_type)
+}
+
+/// The cudf AST divides without the zero-divisor and overflow checks that
+/// DataFusion applies to integer `/` and `%`.
+fn require_no_ast_integer_division(operand_type: &ArrowDataType) -> Result<()> {
+    if is_integral_type(operand_type) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "query_engine.join.validate_residual",
+            "native join residual AST does not evaluate integer division or remainder",
+        )
+        .with_fact("operand_type", format!("{operand_type:?}")));
+    }
+    Ok(())
 }
 
 fn post_join_residual_unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
@@ -1131,6 +1150,8 @@ fn post_join_residual_unary_math_type_contexts(op: UnaryMathOp) -> (&'static str
         UnaryMathOp::Sqrt => ("post-join residual SQRT input", "post-join residual SQRT output"),
         UnaryMathOp::Ln => ("post-join residual LN input", "post-join residual LN output"),
         UnaryMathOp::Exp => ("post-join residual EXP input", "post-join residual EXP output"),
+        UnaryMathOp::Floor => ("post-join residual FLOOR input", "post-join residual FLOOR output"),
+        UnaryMathOp::Ceil => ("post-join residual CEIL input", "post-join residual CEIL output"),
     }
 }
 

@@ -590,7 +590,7 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
 }
 
 #[test]
-fn non_numeric_cast_targets_are_rejected_during_native_planning() {
+fn integer_to_string_cast_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-string-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -602,14 +602,34 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "string cast should not lower");
-    assert_eq!(result.not_selected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plan.as_ref().expect("integer to string cast should lower to a native plan").to_string();
+    assert!(native.contains("CAST(payload AS Utf8)"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn non_numeric_cast_targets_are_rejected_during_native_planning() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-boolean-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Boolean, None));
+    let predicate = binary(cast, Operator::Eq, lit(ScalarValue::Boolean(Some(true))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert!(result.plan.is_none(), "boolean cast should not lower");
+    assert_eq!(result.not_selected_count(), 1, "boolean cast outcomes={:?}", result.report.outcomes());
     assert!(
         matches!(
             result.report.outcomes()[0],
             CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
         ),
-        "string cast outcomes={:?}",
+        "boolean cast outcomes={:?}",
         result.report.outcomes()
     );
 
@@ -683,10 +703,30 @@ fn decimal_to_float32_cast_lowers_through_float64() {
 }
 
 #[test]
-fn lossy_numeric_cast_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("algeon-datafusion-native-lowering-lossy-cast");
+fn narrowing_integer_cast_lowers_during_native_planning() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-narrowing-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(col("m00", &scan_schema).unwrap(), DataType::Int32, None));
+    let predicate = binary(cast, Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plan.as_ref().expect("narrowing cast should lower to a native plan").to_string();
+    assert!(native.contains("CAST(m00 AS Int32)"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fractional_decimal_to_integer_cast_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-fractional-decimal-cast");
+    let path = dir.join("input.parquet");
+    write_decimal_measure_parquet_file(&path);
     let scan = parquet_scan(&path);
     let scan_schema = scan.schema();
     let cast = Arc::new(CastExpr::new(col("m00", &scan_schema).unwrap(), DataType::Int32, None));
@@ -734,8 +774,7 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
 }
 
 #[test]
-fn integer_division_is_rejected_during_native_planning() {
-    // Integer division stays on CPU until libcudf exposes checked by-zero semantics.
+fn integer_division_lowers_to_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-divide");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -749,19 +788,14 @@ fn integer_division_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    assert!(result.plan.is_some(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn integer_modulo_is_rejected_during_native_planning() {
-    // Integer modulo stays on CPU until libcudf exposes checked by-zero semantics.
+fn integer_modulo_lowers_to_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-modulo");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -776,12 +810,8 @@ fn integer_modulo_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    assert!(result.plan.is_some(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -790,7 +820,7 @@ fn integer_modulo_is_rejected_during_native_planning() {
 fn every_rejected_native_candidate_has_stable_rejection_code() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-rejection-codes");
     let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
+    write_decimal_measure_parquet_file(&path);
     let rejected_results = [lower_physical_plan_to_native(
         aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo),
         &ParquetReadStrategyConfig::default(),

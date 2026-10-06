@@ -564,6 +564,7 @@ pub fn query_planning::correlation::TraceId::fmt(&self, &mut core::fmt::Formatte
 pub mod query_planning::datatypes
 pub fn query_planning::datatypes::arrow_decimal_scale_to_cudf_scale(i8) -> i32
 pub fn query_planning::datatypes::arrow_fixed_width_byte_size(&arrow_schema::datatype::DataType) -> core::option::Option<u64>
+pub fn query_planning::datatypes::cast_can_fail_at_runtime(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::diagnostic_arrow_type(&arrow_schema::datatype::DataType) -> alloc::string::String
 pub fn query_planning::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
@@ -1091,7 +1092,9 @@ pub fn query_planning::expr::LiteralValue::data_type(&self) -> arrow_schema::dat
 impl core::fmt::Display for query_planning::expr::LiteralValue
 pub fn query_planning::expr::LiteralValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::expr::UnaryMathOp
+pub query_planning::expr::UnaryMathOp::Ceil
 pub query_planning::expr::UnaryMathOp::Exp
+pub query_planning::expr::UnaryMathOp::Floor
 pub query_planning::expr::UnaryMathOp::Ln
 pub query_planning::expr::UnaryMathOp::Negate
 pub query_planning::expr::UnaryMathOp::Sqrt

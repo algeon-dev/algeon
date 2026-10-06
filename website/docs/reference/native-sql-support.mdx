@@ -37,12 +37,86 @@ arithmetic and comparisons, boolean logic, null tests, supported casts,
 case-sensitive `LIKE`, literal `IN` lists, `CASE`, and string-to-integer
 `TRY_CAST`.
 
+Integer `+`, `-`, `*`, and unary minus wrap on overflow, as DataFusion does
+for column values. Integer `/` and `%` evaluate only the rows where both
+operands are valid. A zero divisor in such a row fails the query, as does
+`/` on the minimum signed value divided by `-1`; `x % -1` is `0`. Rows with a
+null operand stay null and never fail. Floating-point `%` follows IEEE `fmod`:
+the result takes the sign of the dividend, and a zero divisor or an infinite
+dividend gives `NaN`. `%` on decimals is not native. Integer `/` and any `%` are
+not evaluated inside reader predicates or join residual conditions: a reader
+predicate with them stays a filter, and a join residual with them keeps the
+join on DataFusion.
+
+Decimal `/` evaluates the same valid rows and fails on a zero divisor. DataFusion
+computes `dividend * 10^k / divisor` on the raw values in checked `i128`
+arithmetic, where `10^k` gives the quotient the result scale, which is the
+dividend scale plus 4 capped at 38. The query therefore also fails when a valid
+dividend times `10^k` leaves the `i128` range, and when that product is the
+minimum `i128` value and the raw divisor is `-1`. Native evaluation fails on
+the same rows. A
+quotient that needs more digits than the result precision is not an error in
+DataFusion or in native evaluation. A join residual with a decimal `/` keeps the
+join on DataFusion.
+
+Explicit `CAST` runs natively between integer types, from `Float32`,
+`Float64`, and `Decimal128(p, 0)` to integer types, and from integers to
+`Utf8`, `LargeUtf8`, and `Utf8View`. Like DataFusion `CAST`, a cast to an
+integer type fails the query when a valid value is outside the target range.
+Floating-point and decimal inputs truncate toward zero before the comparison,
+and a `NaN` or infinite float fails. Integer-to-string casts produce plain
+decimal text with a leading `-` for negative values, so
+`CAST(row_number() OVER (ORDER BY id) AS BIGINT)` and `CAST(user_id AS VARCHAR)`
+are native. Casting a float or boolean to a string is not.
+
+A cast into `Decimal128(p, s)` from an integer, a float, or another
+`Decimal128` rounds half away from zero where it drops digits. It fails the
+query when a valid value does not fit precision `p` after rescaling, and when a
+float is `NaN` or infinite. A float is rounded as `round(10^s * value)` in
+`Float64`, the way DataFusion does it.
+
+DataFusion evaluates a `CASE` result only on the rows where its condition is
+true, `ELSE` only on the rows where no condition is true, and every `WHEN`
+after the first only on the rows no earlier `WHEN` selected. In
+`CASE base WHEN value`, it evaluates `value` only where `base` is not null. A
+null condition counts as not true. The native evaluator visits every row, so
+lowering sets the divisor of an integer `/` or `%`, and the input of a cast that
+range-checks, to null on the rows DataFusion does not evaluate. A null operand
+never fails. `CASE WHEN n <> 0 THEN total / n END` never divides by zero, while
+`CASE WHEN n >= 0 THEN total / n END` fails the query on a row with `n = 0`, as
+on DataFusion. A nested `CASE` applies the restrictions of every enclosing
+branch. A literal integer divisor other than `0` and `-1` and a cast whose
+target holds every value of the source type cannot fail and are evaluated as
+they are. A decimal `/` is always restricted, because scaling its dividend can
+overflow whatever the divisor is. Each `WHEN` condition that divides or casts
+doubles the restrictions of the branches after it, so a `CASE` with a long chain
+of such conditions (about eight) stays on DataFusion.
+
+DataFusion skips the right operand of `AND` on the rows where the left operand
+is false, and the right operand of `OR` on the rows where it is true, only in
+some batches. It skips every such row when all left values decide the result,
+and the deciding rows when the left values contain no null and at most a fifth
+of them are undecided. Any other batch, including every batch whose left values
+contain a null, evaluates the right operand on every row. Native evaluation
+never runs a fallible operation of the right operand on a row the left operand
+decides, with the restrictions described for `CASE`: for `l AND r` the
+operation runs where `l` is true or null, and for `l OR r` where `l` is false or
+null. `WHERE n <> 0 AND total / n > 1` never divides by zero, while
+`WHERE n >= 0 AND total / n > 1` fails the query on a row with `n = 0`. A decided
+row takes its value from the left operand alone, so results do not change.
+Native evaluation is more permissive than DataFusion in one case: where
+DataFusion evaluates the right operand on a decided row that fails, it fails the
+query and native evaluation returns the result. Native evaluation never fails
+where DataFusion succeeds. An `AND` or `OR` term that divides or casts doubles
+the restrictions of the terms after it, so a chain of about eight such terms
+stays on DataFusion.
+
 The supported DataFusion scalar-function names are:
 
 | Family | Functions and important limits |
 | --- | --- |
 | Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `regexp_replace`, and `concat`. A substring start and optional length must be literal integers with start >= 1 and length >= 0. Pattern, trim, and replacement arguments that define the other operations must be literals. |
-| Numeric | `abs`, `sqrt`, `ln`, `exp`, and `round`; `round` accepts an optional literal integer scale. `ln` and `exp` follow IEEE results (`ln(0)` is `-inf`, a negative `ln` input is `NaN`) and can differ from DataFusion CPU in the last bits of finite results. |
+| Numeric | `abs`, `sqrt`, `ln`, `exp`, `floor`, `ceil`, and `round`; `round` accepts an optional literal integer scale. `floor` and `ceil` take `Float32` or `Float64` (DataFusion widens an integer argument to `Float64`) and pass `NaN` and infinities through; decimal arguments are not native. `ln` and `exp` follow IEEE results (`ln(0)` is `-inf`, a negative `ln` input is `NaN`) and can differ from DataFusion CPU in the last bits of finite results. |
 | Nulls | `nullif` for compatible native types. |
 | Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
 

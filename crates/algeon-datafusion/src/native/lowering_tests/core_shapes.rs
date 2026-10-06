@@ -184,9 +184,7 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
 }
 
 #[test]
-fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
-    // m00/m01 are Int64; integer modulo stays on CPU until checked libcudf
-    // semantics exist.
+fn integer_modulo_projection_expression_lowers_to_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-modulo-shape");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -194,21 +192,32 @@ fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
+fn modulo_with_floating_point_operands_lowers_to_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-modulo-float");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn modulo_with_decimal_operands_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-modulo-decimal");
+    let path = dir.join("input.parquet");
+    write_decimal_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();

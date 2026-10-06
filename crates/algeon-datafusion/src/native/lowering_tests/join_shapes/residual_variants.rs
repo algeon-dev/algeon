@@ -436,7 +436,9 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
 }
 
 #[test]
-fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_predicate() {
+fn hash_join_filter_rejects_a_case_guarded_decimal_divide_residual() {
+    // Native decimal division fails on a zero divisor, and a residual is lowered without restricting a CASE
+    // branch to the rows DataFusion evaluates, so the guarded zero rows would fail the query.
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-hash-join-filter-case-decimal-divide");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -449,33 +451,7 @@ fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_pred
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    let join = rewritten_native_join(&result);
-    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
-    assert!(matches!(
-        residual,
-        Expr::Binary { left, right, .. }
-            if matches!(
-                left.as_ref(),
-                Expr::Column(column) if column.to_string() == "input0.__algeon_native_join_residual_left_0"
-            )
-                && matches!(
-                    right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input1.__algeon_native_join_residual_right_0"
-                )
-    ));
-    assert_join_input_materializes_case_decimal_divide(
-        result.selected_plan(),
-        join.inputs[0],
-        "__algeon_native_join_residual_left_0",
-        "l_payload",
-    );
-    assert_join_input_materializes_case_decimal_divide(
-        result.selected_plan(),
-        join.inputs[1],
-        "__algeon_native_join_residual_right_0",
-        "r_payload",
-    );
-
+    assert_native_rejection(&result, CapabilityReason::UnsupportedExpression);
     fs::remove_dir_all(dir).unwrap();
 }
 

@@ -6,7 +6,7 @@ use datafusion::{
     functions::{
         core::nullif::NullIfFunc,
         datetime::{date_part::DatePartFunc, date_trunc::DateTruncFunc, to_timestamp::ToTimestampSecondsFunc},
-        math::{self, abs::AbsFunc, round::RoundFunc},
+        math::{self, abs::AbsFunc, ceil::CeilFunc, floor::FloorFunc, round::RoundFunc},
         regex::regexpreplace::RegexpReplaceFunc,
         string::{
             btrim::BTrimFunc, concat::ConcatFunc, contains::ContainsFunc, ends_with::EndsWithFunc, lower::LowerFunc,
@@ -24,10 +24,7 @@ use datafusion::{
         variance::{VariancePopulation, VarianceSample},
     },
     logical_expr::{AggregateUDF, Operator, ScalarUDF},
-    physical_expr::{
-        PhysicalExpr, ScalarFunctionExpr,
-        expressions::{BinaryExpr, CastExpr, Literal},
-    },
+    physical_expr::{PhysicalExpr, ScalarFunctionExpr, expressions::Literal},
 };
 use query_engine::rapids_backend::rapids_backend;
 use query_planning::{
@@ -35,7 +32,7 @@ use query_planning::{
         is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{AggregateFunction as NativeAggregateFunction, UnaryMathOp},
-    validation::{is_integral_type, is_string_type, target_integral_max},
+    validation::{is_integral_type, is_string_type},
 };
 
 use super::{ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject};
@@ -186,6 +183,10 @@ impl ScalarFunctionKind {
             Ok(Self::UnaryMath(UnaryMathOp::Ln))
         } else if function.name().eq_ignore_ascii_case("exp") && is_builtin_scalar_impl(function.fun(), &math::exp()) {
             Ok(Self::UnaryMath(UnaryMathOp::Exp))
+        } else if implementation.is::<FloorFunc>() {
+            Ok(Self::UnaryMath(UnaryMathOp::Floor))
+        } else if implementation.is::<CeilFunc>() {
+            Ok(Self::UnaryMath(UnaryMathOp::Ceil))
         } else if implementation.is::<RoundFunc>() {
             Ok(Self::Round)
         } else if implementation.is::<NullIfFunc>() {
@@ -238,7 +239,6 @@ pub(in crate::native) fn native_aggregate_function_kind(fun: &AggregateUDF) -> O
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::native) enum CastCapability {
     Native,
-    BoundedNonnegativeIntegral,
     LiteralStringDate32,
     Decimal128ToFloat32ViaFloat64,
 }
@@ -262,9 +262,6 @@ pub(in crate::native) fn cast_capability(
 ) -> Result<CastCapability, ExpressionRejection> {
     if is_supported_native_cast(source_type, target_type) {
         return Ok(CastCapability::Native);
-    }
-    if bounded_nonnegative_integral_cast_is_supported(expr, source_type, target_type) {
-        return Ok(CastCapability::BoundedNonnegativeIntegral);
     }
     if literal_string_date32_cast_is_supported(expr, target_type) {
         return Ok(CastCapability::LiteralStringDate32);
@@ -349,67 +346,4 @@ fn literal_string_date32_cast_is_supported(expr: &Arc<dyn PhysicalExpr>, target_
                 _ => None,
             })
             .is_some()
-}
-
-pub(in crate::native) fn bounded_nonnegative_integral_cast_is_supported(
-    expr: &Arc<dyn PhysicalExpr>,
-    source_type: &DataType,
-    target_type: &DataType,
-) -> bool {
-    if !is_integral_type(source_type) || !is_integral_type(target_type) {
-        return false;
-    }
-    let Some(max_value) = nonnegative_integral_expr_max(expr) else {
-        return false;
-    };
-    target_integral_max(target_type).is_some_and(|target_max| max_value <= target_max)
-}
-
-fn nonnegative_integral_expr_max(expr: &Arc<dyn PhysicalExpr>) -> Option<u128> {
-    if let Some(literal) = expr.downcast_ref::<Literal>() {
-        return nonnegative_integral_scalar_value(literal.value());
-    }
-    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
-        return nonnegative_integral_expr_max(cast.expr());
-    }
-    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        return match binary.op() {
-            Operator::BitwiseAnd => {
-                nonnegative_integral_expr_max(binary.left()).or_else(|| nonnegative_integral_expr_max(binary.right()))
-            },
-            Operator::BitwiseOr | Operator::BitwiseXor => {
-                Some(nonnegative_integral_expr_max(binary.left())? | nonnegative_integral_expr_max(binary.right())?)
-            },
-            Operator::BitwiseShiftRight => {
-                let left_max = nonnegative_integral_expr_max(binary.left())?;
-                let shift = nonnegative_integral_scalar_expr_value(binary.right())?;
-                if shift >= 128 { Some(0) } else { Some(left_max >> shift) }
-            },
-            Operator::BitwiseShiftLeft => {
-                let left_max = nonnegative_integral_expr_max(binary.left())?;
-                let shift = u32::try_from(nonnegative_integral_scalar_expr_value(binary.right())?).ok()?;
-                left_max.checked_shl(shift)
-            },
-            _ => None,
-        };
-    }
-    None
-}
-
-fn nonnegative_integral_scalar_expr_value(expr: &Arc<dyn PhysicalExpr>) -> Option<u128> {
-    expr.downcast_ref::<Literal>().and_then(|literal| nonnegative_integral_scalar_value(literal.value()))
-}
-
-fn nonnegative_integral_scalar_value(value: &ScalarValue) -> Option<u128> {
-    match value {
-        ScalarValue::Int8(Some(value)) => u128::try_from(*value).ok(),
-        ScalarValue::Int16(Some(value)) => u128::try_from(*value).ok(),
-        ScalarValue::Int32(Some(value)) => u128::try_from(*value).ok(),
-        ScalarValue::Int64(Some(value)) => u128::try_from(*value).ok(),
-        ScalarValue::UInt8(Some(value)) => Some(u128::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Some(u128::from(*value)),
-        ScalarValue::UInt32(Some(value)) => Some(u128::from(*value)),
-        ScalarValue::UInt64(Some(value)) => Some(u128::from(*value)),
-        _ => None,
-    }
 }

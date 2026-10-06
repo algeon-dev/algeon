@@ -1,6 +1,10 @@
 use std::{fs::File, sync::Arc};
 
-use query_planning::expr::{CaseWhen, DatePart, UnaryMathOp};
+use arrow::compute::{CastOptions, cast_with_options};
+use query_planning::{
+    error::QueryError,
+    expr::{CaseWhen, DatePart, UnaryMathOp},
+};
 
 use super::*;
 
@@ -359,16 +363,8 @@ fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
         Err(error) => error,
     };
 
-    assert!(
-        matches!(
-            error.code(),
-            QueryErrorCode::CudfInvalidInput
-                | QueryErrorCode::CudfUnsupported
-                | QueryErrorCode::CudfPersistentFailure
-                | QueryErrorCode::CudfInvariantViolation
-        ),
-        "invalid Float64 -> Int64 cast should be rejected by the native cast contract, got {error:?}",
-    );
+    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput, "got {error:?}");
+    assert_eq!(error.fact_value("cudf_code"), Some("ValueOutOfRange"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -877,4 +873,365 @@ fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execut
     assert!(error.fact_value("path").is_none());
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn project_over_parquet(
+    name: &str,
+    input: RecordBatch,
+    exprs: Vec<Expr>,
+    output_schema: Arc<Schema>,
+) -> QueryEngineResult<RecordBatch> {
+    let dir = unique_temp_dir(name);
+    let path = dir.join("input.parquet");
+    let input_schema = input.schema();
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&input_schema), None).unwrap();
+    writer.write(&input).unwrap();
+    writer.close().unwrap();
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        input_schema.fields().iter().map(|field| field.name().clone()).collect(),
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(exprs, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+    let result = execute_query_plan(&backend_context(), &plan);
+    fs::remove_dir_all(dir).unwrap();
+    let result = result?;
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    Ok(batch.clone())
+}
+
+fn assert_cudf_input_failure(error: &QueryError, cudf_code: &str) {
+    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput, "got {error:?}");
+    assert_eq!(error.fact_value("cudf_code"), Some(cudf_code), "got {error:?}");
+}
+
+#[test]
+fn native_query_casts_integers_between_widths_and_formats_them_as_text() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("wide", DataType::Int64, true),
+            Field::new("rank", DataType::UInt64, true),
+            Field::new("narrow", DataType::Int32, true),
+            Field::new("low", DataType::Int64, true),
+            Field::new("top", DataType::UInt64, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(i64::from(i32::MAX)), Some(i64::from(i32::MIN)), Some(0), None])),
+            Arc::new(UInt64Array::from(vec![Some(0), Some(i64::MAX as u64), Some(7), None])),
+            Arc::new(Int32Array::from(vec![Some(255), Some(0), Some(7), None])),
+            Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(-1), Some(0), None])),
+            Arc::new(UInt64Array::from(vec![Some(u64::MAX), Some(0), Some(1), None])),
+        ],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("wide_i32", DataType::Int32, true),
+        Field::new("rank_i64", DataType::Int64, true),
+        Field::new("narrow_u8", DataType::UInt8, true),
+        Field::new("low_text", DataType::Utf8, true),
+        Field::new("top_text", DataType::Utf8, true),
+    ]));
+    let exprs = vec![
+        Expr::cast(Expr::column("wide"), DataType::Int32),
+        Expr::cast(Expr::column("rank"), DataType::Int64),
+        Expr::cast(Expr::column("narrow"), DataType::UInt8),
+        Expr::cast(Expr::column("low"), DataType::Utf8),
+        Expr::cast(Expr::column("top"), DataType::Utf8),
+    ];
+
+    let batch = project_over_parquet("query-engine-native-integer-casts", input, exprs, output_schema).unwrap();
+
+    assert_eq!(int32_array(&batch, 0).iter().collect::<Vec<_>>(), [Some(i32::MAX), Some(i32::MIN), Some(0), None]);
+    assert_eq!(int64_array(&batch, 1).iter().collect::<Vec<_>>(), [Some(0), Some(i64::MAX), Some(7), None]);
+    let narrow = batch.column(2).as_any().downcast_ref::<UInt8Array>().unwrap();
+    assert_eq!(narrow.iter().collect::<Vec<_>>(), [Some(255), Some(0), Some(7), None]);
+    let low = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(low.iter().collect::<Vec<_>>(), [Some("-9223372036854775808"), Some("-1"), Some("0"), None]);
+    let top = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(top.iter().collect::<Vec<_>>(), [Some("18446744073709551615"), Some("0"), Some("1"), None]);
+}
+
+#[test]
+fn native_query_range_checked_casts_fail_the_query_outside_the_target_range() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("wide", DataType::Int64, true),
+            Field::new("negative", DataType::Int64, true),
+            Field::new("score", DataType::Float64, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), Some(i64::from(i32::MAX) + 1)])),
+            Arc::new(Int64Array::from(vec![Some(1), Some(-1)])),
+            Arc::new(Float64Array::from(vec![Some(1.0), Some(f64::NAN)])),
+        ],
+    )
+    .unwrap();
+    for (name, column, target) in [
+        ("int64-to-int32", "wide", DataType::Int32),
+        ("int64-to-uint64", "negative", DataType::UInt64),
+        ("float64-nan-to-int32", "score", DataType::Int32),
+    ] {
+        let output_schema = Arc::new(Schema::new(vec![Field::new("out", target.clone(), true)]));
+        let error = project_over_parquet(
+            &format!("query-engine-native-cast-failure-{name}"),
+            input.clone(),
+            vec![Expr::cast(Expr::column(column), target)],
+            output_schema,
+        )
+        .expect_err(name);
+        assert_cudf_input_failure(&error, "ValueOutOfRange");
+    }
+}
+
+#[test]
+fn native_query_integer_division_and_remainder_follow_arrow_row_semantics() {
+    let dividends = [Some(7), Some(-7), Some(0), None, Some(9), Some(i64::MIN)];
+    let divisors = [Some(2), Some(2), Some(5), Some(0), None, Some(3)];
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true), Field::new("b", DataType::Int64, true)])),
+        vec![Arc::new(Int64Array::from(dividends.to_vec())), Arc::new(Int64Array::from(divisors.to_vec()))],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("quotient", DataType::Int64, true),
+        Field::new("remainder", DataType::Int64, true),
+        Field::new("quotient_20", DataType::Int64, true),
+        Field::new("remainder_20", DataType::Int64, true),
+    ]));
+    let twenty = || Expr::literal(LiteralValue::Int64(20));
+    let exprs = vec![
+        Expr::binary(Expr::column("a"), BinaryOp::Divide, Expr::column("b")),
+        Expr::binary(Expr::column("a"), BinaryOp::Modulo, Expr::column("b")),
+        Expr::binary(Expr::column("a"), BinaryOp::Divide, twenty()),
+        Expr::binary(Expr::column("a"), BinaryOp::Modulo, twenty()),
+    ];
+
+    let batch = project_over_parquet("query-engine-native-integer-division", input, exprs, output_schema).unwrap();
+
+    let expect = |op: fn(i64, i64) -> i64| -> Vec<Option<i64>> {
+        dividends.iter().zip(divisors).map(|(a, b)| a.zip(b).map(|(a, b)| op(a, b))).collect()
+    };
+    assert_eq!(int64_array(&batch, 0).iter().collect::<Vec<_>>(), expect(|a, b| a / b));
+    assert_eq!(int64_array(&batch, 1).iter().collect::<Vec<_>>(), expect(|a, b| a % b));
+    let by_twenty =
+        |op: fn(i64, i64) -> i64| -> Vec<Option<i64>> { dividends.iter().map(|a| a.map(|a| op(a, 20))).collect() };
+    assert_eq!(int64_array(&batch, 2).iter().collect::<Vec<_>>(), by_twenty(|a, b| a / b));
+    assert_eq!(int64_array(&batch, 3).iter().collect::<Vec<_>>(), by_twenty(|a, b| a % b));
+}
+
+#[test]
+fn native_query_integer_division_fails_on_zero_divisors_and_overflow_only_in_valid_rows() {
+    let batch_with = |a: Vec<Option<i64>>, b: Vec<Option<i64>>| {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, true), Field::new("b", DataType::Int64, true)])),
+            vec![Arc::new(Int64Array::from(a)), Arc::new(Int64Array::from(b))],
+        )
+        .unwrap()
+    };
+    let output_schema = || Arc::new(Schema::new(vec![Field::new("out", DataType::Int64, true)]));
+    let divide = |op| vec![Expr::binary(Expr::column("a"), op, Expr::column("b"))];
+
+    for (name, op) in [("division", BinaryOp::Divide), ("remainder", BinaryOp::Modulo)] {
+        let error = project_over_parquet(
+            &format!("query-engine-native-{name}-by-zero"),
+            batch_with(vec![Some(1), Some(2)], vec![Some(1), Some(0)]),
+            divide(op),
+            output_schema(),
+        )
+        .expect_err(name);
+        assert_cudf_input_failure(&error, "DivisionByZero");
+    }
+
+    let overflow = project_over_parquet(
+        "query-engine-native-division-overflow",
+        batch_with(vec![Some(i64::MIN)], vec![Some(-1)]),
+        divide(BinaryOp::Divide),
+        output_schema(),
+    )
+    .unwrap_err();
+    assert_cudf_input_failure(&overflow, "ValueOutOfRange");
+
+    let wrapped = project_over_parquet(
+        "query-engine-native-remainder-minus-one",
+        batch_with(vec![Some(i64::MIN), Some(5)], vec![Some(-1), Some(-1)]),
+        divide(BinaryOp::Modulo),
+        output_schema(),
+    )
+    .unwrap();
+    assert_eq!(int64_array(&wrapped, 0).iter().collect::<Vec<_>>(), [Some(0), Some(0)]);
+
+    let null_rows = project_over_parquet(
+        "query-engine-native-zero-divisor-in-null-row",
+        batch_with(vec![None, Some(8)], vec![Some(0), Some(2)]),
+        divide(BinaryOp::Divide),
+        output_schema(),
+    )
+    .unwrap();
+    assert_eq!(int64_array(&null_rows, 0).iter().collect::<Vec<_>>(), [None, Some(4)]);
+}
+
+#[test]
+fn native_query_floor_and_ceil_match_ieee_rounding() {
+    let wide = [Some(1.5), Some(-1.5), Some(f64::NAN), Some(f64::INFINITY), Some(-0.0), None, Some(2.0)];
+    let narrow = wide.map(|value| value.map(|value| value as f32));
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("wide", DataType::Float64, true),
+            Field::new("narrow", DataType::Float32, true),
+        ])),
+        vec![Arc::new(Float64Array::from(wide.to_vec())), Arc::new(Float32Array::from(narrow.to_vec()))],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("floor_wide", DataType::Float64, true),
+        Field::new("ceil_wide", DataType::Float64, true),
+        Field::new("floor_narrow", DataType::Float32, true),
+        Field::new("ceil_narrow", DataType::Float32, true),
+    ]));
+    let exprs = vec![
+        Expr::unary_math(UnaryMathOp::Floor, Expr::column("wide"), DataType::Float64),
+        Expr::unary_math(UnaryMathOp::Ceil, Expr::column("wide"), DataType::Float64),
+        Expr::unary_math(UnaryMathOp::Floor, Expr::column("narrow"), DataType::Float32),
+        Expr::unary_math(UnaryMathOp::Ceil, Expr::column("narrow"), DataType::Float32),
+    ];
+
+    let batch = project_over_parquet("query-engine-native-floor-ceil", input, exprs, output_schema).unwrap();
+
+    let bits = |values: Vec<Option<f64>>| values.into_iter().map(|value| value.map(f64::to_bits)).collect::<Vec<_>>();
+    let nan_bits = f64::NAN.to_bits();
+    let normalized = |values: Vec<Option<u64>>| {
+        values
+            .into_iter()
+            .map(|value| value.map(|bits| if f64::from_bits(bits).is_nan() { nan_bits } else { bits }))
+            .collect::<Vec<_>>()
+    };
+    let actual_wide = |index: usize| {
+        normalized(bits(batch.column(index).as_any().downcast_ref::<Float64Array>().unwrap().iter().collect()))
+    };
+    assert_eq!(actual_wide(0), normalized(bits(wide.iter().map(|value| value.map(f64::floor)).collect())));
+    assert_eq!(actual_wide(1), normalized(bits(wide.iter().map(|value| value.map(f64::ceil)).collect())));
+    let actual_narrow = |index: usize| {
+        normalized(bits(
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap()
+                .iter()
+                .map(|value| value.map(f64::from))
+                .collect(),
+        ))
+    };
+    assert_eq!(
+        actual_narrow(2),
+        normalized(bits(narrow.iter().map(|value| value.map(|value| f64::from(value.floor()))).collect()))
+    );
+    assert_eq!(
+        actual_narrow(3),
+        normalized(bits(narrow.iter().map(|value| value.map(|value| f64::from(value.ceil()))).collect()))
+    );
+}
+
+fn decimal_cast_input() -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("amount", DataType::Decimal128(12, 4), true),
+            Field::new("whole", DataType::Int64, true),
+            Field::new("score", DataType::Float64, true),
+        ])),
+        vec![
+            Arc::new(
+                Decimal128Array::from(vec![
+                    Some(1_249),
+                    Some(1_250),
+                    Some(-1_250),
+                    Some(5),
+                    Some(-5),
+                    Some(999_999_999_999),
+                    None,
+                ])
+                .with_precision_and_scale(12, 4)
+                .unwrap(),
+            ),
+            Arc::new(Int64Array::from(vec![
+                Some(1),
+                Some(-12_345),
+                Some(0),
+                Some(999),
+                Some(-999),
+                Some(999_999_999_999_999),
+                None,
+            ])),
+            Arc::new(Float64Array::from(vec![
+                Some(0.125),
+                Some(-0.125),
+                Some(2.5),
+                Some(-2.5),
+                Some(1234.5678),
+                Some(0.285),
+                None,
+            ])),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_query_casts_into_decimal_follow_arrow_rescaling_and_rounding() {
+    let input = decimal_cast_input();
+    let casts = [
+        ("amount", DataType::Decimal128(12, 2)),
+        ("amount", DataType::Decimal128(20, 8)),
+        ("whole", DataType::Decimal128(20, 2)),
+        ("score", DataType::Decimal128(10, 2)),
+        ("score", DataType::Decimal128(38, 0)),
+    ];
+    let output_schema = Arc::new(Schema::new(
+        casts
+            .iter()
+            .enumerate()
+            .map(|(index, (_, target))| Field::new(format!("out_{index}"), target.clone(), true))
+            .collect::<Vec<_>>(),
+    ));
+    let exprs = casts.iter().map(|(column, target)| Expr::cast(Expr::column(*column), target.clone())).collect();
+
+    let batch = project_over_parquet("query-engine-native-decimal-casts", input.clone(), exprs, output_schema).unwrap();
+
+    let arrow_options = CastOptions { safe: false, ..CastOptions::default() };
+    for (index, (column, target)) in casts.iter().enumerate() {
+        let source = input.column_by_name(column).unwrap();
+        let expected = cast_with_options(source, target, &arrow_options).unwrap();
+        assert_eq!(batch.column(index).as_ref(), expected.as_ref(), "{column} as {target:?}");
+    }
+}
+
+#[test]
+fn native_query_decimal_casts_fail_the_query_outside_the_target_precision() {
+    let nan_score = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, true)])),
+        vec![Arc::new(Float64Array::from(vec![Some(1.5), Some(f64::NAN)]))],
+    )
+    .unwrap();
+    for (name, input, column, target) in [
+        // 99_999_999.9999 rounds to 100_000_000.00, which needs 11 digits.
+        ("decimal-to-narrow-precision", decimal_cast_input(), "amount", DataType::Decimal128(10, 2)),
+        ("integer-to-narrow-precision", decimal_cast_input(), "whole", DataType::Decimal128(10, 2)),
+        ("float-to-narrow-precision", decimal_cast_input(), "score", DataType::Decimal128(5, 2)),
+        ("float-nan", nan_score, "score", DataType::Decimal128(10, 2)),
+    ] {
+        let output_schema = Arc::new(Schema::new(vec![Field::new("out", target.clone(), true)]));
+        let error = project_over_parquet(
+            &format!("query-engine-native-decimal-cast-failure-{name}"),
+            input,
+            vec![Expr::cast(Expr::column(column), target)],
+            output_schema,
+        )
+        .expect_err(name);
+        assert_cudf_input_failure(&error, "ValueOutOfRange");
+    }
 }

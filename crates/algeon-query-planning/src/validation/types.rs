@@ -94,6 +94,14 @@ pub(crate) fn require_integral_type(data_type: &ArrowDataType, context: &'static
     if is_integral_type(data_type) { Ok(()) } else { unsupported_type(context, data_type, "expected integral") }
 }
 
+pub(crate) fn require_remainder_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if is_numeric_type(data_type) {
+        Ok(())
+    } else {
+        unsupported_type(context, data_type, "expected integral or floating-point")
+    }
+}
+
 pub(crate) fn require_arithmetic_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_numeric_type(data_type) || is_decimal_type(data_type) {
         Ok(())

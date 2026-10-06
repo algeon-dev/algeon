@@ -3046,6 +3046,12 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Formats an integer column as decimal strings with explicit execution context.\n\n `input` must be a non-boolean integral column. Each valid row becomes its\n plain base-10 text with a leading `-` for negative values and no padding;\n null rows stay null. Wraps `cudf::strings::from_integers`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    pub fn cudf_strings_from_integers_ex(
+        input: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Count null, NaN, and infinite values in a FLOAT32 column on the explicit\n execution stream and return only the bounded host-visible count scalar."]
     pub fn cudf_float32_non_finite_count_ex(
         input: cudf_column_view_handle,

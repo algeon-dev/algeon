@@ -21,7 +21,11 @@ pub enum Expr {
     /// Element-wise SQL-style rounding. Half-way ties round away from zero.
     Round { input: Box<Expr>, decimal_places: i32 },
     /// Cast to a target type.
-    Cast { input: Box<Expr>, target: DataType },
+    ///
+    /// With a `precision`, the target is a decimal type declared with that
+    /// precision; see [`Expr::cast_decimal`]. Without one, the cast is
+    /// libcudf's.
+    Cast { input: Box<Expr>, target: DataType, precision: Option<u8> },
     /// SQL `TRY_CAST` to a target type: rows that cannot be represented in the
     /// target type evaluate to null instead of raising an error.
     ///
@@ -77,7 +81,22 @@ impl Expr {
     /// Accepts either a [`DataType`] (canonical, supports decimal scale) or a
     /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
     pub fn cast(self, target: impl Into<DataType>) -> Expr {
-        Expr::Cast { input: Box::new(self), target: target.into() }
+        Expr::Cast { input: Box::new(self), target: target.into(), precision: None }
+    }
+
+    /// Cast the result to a decimal `target` declared with `precision` digits,
+    /// with the semantics of a DataFusion `CAST`.
+    ///
+    /// libcudf decimal types store a scale and no precision, so a plain
+    /// [`Expr::cast`] wraps values that overflow the declared precision and
+    /// truncates where SQL rounds. This cast rounds half away from zero when
+    /// digits are dropped, and fails with [`crate::ErrorCode::ValueOutOfRange`]
+    /// when a valid row does not fit `precision` after rescaling, or when a
+    /// floating-point row is NaN or infinite. Evaluation fails with
+    /// [`crate::ErrorCode::UnsupportedDtype`] unless `target` is a decimal type
+    /// and `precision` is between 1 and the digits its storage holds.
+    pub fn cast_decimal(self, target: DataType, precision: u8) -> Expr {
+        Expr::Cast { input: Box::new(self), target, precision: Some(precision) }
     }
 
     /// Try-cast the result to the given type, evaluating to null for rows
@@ -376,11 +395,16 @@ impl Expr {
                 ctx.wrap_column(col)
             },
 
-            Expr::Cast { input, target } => {
+            Expr::Cast { input, target, precision } => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col =
-                    unary::cast_impl(&cv, target, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
+                let (domain, options, operation) = (&ctx.output_domain, ctx.required_exec_options(), ctx.operation);
+                let col = match precision {
+                    Some(precision) => {
+                        unary::cast_to_decimal_impl(&cv, target, *precision, domain, options, operation)?
+                    },
+                    None => unary::cast_impl(&cv, target, domain, options, operation)?,
+                };
                 ctx.wrap_column(col)
             },
 

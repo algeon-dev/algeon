@@ -221,8 +221,7 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 }
 
 #[test]
-fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
-    // Join-key projections must reject integer divide before it can reach libcudf.
+fn integer_divide_hash_join_key_lowers_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-integer-divide-join-key");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -252,12 +251,8 @@ fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(join, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }

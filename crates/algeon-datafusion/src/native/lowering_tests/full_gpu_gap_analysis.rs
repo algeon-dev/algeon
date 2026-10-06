@@ -150,27 +150,56 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         sql: "SELECT id, EXP(score) AS exp_score FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    // The CASE yields Int64, and narrowing it to Int32 has no admitted native
-    // cast; the category names the rejected type pair.
+    GpuGapCase {
+        id: "floor_ceil_scalar_functions",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, FLOOR(score) AS floor_score, CEIL(score) AS ceil_score FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // The CASE yields Int64; narrowing it to Int32 is a range-checked native cast.
     GpuGapCase {
         id: "narrowing_cast_of_case",
         feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, CAST(CASE WHEN score >= 3.0 THEN 1 ELSE 0 END AS INT) AS label FROM bench",
-        expected: ExpectedGpuCoverageOutcome::NotSupported {
-            reason: CapabilityReason::UnsupportedType,
-            unsupported_category: "type_cast_int64_to_int32",
-        },
+        expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    // Only the integer modulo is rejected; the supported SQRT beside it must
+    GpuGapCase {
+        id: "integer_to_string_cast",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, CAST(payload AS VARCHAR) AS payload_text FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "integer_modulo_and_division",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, payload / 20 AS bucket FROM bench WHERE payload % 2 = 1",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // DataFusion divides only on the rows that reach the THEN branch; lowering restricts the divisor
+    // to those rows, so the guarded division stays native.
+    GpuGapCase {
+        id: "variable_divisor_inside_case_branch",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, CASE WHEN key <> 0 THEN payload / key ELSE 0 END AS ratio FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // Only the decimal modulo is rejected; the supported SQRT beside it must
     // not be reported as the unsupported expression.
     GpuGapCase {
-        id: "supported_function_beside_integer_modulo",
+        id: "supported_function_beside_decimal_modulo",
         feature: GpuGapFeature::ScalarExpression,
-        sql: "SELECT id, sqrt(score) AS root_score FROM bench WHERE payload % 2 = 1",
+        sql: "SELECT id, sqrt(score) AS root_score FROM bench \
+              WHERE CAST(payload AS DECIMAL(18, 2)) % CAST(2 AS DECIMAL(18, 2)) = CAST(1 AS DECIMAL(18, 2))",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
-            reason: CapabilityReason::UnsupportedExpression,
-            unsupported_category: "expression",
+            reason: CapabilityReason::UnsupportedType,
+            unsupported_category: "type",
         },
+    },
+    GpuGapCase {
+        id: "floating_point_modulo",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, score % 2.0 AS fraction FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
     },
     GpuGapCase {
         id: "string_concat_operator",

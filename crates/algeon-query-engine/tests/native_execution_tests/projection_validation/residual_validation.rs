@@ -87,6 +87,52 @@ fn native_query_rejects_unsupported_join_residual_cast_before_source_read() {
 }
 
 #[test]
+fn native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_check() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Float64, false),
+    ]));
+    let widened_id =
+        |side: usize, name: &str, alias: &str| Expr::cast(Expr::input_column(side, name, alias), DataType::Int64);
+
+    // The AST casts NaN and out-of-range floats without the failure DataFusion raises.
+    let float_to_integer = Expr::binary(
+        Expr::cast(Expr::input_column(0, "score", "left_score"), DataType::Int64),
+        BinaryOp::Eq,
+        widened_id(1, "id", "right_id"),
+    );
+    let error = residual_validation_error_with_schema(
+        JoinType::Inner,
+        vec![id_join_key()],
+        float_to_integer,
+        Arc::clone(&schema),
+        vec!["id", "score"],
+    );
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.operation(), "query_engine.join.validate_residual");
+    assert_eq!(error.fact_value("source_type"), Some("Float64"));
+    assert_eq!(error.fact_value("target_type"), Some("Int64"));
+
+    for op in [BinaryOp::Divide, BinaryOp::Modulo] {
+        let integer_arithmetic = Expr::binary(
+            Expr::binary(widened_id(0, "id", "left_id"), op, widened_id(1, "id", "right_id")),
+            BinaryOp::Gt,
+            Expr::literal(LiteralValue::Int64(1)),
+        );
+        let error = residual_validation_error_with_schema(
+            JoinType::Inner,
+            vec![id_join_key()],
+            integer_arithmetic,
+            Arc::clone(&schema),
+            vec!["id", "score"],
+        );
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression, "{op:?}");
+        assert_eq!(error.operation(), "query_engine.join.validate_residual", "{op:?}");
+        assert!(error.message().contains("integer division or remainder"), "{op:?}: {error}");
+    }
+}
+
+#[test]
 fn native_query_rejects_unsupported_residual_expression_families_before_source_read() {
     let cases = vec![
         ("LIKE", Expr::like(Expr::input_column(0, "id", "left_id"), "1%")),
