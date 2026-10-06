@@ -12,6 +12,8 @@ source months. SQL filters and aggregates interaction events into graph inputs;
 cuGraph results can feed further filters, joins, and aggregates in the same
 statement. The item-user PageRank query below filters view events, counts
 repeated interactions as edge weights, and returns the highest-ranked items.
+Twelve full-scale examples on the algorithm pages start from the same raw
+tables and cover 17 cuGraph, cuVS, and cuML functions.
 
 ## At a glance
 
@@ -23,7 +25,7 @@ repeated interactions as edge weights, and returns the highest-ranked items.
 | Preparation | The fixture retains all source events and stores the latest attributes once per item |
 | Python packages | `pyarrow`, and the `duckdb` CLI on `PATH` for conversion |
 | Server | `127.0.0.1:50064`; the scale configuration allows a 90 GiB query on a 94 GiB device ledger |
-| Queries | Category engagement, user activity, item-user PageRank, and batched exact and approximate vector search |
+| Queries | Category engagement, user activity, item-user PageRank, batched vector search, and the full-scale algorithm examples listed below |
 
 ## Examples
 
@@ -36,6 +38,23 @@ repeated interactions as edge weights, and returns the highest-ranked items.
   aggregates all events by user and returns the 100 most active users.
 - [Batched vector search](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md#user-vectors-and-batched-search)
   searches category-preference vectors derived from the complete event range.
+
+The full-scale algorithm examples run in one statement each over all six
+months, except the approximate-search comparison, which reads a prepared
+taste table:
+
+- [Which athleisure brands draw most of their fans from lululemon's audience?](../../cugraph/udtfs/similarity/cugraph_overlap.mdx?dataset=merrec#examples) (`cugraph_overlap`)
+- [Which brand entries share almost the same fans?](../../cugraph/udtfs/similarity/cugraph_jaccard.mdx?dataset=merrec#examples) (`cugraph_jaccard`)
+- [Which shopping worlds do shared fans reveal across official categories?](../../cugraph/udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_jaccard`, `cugraph_leiden`)
+- [Which brands moved closer to Barbie fans after the July 2023 film release?](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_pagerank`)
+- [What does the marketplace look like when brands sit next to the brands their fans like?](../../cugraph/udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples) (`cugraph_jaccard`, `cugraph_leiden`, `cugraph_force_atlas2`)
+- [Is `session_id` safe to use as a per-user session key?](../../cugraph/udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=merrec#examples) (`cugraph_weakly_connected_components`)
+- [Can a lookalike audience find next season's Pokemon buyers?](../../cuvs/udtfs/cuvs_brute_force_knn.mdx?dataset=merrec#examples) (`cuvs_brute_force_knn`)
+- [When does approximate search pay off for a neighbor graph of every shopper?](../../cuvs/udtfs/cuvs_cagra.mdx?dataset=merrec#examples) (`cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq`)
+- [Which shopper personas bring in the most spending per shopper?](../../cuvs/udtfs/cuvs_kmeans.mdx?dataset=merrec#examples) (`cuvs_kmeans`, `cuvs_top_k`)
+- [Which active shoppers will buy next month?](../../cuml/udtfs/cuml_logistic_regression.mdx?dataset=merrec#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
+- [How concentrated is next month's spending, and can a forest find the big spenders?](../../cuml/udtfs/cuml_random_forest_regressor.mdx#examples) (`cuml_random_forest_regressor`)
+- [Can a model trained elsewhere rank next month's buyers inside SQL?](../../cuml/udtfs/cuml_forest_predict.mdx?dataset=merrec#examples) (`cuml_forest_predict`)
 
 The browsing-market visualizations at the end of this page retain their
 original single-shard measurements and vertex identifiers.
@@ -71,7 +90,9 @@ The scale configuration targets the development host's 96 GB GPU: a 94 GiB
 device ledger, 1 GiB backend reserve, 90 GiB query limit, and one active
 attempt. Set limits appropriate to the available device capacity on other
 hosts. `native_required` rejects remaining DataFusion CPU operators, including
-relational operators around explicit GPU functions.
+relational operators around explicit GPU functions. The configuration's
+`[models]` root, `fixture/demo/merrec/models`, holds the XGBoost model that
+the forest-predict example scores.
 
 ## Register the tables
 
@@ -109,6 +130,26 @@ graph construction, the algorithm, and result receipt. The
 records CPU comparisons and vector preparation. Graph size is measured after
 edge aggregation and normalization; the source event count is a separate value.
 
+The full-scale algorithm examples need the prepared `mr_taste64` table and,
+for forest predict, a trained model. `--prepare-scale` builds and registers
+the taste tables; the
+[scale workflow](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md#full-scale-exploration-demos)
+lists every example file and the full command sequence:
+
+```bash
+S=fixture/demo/merrec/scripts/scale
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 --prepare-scale \
+  --data-dir "$MERREC_ROOT/parquet" \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" \
+  --timeout 1800 $S/26_propensity_training_features.sql
+python3 $S/train_propensity_model.py \
+  "$MERREC_RESULTS/26_propensity_training_features.parquet" \
+  fixture/demo/merrec/models/propensity_xgb.json
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" \
+  --timeout 1800 --repeats 3 $S/07_brand_overlap.sql $S/10_barbie_tie_ins.sql
+```
+
 The complete six-month PageRank query has been validated with 87,055,073
 vertices and 1,682,503,472 normalized directed edges representing the undirected
 graph. It completed within the 90 GiB query limit, with a measured allocator
@@ -123,6 +164,12 @@ the median Flight latency excluding the first run was 19.31 seconds on the
 |---|---:|---|
 | `merrec_events` | 1,268,092,738 | Timestamp, user and item IDs, session, sequence, and event type |
 | `merrec_items` | 82,614,392 | Latest item attributes within the selected six-month range |
+| `mr_taste64` | 2,080,743 | Prepared by `14_taste64.sql`: one 64-wide view-share vector per shopper with at least 20 views before 2023-09-01 |
+
+`session_id` values repeat across users: 15,138,756 of the 25,864,474 IDs
+appear for more than one user. Key sessions by `(user_id, session_id)`; the
+[weakly connected components example](../../cugraph/udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=merrec#examples)
+shows the effect.
 
 ## Single-shard browsing results
 
@@ -132,19 +179,19 @@ estimate purchase conversion or revenue uplift. Reproduction commands and the
 sample server configuration are in the
 [research guide](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/REPRODUCE.md).
 
-- [Find collectible markets that share an audience with Nintendo games](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx#examples)
+- [Find collectible markets that share an audience with Nintendo games](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec-shard#examples)
   with personalized PageRank and Jaccard.
   [Download its ten result rows](/data/merrec-graph-capture.json).
-- [Compare audience cosine with Jaccard for Nintendo games](../../cugraph/udtfs/similarity/cugraph_cosine.mdx#examples),
+- [Compare audience cosine with Jaccard for Nintendo games](../../cugraph/udtfs/similarity/cugraph_cosine.mdx?dataset=merrec-shard#examples),
   where small markets that draw most viewers from the seed audience rank
   higher under cosine. [Download its ten result rows](/data/merrec-cosine-capture.json).
-- [Inspect concentrated and mixed preferences](../../cuml/udtfs/cuml_hdbscan.mdx#examples)
+- [Inspect concentrated and mixed preferences](../../cuml/udtfs/cuml_hdbscan.mdx?dataset=merrec-shard#examples)
   with HDBSCAN and UMAP.
   [Download all 1,919 points](/data/merrec-audience-capture.json).
-- [Describe campaign themes](../../cuvs/udtfs/cuvs_kmeans.mdx#examples)
+- [Describe campaign themes](../../cuvs/udtfs/cuvs_kmeans.mdx?dataset=merrec-shard#examples)
   with KMeans and Top-K, returning three category means for each of eight
   groups. [Download all 24 rows](/data/merrec-segment-capture.json).
-- [Build navigation collections](../../cugraph/udtfs/community/cugraph_leiden.mdx#examples)
+- [Build navigation collections](../../cugraph/udtfs/community/cugraph_leiden.mdx?dataset=merrec-shard#examples)
   with Leiden and weighted PageRank, returning five representative markets for
   each of 22 groups. [Download all 110 rows](/data/merrec-community-capture.json).
 

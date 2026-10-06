@@ -1,0 +1,110 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Which brands moved closer to Barbie fans after the July 2023 film release?
+
+Barbie listings drew 732,440 views in June 2023 and 1,408,609 in July, the
+month the film opened. This statement asks which other brands became more
+connected to the Barbie audience at the same time. It builds two user-brand
+like graphs, May-June and July-August, and runs four graph algorithms on
+them:
+
+- Personalized PageRank restarts every random walk at Barbie (brand `2595`),
+  so its score measures closeness to the Barbie audience.
+- Plain PageRank on the same graph measures overall popularity.
+- `lift = personalized score / global score` removes the popularity
+  baseline. Without it, Mattel, Disney and Nike lead every list.
+- `lift_change` divides the July-August lift by the May-June lift.
+
+```sql
+WITH likes AS (
+  SELECT e.user_id, i.brand_id,
+         CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00' THEN 0 ELSE 1 END AS after_release
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
+    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'
+    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'
+  GROUP BY e.user_id, i.brand_id,
+           CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00' THEN 0 ELSE 1 END
+), before_graph AS (
+  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst FROM likes WHERE after_release = 0
+), after_graph AS (
+  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst FROM likes WHERE after_release = 1
+), fans AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id,
+         SUM(1 - after_release) AS fans_before, SUM(after_release) AS fans_after
+  FROM likes GROUP BY brand_id
+), ppr_before AS (
+  SELECT vertex, value FROM cugraph_personalized_pagerank(
+    edges => (SELECT src, dst FROM before_graph),
+    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),
+    directed => false)
+), ppr_after AS (
+  SELECT vertex, value FROM cugraph_personalized_pagerank(
+    edges => (SELECT src, dst FROM after_graph),
+    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),
+    directed => false)
+), pr_before AS (
+  SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM before_graph), directed => false)
+), pr_after AS (
+  SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM after_graph), directed => false)
+), brands AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
+  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id
+)
+SELECT b.brand_name, f.fans_before, f.fans_after,
+       pb.value / rb.value AS lift_before,
+       pa.value / ra.value AS lift_after,
+       (pa.value / ra.value) / (pb.value / rb.value) AS lift_change
+FROM ppr_after pa
+JOIN pr_after ra ON ra.vertex = pa.vertex
+JOIN ppr_before pb ON pb.vertex = pa.vertex
+JOIN pr_before rb ON rb.vertex = pa.vertex
+JOIN fans f ON f.brand_id = pa.vertex
+JOIN brands b ON b.brand_id = pa.vertex
+WHERE pa.vertex > 0 AND pa.vertex <> 2595
+  AND f.fans_before >= 1000 AND f.fans_after >= 1000
+ORDER BY lift_change DESC, b.brand_name
+LIMIT 25;
+```
+
+| Brand | Fans May-Jun | Fans Jul-Aug | Lift May-Jun | Lift Jul-Aug | Lift change |
+|---|---:|---:|---:|---:|---:|
+| NYX | 2,781 | 4,253 | 0.97 | 2.07 | 2.13 |
+| Amc | 2,654 | 2,815 | 0.97 | 1.82 | 1.87 |
+| Primark | 1,966 | 2,987 | 1.10 | 2.04 | 1.85 |
+| ALDO | 4,571 | 6,379 | 0.85 | 1.50 | 1.76 |
+| Taylor Swift | 15,577 | 18,514 | 0.65 | 0.96 | 1.48 |
+| Stoney Clover Lane | 5,156 | 5,420 | 1.06 | 1.50 | 1.42 |
+| Stanley | 16,209 | 16,642 | 0.49 | 0.69 | 1.40 |
+| Dunkin' | 1,580 | 1,459 | 0.73 | 1.01 | 1.39 |
+| Henri Bendel | 1,133 | 1,358 | 0.65 | 0.85 | 1.32 |
+| Dutch Bros | 1,035 | 1,086 | 0.53 | 0.70 | 1.31 |
+| Fresh | 1,136 | 1,325 | 1.33 | 1.74 | 1.31 |
+| Starbucks | 26,096 | 29,130 | 0.76 | 0.98 | 1.29 |
+| BOGG BAG | 4,578 | 3,496 | 0.52 | 0.67 | 1.29 |
+| Farm Rio | 2,782 | 3,044 | 0.50 | 0.64 | 1.28 |
+| Alice + Olivia | 1,279 | 1,511 | 0.63 | 0.81 | 1.28 |
+| HAUS LABORATORIES | 1,111 | 1,361 | 0.72 | 0.92 | 1.27 |
+| Interscope Records | 1,630 | 2,218 | 0.92 | 1.17 | 1.27 |
+| MacKenzie-Childs | 1,270 | 1,758 | 0.58 | 0.73 | 1.26 |
+| ZARA | 38,166 | 48,545 | 0.65 | 0.82 | 1.26 |
+| Bombshell Sportswear | 1,113 | 1,285 | 0.51 | 0.64 | 1.26 |
+| OPI | 2,406 | 3,063 | 0.72 | 0.90 | 1.26 |
+| Dagne Dover | 1,823 | 2,390 | 0.43 | 0.54 | 1.25 |
+| Rothy's | 4,272 | 4,756 | 0.44 | 0.55 | 1.25 |
+| Brahmin | 4,044 | 4,290 | 0.48 | 0.60 | 1.25 |
+| Golden Goose | 2,855 | 3,436 | 0.38 | 0.48 | 1.23 |
+
+The top four rows are known Barbie collaborations, and the listings confirm
+them. In July and August, 30.6% of NYX likes were on listings whose name
+contains "Barbie", up from 1.8% in May and June. The other rates are Primark
+24.1% (from 1.6%), ALDO 19.0% (from 0.4%) and the AMC brand 9.2% (from 0%),
+whose listings include cinema promo cups and popcorn tins. OPI and ZARA,
+which also sold Barbie lines, show smaller shifts. Taylor Swift, Stanley and
+the coffee chains rose through shared audience alone; their listings carry
+almost no Barbie names. Nothing in the query names the film: the four graph
+calls and two ratios find the tie-ins from likes. A partnerships or trend
+team can use the same query for any seed brand and date split.
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 4.94 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 13.26 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-barbie-tie-ins.json) with the executed SQL, query IDs, timings, and all result rows.

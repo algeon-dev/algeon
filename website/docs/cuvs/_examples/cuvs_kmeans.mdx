@@ -1,5 +1,6 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import MerRecScalePersonas from './merrec_scale_personas.mdx';
 import MerRecSegments from './merrec_segments.mdx';
 
 <Tabs queryString="dataset">
@@ -94,6 +95,9 @@ review text, see [KMeans followed by Top-K](../udtfs/cuvs_top_k.mdx#examples).
 
   </TabItem>
   <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecScalePersonas />
+  </TabItem>
+  <TabItem value="merrec-shard" label="MerRec single shard">
     <MerRecSegments />
   </TabItem>
 </Tabs>

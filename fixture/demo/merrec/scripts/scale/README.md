@@ -168,3 +168,104 @@ last two of three runs). Use exact search as the vector demonstration for this
 dataset. CAGRA's neighbor ID overlap with exact search was 94.165%; 98.603% of
 its neighbors were within the exact kth-neighbor distance plus a squared-L2
 tolerance of `1e-6`. Equal-distance profiles account for some ID differences.
+
+## Full-scale exploration demos
+
+Files `07` through `27` hold the full-scale examples published on the
+algorithm pages. Each SQL file is one statement over the registered source
+tables, except the ANN files, which read the prepared `mr_taste64` table.
+
+| File | Algorithms | Question |
+|---|---|---|
+| `07_brand_overlap.sql` | Overlap | Which brands draw most of their fans from lululemon's audience? |
+| `08_brand_twins.sql` | Jaccard | Which brand entries share almost the same fans? |
+| `09_shopping_worlds.sql` | Jaccard, Leiden | Which shopping worlds cut across official categories? |
+| `10_barbie_tie_ins.sql` | Personalized PageRank, PageRank | Which brands moved closer to Barbie fans after July 2023? |
+| `11_brand_map.sql` | Jaccard, Leiden, ForceAtlas2 | Brand map placed by shared fans and colored by world |
+| `12_session_audit.sql` | Weakly connected components | Is `session_id` a per-user session key? |
+| `13_pokemon_lookalikes.sql` | Brute-force kNN | Do lookalikes of Pokemon buyers buy Pokemon later? |
+| `14_taste64.sql` | none | Prepares 64-wide taste vectors for `mr_taste64` |
+| `15` to `21` | Brute-force kNN, CAGRA, IVF-Flat, IVF-PQ | All-shopper neighbor graph timing and recall |
+| `28`, `29` | Brute-force kNN, CAGRA | The same search for 10,000 query shoppers |
+| `22_shopper_personas.sql` | KMeans, Top-K | Persona size, buyer share, and GMV per shopper |
+| `23_propensity_logreg.sql`, `24_propensity_forest.sql` | Logistic regression, random forest classifier | Next-month buyers against a recent-purchase rule |
+| `25_gmv_forecast.sql` | Random forest regressor | Share of next-month GMV held by the top-ranked shoppers |
+| `26_propensity_training_features.sql` | none | Training features for the offline XGBoost model |
+| `27_propensity_xgboost.sql` | Forest predict | Ranked audiences from XGBoost scores |
+
+The like-based brand graphs use distinct user-brand pairs from all
+182,889,825 `item_like` events. User vertices are `-(user_id + 1)`, so they
+never collide with brand IDs. The propensity cohorts use 92 days of
+features before a cutoff (2023-08-01 for training, 2023-09-01 for
+evaluation) and label a completed purchase in the following 30 days.
+
+`--prepare-scale` builds both `03_user_features` and `14_taste64`, then
+registers `mr_scale_tastes` and `mr_taste64`. Train the forest-predict model
+after exporting its features; the server reads it from the `[models]` root
+in [`server.toml`](server.toml):
+
+```bash
+MERREC_ROOT=/mnt/algeon-nvme/algeon/fixture/demo/merrec
+MERREC_REPORT="$PWD/target/merrec-scale/full-demos/gpu"
+MERREC_RESULTS="$MERREC_ROOT/scale-results/full-demos"
+S=fixture/demo/merrec/scripts/scale
+
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 --prepare-scale \
+  --data-dir "$MERREC_ROOT/parquet" \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" \
+  --timeout 1800 $S/26_propensity_training_features.sql
+python3 $S/train_propensity_model.py \
+  "$MERREC_RESULTS/26_propensity_training_features.parquet" \
+  fixture/demo/merrec/models/propensity_xgb.json
+
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" \
+  --timeout 1800 --repeats 3 \
+  $S/07_brand_overlap.sql $S/08_brand_twins.sql $S/09_shopping_worlds.sql \
+  $S/10_barbie_tie_ins.sql $S/11_brand_map.sql $S/12_session_audit.sql \
+  $S/13_pokemon_lookalikes.sql $S/15_ann_exact.sql $S/16_ann_cagra.sql \
+  $S/17_ann_ivf_flat.sql $S/18_ann_ivf_pq.sql $S/22_shopper_personas.sql \
+  $S/23_propensity_logreg.sql $S/24_propensity_forest.sql \
+  $S/25_gmv_forecast.sql $S/27_propensity_xgboost.sql \
+  $S/28_ann_exact_10k.sql $S/29_ann_cagra_10k.sql
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" --timeout 1800 \
+  $S/19_ann_recall_cagra.sql $S/20_ann_recall_ivf_flat.sql $S/21_ann_recall_ivf_pq.sql
+```
+
+The training script needs `pyarrow` and `xgboost`. The algorithm pages
+report the median Flight latency of runs 2 and 3, the native fragment and
+host boundary counts, and the query allocator peak of each statement.
+
+Captures on 2026-10-06 used a release server built from `cbb98dd0a` with the
+uncommitted LAG/LEAD and ECG validation fixes, the configuration above, and
+cached source files. Single-run statements report that run's latency.
+
+| File | Runs | Median after first (s) | Native fragments | Host boundaries | Allocator peak (GiB) |
+|---|---:|---:|---:|---:|---:|
+| `07_brand_overlap.sql` | 3 | 5.66 | 3 | 0 | 17.20 |
+| `08_brand_twins.sql` | 3 | 6.96 | 3 | 0 | 74.74 |
+| `09_shopping_worlds.sql` | 3 | 9.41 | 4 | 0 | 54.46 |
+| `10_barbie_tie_ins.sql` | 3 | 4.94 | 7 | 0 | 13.26 |
+| `11_brand_map.sql` | 3 | 17.73 | 7 | 0 | 54.46 |
+| `12_session_audit.sql` | 3 | 5.08 | 2 | 0 | 21.16 |
+| `13_pokemon_lookalikes.sql` | 3 | 26.09 | 6 | 0 | 25.06 |
+| `15_ann_exact.sql` | 3 | 42.03 | 4 | 0 | 3.87 |
+| `16_ann_cagra.sql` | 3 | 8.99 | 4 | 0 | 4.56 |
+| `17_ann_ivf_flat.sql` | 3 | 8.57 | 4 | 0 | 4.55 |
+| `18_ann_ivf_pq.sql` | 3 | 4.80 | 4 | 0 | 4.55 |
+| `19_ann_recall_cagra.sql` | 1 | 99.01 | 10 | 0 | 6.12 |
+| `20_ann_recall_ivf_flat.sql` | 1 | 98.60 | 10 | 0 | 6.11 |
+| `21_ann_recall_ivf_pq.sql` | 1 | 93.87 | 10 | 0 | 5.43 |
+| `22_shopper_personas.sql` | 3 | 49.98 | 7 | 0 | 29.14 |
+| `23_propensity_logreg.sql` | 3 | 29.86 | 4 | 0 | 21.70 |
+| `24_propensity_forest.sql` | 3 | 31.23 | 4 | 0 | 21.70 |
+| `25_gmv_forecast.sql` | 3 | 30.42 | 4 | 0 | 21.79 |
+| `27_propensity_xgboost.sql` | 3 | 14.68 | 3 | 0 | 21.58 |
+| `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.09 |
+| `29_ann_cagra_10k.sql` | 3 | 8.30 | 4 | 0 | 2.09 |
+
+Results that vary between runs: ForceAtlas2 coordinates, KMeans persona
+sizes (no seed option), the lookalike count (19,122 or 19,125, from distance
+ties), logistic regression flags (115,050 to 115,095), and ANN mean distances.
+

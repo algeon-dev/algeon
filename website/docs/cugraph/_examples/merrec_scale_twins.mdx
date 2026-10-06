@@ -1,0 +1,76 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Which brand entries share almost the same fans?
+
+The query builds the user-brand graph from every `item_like` event, takes
+the 2,000 brands with the most fans, and scores all 1,999,000 brand pairs
+with Jaccard in one call: shared fans divided by the union of both
+audiences. SQL then joins brand names and fan counts and keeps the 30
+highest scores.
+
+```sql
+WITH fans AS (
+  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
+  GROUP BY e.user_id, i.brand_id
+), top_brands AS (
+  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 2000
+), brands AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
+  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id
+)
+SELECT ba.brand_name AS brand_a, bb.brand_name AS brand_b,
+       a.fans AS fans_a, b.fans AS fans_b, r.similarity AS jaccard
+FROM cugraph_jaccard(
+  edges => (SELECT src, dst FROM fans),
+  vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second
+                   FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),
+  directed => false
+) r
+JOIN top_brands a ON a.brand_id = r.first
+JOIN top_brands b ON b.brand_id = r.second
+JOIN brands ba ON ba.brand_id = r.first
+JOIN brands bb ON bb.brand_id = r.second
+ORDER BY r.similarity DESC, brand_a
+LIMIT 30;
+```
+
+| Brand A | Brand B | Fans A | Fans B | Jaccard |
+|---|---|---:|---:|---:|
+| Tomorrow X Together | TXT | 13,880 | 8,267 | 0.436 |
+| Rilakkuma | San-X | 10,232 | 14,392 | 0.367 |
+| Baby Tula | Tula | 3,398 | 3,806 | 0.355 |
+| Air Jordan | Jordan | 123,149 | 72,496 | 0.353 |
+| Mugler | Thierry Mugler | 6,232 | 5,925 | 0.348 |
+| Freebird | Freebird By Steven | 2,949 | 4,173 | 0.344 |
+| Hello Kitty | Sanrio | 72,010 | 109,359 | 0.337 |
+| Bandai Tamashii Nations | SH Figuarts | 19,742 | 9,907 | 0.334 |
+| Konami | Yu-Gi-Oh! | 12,915 | 8,340 | 0.324 |
+| Yves Saint Laurent | YSL Yves Saint Laurent | 22,460 | 23,895 | 0.324 |
+| Christian Dior | Dior | 38,883 | 37,626 | 0.321 |
+| A Bathing Ape | Bape | 12,620 | 13,245 | 0.320 |
+| BabyBjorn | BABYBJÖRN | 2,969 | 3,434 | 0.320 |
+| Hermès | HERMES | 8,923 | 7,051 | 0.320 |
+| Essentials | Fear of God | 10,099 | 11,729 | 0.315 |
+| Panini | Topps | 36,503 | 36,718 | 0.315 |
+| Toy Biz | Toybiz | 7,008 | 6,707 | 0.304 |
+| Collector's Gallery | Stray Kids | 10,098 | 7,822 | 0.301 |
+| NCT | SM Entertainment | 14,569 | 16,116 | 0.299 |
+| Banpresto | Good Smile Company | 43,473 | 40,636 | 0.297 |
+
+The table shows the first 20 of 30 rows.
+
+Most of the highest-scoring pairs are one brand listed twice in the catalog:
+TXT and Tomorrow X Together, Air Jordan and Jordan, Mugler and Thierry
+Mugler, Yves Saint Laurent and YSL Yves Saint Laurent, Christian Dior and
+Dior, A Bathing Ape and Bape, Hermès and HERMES, BabyBjorn and BABYBJÖRN.
+The audiences give these entries away without any string matching. The
+other pairs are distinct brands that one audience follows together, such
+as Hello Kitty and Sanrio, Panini and Topps, or Carter's and Cat & Jack. A
+catalog team can review the first group as merge candidates and use the
+second group for cross-brand navigation. A high score alone does not prove
+that two entries are the same brand; the names still need review.
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 6.96 s, including planning, every step of the statement, and result receipt. Each plan had 3 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 74.74 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-brand-twins.json) with the executed SQL, query IDs, timings, and all result rows.

@@ -1,0 +1,123 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Which shopper personas bring in the most spending per shopper?
+
+One statement builds a 17-category taste vector for each of the 2,789,275
+shoppers with at least 20 views. Each value is the square root of the
+shopper's view share in one top-level category. KMeans fits 10 personas
+on those vectors. SQL then measures each persona's size, the share of its
+shoppers who completed a purchase, and its purchase value (GMV) per
+shopper. Finally, Top-K names the three categories with the largest mean
+view share in each persona.
+
+| Persona | Shoppers | Buyers | GMV per shopper | Top three categories by mean view share |
+|---|---:|---:|---:|---|
+| `6` | 669,863 | 7.8% | $6.58 | Women 78.7%, Men 5.6%, Kids 3.1% |
+| `7` | 451,668 | 11.9% | $12.57 | Toys & Collectibles 74.3%, Electronics 6.0%, Women 3.5% |
+| `8` | 361,625 | 8.9% | $7.58 | Women 36.5%, Toys & Collectibles 16.0%, Home 10.5% |
+| `1` | 308,539 | 8.3% | $8.02 | Men 63.8%, Women 14.2%, Electronics 4.4% |
+| `3` | 251,284 | 9.7% | $12.67 | Electronics 68.2%, Toys & Collectibles 8.3%, Men 4.4% |
+| `5` | 238,814 | 7.3% | $4.81 | Kids 59.8%, Women 18.1%, Toys & Collectibles 6.0% |
+| `4` | 198,576 | 10.4% | $9.38 | Home 47.0%, Vintage & collectibles 17.5%, Women 9.6% |
+| `0` | 143,965 | 11.5% | $12.50 | Beauty 55.8%, Women 21.5%, Home 5.3% |
+| `9` | 102,796 | 7.1% | $6.54 | Sports & outdoors 31.9%, Other 16.2%, Men 12.5% |
+| `2` | 62,145 | 11.0% | $13.59 | Books 51.8%, Toys & Collectibles 15.9%, Electronics 6.8% |
+
+Personas centered on toys and collectibles, electronics, beauty and books
+spend roughly twice as much per shopper as the largest persona, women's
+fashion, and the kids persona spends the least. The same 2.8 million shoppers fall
+into personas of very different value, which affects where campaign budget
+goes. Persona numbers are labels from this KMeans fit. `cuvs_kmeans` takes no seed, so persona sizes
+moved by up to a few dozen shoppers across the three captured runs; the table shows the first run. GMV is the sum of listed prices of completed purchases,
+because the dataset records no final sale price.
+
+<details>
+<summary>Executed SQL</summary>
+
+```sql
+WITH shoppers AS (
+  SELECT e.user_id AS id,
+    SUM(CASE WHEN e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS purchases,
+    SUM(CASE WHEN e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS gmv,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Women' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS women,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Toys & Collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS toys,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Kids' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS kids,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Men' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS men,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Home' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS home,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Electronics' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS electronics,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Beauty' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS beauty,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Vintage & collectibles' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS vintage,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Books' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS books,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Sports & outdoors' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS sports,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Other' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS other,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Handmade' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS handmade,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Garden & Outdoor' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS garden,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Arts & Crafts' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS arts,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Pet Supplies' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS pets,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Office' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS office,
+    COALESCE(CAST(SQRT(SUM(CASE WHEN e.event_type = 'item_view' AND i.c0_name = 'Tools' THEN 1.0 ELSE 0.0 END) / SUM(CASE WHEN e.event_type = 'item_view' THEN 1.0 ELSE 0.0 END)) AS REAL), CAST(0 AS REAL)) AS tools
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  GROUP BY e.user_id
+  HAVING SUM(CASE WHEN e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20
+), assignments AS (
+  SELECT id, cluster_id FROM cuvs_kmeans(
+    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM shoppers ORDER BY id),
+    n_clusters => 10, n_init => 3, max_iter => 300)
+), personas AS (
+  SELECT a.cluster_id AS id, COUNT(*) AS shoppers,
+    AVG(CASE WHEN s.purchases > 0 THEN 1.0 ELSE 0.0 END) AS buyer_share,
+    SUM(s.gmv) AS gmv,
+    COALESCE(CAST(AVG(s.women * s.women) AS REAL), CAST(0 AS REAL)) AS women,
+    COALESCE(CAST(AVG(s.toys * s.toys) AS REAL), CAST(0 AS REAL)) AS toys,
+    COALESCE(CAST(AVG(s.kids * s.kids) AS REAL), CAST(0 AS REAL)) AS kids,
+    COALESCE(CAST(AVG(s.men * s.men) AS REAL), CAST(0 AS REAL)) AS men,
+    COALESCE(CAST(AVG(s.home * s.home) AS REAL), CAST(0 AS REAL)) AS home,
+    COALESCE(CAST(AVG(s.electronics * s.electronics) AS REAL), CAST(0 AS REAL)) AS electronics,
+    COALESCE(CAST(AVG(s.beauty * s.beauty) AS REAL), CAST(0 AS REAL)) AS beauty,
+    COALESCE(CAST(AVG(s.vintage * s.vintage) AS REAL), CAST(0 AS REAL)) AS vintage,
+    COALESCE(CAST(AVG(s.books * s.books) AS REAL), CAST(0 AS REAL)) AS books,
+    COALESCE(CAST(AVG(s.sports * s.sports) AS REAL), CAST(0 AS REAL)) AS sports,
+    COALESCE(CAST(AVG(s.other * s.other) AS REAL), CAST(0 AS REAL)) AS other,
+    COALESCE(CAST(AVG(s.handmade * s.handmade) AS REAL), CAST(0 AS REAL)) AS handmade,
+    COALESCE(CAST(AVG(s.garden * s.garden) AS REAL), CAST(0 AS REAL)) AS garden,
+    COALESCE(CAST(AVG(s.arts * s.arts) AS REAL), CAST(0 AS REAL)) AS arts,
+    COALESCE(CAST(AVG(s.pets * s.pets) AS REAL), CAST(0 AS REAL)) AS pets,
+    COALESCE(CAST(AVG(s.office * s.office) AS REAL), CAST(0 AS REAL)) AS office,
+    COALESCE(CAST(AVG(s.tools * s.tools) AS REAL), CAST(0 AS REAL)) AS tools
+  FROM assignments a JOIN shoppers s ON s.id = a.id
+  GROUP BY a.cluster_id
+), leading AS (
+  SELECT id, rank, position, value FROM cuvs_top_k(
+    input => (SELECT id, women, toys, kids, men, home, electronics, beauty, vintage, books, sports, other, handmade, garden, arts, pets, office, tools FROM personas ORDER BY id),
+    k => 3, select => 'max')
+)
+SELECT p.id AS persona, p.shoppers, p.buyer_share, p.gmv, p.gmv / p.shoppers AS gmv_per_shopper,
+  l.rank,
+  CASE l.position
+    WHEN 0 THEN 'Women'
+    WHEN 1 THEN 'Toys & Collectibles'
+    WHEN 2 THEN 'Kids'
+    WHEN 3 THEN 'Men'
+    WHEN 4 THEN 'Home'
+    WHEN 5 THEN 'Electronics'
+    WHEN 6 THEN 'Beauty'
+    WHEN 7 THEN 'Vintage & collectibles'
+    WHEN 8 THEN 'Books'
+    WHEN 9 THEN 'Sports & outdoors'
+    WHEN 10 THEN 'Other'
+    WHEN 11 THEN 'Handmade'
+    WHEN 12 THEN 'Garden & Outdoor'
+    WHEN 13 THEN 'Arts & Crafts'
+    WHEN 14 THEN 'Pet Supplies'
+    WHEN 15 THEN 'Office'
+    WHEN 16 THEN 'Tools'
+  END AS category,
+  l.value AS mean_view_share
+FROM leading l JOIN personas p ON p.id = l.id
+ORDER BY p.shoppers DESC, l.rank;
+```
+
+</details>
+
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 49.98 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 29.14 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-shopper-personas.json) with the executed SQL, query IDs, timings, and all result rows.
