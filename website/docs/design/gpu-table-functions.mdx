@@ -206,6 +206,36 @@ its own result. In `EXPLAIN` output the producer reports `shared_consumers`,
 and the `shared_resident_extraction` planning diagnostics record the decision
 for each node of each unit.
 
+## Reproducibility
+
+Two runs of the same statement on the same data, options and GPU return the same relation for some GPU functions and different relations for others. Several cuGraph, cuVS and cuML kernels add floating-point values with atomic operations, or let the first thread to arrive decide a tie. The order of those operations changes between runs, and Algeon adds no ordering to them. A `seed` option fixes the random draws of an algorithm and leaves the accumulation order of atomic operations unconstrained.
+
+| Function | Seed option | Between runs |
+| --- | --- | --- |
+| `cugraph_force_atlas2` | `seed`: initial positions | Coordinates differ in every run, because force accumulation uses atomics. |
+| `cugraph_spectral_modularity_maximization` | `seed`: Lanczos start vector and k-means initialization | The partition can differ with the same seed, because k-means centroid sums use atomics. |
+| `cugraph_ecg` | `seed`: initial community labels of each Louvain pass | Identical communities are not guaranteed. |
+| `cugraph_leiden` | `seed`: random choices in the refinement step | Identical communities are not guaranteed. The MerRec shopping-worlds capture returned one partition in three runs. |
+| `cugraph_bfs` | none | Distances repeat. The predecessor of a vertex with several shortest-path parents can differ. |
+| `cugraph_sssp` | none | Distances and predecessors repeat. Which of several equal-cost parents becomes the predecessor is unspecified. |
+| `cugraph_hits` | none | Scores differ in the last digits, because the hub update uses atomics. |
+| `cugraph_pagerank`, `cugraph_personalized_pagerank` | none | Identical without an edge `weight` column, as in the captured Barbie example. With one, scores differ in the last digits. |
+| `cuvs_kmeans` | none; the native seed is fixed at 0 | Cluster sizes differ slightly, because centroid sums use atomics. The shopper-persona capture differs between runs. |
+| `cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq` | none | Neighbors and distances differ slightly, because index construction uses atomics. |
+| `cuvs_brute_force_knn` | none | Distances repeat. Neighbors tied at the k-th distance can differ. |
+| `cuvs_top_k` | none | The positions chosen among values tied across rank k are unspecified. |
+| `cuml_logistic_regression` | none | Coefficients and scores differ slightly, because the loss reduction uses atomics. |
+| `cuml_random_forest_classifier` | `seed`: bootstrap rows and feature subsets | The same seed, input row order and GPU grow the same forest. |
+| `cuml_random_forest_regressor` | `seed`: bootstrap rows and feature subsets | Not guaranteed to be bit-identical, because regression histograms use floating-point atomics. |
+| `cuml_umap` | `random_state`: spectral initialization, edge shuffle and negative sampling | Runs in cuML's deterministic mode and is expected to repeat. No repeated-run capture exists. |
+| `cuml_forest_predict` | none | Identical for the same model file, input row order and GPU; inference draws no random numbers. |
+
+Connected-component labels (the minimum vertex ID of each component), degrees, triangle counts and core numbers involve no floating-point accumulation and repeat. The similarity functions `cugraph_jaccard`, `cugraph_sorensen`, `cugraph_overlap` and `cugraph_cosine` contain no atomic accumulation, and Jaccard and overlap returned identical rows in the captured MerRec runs. No repeated-run measurement exists for the remaining functions, and none of them has a `seed` option (the `seeds` argument of the betweenness functions lists source vertices and draws no random numbers).
+
+Compare results across runs with a tolerance for scores, set overlap for community membership and neighbor lists, and rank correlation for orderings. Bitwise equality is a valid check only for the functions that repeat. Community and cluster labels are arbitrary integers; compare which rows share a label. Layout coordinates change in every run; compare neighborhoods or pairwise distances after aligning the layouts. When later statements must read the values of one execution, store the result with `CREATE OR REPLACE TABLE ... AS`, as described in [Reuse algorithm results](../cugraph/graph-options.mdx#reuse-algorithm-results).
+
+A seed fixes random draws over one row order. Without a top-level `ORDER BY`, the row order of an input subquery can change between runs and moves seeded results as well; see [Input order](../cuml/ml-inputs.mdx#input-order) and [Relation identity](../cuvs/vector-inputs.mdx#relation-identity).
+
 ## Observe the boundaries
 
 Use the [plan and runtime artifacts](./native-lowering.mdx#connect-the-plan-to-an-execution)

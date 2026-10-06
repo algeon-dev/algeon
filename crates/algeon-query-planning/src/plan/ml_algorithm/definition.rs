@@ -478,6 +478,7 @@ const RF_LIMITATIONS: &[&str] = &[
     "Classifier labels must be Int32 contiguous classes 0..C-1; regressor labels must be finite Float32. Null labels fail the query. Predict must omit label and match the training feature dimension.",
     "Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.",
     "Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.",
+    "seed sets the bootstrap rows and feature subsets; refits are not guaranteed to be bit-identical, because regression histograms accumulate with floating-point atomics.",
 ];
 const LOGISTIC_LIMITATIONS: &[&str] = &[
     "Training labels must be Int32 contiguous classes 0..C-1 and must not be null; predict must omit label and match the feature dimension.",
@@ -531,6 +532,7 @@ const UMAP_LIMITATIONS: &[&str] = &[
     "Only Float32 features are supported; L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.",
     "Empty input returns an empty result. Other inputs require n_neighbors < rows, checked at execution.",
     "min_dist must not exceed spread. The fit and embedding are query-local.",
+    "random_state seeds the spectral initialization, the edge shuffle, and negative sampling.",
 ];
 const OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
     GpuOutputFieldDefinition {

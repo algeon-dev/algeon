@@ -97,5 +97,6 @@ import Examples from '../_examples/cuvs_kmeans.mdx';
 - Fits a model and returns assignments within one statement; it does not return a reusable model, centroids, or inertia.
 - The evaluated input must be non-empty and n_clusters must not exceed its row count.
 - cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.
+- Cluster sizes can differ slightly between runs, because centroid sums accumulate with floating-point atomics; the native seed is fixed at 0 and cannot be set.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

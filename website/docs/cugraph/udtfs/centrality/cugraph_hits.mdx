@@ -76,6 +76,6 @@ import Examples from '../../_examples/cugraph_hits.mdx';
 
 ## Limits
 
-_No algorithm-specific limitations._
+- scores can differ in the last digits between runs because the hub update accumulates with floating-point atomics
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

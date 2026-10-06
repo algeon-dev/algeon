@@ -148,9 +148,10 @@ Look for both fields in the physical plan:
 ## Reuse algorithm results
 
 A view stores a query definition; later reads can execute the algorithm again.
-Component labels, community partitions, and layout coordinates can change
-between executions. Use `CREATE OR REPLACE TABLE ... AS` when later queries
-need results from one execution, as in the
+Community partitions and layout coordinates can change between executions;
+the [reproducibility section](../design/gpu-table-functions.mdx#reproducibility)
+lists which functions repeat. Use `CREATE OR REPLACE TABLE ... AS` when later
+queries need results from one execution, as in the
 [SCC example](./udtfs/connectivity/cugraph_strongly_connected_components.mdx#examples).
 
 CTAS executes the query and collects its results into a DataFusion `MemTable`

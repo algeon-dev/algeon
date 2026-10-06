@@ -422,11 +422,13 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/ecg__default.json"),
-        // ECG runs a randomized Louvain ensemble. A fixed seed makes a
-        // particular build repeatable, but does not make partitions portable
-        // across CUDA/cuGraph builds or graph-ordering implementations. Keep
-        // the Python result as a modularity baseline instead of requiring its
-        // exact set-of-sets partition.
+        // ECG runs `ensemble_size` Louvain passes and a final pass, each from
+        // random initial community labels. `seed` fixes only those labels, and
+        // the ECG contract promises no identical communities across runs. The
+        // oracle also comes from another build (pylibcugraph 26.06.00, per its
+        // header). The check therefore compares vertex coverage, community
+        // count and modularity against the oracle instead of its exact
+        // set-of-sets partition.
         comparator: ParityComparator::PartitionQuality,
         tolerance: ParityTolerance { abs: 5.0e-2, rel: 0.0 },
     },

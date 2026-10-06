@@ -117,47 +117,84 @@ LIMIT 30;
 </div>
 
 </TabItem>
-<TabItem value="marketplace" label="Shopper browsing">
+<TabItem value="marketplace" label="Marketplace brands">
 
-<p className={styles.exampleEyebrow}><span>cuGraph</span>MerRec · Mercari US browsing graph, October 2023</p>
-<p className={styles.exampleQuestion}>Which collectibles share an audience with Nintendo games?</p>
-<p className={styles.exampleHow}>Personalized PageRank picks 100 groups near the Nintendo seed; Jaccard scores their shared viewers.</p>
+<p className={styles.exampleEyebrow}><span>cuGraph</span>MerRec · Mercari US marketplace · 1.27B events · May to October 2023</p>
+<p className={styles.exampleQuestion}>Which brands moved closer to Barbie fans after the July 2023 film release?</p>
+<p className={styles.exampleHow}>Personalized PageRank restarts at Barbie on the May-June and July-August like graphs; plain PageRank on the same graphs gives each brand's popularity baseline.</p>
 
 ```sql
-SELECT m.product_id, m.brand_name, m.category, m.leaf_category,
-       m.viewers, r.similarity AS audience_jaccard
-FROM cugraph_jaccard(
-  edges => (SELECT src, dst FROM mr_audience),
-  vertex_pairs => (
-    SELECT CAST(672 AS INT) AS first, candidates.vertex AS second
-    FROM (
-      SELECT vertex, value
-      FROM cugraph_personalized_pagerank(
-        edges => (SELECT src, dst, weight FROM mr_edges),
-        personalization => (SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value
-                            FROM mr_nodes WHERE product_id = '15928_1315'))
-      WHERE vertex <> 672
-      ORDER BY value DESC, vertex LIMIT 100) candidates),
-  directed => false) r
-JOIN mr_nodes m ON m.id = r.second
-WHERE m.category = 'Toys & Collectibles' AND m.viewers >= 30
-ORDER BY r.similarity DESC, m.product_id
-LIMIT 10;
+WITH likes AS (
+  SELECT e.user_id, i.brand_id,
+         CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00'
+              THEN 0 ELSE 1 END AS after_release
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
+    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'
+    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'
+  GROUP BY e.user_id, i.brand_id,
+           CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00'
+                THEN 0 ELSE 1 END
+), before_graph AS (
+  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst
+  FROM likes WHERE after_release = 0
+), after_graph AS (
+  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst
+  FROM likes WHERE after_release = 1
+), fans AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id,
+         SUM(1 - after_release) AS fans_before, SUM(after_release) AS fans_after
+  FROM likes GROUP BY brand_id
+), ppr_before AS (
+  SELECT vertex, value FROM cugraph_personalized_pagerank(
+    edges => (SELECT src, dst FROM before_graph),
+    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),
+    directed => false)
+), ppr_after AS (
+  SELECT vertex, value FROM cugraph_personalized_pagerank(
+    edges => (SELECT src, dst FROM after_graph),
+    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),
+    directed => false)
+), pr_before AS (
+  SELECT vertex, value FROM cugraph_pagerank(
+    edges => (SELECT src, dst FROM before_graph), directed => false)
+), pr_after AS (
+  SELECT vertex, value FROM cugraph_pagerank(
+    edges => (SELECT src, dst FROM after_graph), directed => false)
+), brands AS (
+  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
+  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id
+)
+SELECT b.brand_name, f.fans_before, f.fans_after,
+       pb.value / rb.value AS lift_before,
+       pa.value / ra.value AS lift_after,
+       (pa.value / ra.value) / (pb.value / rb.value) AS lift_change
+FROM ppr_after pa
+JOIN pr_after ra ON ra.vertex = pa.vertex
+JOIN ppr_before pb ON pb.vertex = pa.vertex
+JOIN pr_before rb ON rb.vertex = pa.vertex
+JOIN fans f ON f.brand_id = pa.vertex
+JOIN brands b ON b.brand_id = pa.vertex
+WHERE pa.vertex > 0 AND pa.vertex <> 2595
+  AND f.fans_before >= 1000 AND f.fans_after >= 1000
+ORDER BY lift_change DESC, b.brand_name
+LIMIT 25;
 ```
 
 <ResultBars
-  summary="First four of ten collectible groups, by audience Jaccard"
+  summary="25 rows in 4.94 s, the median of runs 2 and 3"
+  context="Change in Barbie lift, July-August over May-June, for the first four rows:"
   rows={[
-    {label: 'Pokemon · Single Cards', value: 0.1343, display: '0.134', detail: '135 viewers'},
-    {label: 'Brand not listed · Action Figures', value: 0.1289, display: '0.129', detail: '395 viewers'},
-    {label: 'Funko · Bobbleheads', value: 0.1161, display: '0.116', detail: '315 viewers'},
-    {label: 'LEGO · LEGO Toys', value: 0.1026, display: '0.103', detail: '211 viewers'},
+    {label: 'NYX', value: 2.1330255896549337, display: '2.13', detail: 'lift 0.97 to 2.07'},
+    {label: 'Amc', value: 1.8679194695450891, display: '1.87', detail: 'lift 0.97 to 1.82'},
+    {label: 'Primark', value: 1.853862113621258, display: '1.85', detail: 'lift 1.10 to 2.04'},
+    {label: 'ALDO', value: 1.7645188895268598, display: '1.76', detail: 'lift 0.85 to 1.50'},
   ]}
 />
 
 <div className={styles.exampleFooter}>
-<span>Seed `15928_1315` is the Nintendo games group, vertex 672. Scores count shared viewers in one October 2023 shard and say nothing about purchases.</span>
-<span>[Full example](./cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx#examples) · [Dataset setup](./guides/datasets/merrec.mdx)</span>
+<span>Lift divides a brand's personalized PageRank by its plain PageRank to cancel popularity. All three runs returned identical rows. Likes record shared interest and say nothing about purchases.</span>
+<span>[Full example](./cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) · [Dataset setup](./guides/datasets/merrec.mdx)</span>
 </div>
 
 </TabItem>

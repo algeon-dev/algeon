@@ -56,4 +56,6 @@ machine translation*. The table abbreviates the GENIA title to *GENIA corpus…*
 The edge filter excludes invalid years and publications after the source's
 year. Forward-dated citations within that interval retain a positive cost.
 Unreachable vertices are excluded. If several routes have the same minimum
-cost, their predecessor papers can differ between runs.
+cost, the query names the predecessor of one of them. Repeated runs on the same
+data name the same paper, but which of the tied routes that is stays
+unspecified.
