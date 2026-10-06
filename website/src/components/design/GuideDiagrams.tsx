@@ -50,13 +50,13 @@ function Label({x, y, children, textAnchor = 'start'}: {
 }
 
 function Region({x, y, w, h, label, tone = 'plain', labelOffset = 14}: {
-  x: number; y: number; w: number; h: number; label: string; tone?: Tone; labelOffset?: number;
+  x: number; y: number; w: number; h: number; label?: string; tone?: Tone; labelOffset?: number;
 }) {
   return <g>
     <rect x={x} y={y} width={w} height={h} rx={16} fill={TONE[tone]} opacity={0.05} />
-    {sketchRoundRect(`guide-region:${label}`, x, y, w, h, 16,
+    {sketchRoundRect(`guide-region:${label ?? `${x}:${y}`}`, x, y, w, h, 16,
       {stroke: TONE[tone], strokeWidth: 1, dashed: true})}
-    <Label x={x + labelOffset} y={y + 22}>{label}</Label>
+    {label ? <Label x={x + labelOffset} y={y + 22}>{label}</Label> : null}
   </g>;
 }
 
@@ -295,70 +295,718 @@ export function StorageRoutes() {
 }
 
 export function ColumnLayout() {
-  const rows = [
-    {name: 'customer_id', values: ['7', '9', '7', '2'], y: 28, tone: 'gpu' as Tone},
-    {name: 'amount', values: ['12', '5', '8', '9'], y: 91, tone: 'gpu' as Tone},
-    {name: 'status offsets', values: ['0', '4', '8', '12', '20'], y: 185, tone: 'bridge' as Tone},
-    {name: 'status characters', values: ['paid', 'open', 'paid', 'refunded'],
-      widths: [94, 94, 94, 188], y: 248, tone: 'bridge' as Tone},
+  const rowLabels = ['Row 0', 'Row 1', 'Row 2', 'Row 3'];
+  const fixedColWidth = 120;
+  const startX = 210;
+  const lanes = ['Lane 0', 'Lane 1', 'Lane 2', 'Lane 3'];
+  const amountValues = ['12', '5', '8', '9'];
+  const customerValues = ['7', '9', '7', '2'];
+  const stringOffsets = ['0', '4', '8', '12', '20'];
+  const stringChars = [
+    {text: 'paid', bytes: '4 B', slice: '[0..4)', width: 96, x: startX},
+    {text: 'open', bytes: '4 B', slice: '[4..8)', width: 96, x: startX + 96},
+    {text: 'paid', bytes: '4 B', slice: '[8..12)', width: 96, x: startX + 192},
+    {text: 'refunded', bytes: '8 B', slice: '[12..20)', width: 192, x: startX + 288},
   ];
-  return <GuideFigure height={318}
-    label="Decoded column buffers for four rows. customer_id contains 7, 9, 7, 2; amount contains 12, 5, 8, 9. String status uses offsets 0, 4, 8, 12, 20 into the character bytes paidopenpaidrefunded. The longer last string occupies twice as many bytes. Each column has separate contiguous buffers."
-    caption="Each offset pair selects one string's bytes; refunded needs more space than paid. Row position connects values across columns. Optional validity bitmaps track nulls separately.">
-    {rows.map((row) => <g key={row.name}>
-      <Label x={8} y={row.y + 27}>{row.name}</Label>
-      {row.values.map((value, i) => {
-        const widths = row.widths ?? row.values.map(() => row.values.length === 5 ? 94 : 118);
-        const width = widths[i];
-        const x = 214 + widths.slice(0, i).reduce((sum, size) => sum + size, 0);
-        return <g key={i}>
-          <rect x={x} y={row.y} width={width} height={44}
-            fill={TONE[row.tone]} fillOpacity={0.09} stroke={COLOR.border} />
-          <text x={x + width / 2} y={row.y + 29} textAnchor="middle"
-            fontSize={16} fontFamily={SANS} fill={COLOR.fg}>{value}</text>
-        </g>;
+  const validityBits = ['1', '1', '1', '1'];
+
+  return (
+    <GuideFigure
+      height={472}
+      label="Decoded GPU column buffers and coalesced memory access for four rows. A GPU Warp (32 threads) uses lanes 0 to 3 to scan adjacent amount values in one coalesced memory transaction, skipping customer_id. Variable-width status strings use offsets 0, 4, 8, 12, 20 to slice into the character buffer, and a validity bitmap tracks null values."
+      caption="A GPU warp coalesces adjacent lane reads into fewer memory transactions, while unprojected columns consume no memory bandwidth. Strings use offset pairs to slice contiguous character bytes; validity bitmaps track nulls.">
+      {/* Logical row header pills */}
+      {rowLabels.map((label, i) => {
+        const cx = startX + i * fixedColWidth + fixedColWidth / 2;
+        return (
+          <g key={label}>
+            <rect
+              x={cx - 32}
+              y={10}
+              width={64}
+              height={22}
+              rx={6}
+              fill={COLOR.surface}
+              stroke={COLOR.border}
+              strokeWidth={1}
+            />
+            <text
+              x={cx}
+              y={25}
+              textAnchor="middle"
+              fontFamily={SANS}
+              fontSize={11.5}
+              fill={COLOR.muted}>
+              {label}
+            </text>
+          </g>
+        );
       })}
-    </g>)}
-    {sketchLine('layout:string-boundary', 8, 158, 702, 158, {stroke: COLOR.border, dashed: true})}
-  </GuideFigure>;
+
+      {/* GPU Warp section: Left explanation & right spacious container */}
+      <Label x={8} y={64}>GPU Warp</Label>
+      <text x={8} y={80} fill={COLOR.muted} fontFamily={SANS} fontSize={11}>
+        32 lanes (SIMT)
+      </text>
+      <text x={8} y={95} fill={COLOR.subtle} fontFamily={SANS} fontSize={10.5}>
+        lanes 0..3 shown
+      </text>
+
+      <rect
+        x={startX - 6}
+        y={44}
+        width={492}
+        height={56}
+        rx={10}
+        fill={TONE.gpu}
+        fillOpacity={0.04}
+        stroke={TONE.gpu}
+        strokeWidth={1}
+        strokeDasharray="4 4"
+      />
+      <text
+        x={startX + 10}
+        y={58}
+        fontFamily={SANS}
+        fontSize={10}
+        letterSpacing="0.04em"
+        fill={COLOR.muted}>
+        WARP 0 · ACTIVE EXECUTION LANES
+      </text>
+
+      {lanes.map((lane, i) => {
+        const cx = startX + i * fixedColWidth + fixedColWidth / 2;
+        return (
+          <g key={lane}>
+            <rect
+              x={cx - 48}
+              y={64}
+              width={96}
+              height={27}
+              rx={6}
+              fill={TONE.gpu}
+              fillOpacity={0.14}
+              stroke={COLOR.border}
+            />
+            <text
+              x={cx}
+              y={82}
+              textAnchor="middle"
+              fontFamily={SANS}
+              fontSize={12}
+              fill={COLOR.fg}>
+              {lane}
+            </text>
+            <Arrow id={`coalesce:l${i}`} points={[[cx, 99], [cx, 118]]} />
+          </g>
+        );
+      })}
+
+      {/* amount column (scanned) */}
+      <Label x={8} y={138}>amount</Label>
+      <text x={8} y={154} fill={COLOR.muted} fontFamily={SANS} fontSize={11}>
+        INT32 (scan target)
+      </text>
+      {amountValues.map((val, i) => {
+        const x = startX + i * fixedColWidth;
+        return (
+          <g key={i}>
+            <rect
+              x={x}
+              y={120}
+              width={fixedColWidth}
+              height={44}
+              fill={TONE.gpu}
+              fillOpacity={0.12}
+              stroke={COLOR.border}
+            />
+            <text
+              x={x + fixedColWidth / 2}
+              y={147}
+              textAnchor="middle"
+              fontSize={16}
+              fontFamily={SANS}
+              fill={COLOR.fg}>
+              {val}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Coalesced transaction callout badge */}
+      <path
+        d={`M ${startX} 169 L ${startX} 175 L ${startX + 480} 175 L ${startX + 480} 169`}
+        fill="none"
+        stroke={TONE.gpu}
+        strokeWidth={1.2}
+      />
+      <rect
+        x={startX + 80}
+        y={180}
+        width={320}
+        height={22}
+        rx={11}
+        fill={TONE.gpu}
+        fillOpacity={0.12}
+        stroke={TONE.gpu}
+        strokeWidth={1}
+      />
+      <text
+        x={startX + 240}
+        y={195}
+        textAnchor="middle"
+        fontFamily={SANS}
+        fontSize={11}
+        fill={COLOR.fg}>
+        1 coalesced memory transaction (16 contiguous bytes)
+      </text>
+
+      {/* customer_id column (unprojected / skipped) */}
+      <Label x={8} y={230}>customer_id</Label>
+      <text x={8} y={246} fill={COLOR.subtle} fontFamily={SANS} fontSize={11}>
+        INT32 (unread)
+      </text>
+      {customerValues.map((val, i) => {
+        const x = startX + i * fixedColWidth;
+        return (
+          <g key={i} opacity={0.4}>
+            <rect
+              x={x}
+              y={212}
+              width={fixedColWidth}
+              height={40}
+              fill={TONE.plain}
+              fillOpacity={0.06}
+              stroke={COLOR.border}
+              strokeDasharray="4 4"
+            />
+            <text
+              x={x + fixedColWidth / 2}
+              y={237}
+              textAnchor="middle"
+              fontSize={15}
+              fontFamily={SANS}
+              fill={COLOR.fg}>
+              {val}
+            </text>
+          </g>
+        );
+      })}
+      <text
+        x={startX + 240}
+        y={267}
+        textAnchor="middle"
+        fontFamily={SANS}
+        fontSize={11}
+        fill={COLOR.subtle}>
+        Skipped in projection: 0 bytes transferred from device memory
+      </text>
+
+      {/* Divider */}
+      {sketchLine('layout:string-boundary', 8, 282, 696, 282, {stroke: COLOR.border, dashed: true})}
+      <text x={8} y={298} fill={COLOR.muted} fontFamily={SANS} fontSize={11.5}>
+        Variable-width column: offsets index into character buffer
+      </text>
+
+      {/* status offsets */}
+      <Label x={8} y={328}>status offsets</Label>
+      <text x={8} y={344} fill={COLOR.muted} fontFamily={SANS} fontSize={11}>
+        INT32 (5 elements)
+      </text>
+      {stringOffsets.map((val, i) => {
+        const x = startX + i * 96;
+        return (
+          <g key={i}>
+            <rect
+              x={x}
+              y={312}
+              width={96}
+              height={34}
+              fill={TONE.bridge}
+              fillOpacity={0.12}
+              stroke={COLOR.border}
+            />
+            <text
+              x={x + 48}
+              y={334}
+              textAnchor="middle"
+              fontSize={14}
+              fontFamily={SANS}
+              fill={COLOR.fg}>
+              {val}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* status characters */}
+      <Label x={8} y={380}>status bytes</Label>
+      <text x={8} y={396} fill={COLOR.muted} fontFamily={SANS} fontSize={11}>
+        UTF-8 bytes
+      </text>
+      {stringChars.map((item, i) => (
+        <g key={i}>
+          <rect
+            x={item.x}
+            y={358}
+            width={item.width}
+            height={48}
+            fill={TONE.bridge}
+            fillOpacity={0.12}
+            stroke={COLOR.border}
+          />
+          <text
+            x={item.x + item.width / 2}
+            y={379}
+            textAnchor="middle"
+            fontSize={15}
+            fontFamily={SANS}
+            fill={COLOR.fg}>
+            {item.text}
+          </text>
+          <text
+            x={item.x + item.width / 2}
+            y={396}
+            textAnchor="middle"
+            fontSize={10.5}
+            fontFamily={SANS}
+            fill={COLOR.muted}>
+            {item.slice} ({item.bytes})
+          </text>
+        </g>
+      ))}
+
+      {/* validity bitmap */}
+      <Label x={8} y={432}>validity bitmap</Label>
+      <text x={8} y={448} fill={COLOR.muted} fontFamily={SANS} fontSize={11}>
+        1 bit / row
+      </text>
+      {validityBits.map((bit, i) => {
+        const x = startX + i * fixedColWidth;
+        return (
+          <g key={i}>
+            <rect
+              x={x}
+              y={418}
+              width={fixedColWidth}
+              height={32}
+              fill={TONE.gpu}
+              fillOpacity={0.06}
+              stroke={COLOR.border}
+            />
+            <text
+              x={x + fixedColWidth / 2}
+              y={439}
+              textAnchor="middle"
+              fontSize={13}
+              fontFamily={SANS}
+              fill={COLOR.fg}>
+              bit {bit} (valid)
+            </text>
+          </g>
+        );
+      })}
+    </GuideFigure>
+  );
 }
 
 export function StreamSchedule() {
-  return <GuideFigure height={384}
-    label="Illustrative chunked aggregation on one GPU. Two parallel columns show Stream A decoding, filtering and partially aggregating chunk 1, and Stream B doing the same for chunk 2. Symmetric completion arrows connect both partial results to the root stream's merge."
-    caption="Both streams operate on the same GPU's VRAM. The merge waits for both partial results; independent chunks may overlap when resources permit.">
-    <Label x={24} y={18}>Stream A</Label>
-    <Label x={424} y={18}>Stream B</Label>
-    <Label x={24} y={342}>Root stream</Label>
-    <Arrow id="streams:a" points={[[160, 116], [160, 134]]} />
-    <Arrow id="streams:b" points={[[560, 116], [560, 134]]} />
-    <Arrow id="streams:join-a" points={[[160, 218], [160, 262], [284, 262], [284, 294]]} />
-    <Arrow id="streams:join-b" points={[[560, 218], [560, 262], [436, 262], [436, 294]]} />
-    <BackedLabel x={360} y={246} text="wait for both producers" />
-    <Card x={24} y={38} w={272} name="Decode + filter" note="Chunk 1" tone="gpu" />
-    <Card x={24} y={140} w={272} name="Partial sums" note="Group state for chunk 1" tone="gpu" />
-    <Card x={424} y={38} w={272} name="Decode + filter" note="Chunk 2" tone="gpu" />
-    <Card x={424} y={140} w={272} name="Partial sums" note="Group state for chunk 2" tone="gpu" />
-    <Card x={208} y={300} w={304} name="Merge partial results" note="Preserve the grouped-sum result" tone="engine" />
-  </GuideFigure>;
+  const cardW = 330;
+  const leftX = 45;
+  const leftCx = leftX + cardW / 2; // 210
+  const rightX = 425;
+  const rightCx = rightX + cardW / 2; // 590
+  const midX = 400;
+
+  return (
+    <GuideFigure
+      width={800}
+      minWidth={680}
+      height={640}
+      label="Asynchronous chunked aggregation across CUDA streams in one query attempt. Host workers in GpuExecutionPool asynchronously enqueue chunk operations into independent CUDA streams and record readiness events before recycling. Stream A and Stream B execute decode, filter, and partial aggregation concurrently in shared VRAM. A GPU-side completion fence (cudaStreamWaitEvent) synchronizes both streams into the root stream for the final grouped merge without CPU blocking."
+      caption="CPU workers enqueue operations and return immediately to the pool. Streams A and B execute concurrently on the GPU, sharing VRAM and memory bandwidth under one query cap. The root stream waits on GPU events before merging partial results.">
+      {/* 1. Background Regions with native container labels */}
+      {/* Top Tier: Host CPU Worker Pool */}
+      <Region
+        x={16}
+        y={6}
+        w={768}
+        h={110}
+        label="Host CPU · GpuExecutionPool (OS worker threads)"
+        labelOffset={16}
+        tone="plain"
+      />
+
+      {/* Main Tier: GPU VRAM Attempt Container */}
+      <Region
+        x={16}
+        y={132}
+        w={768}
+        h={496}
+        label="GPU VRAM · single admitted query attempt (shared memory cap & bandwidth)"
+        labelOffset={16}
+        tone="engine"
+      />
+
+      {/* Lane 1: Stream A */}
+      <Region
+        x={28}
+        y={168}
+        w={360}
+        h={240}
+        label="Lane 1 · Stream A (ordered FIFO queue)"
+        labelOffset={16}
+        tone="gpu"
+      />
+
+      {/* Lane 2: Stream B */}
+      <Region
+        x={412}
+        y={168}
+        w={360}
+        h={240}
+        label="Lane 2 · Stream B (ordered FIFO queue)"
+        labelOffset={16}
+        tone="gpu"
+      />
+
+      {/* Bottom Tier: Root Stream Region */}
+      <Region
+        x={28}
+        y={486}
+        w={744}
+        h={132}
+        label="Root Stream · query coordinator"
+        labelOffset={16}
+        tone="engine"
+      />
+
+      {/* 2. Arrows */}
+      {/* Transition: Non-blocking Enqueue from Host to GPU Lanes */}
+      <Arrow
+        id="streams:enqueue-a"
+        points={[[leftCx, 108], [leftCx, 204]]}
+      />
+      <Arrow
+        id="streams:enqueue-b"
+        points={[[rightCx, 108], [rightCx, 204]]}
+      />
+
+      {/* Lane 1 vertical flow */}
+      <Arrow
+        id="streams:flow-a"
+        points={[[leftCx, 274], [leftCx, 298]]}
+      />
+
+      {/* Lane 2 vertical flow */}
+      <Arrow
+        id="streams:flow-b"
+        points={[[rightCx, 274], [rightCx, 298]]}
+      />
+
+      {/* Merged Streams into Root Stream (Fork-Join merge) */}
+      <Arrow
+        id="streams:merge-a"
+        points={[[leftCx, 368], [leftCx, 432], [midX, 432], [midX, 514]]}
+      />
+      <Arrow
+        id="streams:merge-b"
+        points={[[rightCx, 368], [rightCx, 432], [midX, 432], [midX, 514]]}
+        arrowhead={false}
+      />
+
+      {/* 3. Event Milestone Markers on Stream Arrows */}
+      <BackedLabel x={leftCx} y={400} text="◆ CUDA Event A recorded" />
+      <BackedLabel x={rightCx} y={400} text="◆ CUDA Event B recorded" />
+
+      {/* 4. Annotation beside the merged stream arrow */}
+      <text
+        x={midX + 14}
+        y={452}
+        fontFamily={SANS}
+        fontSize={11}
+        fill={COLOR.muted}>
+        <tspan x={midX + 14} dy="0" fontWeight={600} fill={COLOR.fg}>
+          GPU completion fence
+        </tspan>
+        <tspan x={midX + 14} dy="14">
+          cudaStreamWaitEvent · unblocks Root Stream
+        </tspan>
+      </text>
+
+      {/* 5. Operator Cards */}
+      <Card
+        x={leftX}
+        y={40}
+        w={cardW}
+        h={68}
+        name="Worker 1 (OS Thread · Lane 1)"
+        note={['Async enqueues Chunk 1 to Stream A', 'Records Event A, then thread recycles']}
+        tone="plain"
+      />
+      <Card
+        x={rightX}
+        y={40}
+        w={cardW}
+        h={68}
+        name="Worker 2 (OS Thread · Lane 2)"
+        note={['Async enqueues Chunk 2 to Stream B', 'Records Event B, then thread recycles']}
+        tone="plain"
+      />
+
+      <Card
+        x={leftX}
+        y={204}
+        w={cardW}
+        h={70}
+        name="1A. Decode + filter"
+        note={['Scan Chunk 1 Parquet buffers', 'Evaluate predicates, gather matching rows']}
+        tone="gpu"
+      />
+      <Card
+        x={leftX}
+        y={298}
+        w={cardW}
+        h={70}
+        name="2A. Partial sums"
+        note={['Group state hash table for Chunk 1', 'Retains intermediate state in VRAM']}
+        tone="gpu"
+      />
+
+      <Card
+        x={rightX}
+        y={204}
+        w={cardW}
+        h={70}
+        name="1B. Decode + filter"
+        note={['Scan Chunk 2 Parquet buffers', 'Runs concurrently with Stream A']}
+        tone="gpu"
+      />
+      <Card
+        x={rightX}
+        y={298}
+        w={cardW}
+        h={70}
+        name="2B. Partial sums"
+        note={['Group state hash table for Chunk 2', 'Competes for VRAM bus bandwidth']}
+        tone="gpu"
+      />
+
+      <Card
+        x={45}
+        y={514}
+        w={710}
+        h={92}
+        name="3. Merge partial results"
+        note={[
+          'Combines Chunk 1 and Chunk 2 partial group states into unified hash table',
+          'Evaluates global aggregate functions (SUM, COUNT, AVG) on final keys',
+          'Materializes resident result relation under the same query VRAM cap',
+        ]}
+        tone="engine"
+      />
+    </GuideFigure>
+  );
 }
 
 export function GpuUdtfFlow() {
-  return <GuideFigure width={880} minWidth={760} height={390}
-    label="PageRank within a native GPU query. Filtered cuDF edge columns are exposed to cuGraph through a prepared export and read lease. Graph construction and PageRank produce native arrays that are copied on the device into owned cuDF result columns. A resident relation then feeds native filter, join and aggregate operations."
-    caption="Illustrative uncached path on one GPU. Producer storage remains owned through consumer reads. Graph preparation and the PageRank result conversion can allocate and copy within VRAM; host output is materialized at a later CPU or client boundary.">
-    <Region x={8} y={8} w={864} h={372} label="GPU VRAM · one admitted attempt" tone="engine" />
-    <Arrow id="udtf:input" points={[[272, 107], [542, 107]]} />
-    <Label x={407} y={95} textAnchor="middle">prepared export + read lease</Label>
-    <Arrow id="udtf:result" points={[[698, 152], [698, 196], [145, 196], [145, 240]]} />
-    <Label x={421} y={184} textAnchor="middle">Native result → device copy into cuDF</Label>
-    <Arrow id="udtf:consumer" points={[[272, 294], [542, 294]]} />
-    <Label x={407} y={282} textAnchor="middle">resident relation</Label>
-    <Card x={24} y={68} w={242} h={78} name="Filtered cuDF edges" note="Owns src / dst columns" tone="gpu" />
-    <Card x={548} y={68} w={300} h={78} name="cuGraph PageRank" note="Normalize edges · build graph" tone="graph" />
-    <Card x={24} y={246} w={242} h={96} name="cuDF result" note={['Owns vertex / value columns', 'Independent result allocations']} tone="gpu" />
-    <Card x={548} y={246} w={300} h={96} name="Filter · join · aggregate" note="Native GPU consumers" tone="gpu" />
-  </GuideFigure>;
+  const cardW = 348;
+  const leftX = 50;
+  const leftCx = leftX + cardW / 2; // 224
+  const leftOuterX = leftX + 50; // 100 (outermost left departure/entry)
+  const rightX = 482;
+  const rightCx = rightX + cardW / 2; // 656
+  const rightOuterX = rightX + cardW - 50; // 780 (outermost right departure/entry)
+
+  return (
+    <GuideFigure
+      width={880}
+      minWidth={760}
+      height={810}
+      label="GPU UDTF execution flow for PageRank within a SQL query. The relational pipeline on the left filters edge columns in cuDF. A zero-copy read lease passes edge buffers to cuGraph for graph construction and PageRank. The result is copied in device memory into independently owned cuDF columns for downstream filtering, joining, and aggregation, while native graph memory is settled and freed."
+      caption="Relational SQL operators (left) and the graph algorithm (right) share VRAM under one admission grant. Edge inputs are borrowed via a zero-copy read lease; algorithm results are copied into owned cuDF columns so native graph memory can be freed for downstream relational operators.">
+      {/* Outer VRAM Attempt Container */}
+      <Region
+        x={12}
+        y={12}
+        w={856}
+        h={786}
+        label="GPU VRAM · single admitted query attempt (shared memory cap)"
+        tone="engine"
+        labelOffset={20}
+      />
+
+      {/* Swimlane 1: Relational Pipeline (cuDF) */}
+      <Region
+        x={28}
+        y={48}
+        w={392}
+        h={734}
+        label="Relational Pipeline (cuDF)"
+        tone="gpu"
+        labelOffset={16}
+      />
+
+      {/* Swimlane 2: Algorithm Runtime (cuGraph UDTF) */}
+      <Region
+        x={460}
+        y={48}
+        w={392}
+        h={734}
+        label="Algorithm Runtime (cuGraph UDTF)"
+        tone="graph"
+        labelOffset={16}
+      />
+
+      {/* Arrow: Step 1 -> Step 2 (Zero-Copy Lease crossing from outermost points) */}
+      <Arrow
+        id="udtf:lease-arrow"
+        points={[[leftOuterX, 168], [leftOuterX, 206], [rightOuterX, 206], [rightOuterX, 244]]}
+      />
+
+      {/* Arrow: Step 2 -> Step 3 (Inside Right Lane - center axis) */}
+      <Arrow
+        id="udtf:graph-to-pagerank"
+        points={[[rightCx, 332], [rightCx, 368]]}
+      />
+
+      {/* Arrow: Step 3 -> Step 4 (Device Memory Copy crossing from outermost points) */}
+      <Arrow
+        id="udtf:copy-arrow"
+        points={[[rightOuterX, 456], [rightOuterX, 484], [leftOuterX, 484], [leftOuterX, 532]]}
+      />
+
+      {/* Arrow: Step 4 -> Step 5 (Inside Left Lane - center axis) */}
+      <Arrow
+        id="udtf:result-to-downstream"
+        points={[[leftCx, 620], [leftCx, 650]]}
+      />
+
+      {/* Dashed Arrow: Step 3 -> Resource Settle & Free (center axis of right lane) */}
+      <Arrow
+        id="udtf:settle-arrow"
+        points={[[rightCx, 456], [rightCx, 530]]}
+        dashed
+      />
+
+      {/* Badge: Zero-Copy Read Lease */}
+      <rect
+        x={220}
+        y={192}
+        width={440}
+        height={28}
+        rx={14}
+        fill={COLOR.surface}
+        stroke={TONE.bridge}
+        strokeWidth={1.4}
+      />
+      <text
+        x={440}
+        y={210}
+        textAnchor="middle"
+        fontFamily={SANS}
+        fontSize={12}
+        fill={COLOR.fg}>
+        Zero-Copy Read Lease (PreparedTableExport · borrows edge buffers)
+      </text>
+
+      {/* Badge: Device Memory Copy (positioned clear of the right-lane dashed arrow) */}
+      <rect
+        x={165}
+        y={470}
+        width={420}
+        height={28}
+        rx={14}
+        fill={COLOR.surface}
+        stroke={TONE.gpu}
+        strokeWidth={1.4}
+      />
+      <text
+        x={375}
+        y={488}
+        textAnchor="middle"
+        fontFamily={SANS}
+        fontSize={12}
+        fill={COLOR.fg}>
+        Device Memory Copy · to_dataframe(allocates owned cuDF columns)
+      </text>
+
+      {/* Card 1: Input Subquery */}
+      <Card
+        x={leftX}
+        y={80}
+        w={cardW}
+        h={88}
+        name="1. Edge Subquery (citations)"
+        note={['WHERE citation_year >= 2020', 'cuDF owns src, dst columns']}
+        tone="gpu"
+      />
+
+      {/* Card 2: Graph Construction */}
+      <Card
+        x={rightX}
+        y={244}
+        w={cardW}
+        h={88}
+        name="2. Graph Construction"
+        note={['Validate column types and active ranges', 'Build CSR representation in VRAM']}
+        tone="graph"
+      />
+
+      {/* Card 3: PageRank Kernel */}
+      <Card
+        x={rightX}
+        y={368}
+        w={cardW}
+        h={88}
+        name="3. PageRank Kernel"
+        note={['Iterative power iteration on GPU', 'Owns native vertex and score arrays']}
+        tone="graph"
+      />
+
+      {/* Card 4: UDTF Result Relation */}
+      <Card
+        x={leftX}
+        y={532}
+        w={cardW}
+        h={88}
+        name="4. UDTF Result (ranked)"
+        note={['Independently owned vertex, value columns', 'SQL-facing schema normalization']}
+        tone="gpu"
+      />
+
+      {/* Card 5: Downstream SQL Pipeline */}
+      <Card
+        x={leftX}
+        y={650}
+        w={cardW}
+        h={110}
+        name="5. Downstream SQL Pipeline"
+        note={[
+          'Filter: value > 0.0001',
+          'Hash Join: papers ON paper_id = vertex',
+          'Aggregate: GROUP BY field',
+        ]}
+        tone="gpu"
+      />
+
+      {/* Card 6: Resource Settle & Free */}
+      <Card
+        x={rightX}
+        y={532}
+        w={cardW}
+        h={124}
+        name="Resource Settle & Free"
+        note={[
+          'PageRank native arrays freed after copy',
+          'Read lease on edge buffers released',
+          'VRAM returned to query pool for hash join',
+        ]}
+        tone="plain"
+      />
+      <BackedLabel x={rightCx} y={508} text="after copy completes" />
+    </GuideFigure>
+  );
 }
 
 export function AttemptLifetime() {

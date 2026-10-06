@@ -1,9 +1,11 @@
 use std::{collections::VecDeque, time::Duration};
 
+use query_planning::chunk::SourceChunkPlanningPolicy;
+
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, Arc, ArrowSchemaRef, BoundedExecutionAttempt,
     BoundedFinalMergePolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame,
-    Instant, MemoryControlPolicy, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, aggregate_spec_has_avg,
+    Instant, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, aggregate_spec_has_avg,
     aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision, attach_budget_token_failure_facts,
     cast_count_output_columns_with_budget, concatenate_partitioned_final_merge_outputs, cudf_query_error,
     execute_aggregate_with_budget, execute_compiled_bounded_aggregate_from_empty_input,
@@ -462,8 +464,9 @@ pub(super) fn record_compiled_partitioned_final_merge_strategy(
 }
 
 fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[CommittedPartial]) -> usize {
-    let MemoryControlPolicy { max_source_chunk_bytes, .. } = context.memory_control_policy();
-    let threshold_bytes = max_source_chunk_bytes.max(1);
+    let threshold_bytes = SourceChunkPlanningPolicy::from(context.memory_control_policy())
+        .max_source_chunk_bytes
+        .expect("bounded source planning has a finite byte target");
     let total_bytes = partials.iter().map(compiled_partial_merge_basis_bytes).sum::<u64>();
     if total_bytes <= threshold_bytes {
         return partials.len();

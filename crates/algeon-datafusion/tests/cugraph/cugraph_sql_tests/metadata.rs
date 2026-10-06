@@ -1,3 +1,5 @@
+use algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig;
+
 use super::{support::*, *};
 
 fn gpu_call(edges: &str, options: serde_json::Value) -> String {
@@ -802,17 +804,25 @@ async fn cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas(
 
 #[tokio::test]
 async fn cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_rejected() {
-    let builder = SessionStateBuilder::new_with_default_features()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .expect("first cuGraph install succeeds")
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .expect("identical reinstall is idempotent");
-
-    let conflicting =
-        CugraphSqlConfig { default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() } };
-    let error = builder.try_with_cugraph_sql(conflicting).expect_err("conflicting graph defaults must be rejected");
-    let algeon = typed_algeon_error(&error);
-    assert_eq!(algeon.code(), ErrorCode::InvalidRequest);
-    assert_eq!(algeon.operation(), "algeon_datafusion.gpu_functions.install");
-    assert!(algeon.message().contains("conflicting GPU function family installation"));
+    for conflicting in [
+        CugraphSqlConfig {
+            default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
+            ..Default::default()
+        },
+        CugraphSqlConfig {
+            host_boundary_config: GpuIslandHostBoundaryConfig::try_new(8_192, 4_096).unwrap(),
+            ..Default::default()
+        },
+    ] {
+        let builder = SessionStateBuilder::new_with_default_features()
+            .try_with_cugraph_sql(CugraphSqlConfig::default())
+            .expect("first cuGraph install succeeds")
+            .try_with_cugraph_sql(CugraphSqlConfig::default())
+            .expect("identical reinstall is idempotent");
+        let error = builder.try_with_cugraph_sql(conflicting).expect_err("conflicting settings must be rejected");
+        let algeon = typed_algeon_error(&error);
+        assert_eq!(algeon.code(), ErrorCode::InvalidRequest);
+        assert_eq!(algeon.operation(), "algeon_datafusion.gpu_functions.install");
+        assert!(algeon.message().contains("conflicting GPU function family installation"));
+    }
 }

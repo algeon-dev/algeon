@@ -380,6 +380,14 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     );
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
     assert_eq!(ctx.state().config_options().execution.target_partitions, 1);
+    let source_dir = tempfile::Builder::new().prefix("algeon-datafusion-strict-metadata-").tempdir().unwrap();
+    let source_path = source_dir.path().join("registered_source.parquet");
+    write_update_edges_parquet(&source_path);
+    let source_ddl = format!(
+        "CREATE EXTERNAL TABLE metadata_registered_source STORED AS PARQUET LOCATION '{}'",
+        source_path.to_string_lossy()
+    );
+    ctx.sql(&source_ddl).await.unwrap().collect().await.unwrap();
     let scan_probe = Arc::new(ScanFailingTableProvider::new(Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
@@ -445,6 +453,16 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     let show_columns_info = client.execute("SHOW COLUMNS FROM metadata_probe".to_string(), None).await.unwrap();
     let direct_columns = collect_metadata_batches(&mut client, &show_columns_info).await;
     assert_eq!(collect_string_column(&direct_columns, "column_name"), vec!["id", "label"]);
+
+    let show_create_info =
+        client.execute("SHOW CREATE TABLE metadata_registered_source".to_string(), None).await.unwrap();
+    let show_create_query_id = query_id_from_statement_flight_info(&show_create_info);
+    let show_create = collect_metadata_batches(&mut client, &show_create_info).await;
+    assert_eq!(collect_string_column(&show_create, "table_name"), vec!["metadata_registered_source"]);
+    assert_eq!(collect_string_column(&show_create, "definition"), vec![source_ddl.clone()]);
+    let scan_free_create_info = client.execute("SHOW CREATE TABLE metadata_probe".to_string(), None).await.unwrap();
+    let scan_free_create = collect_metadata_batches(&mut client, &scan_free_create_info).await;
+    assert_eq!(collect_string_column(&scan_free_create, "table_name"), vec!["metadata_probe"]);
 
     let describe_info = client.execute("DESCRIBE metadata_probe".to_string(), None).await.unwrap();
     let described = collect_metadata_batches(&mut client, &describe_info).await;
@@ -524,6 +542,13 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
         collect_string_column(&direct_columns, "column_name")
     );
 
+    let mut prepared_create =
+        client.prepare("SHOW CREATE TABLE metadata_registered_source".to_string(), None).await.unwrap();
+    let prepared_create_info = prepared_create.execute().await.unwrap();
+    let prepared_create_rows = collect_metadata_batches(&mut client, &prepared_create_info).await;
+    prepared_create.close().await.unwrap();
+    assert_eq!(collect_string_column(&prepared_create_rows, "definition"), vec![source_ddl]);
+
     let cancelled_info = client.execute("SHOW TABLES".to_string(), None).await.unwrap();
     let cancelled_query_id = query_id_from_statement_flight_info(&cancelled_info);
     assert_eq!(cancel_query_raw(&mut client, &cancelled_info).await.result, CANCEL_RESULT_CANCELLING);
@@ -536,6 +561,9 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     assert!(metadata_stats.contains("# outcome=succeeded"), "{metadata_stats}");
     assert!(metadata_stats.contains("[physical_plan]"), "{metadata_stats}");
     assert!(!metadata_stats.contains("# attempt_id="), "{metadata_stats}");
+    let show_create_stats = get_query_stats_raw(&mut client, &show_create_query_id).await;
+    assert!(show_create_stats.contains("# outcome=succeeded"), "{show_create_stats}");
+    assert!(!show_create_stats.contains("# attempt_id="), "{show_create_stats}");
     let gpu_list_stats = get_query_stats_raw(&mut client, &gpu_list_query_id).await;
     assert!(gpu_list_stats.contains("# outcome=succeeded"), "{gpu_list_stats}");
     assert!(!gpu_list_stats.contains("# attempt_id="), "{gpu_list_stats}");

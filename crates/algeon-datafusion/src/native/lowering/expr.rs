@@ -9,7 +9,7 @@ use datafusion::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
-            LikeExpr, Literal, NotExpr, TryCastExpr,
+            LikeExpr, Literal, NegativeExpr, NotExpr, TryCastExpr,
         },
     },
 };
@@ -118,6 +118,15 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_validated_child_expr_with_bindings(not.arg(), validated, bindings)?);
+    }
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
+        let output_type = physical_expr_data_type(negative.arg(), input_schema)
+            .expect("validated negation must have a resolved type");
+        return Ok(NativeExpr::unary_math(
+            UnaryMathOp::Negate,
+            lower_validated_child_expr_with_bindings(negative.arg(), validated, bindings)?,
+            output_type,
+        ));
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_validated_child_expr_with_bindings(is_null.arg(), validated, bindings)?));
@@ -568,6 +577,9 @@ fn collect_validated_required_field_indices(
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return collect_validated_required_field_indices(&validated.trusted_descendant(not.arg()), required);
+    }
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
+        return collect_validated_required_field_indices(&validated.trusted_descendant(negative.arg()), required);
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return collect_validated_required_field_indices(&validated.trusted_descendant(is_null.arg()), required);

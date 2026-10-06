@@ -428,7 +428,7 @@ fn parse_lag_lead_default(
 }
 
 fn is_whole_partition_frame(frame: &WindowFrame) -> bool {
-    frame.units == WindowFrameUnits::Rows
+    matches!(frame.units, WindowFrameUnits::Rows | WindowFrameUnits::Range)
         && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if scalar_is_unbounded(value))
         && matches!(&frame.end_bound, WindowFrameBound::Following(value) if scalar_is_unbounded(value))
 }

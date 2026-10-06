@@ -31,8 +31,12 @@ impl CompiledGpuTaskExecutor<'_> {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) => self.execute_local_parquet_source(task, node_id, output, source),
                 SourceNode::GpuResident(source) => {
-                    execute_bounded_gpu_resident_source(&mut self.execution, source, &self.gpu_inputs)
-                        .map(CompiledGpuResource::new)
+                    execute_bounded_gpu_resident_source(&mut self.execution, source, &self.gpu_inputs).and_then(
+                        |frame| {
+                            self.retire_gpu_input_read(&source.input_name)?;
+                            Ok(CompiledGpuResource::new(frame))
+                        },
+                    )
                 },
                 SourceNode::LiteralBatch(source) => {
                     execute_bounded_literal_batch_source(&mut self.execution, source).map(CompiledGpuResource::new)
@@ -45,6 +49,18 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(vec![(output, resource)])
+    }
+
+    fn retire_gpu_input_read(&mut self, input_name: &str) -> Result<()> {
+        let remaining = self.remaining_gpu_input_reads.get_mut(input_name).ok_or_else(|| {
+            invalid("compiled resident source has no remaining input read").with_fact("input_name", input_name)
+        })?;
+        *remaining -= 1;
+        if *remaining == 0 {
+            self.remaining_gpu_input_reads.remove(input_name);
+            self.gpu_inputs.remove(input_name);
+        }
+        Ok(())
     }
 
     fn execute_local_parquet_source(

@@ -7,7 +7,7 @@ use datafusion::{
         LexOrdering, PhysicalExpr, ScalarFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
-            LikeExpr, Literal, NotExpr, TryCastExpr,
+            LikeExpr, Literal, NegativeExpr, NotExpr, TryCastExpr,
         },
     },
     physical_plan::{
@@ -300,6 +300,9 @@ pub(super) fn collect_required_columns(
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
         collect_required_columns(not.arg(), input_schema, required)?;
         return Ok(());
+    }
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
+        return collect_required_columns(negative.arg(), input_schema, required);
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         collect_required_columns(is_null.arg(), input_schema, required)?;

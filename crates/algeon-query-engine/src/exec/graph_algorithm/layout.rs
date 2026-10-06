@@ -32,7 +32,7 @@ pub(super) fn execute_force_atlas2(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let fa2_params = force_atlas2_params(params)?;
     let vertex_attributes = params

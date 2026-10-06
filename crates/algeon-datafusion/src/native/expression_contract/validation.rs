@@ -11,6 +11,7 @@ use datafusion::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
             LikeExpr, Literal, NegativeExpr, NotExpr, TryCastExpr,
         },
+        utils::collect_columns,
     },
 };
 use query_planning::{
@@ -161,8 +162,32 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
     if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return validate_try_cast_expr(try_cast, input_schema);
     }
-    if expr.downcast_ref::<NegativeExpr>().is_some() {
-        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
+        let data_type = physical_expr_data_type(negative.arg(), input_schema)?;
+        if !matches!(
+            data_type,
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+        ) {
+            return Err(ExpressionRejection::unsupported_type(ExpressionCapability::NegativeExpression));
+        }
+        // DataFusion checks integer scalars but wraps arrays. Only literal
+        // scalars have a checked result available during validation.
+        if matches!(data_type, DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64)
+            && collect_columns(negative.arg()).is_empty()
+        {
+            let Some(literal) = negative.arg().downcast_ref::<Literal>() else {
+                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
+            };
+            if literal.value().arithmetic_negate().is_err() {
+                return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
+            }
+        }
+        return validate_physical_expr(negative.arg(), input_schema);
     }
     Err(unsupported_expression())
 }
@@ -740,6 +765,9 @@ pub(in crate::native) fn physical_expr_data_type(
         return BinaryTypeCoercer::new(&left_type, binary.op(), &right_type).get_result_type().map_err(|_error| {
             ExpressionRejection::unsupported_expression(ExpressionCapability::DataFusionTypeResolution)
         });
+    }
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
+        return physical_expr_data_type(negative.arg(), input_schema);
     }
     if expr.downcast_ref::<NotExpr>().is_some()
         || expr.downcast_ref::<IsNullExpr>().is_some()

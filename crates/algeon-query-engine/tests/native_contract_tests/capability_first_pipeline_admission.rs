@@ -428,6 +428,53 @@ fn capability_admission_rejects_row_number_whose_input_is_not_ordered_by_its_par
 }
 
 #[test]
+fn capability_admission_admits_window_over_renamed_partition_key() {
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("p", DataType::Int32, false), Field::new("o", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1, 2, 1, 2])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])) as ArrayRef,
+        ],
+    )
+    .expect("literal window batch");
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![batch])));
+    let sorted = builder
+        .add_sort(
+            source,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("p"), false, false),
+                SortExpr::new(Expr::column("o"), false, false),
+            ]),
+        )
+        .unwrap();
+    let projected = builder
+        .add_projection(
+            sorted,
+            vec![
+                ProjectionOutput::new(Expr::column("p"), Field::new("p_renamed", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("o"), Field::new("o", DataType::Int32, false)),
+            ],
+        )
+        .unwrap();
+    let window = builder
+        .add_window(
+            projected,
+            WindowSpec::new(
+                vec![Expr::column("p_renamed")],
+                vec![SortExpr::new(Expr::column("o"), false, false)],
+                vec![WindowFunction::row_number("row_number")],
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(window).unwrap();
+    assert!(admit_default(&plan).expect("window admission should not error").admission().is_some());
+}
+
+#[test]
 fn capability_admission_rejects_partitioned_row_number_without_order_over_unordered_input() {
     // Without ORDER BY any numbering within a partition is valid, but it is
     // still positional: the partition's rows must be adjacent.

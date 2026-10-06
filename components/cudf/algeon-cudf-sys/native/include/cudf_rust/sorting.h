@@ -68,13 +68,14 @@ cudf_status_t cudf_stable_sort_by_key_ex(
 
 /// Sorted order with explicit execution context.
 ///
-/// Output is a single INT32 column.
+/// Output is a single INT32 column. A nonzero `stable` preserves the input
+/// order of rows whose keys compare equal.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
                                    cudf_order_t const *column_order,
                                    cudf_null_order_t const *null_precedence,
-                                   int32_t num_keys, cudf_column_handle *out,
+                                   int32_t num_keys, int32_t stable, cudf_column_handle *out,
                                    cudf_exec_options_t const *options);
 
 /// Check whether the table is already sorted with explicit execution context.

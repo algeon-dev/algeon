@@ -45,7 +45,7 @@ pub use env::{
     ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
 };
 use env::{DEFAULT_BIND_ADDR, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
-use file::{ServerFileOverlay, load_overlay};
+use file::{ServerCugraphFileConfig, ServerFileOverlay, load_overlay};
 use models::models_config;
 use native::native_optimizer_config;
 pub use native::{
@@ -224,7 +224,7 @@ impl ServerConfig {
             "this server setting belonged to the removed Iceberg integration; remove it",
         )?;
 
-        let cugraph = cugraph_config(&mut values)?;
+        let cugraph = cugraph_config(&mut values, &overlay.cugraph)?;
 
         let workspace = workspace_overlay_config(&mut values)?;
         let models = models_config(&overlay.models)?;

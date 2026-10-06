@@ -71,9 +71,10 @@ the sampled low-rating reviews, and an original report to investigate.
 The [saved rows](/data/amazon-reviews-capture.json) include the full text and
 product IDs for each result.
 
-The query took a median 0.752 seconds over three runs. This capture used
-mixed execution: the vector input and KMeans ran on the GPU, with part of
-the subsequent relational work in DataFusion. See the
+The query took a median 0.752 seconds over three runs. Under
+`native_required`, the entire statement executes natively on the GPU with
+zero host DataFusion boundaries, including the vector input, KMeans
+clustering, relational joins, and window aggregations. See the
 [capture conditions](../../guides/datasets/amazon-reviews.mdx#captured-run).
 
 `example_review` is the 2022 review with the smallest ID for that product

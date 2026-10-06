@@ -19,6 +19,11 @@ Callers must still keep every owned input alive until the documented operation
 and any submitted GPU work finish. Parent/child or retained-resource lifetime
 rules in the relevant C header are part of the ABI contract.
 
+`cudf_ordered_unique_indices_ex` borrows an INT32 row permutation whose indices
+are valid for its input table. The safe prepared-sort API owns that permutation.
+The operation returns owning indices into the original table; its boundary
+predicate compares adjacent positions through the borrowed permutation.
+
 ## Execution and memory provenance
 
 Execution-sensitive production `_ex` calls require an explicit device, stream,

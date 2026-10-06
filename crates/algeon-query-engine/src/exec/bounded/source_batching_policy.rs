@@ -1,4 +1,4 @@
-use query_planning::execution_contracts::MemoryControlPolicy;
+use query_planning::{chunk::SourceChunkPlanningPolicy, execution_contracts::MemoryControlPolicy};
 
 /// Internal batching caps for bounded local-Parquet source work.
 ///
@@ -8,11 +8,7 @@ use query_planning::execution_contracts::MemoryControlPolicy;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_batch_read_max_planned_bytes: u64,
-    source_adjacent_aggregate_target_chunk_bytes: u64,
-    source_adjacent_grouped_aggregate_target_chunk_bytes: u64,
     source_adjacent_grouped_aggregate_max_operator_row_groups: usize,
-    source_adjacent_raw_source_batch_max_bytes: u64,
-    remote_direct_source_adjacent_raw_source_batch_max_bytes: u64,
     source_adjacent_partitioned_aggregate_max_batch_fan_in: usize,
     source_adjacent_partitioned_aggregate_max_batch_row_groups: u64,
     source_adjacent_partitioned_aggregate_max_batch_bytes: u64,
@@ -30,15 +26,7 @@ pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
 
 impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES: u64 =
-        2 * 1024 * 1024 * 1024;
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 =
-        384 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
-    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 =
-        Self::DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES;
-    pub(in crate::exec::bounded) const DEFAULT_REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 =
-        8 * 1024 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN: usize = 64;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS: u64 = 64;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES: u64 =
@@ -77,11 +65,11 @@ impl BoundedSourceBatchingPolicy {
         memory_policy: MemoryControlPolicy,
         decode_scratch_risk: bool,
     ) -> Option<u64> {
-        let MemoryControlPolicy { max_source_chunk_bytes, .. } = memory_policy;
+        let target = SourceChunkPlanningPolicy::from(memory_policy).max_source_chunk_bytes;
         if decode_scratch_risk {
-            Some(max_source_chunk_bytes.min(self.source_batch_read_max_planned_bytes))
+            target.map(|bytes| bytes.min(self.source_batch_read_max_planned_bytes))
         } else {
-            Some(max_source_chunk_bytes)
+            target
         }
     }
 
@@ -94,14 +82,6 @@ impl BoundedSourceBatchingPolicy {
             .or(Some(self.source_batch_read_max_planned_bytes))
     }
 
-    pub(in crate::exec::bounded) fn source_adjacent_aggregate_target_chunk_bytes(self) -> u64 {
-        self.source_adjacent_aggregate_target_chunk_bytes
-    }
-
-    pub(in crate::exec::bounded) fn source_adjacent_grouped_aggregate_target_chunk_bytes(self) -> u64 {
-        self.source_adjacent_grouped_aggregate_target_chunk_bytes
-    }
-
     pub(in crate::exec::bounded) fn source_adjacent_grouped_aggregate_max_operator_row_groups(self) -> usize {
         self.source_adjacent_grouped_aggregate_max_operator_row_groups
     }
@@ -109,26 +89,23 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) fn source_adjacent_raw_source_batch_target_bytes(
         self,
         memory_policy: MemoryControlPolicy,
-        remote_direct_required: bool,
         source_adjacent_grouped_aggregate: bool,
     ) -> Option<u64> {
-        let raw_cap =
-            self.source_adjacent_raw_source_batch_max_bytes(remote_direct_required, source_adjacent_grouped_aggregate);
-        Some(memory_policy.max_source_chunk_bytes.min(raw_cap))
+        let target = self.source_adjacent_raw_source_batch_max_bytes(
+            memory_policy.device_budget_bytes,
+            source_adjacent_grouped_aggregate,
+        );
+        Some(memory_policy.max_source_chunk_bytes.min(target))
     }
 
     pub(in crate::exec::bounded) fn source_adjacent_raw_source_batch_max_bytes(
         self,
-        remote_direct_required: bool,
+        device_budget_bytes: u64,
         source_adjacent_grouped_aggregate: bool,
     ) -> u64 {
-        if source_adjacent_grouped_aggregate {
-            return self.source_adjacent_grouped_aggregate_target_chunk_bytes;
-        }
-        if remote_direct_required {
-            return self.remote_direct_source_adjacent_raw_source_batch_max_bytes;
-        }
-        self.source_adjacent_raw_source_batch_max_bytes
+        let copies =
+            if source_adjacent_grouped_aggregate { 1 + self.source_adjacent_raw_batch_stage_copy_factor } else { 2 };
+        (self.source_adjacent_raw_batch_working_set_target_bytes(device_budget_bytes) / copies).max(1)
     }
 
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_ready(
@@ -232,14 +209,8 @@ impl Default for BoundedSourceBatchingPolicy {
     fn default() -> Self {
         Self {
             source_batch_read_max_planned_bytes: Self::DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES,
-            source_adjacent_aggregate_target_chunk_bytes: Self::DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES,
-            source_adjacent_grouped_aggregate_target_chunk_bytes:
-                Self::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES,
             source_adjacent_grouped_aggregate_max_operator_row_groups:
                 Self::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS,
-            source_adjacent_raw_source_batch_max_bytes: Self::DEFAULT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES,
-            remote_direct_source_adjacent_raw_source_batch_max_bytes:
-                Self::DEFAULT_REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES,
             source_adjacent_partitioned_aggregate_max_batch_fan_in:
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN,
             source_adjacent_partitioned_aggregate_max_batch_row_groups:
@@ -293,25 +264,39 @@ mod tests {
     }
 
     #[test]
-    fn source_adjacent_remote_direct_cap_preserves_grouped_override() {
-        let policy = BoundedSourceBatchingPolicy::default();
+    fn generic_source_batches_use_grant_capacity_without_a_default_byte_ceiling() {
+        let batching = BoundedSourceBatchingPolicy::default();
+        for grant in [256 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 64 * 1024 * 1024 * 1024] {
+            let memory = MemoryControlPolicy {
+                device_budget_bytes: grant,
+                max_source_chunk_bytes: MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            };
+            assert_eq!(batching.generic_source_batch_target_bytes(memory, false), Some(grant / 4));
+            assert_eq!(
+                batching.generic_source_batch_target_bytes(memory, true),
+                Some((grant / 4).min(4 * 1024 * 1024 * 1024))
+            );
+        }
+    }
 
-        assert_eq!(
-            policy.source_adjacent_raw_source_batch_max_bytes(true, true),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
-        );
-        assert_eq!(
-            policy.source_adjacent_raw_source_batch_max_bytes(true, false),
-            BoundedSourceBatchingPolicy::DEFAULT_REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
-        );
-        assert_eq!(
-            policy.source_adjacent_raw_source_batch_max_bytes(false, true),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
-        );
-        assert_eq!(
-            policy.source_adjacent_raw_source_batch_max_bytes(false, false),
-            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES
-        );
+    #[test]
+    fn source_adjacent_targets_scale_with_grant_and_preserve_explicit_limit() {
+        let policy = BoundedSourceBatchingPolicy::default();
+        for grant in [256 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 64 * 1024 * 1024 * 1024] {
+            assert_eq!(policy.source_adjacent_raw_source_batch_max_bytes(grant, true), grant / 8);
+            assert_eq!(policy.source_adjacent_raw_source_batch_max_bytes(grant, false), grant / 4);
+            let explicit = MemoryControlPolicy {
+                device_budget_bytes: grant,
+                max_source_chunk_bytes: 16 * 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            };
+            assert_eq!(policy.source_adjacent_raw_source_batch_target_bytes(explicit, true), Some(16 * 1024 * 1024));
+        }
     }
 
     #[test]

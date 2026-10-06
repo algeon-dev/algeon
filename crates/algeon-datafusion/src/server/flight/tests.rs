@@ -289,6 +289,7 @@ fn statement_execution_domain_classifier_is_fail_closed() {
     let metadata_queries = [
         "SHOW TABLES",
         "SHOW COLUMNS FROM t",
+        "SHOW CREATE TABLE t",
         "DESCRIBE t",
         "DESC t",
         "SELECT table_name FROM information_schema.tables",
@@ -328,6 +329,7 @@ fn statement_execution_domain_classifier_is_fail_closed() {
         "SELECT 1",
         "SHOW FUNCTIONS",
         "SHOW FULL TABLES",
+        "SHOW CREATE VIEW t",
         "SELECT * FROM user_table",
         "SELECT i.table_name FROM information_schema.tables i JOIN user_table u ON true",
         "SELECT * FROM gpu_list_functions",
@@ -415,6 +417,8 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
     service.verify_metadata_logical_plan(&information_schema, "algeon_datafusion.test.metadata_proof").unwrap();
     let describe = ctx.state().create_logical_plan("DESCRIBE user_table").await.unwrap();
     service.verify_metadata_logical_plan(&describe, "algeon_datafusion.test.metadata_proof").unwrap();
+    let show_create = ctx.state().create_logical_plan("SHOW CREATE TABLE user_table").await.unwrap();
+    service.verify_metadata_logical_plan(&show_create, "algeon_datafusion.test.metadata_proof").unwrap();
 
     let spoofed_provider = Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![]]).unwrap());
     let spoofed_plan = LogicalPlanBuilder::scan(

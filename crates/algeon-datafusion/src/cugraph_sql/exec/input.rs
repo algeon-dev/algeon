@@ -1,14 +1,12 @@
 use std::{
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
 use arrow::array::new_empty_array;
 use cudf::DataFrame;
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use futures::{StreamExt, stream::iter};
 use query_planning::{
     error::{QueryError, QueryErrorCode},
@@ -226,7 +224,7 @@ pub(super) async fn collect_cugraph_inputs(
     let reservation = MemoryConsumer::new(CUGRAPH_HOST_INPUT_MEMORY_CONSUMER)
         .with_can_spill(false)
         .register(task_context.memory_pool());
-    let staged_bytes = AtomicUsize::new(0);
+    let memory_counter = Mutex::new(RecordBatchMemoryCounter::new());
     let host_evidence = HostReservationEvidence::new(max_input_staging_bytes, max_output_staging_bytes);
     let edge = stage_cugraph_source(
         "edge",
@@ -234,7 +232,7 @@ pub(super) async fn collect_cugraph_inputs(
         Arc::clone(&task_context),
         cancellation,
         max_input_staging_bytes,
-        &staged_bytes,
+        &memory_counter,
         &reservation,
     )
     .await?;
@@ -247,7 +245,7 @@ pub(super) async fn collect_cugraph_inputs(
                 Arc::clone(&task_context),
                 cancellation,
                 max_input_staging_bytes,
-                &staged_bytes,
+                &memory_counter,
                 &reservation,
             )
             .await?,
@@ -262,7 +260,7 @@ async fn stage_cugraph_source(
     task_context: Arc<TaskContext>,
     cancellation: &ExecutionCancellation,
     max_staging_bytes: usize,
-    staged_bytes: &AtomicUsize,
+    memory_counter: &Mutex<RecordBatchMemoryCounter>,
     reservation: &MemoryReservation,
 ) -> DataFusionResult<StagedCugraphSource> {
     let plan = graph_input_native_producer(&plan).cloned().unwrap_or(plan);
@@ -300,7 +298,7 @@ async fn stage_cugraph_source(
                         "input",
                         &batch,
                         max_staging_bytes,
-                        staged_bytes,
+                        memory_counter,
                         reservation,
                     )?;
                     batches.push(batch);
@@ -330,24 +328,23 @@ fn reserve_host_staging_batch(
     boundary: &'static str,
     batch: &RecordBatch,
     max_staging_bytes: usize,
-    staged_bytes: &AtomicUsize,
+    memory_counter: &Mutex<RecordBatchMemoryCounter>,
     reservation: &MemoryReservation,
 ) -> Result<()> {
-    let batch_bytes = get_record_batch_memory_size(batch);
-    // Claim through compare-exchange so concurrently polled partitions cannot jointly overshoot
-    // the cumulative cap; a denied pool reservation below returns the claim.
-    let staged = loop {
-        let staged = staged_bytes.load(Ordering::Relaxed);
-        let next = staged
-            .checked_add(batch_bytes)
-            .filter(|next| *next <= max_staging_bytes)
-            .ok_or_else(|| host_staging_limit_error(source_kind, boundary, staged, batch_bytes, max_staging_bytes))?;
-        if staged_bytes.compare_exchange(staged, next, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-            break staged;
-        }
-    };
+    let mut counter = memory_counter.lock().map_err(|_| {
+        Error::new(
+            ErrorCode::Internal,
+            "algeon_datafusion.cugraph_sql.host_staging_reservation",
+            "cuGraph host staging memory counter was poisoned",
+        )
+    })?;
+    // Retained batches can be slices of one allocation; charge each backing buffer once.
+    let staged = counter.memory_usage();
+    let batch_bytes = counter.count_batch(batch);
+    if counter.memory_usage() > max_staging_bytes {
+        return Err(host_staging_limit_error(source_kind, boundary, staged, batch_bytes, max_staging_bytes));
+    }
     reservation.try_grow(batch_bytes).map_err(|source| {
-        staged_bytes.fetch_sub(batch_bytes, Ordering::Relaxed);
         Error::new(
             ErrorCode::MemoryReservationFailed,
             "algeon_datafusion.cugraph_sql.host_staging_reservation",

@@ -4,7 +4,7 @@ use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
 use super::{
     Expr, QueryError, QueryErrorCode, Result,
-    expressions::{validate_column, validate_literal},
+    expressions::{validate_column, validate_literal, validate_negation_types},
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
@@ -749,6 +749,7 @@ fn validate_post_join_residual_expr(
                 ctx,
             )?;
             let (input_context, output_context) = post_join_residual_unary_math_type_contexts(*op);
+            validate_negation_types(*op, &data_type, output_type)?;
             require_arithmetic_type(&data_type, input_context)?;
             require_arithmetic_type(output_type, output_context)?;
             Ok(output_type.clone())
@@ -1126,6 +1127,7 @@ fn is_supported_join_residual_ast_cast(
 
 fn post_join_residual_unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
     match op {
+        UnaryMathOp::Negate => ("post-join residual NEGATE input", "post-join residual NEGATE output"),
         UnaryMathOp::Sqrt => ("post-join residual SQRT input", "post-join residual SQRT output"),
         UnaryMathOp::Ln => ("post-join residual LN input", "post-join residual LN output"),
         UnaryMathOp::Exp => ("post-join residual EXP input", "post-join residual EXP output"),

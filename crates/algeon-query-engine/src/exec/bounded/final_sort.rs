@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
+use query_planning::chunk::SourceChunkPlanningPolicy;
 
 use super::{compiled::ResidentFrameStreamPayload, *};
 
@@ -274,7 +275,9 @@ impl FinalSortExecutor<'_, '_, '_> {
             return Ok(true);
         }
 
-        let MemoryControlPolicy { max_source_chunk_bytes, .. } = self.execution.context().memory_control_policy();
-        Ok(input_bytes > max_source_chunk_bytes && limited_output_bytes <= max_source_chunk_bytes)
+        let target = SourceChunkPlanningPolicy::from(self.execution.context().memory_control_policy())
+            .max_source_chunk_bytes
+            .expect("bounded source planning has a finite byte target");
+        Ok(input_bytes > target && limited_output_bytes <= target)
     }
 }

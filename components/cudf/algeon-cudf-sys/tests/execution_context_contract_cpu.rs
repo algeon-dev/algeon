@@ -60,6 +60,7 @@ const STREAM_COMPACTION_H: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/stream_compaction.h"));
 const STREAM_COMPACTION_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/stream_compaction.cpp"));
+const ORDERED_UNIQUE_CU: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/ordered_unique.cu"));
 const STRINGS_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/strings.h"));
 const STRINGS_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/strings.cpp"));
 const QUERY_DOMAIN_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/memory/query_domain.cpp"));

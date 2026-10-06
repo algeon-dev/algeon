@@ -302,6 +302,7 @@ add_library(
   src/copying.cpp
   src/strings.cpp
   src/stream_compaction.cpp
+  src/ordered_unique.cu
   src/device.cpp
   src/abi_checks.cpp
   src/c_header_smoke.c

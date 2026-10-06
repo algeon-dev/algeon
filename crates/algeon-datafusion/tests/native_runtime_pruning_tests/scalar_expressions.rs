@@ -1,8 +1,8 @@
-use std::fs;
+use std::fs::{self, File};
 
 use algeon_datafusion::{capability::CapabilityReason, report::CandidateOutcome};
 use arrow::{
-    array::{Array, AsArray},
+    array::{Array, AsArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array},
     compute::concat_batches,
     datatypes::{Float32Type, Float64Type},
 };
@@ -10,8 +10,103 @@ use cudf::testing::arrow::{
     arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
     reset_arrow_host_interop_observation_for_test,
 };
+use datafusion::parquet::arrow::ArrowWriter;
 
 use super::*;
+
+#[tokio::test]
+async fn native_runtime_negation_matches_wrapping_integers_and_ieee_float_bits() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-negation");
+    let path = dir.join("input.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
+        Field::new("i8", DataType::Int8, true),
+        Field::new("i16", DataType::Int16, true),
+        Field::new("i32", DataType::Int32, true),
+        Field::new("i64", DataType::Int64, true),
+        Field::new("f32", DataType::Float32, true),
+        Field::new("f64", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4, 5, 6])),
+            Arc::new(Int8Array::from(vec![Some(i8::MIN), Some(i8::MAX), Some(-1), Some(0), None, Some(1), Some(-2)])),
+            Arc::new(Int16Array::from(vec![
+                Some(i16::MIN),
+                Some(i16::MAX),
+                Some(-1),
+                Some(0),
+                None,
+                Some(1),
+                Some(-2),
+            ])),
+            Arc::new(Int32Array::from(vec![
+                Some(i32::MIN),
+                Some(i32::MAX),
+                Some(-1),
+                Some(0),
+                None,
+                Some(1),
+                Some(-2),
+            ])),
+            Arc::new(Int64Array::from(vec![
+                Some(i64::MIN),
+                Some(i64::MAX),
+                Some(-1),
+                Some(0),
+                None,
+                Some(1),
+                Some(-2),
+            ])),
+            Arc::new(Float32Array::from(vec![
+                Some(0.0),
+                Some(-0.0),
+                Some(f32::INFINITY),
+                Some(f32::NEG_INFINITY),
+                None,
+                Some(1.5),
+                Some(-1.5),
+            ])),
+            Arc::new(Float64Array::from(vec![
+                Some(0.0),
+                Some(-0.0),
+                Some(f64::INFINITY),
+                Some(f64::NEG_INFINITY),
+                None,
+                Some(1.5),
+                Some(-1.5),
+            ])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let sql = "SELECT row_id, -i8 AS n8, -i16 AS n16, -i32 AS n32, -i64 AS n64, \
+               -f32 AS nf32, -f64 AS nf64 FROM bench ORDER BY row_id";
+    let cpu_batches = cpu_sql_output(&path, sql).await;
+    let optimization = optimize_with_pruning_template(sql_plan(&path, SessionConfig::new(), sql).await);
+    assert_eq!(optimization.report.selected_count(), 1, "{:?}", optimization.report.outcomes());
+    assert_algeon_native_exec(&optimization.plan, "negation must lower to native execution");
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+    let cpu = concat_batches(&cpu_batches[0].schema(), &cpu_batches).unwrap();
+    let native = concat_batches(&native_batches[0].schema(), &native_batches).unwrap();
+    for row in 0..native.num_rows() {
+        if !cpu.column(5).is_null(row) {
+            assert_eq!(
+                cpu.column(5).as_primitive::<Float32Type>().value(row).to_bits(),
+                native.column(5).as_primitive::<Float32Type>().value(row).to_bits()
+            );
+            assert_eq!(
+                cpu.column(6).as_primitive::<Float64Type>().value(row).to_bits(),
+                native.column(6).as_primitive::<Float64Type>().value(row).to_bits()
+            );
+        }
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
 
 #[tokio::test]
 async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_columns() {

@@ -92,6 +92,7 @@ pub(crate) fn validate_expr(
         },
         Expr::UnaryMath { op, expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
+            validate_negation_types(*op, &data_type, output_type)?;
             let (input_context, output_context) = unary_math_type_contexts(*op);
             require_arithmetic_type(&data_type, input_context)?;
             require_arithmetic_type(output_type, output_context)?;
@@ -768,8 +769,37 @@ pub(crate) fn comma_separated(columns: &BTreeSet<String>) -> String {
 
 fn unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
     match op {
+        UnaryMathOp::Negate => ("NEGATE input", "NEGATE output"),
         UnaryMathOp::Sqrt => ("SQRT input", "SQRT output"),
         UnaryMathOp::Ln => ("LN input", "LN output"),
         UnaryMathOp::Exp => ("EXP input", "EXP output"),
     }
+}
+
+pub(super) fn validate_negation_types(
+    op: UnaryMathOp,
+    input_type: &ArrowDataType,
+    output_type: &ArrowDataType,
+) -> Result<()> {
+    if op == UnaryMathOp::Negate
+        && (input_type != output_type
+            || !matches!(
+                input_type,
+                ArrowDataType::Int8
+                    | ArrowDataType::Int16
+                    | ArrowDataType::Int32
+                    | ArrowDataType::Int64
+                    | ArrowDataType::Float32
+                    | ArrowDataType::Float64
+            ))
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "query_engine.plan.validate_expr",
+            "native negation requires matching signed integer or floating-point input and output types",
+        )
+        .with_fact("input_type", format!("{input_type:?}"))
+        .with_fact("output_type", format!("{output_type:?}")));
+    }
+    Ok(())
 }

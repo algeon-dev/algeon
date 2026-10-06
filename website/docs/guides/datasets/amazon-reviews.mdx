@@ -105,32 +105,16 @@ directories, which is why every command above passes `--profile bge-m3`.
 ```bash
 cargo build --workspace --all-features --release --bin algeon_server
 
-cat > target/amazon-semantic-server.toml <<'TOML'
-[native]
-execution_mode = "native_preferred"
-
-[[admission.device_profiles]]
-device_ordinal = 0
-memory_limit_bytes = 68719476736
-backend_reserve_bytes = 1073741824
-cache_cap_bytes = 0
-default_query_limit_bytes = 34359738368
-max_active_attempts = 1
-source_work_per_attempt = 2
-stream_pool_size = 8
-worker_count = 4
-lane_count = 4
-TOML
-
-ALGEON_SERVER_CONFIG_FILE="$PWD/target/amazon-semantic-server.toml" \
+ALGEON_SERVER_CONFIG_FILE="$PWD/fixture/demo/amazon_reviews_2023/scripts/scale/server.toml" \
 ALGEON_SERVER_BIND=127.0.0.1:50062 \
 flock -x /tmp/cudf-gpu.lock target/release/algeon_server
 ```
 
-This configuration requires a device with at least 64 GiB available to the
-configured backend, and gives each query a 32 GiB limit. The capture used an
-RTX PRO 6000 Blackwell with 96 GiB. Before lowering those limits, check the
-working set of the query you plan to run.
+The scale configuration targets the development host's 96 GB GPU: a 94 GiB
+device ledger, 1 GiB backend reserve, 90 GiB query limit, and one active
+attempt. Set limits appropriate to the available device capacity on other
+hosts. `native_required` enforces that the entire query, including relational
+filters, joins, and window aggregations, executes in native GPU fragments.
 
 ## Register the tables
 
@@ -191,15 +175,15 @@ generation and writing result Parquet are outside this interval.
 | --- | ---: | ---: | --- |
 | Travel headphones with price and review constraints | 10 | 1.544 s | native |
 | Similar products for 10,000 catalog entries against 1M products | 100,000 | 2.584 s | native |
-| Products with a changed mix of low-rating reviews | 10 | 0.752 s | mixed |
+| Products with a changed mix of low-rating reviews | 10 | 0.752 s | native |
 | Largest keyword rates within six product clusters | 18 | 0.776 s | native |
 | Review map with product names and original text | 9,967 | 3.882 s | native |
 
-The four native captures recorded zero host DataFusion boundaries. The
-annual-change query recorded 20 because its partition-preserving sort is
-outside native coverage; its vector input and KMeans still execute on the
-GPU. These are observed query paths for this build and do not guarantee the
-same path for arbitrary input schemas or SQL changes.
+All five queries execute natively with zero host DataFusion boundaries
+(`datafusion_boundary_count: 0`). The annual-change query's partition-preserving
+sort and unbounded window frames lower into native GPU fragments under
+`native_required`. These are observed query paths for this build and do not
+guarantee the same path for arbitrary input schemas or SQL changes.
 
 The [capture record](/data/amazon-reviews-capture.json) includes query IDs,
 executed SQL, model and vector checksums, and the result rows shown in the

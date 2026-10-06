@@ -2,13 +2,16 @@
 
 use std::num::{NonZeroU64, NonZeroUsize};
 
+use query_planning::execution_contracts::MemoryControlPolicy;
+
 use crate::error::{Error, ErrorCode, Result};
 
 /// Source chunking of native reads. Device capacity always comes from the
 /// admitted grant, so a chunking carries no device budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceChunking {
-    /// Source bytes planned into one chunk; a planning target, not a cap.
+    /// Source bytes planned into one chunk; a planning target.
+    /// `u64::MAX` derives the target from the immutable admitted grant.
     pub max_source_chunk_bytes: NonZeroU64,
     /// Row groups planned into one chunk.
     pub max_row_groups_per_chunk: NonZeroUsize,
@@ -19,14 +22,18 @@ pub struct SourceChunking {
 }
 
 impl SourceChunking {
-    /// Default source bytes planned into one chunk.
-    pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: NonZeroU64 = NonZeroU64::new(64 * 1024 * 1024).unwrap();
+    /// Default source-byte setting, without a configured ceiling.
+    pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: NonZeroU64 =
+        NonZeroU64::new(MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES).unwrap();
     /// Default row groups planned into one chunk.
-    pub const DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: NonZeroUsize = NonZeroUsize::MIN;
+    pub const DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: NonZeroUsize =
+        NonZeroUsize::new(MemoryControlPolicy::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK).unwrap();
     /// Default retry attempts of a failed chunk read.
-    pub const DEFAULT_MAX_RETRY_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+    pub const DEFAULT_MAX_RETRY_ATTEMPTS: NonZeroUsize =
+        NonZeroUsize::new(MemoryControlPolicy::DEFAULT_MAX_RETRY_ATTEMPTS).unwrap();
     /// Default row-group floor of a retried chunk.
-    pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: NonZeroUsize = NonZeroUsize::MIN;
+    pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: NonZeroUsize =
+        NonZeroUsize::new(MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS).unwrap();
 
     /// Chunking from plain counts; each must be greater than zero.
     pub fn try_new(

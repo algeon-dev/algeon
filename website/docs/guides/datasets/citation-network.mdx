@@ -22,7 +22,7 @@ position in this snapshot and say nothing about its quality.
 | Scale | 4.9M papers and 45.6M citations, plus author and field-of-study links |
 | Preparation | 12.5 GB source JSON becomes about 4.6 GB of Parquet. The recorded conversion took 17–19 minutes and 7.8 GB RAM on a 32-core host with local NVMe |
 | Python packages | `pyarrow` |
-| Server | `127.0.0.1:50051` on GPU 0; cuGraph calls run on the GPU and ordinary SQL on the CPU |
+| Server | `127.0.0.1:50051` on GPU 0; cuGraph and relational SQL execute natively on the GPU |
 | Examples | Every [cuGraph UDTF](../../cugraph/udtfs/index.mdx) |
 
 ## Examples
@@ -72,7 +72,7 @@ Create a demo configuration for GPU 0 and start the server on localhost:
 mkdir -p target
 cat > target/citation-demo.toml <<'TOML'
 [native]
-execution_mode = "functions_only"
+execution_mode = "native_required"
 
 [[admission.device_profiles]]
 device_ordinal = 0
@@ -85,8 +85,9 @@ ALGEON_SERVER_CUGRAPH_ENABLED=true \
 flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/algeon_server"
 ```
 
-Leave this terminal running. This configuration runs explicit cuGraph calls
-on the GPU and ordinary SQL on the CPU.
+Leave this terminal running. This configuration executes both explicit cuGraph
+calls and relational operations (filters, joins, aggregates, and windows) natively
+on the GPU with zero host DataFusion boundaries.
 
 ## Register the tables
 
@@ -161,6 +162,18 @@ and running another example can replace shared names such as `ai_nodes` and
 degree counts only edges present here; the
 [in-degree example](../../cugraph/udtfs/structure/cugraph_in_degrees_all.mdx#examples)
 compares them.
+
+## Graph scopes
+
+The cuGraph examples evaluate different graph scopes derived from the base tables:
+
+| Graph scope | Derivation / Filter | Directed edges | Active vertices | Used in |
+|---|---|---:|---:|---|
+| Full citation graph | `citation_edges` | 45,564,149 | 4,146,772 | [PageRank](#run-the-examples), global centrality |
+| Pre-2000 subgraph | `edges_pre2000` (endpoints dated 1901–2000) | 3,431,911 | 518,777 | Historical PageRank |
+| AI research subgraph | `ai_edges` (year >= 2010, 10 AI fields) | 164,368 | 38,054 | Louvain community detection |
+| Attention ego graph | `attention_ego_edges` (Transformer + 132 citations) | 399 | 133 | ForceAtlas2 layout |
+| NLP bibliography graph | `bibliography_edges` (12 candidate papers) | 452 | 371 | Sørensen similarity |
 
 <details id="seed-papers-used-in-the-examples">
 <summary>Seed papers used in the examples</summary>

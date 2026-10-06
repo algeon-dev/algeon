@@ -1425,6 +1425,68 @@ fn windows_sharing_a_sort_keep_the_order_the_query_relies_on() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// DataFusion inserts a multi-partition partition-preserving SortExec under
+/// window aggregates when target_partitions > 1. The native planner must
+/// normalize this input into a native sort and lower the entire window plan
+/// to native GPU execution with zero host boundaries.
+#[test]
+fn window_agg_over_partition_preserving_sort_in_multi_partition_session() {
+    const ROWS: i32 = 20_000;
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-window-partition-preserving");
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Int32, false),
+            Field::new("x", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from_iter_values((0..ROWS).map(|row| (row * 7919) % 211))),
+                Arc::new(Int64Array::from_iter_values((0..ROWS).map(|row| i64::from(row % 1000)))),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || SessionConfig::new().with_target_partitions(4).with_repartition_file_scans(true);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    let runtime = Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    let (actual, expected) = runtime.block_on(async {
+        for ctx in [&required, &cpu] {
+            ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+        }
+        let query = "SELECT p, SUM(x) OVER (PARTITION BY p) AS s FROM input ORDER BY p, s";
+        let req_plan = required
+            .sql(query)
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .expect("NativeRequired plans the window natively");
+        let tree = displayable(req_plan.as_ref()).indent(false).to_string();
+        assert!(
+            below_native_admission(&req_plan).downcast_ref::<AlgeonNativeExec>().is_some(),
+            "window plan must lower to AlgeonNativeExec:\n{tree}"
+        );
+        let rows = |batches: Vec<RecordBatch>| pretty_format_batches(&batches).unwrap().to_string();
+        let actual = rows(collect(req_plan, Arc::new(TaskContext::default())).await.unwrap());
+        let expected = rows(cpu.sql(query).await.unwrap().collect().await.unwrap());
+        (actual, expected)
+    });
+    assert_eq!(actual, expected);
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// DataFusion's `rank()`, `dense_rank()`, and `percent_rank()` are one `Rank`
 /// type that differs only in a private rank kind. Only `rank()` has a native
 /// kernel, so the other two stay in DataFusion under NativePreferred and

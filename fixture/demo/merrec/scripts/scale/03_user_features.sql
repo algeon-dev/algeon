@@ -1,0 +1,21 @@
+SELECT e.user_id AS id, COUNT(*) AS views, AVG(i.price) AS mean_viewed_price,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Women' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS women,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Toys & Collectibles' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS toys,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Kids' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS kids,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Men' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS men,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Home' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS home,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Electronics' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS electronics,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Beauty' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS beauty,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Vintage & collectibles' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS vintage,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Books' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS books,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Sports & outdoors' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS sports,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Other' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS other,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Handmade' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS handmade,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Garden & Outdoor' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS garden,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Arts & Crafts' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS arts,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Pet Supplies' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS pets,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Office' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS office,
+  CAST(SQRT(SUM(CASE WHEN i.c0_name = 'Tools' THEN 1.0 ELSE 0.0 END) / COUNT(*)) AS REAL) AS tools
+FROM merrec_events e JOIN merrec_items i ON i.item_id=e.item_id
+WHERE e.event_type='item_view'
+GROUP BY e.user_id HAVING COUNT(*) >= 20 ORDER BY id;

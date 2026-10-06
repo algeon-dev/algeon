@@ -78,6 +78,7 @@ pub struct QueryExecutionConfig {
     /// Expert local-throughput source chunk planning policy copied into admitted contexts.
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Source chunk byte target copied into admitted bounded contexts.
+    /// `u64::MAX` derives a finite target from the immutable grant.
     pub max_source_chunk_bytes: u64,
     /// Source row-group target copied into admitted bounded contexts.
     pub max_row_groups_per_chunk: usize,
@@ -123,10 +124,10 @@ impl Default for QueryExecutionConfig {
             planning_policy: PlanningPolicy::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
+            max_source_chunk_bytes: MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: MemoryControlPolicy::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: MemoryControlPolicy::DEFAULT_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS,
         }
     }
 }

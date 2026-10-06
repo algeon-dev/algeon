@@ -1,5 +1,3 @@
-use query_planning::source::ParquetReadStrategy;
-
 use super::*;
 use crate::exec::source::{ScheduledLocalParquetReadOutput, read_local_parquet_chunk, read_local_parquet_chunk_batch};
 

@@ -19,7 +19,7 @@ use crate::{
         join::MergeOptions,
         reduction::ScanAgg,
         sorting::{self, SortOptions},
-        stream_compaction::DuplicateKeepOption,
+        stream_compaction::{self, DuplicateKeepOption, StreamCompactionExecution},
     },
     runtime::{
         BudgetedExecutionOutcome, CompleteReport, ExecutionBudgetReport, ExecutionBudgetToken, execution_context::Exec,
@@ -143,6 +143,43 @@ impl DataFramePreparedSort {
         self.input
             .gather_in_context(&self.sorted_order, ctx)
             .map_err(|error| error.reanchor("dataframe::prepared_sort::materialize"))
+    }
+
+    /// Materialize rows after removing consecutive duplicate keys in the
+    /// prepared order. Equal keys must already be adjacent in that order.
+    /// First and last retention preserve the prepared order, including stable
+    /// ties. Null and NaN keys compare equal. The prepared row order is released
+    /// before gathering retained payload rows.
+    pub fn materialize_drop_consecutive_duplicates(
+        self,
+        opts: DropDuplicatesOptions,
+        ctx: Exec<'_>,
+    ) -> Result<DataFrame> {
+        let operation = "dataframe::prepared_sort::materialize_drop_consecutive_duplicates";
+        let output_domain = ctx.resolve_output_domain(&self.input.domain)?;
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.input.domain, self.sorted_order.as_column().execution_domain()],
+            operation,
+        )?;
+        let subset = if opts.subset.is_empty() { self.input.column_names_owned() } else { opts.subset };
+        let subset_refs = subset.iter().map(String::as_str).collect::<Vec<_>>();
+        let key_indices = resolve_column_names(&self.input.columns, &subset_refs, operation)?;
+        let selected = {
+            let input = self.input.build_table_view()?;
+            let row_order = self.sorted_order.view()?;
+            let selected = stream_compaction::ordered_unique_indices_impl(
+                &input,
+                &row_order,
+                &key_indices,
+                opts.keep,
+                StreamCompactionExecution::new(&output_domain, execution.exec_options(), operation),
+            )?;
+            Series::from_column(selected)?
+        };
+        // The selected indices replace the prepared permutation before the payload allocation.
+        drop(self.sorted_order);
+        self.input.gather_in_context(&selected, ctx).map_err(|error| error.reanchor(operation))
     }
 
     /// Gather the retained input DataFrame using a hard budget token.
@@ -280,96 +317,37 @@ impl DataFrame {
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
-        let (mut orders, mut null_orders) = options.resolve(by_refs.len(), operation)?;
+        let (orders, null_orders) = options.resolve(by_refs.len(), operation)?;
 
-        let stable_row_position = if options.stable {
-            orders.push(sorting::Order::Ascending);
-            if let Some(null_orders) = null_orders.as_mut() {
-                null_orders.push(sorting::NullOrder::After);
-            }
-            Some(position_sequence_in_domain(self.row_count, &output_domain, operation)?)
+        let sorted_order = if options.stable && key_indices.is_empty() {
+            // A zero-key stable sort preserves every input row; libcudf's
+            // zero-column sorted order is empty even for a nonempty input.
+            position_sequence_in_domain(self.row_count, &output_domain, operation)?
         } else {
-            None
-        };
-
-        let stable_key_columns;
-        let keys_table = if stable_row_position.is_some() {
-            stable_key_columns = self.sort_key_columns_in_domain(&key_indices, &output_domain, operation)?;
-            Self::build_stable_sort_key_table_for_sorted_order(
-                &stable_key_columns,
-                stable_row_position.as_ref(),
-                operation,
-            )?
-        } else {
-            Self::build_sort_key_table_for_sorted_order(
-                self.columns_map(),
-                &key_indices,
-                stable_row_position.as_ref(),
-                operation,
+            let keys_table = Self::build_sort_key_table_for_sorted_order(self.columns_map(), &key_indices, operation)?;
+            sorting::sorted_order_impl(
+                &keys_table,
+                sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
+                options.stable,
+                sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
             )?
         };
-        let sorted_order = sorting::sorted_order_impl(
-            &keys_table,
-            sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
-            sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
-        )?;
         let sorted_order = Series::from_column(sorted_order)
             .map_err(|error| error.reanchor(operation).with_detail("resource", "sorted_order"))?;
 
         Ok(DataFramePreparedSort::new(self.clone(), sorted_order))
     }
 
-    fn sort_key_columns_in_domain(
-        &self,
-        key_indices: &[usize],
-        output_domain: &Arc<ExecutionDomain>,
-        operation: &'static str,
-    ) -> Result<Vec<Arc<Column>>> {
-        let should_copy = !ExecutionDomain::same_provenance(&self.domain, output_domain);
-        let mut key_columns = Vec::with_capacity(key_indices.len());
-        for &idx in key_indices {
-            let (_, column) = self.columns.get_index(idx).expect("resolved sort key index remains valid");
-            let column = if should_copy {
-                Arc::new(column.copy_into_domain(Arc::clone(output_domain), operation)?)
-            } else {
-                Arc::clone(column)
-            };
-            key_columns.push(column);
-        }
-        Ok(key_columns)
-    }
-
-    fn build_stable_sort_key_table_for_sorted_order<'a>(
-        key_columns: &'a [Arc<Column>],
-        stable_row_position: Option<&'a Column>,
-        operation: &'static str,
-    ) -> Result<TableView<'a>> {
-        let mut views = Vec::with_capacity(key_columns.len() + usize::from(stable_row_position.is_some()));
-        for column in key_columns {
-            views.push(column.view()?);
-        }
-        if let Some(stable_row_position) = stable_row_position {
-            views.push(stable_row_position.view()?);
-        }
-
-        TableView::from_borrowed_column_views_in_domain(views, None, operation)
-    }
-
     fn build_sort_key_table_for_sorted_order<'a>(
         columns: &'a FastIndexMap<String, Arc<Column>>,
         key_indices: &[usize],
-        stable_row_position: Option<&'a Column>,
         operation: &'static str,
     ) -> Result<TableView<'a>> {
-        let mut views = Vec::with_capacity(key_indices.len() + usize::from(stable_row_position.is_some()));
+        let mut views = Vec::with_capacity(key_indices.len());
         for &idx in key_indices {
             let (_, column) = columns.get_index(idx).expect("resolved sort key index remains valid");
             views.push(column.view()?);
         }
-        if let Some(stable_row_position) = stable_row_position {
-            views.push(stable_row_position.view()?);
-        }
-
         if views.is_empty() {
             build_borrowed_table_view_from_columns(columns, &[])
         } else {

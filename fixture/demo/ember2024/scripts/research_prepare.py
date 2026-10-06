@@ -34,7 +34,7 @@ HISTOGRAM_START = 7
 HISTOGRAM_STOP = 519
 HISTOGRAM_DIM = HISTOGRAM_STOP - HISTOGRAM_START
 METADATA_CHUNK_ROWS = 50_000
-VECTOR_CHUNK_ROWS = 2_048
+VECTOR_CHUNK_ROWS = 50_000
 IMPORT_CHUNK_ROWS = 100_000
 SQL_COMMIT_ROWS = 100_000
 
@@ -138,7 +138,7 @@ def raw_sha256(record: dict[str, Any], split: str, source_id: int) -> tuple[str,
 
 
 def is_selected(split: str, digest_hex: str) -> bool:
-    return split == "challenge" or int(digest_hex[:8], 16) % 100 == 0
+    return True
 
 
 def write_metadata_chunk(writer: pq.ParquetWriter, columns: dict[str, list[Any]]) -> int:
@@ -369,14 +369,15 @@ def process_split(
                             if len(vector_rows) >= VECTOR_CHUNK_ROWS:
                                 vector_rows_written += write_vector_chunk(vector_writer, vector_rows)
 
-                            symbols = extract_import_symbols(record.get("imports"))
-                            if not symbols:
-                                selected_rows_without_imports += 1
-                            for symbol in symbols:
-                                import_rows.append((row_id, split, symbol))
-                            import_count += len(symbols)
-                            if len(import_rows) >= IMPORT_CHUNK_ROWS:
-                                import_rows_written += write_import_chunk(import_writer, import_rows)
+                            if split == "challenge":
+                                symbols = extract_import_symbols(record.get("imports"))
+                                if not symbols:
+                                    selected_rows_without_imports += 1
+                                for symbol in symbols:
+                                    import_rows.append((row_id, split, symbol))
+                                import_count += len(symbols)
+                                if len(import_rows) >= IMPORT_CHUNK_ROWS:
+                                    import_rows_written += write_import_chunk(import_writer, import_rows)
 
                 if (file_index + 1) % 20 == 0 or file_index + 1 == len(path_list):
                     elapsed = time.monotonic() - started
@@ -633,8 +634,8 @@ def validate_weekly_file_first_rows(extractor: PEFeatureExtractor) -> dict[str, 
             mapped_label = int(y_memmap[source_sample_id])
             if raw_label != target["label"] or raw_label != mapped_label:
                 raise ValueError(f"raw, vector parquet, and y memmap labels differ at {split} source_id {source_sample_id}")
-            if split != "challenge" and int(digest_hex[:8], 16) % 100 != 0:
-                raise ValueError(f"selected raw sample violates the hash selection rule at {split} source_id {source_sample_id}")
+            if not is_selected(split, digest_hex):
+                raise ValueError(f"selected raw sample violates the selection rule at {split} source_id {source_sample_id}")
             raw_vector = np.asarray(extractor.process_raw_features(record), dtype=np.float32)
             memmap_vector = np.asarray(x_memmap[source_sample_id], dtype=np.float32)
             if raw_vector.shape != (VECTOR_DIM,):
@@ -805,7 +806,7 @@ def main() -> None:
             },
             "selection_rule": {
                 "challenge": "all unique SHA256 rows",
-                "train_test": "unique SHA256 rows where integer(first 8 hexadecimal SHA256 characters, base 16) modulo 100 equals 0",
+                "train_test": "all unique SHA256 rows",
                 "selection_uses_label_or_family": False,
                 "deduplication": "first row for each SHA256 within each split is retained",
             },

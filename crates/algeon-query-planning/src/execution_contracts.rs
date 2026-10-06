@@ -10,6 +10,8 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MemoryControlPolicy {
     pub device_budget_bytes: u64,
+    /// Source-byte grouping target. `u64::MAX` leaves the configured target
+    /// unset; source tasks derive a finite target from the admitted grant.
     pub max_source_chunk_bytes: u64,
     pub max_row_groups_per_chunk: usize,
     pub max_retry_attempts: usize,
@@ -17,6 +19,13 @@ pub struct MemoryControlPolicy {
 }
 
 impl MemoryControlPolicy {
+    /// No configured source-byte ceiling; the immutable grant sizes batches.
+    pub const DEFAULT_MAX_SOURCE_CHUNK_BYTES: u64 = u64::MAX;
+    /// Individual row groups remain retryable units within coalesced reads.
+    pub const DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
+    pub const DEFAULT_MAX_RETRY_ATTEMPTS: usize = 3;
+    pub const DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
+
     pub fn validate(self) -> Result<()> {
         let Self {
             device_budget_bytes,

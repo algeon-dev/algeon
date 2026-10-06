@@ -553,6 +553,7 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::RegexpReplace { .. } => "regexp_replace",
         Expr::Concat(_) => "concat",
         Expr::Abs(_) => "abs",
+        Expr::UnaryMath { op: UnaryMathOp::Negate, .. } => "negate",
         Expr::UnaryMath { op: UnaryMathOp::Sqrt, .. } => "sqrt",
         Expr::UnaryMath { op: UnaryMathOp::Ln, .. } => "ln",
         Expr::UnaryMath { op: UnaryMathOp::Exp, .. } => "exp",

@@ -11,6 +11,8 @@ use query_planning::plan::GraphAlgorithmSpec;
 #[cfg(feature = "cugraph")]
 use query_planning::plan::GraphBetweennessSeeds;
 
+#[cfg(feature = "cugraph")]
+use super::statistics::distinct_graph_endpoints;
 use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
 
 #[cfg(feature = "cugraph")]
@@ -241,31 +243,18 @@ fn sorted_graph_vertices_i64(
     spec: &GraphAlgorithmSpec,
     operation: &'static str,
 ) -> Result<Vec<i64>> {
-    let source = input
-        .series(&spec.edge_columns.source)
-        .map_err(|error| cudf_query_error(operation, "failed to read graph source column", error))?;
-    let destination = input
-        .series(&spec.edge_columns.destination)
-        .map_err(|error| cudf_query_error(operation, "failed to read graph destination column", error))?;
+    let ctx = Exec::RETAINED;
+    let (source, destination) = distinct_graph_endpoints(input, spec, ctx, operation)?;
     let source_dtype =
         source.dtype().map_err(|error| cudf_query_error(operation, "failed to inspect graph source dtype", error))?;
-    let destination_dtype = destination
-        .dtype()
-        .map_err(|error| cudf_query_error(operation, "failed to inspect graph destination dtype", error))?;
-    if source_dtype.id() != destination_dtype.id() {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            operation,
-            "cuGraph source and destination columns must have the same vertex dtype",
-        )
-        .with_fact("src_col", &spec.edge_columns.source)
-        .with_fact("dst_col", &spec.edge_columns.destination)
-        .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
-        .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
-    }
-    let vertices = Series::concat(&[&source, &destination], Exec::RETAINED)
-        .and_then(|series| series.on(Exec::RETAINED).unique())
-        .and_then(|series| series.on(Exec::RETAINED).sort_values(CudfSortOptions::new()))
+    let destination_only = destination
+        .on(ctx)
+        .isin(&source)
+        .and_then(|mask| mask.on(ctx).logical_not())
+        .and_then(|mask| destination.on(ctx).filter(&mask))
+        .map_err(|error| cudf_query_error(operation, "failed to collect graph destination-only vertices", error))?;
+    let vertices = Series::concat(&[&source, &destination_only], ctx)
+        .and_then(|series| series.on(ctx).sort_values(CudfSortOptions::new()))
         .map_err(|error| cudf_query_error(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
         TypeId::Int32 => vertices

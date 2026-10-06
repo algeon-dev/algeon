@@ -34,7 +34,7 @@ pub(super) fn execute_pagerank(
 
     let resident_key = input.graph_residency().and_then(|descriptor| planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let pr_params = pagerank_params(params)?;
 
@@ -92,7 +92,7 @@ pub(super) fn execute_personalized_pagerank(
     })?;
 
     let input = input.into_frame();
-    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let (edges, vertex_type) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let ppr_params = personalized_pagerank_params(&params.pagerank)?;
     let personalization_frame = personalization_frame.into_frame();
@@ -172,7 +172,7 @@ pub(super) fn execute_eigenvector_centrality(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let evc_params = eigenvector_centrality_params(params)?;
 
@@ -217,7 +217,7 @@ pub(super) fn execute_hits(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let h_params = hits_params(params)?;
 
@@ -275,7 +275,7 @@ pub(super) fn execute_betweenness_centrality(
     };
 
     let input = input.into_frame();
-    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let (edges, vertex_type) = project_edge_list(input, spec)?;
     let seed_count =
         params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
     let i32_seeds = match (vertex_type, params.seeds.as_ref()) {
@@ -347,7 +347,7 @@ pub(super) fn execute_edge_betweenness_centrality(
     };
 
     let input = input.into_frame();
-    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let (edges, vertex_type) = project_edge_list(input, spec)?;
     let seed_count =
         params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
     let i32_seeds = match (vertex_type, params.seeds.as_ref()) {
@@ -546,7 +546,7 @@ pub(super) fn execute_katz_centrality(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let kc_params = katz_centrality_params(params)?;
 

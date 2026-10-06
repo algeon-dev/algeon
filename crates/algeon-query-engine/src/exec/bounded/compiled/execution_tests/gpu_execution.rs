@@ -1,3 +1,12 @@
+use cudf::DataFrame as CudfDataFrame;
+#[cfg(feature = "cugraph")]
+use cudf::testing::device_copy::device_to_device_copy_count_for_test;
+#[cfg(feature = "cugraph")]
+use query_planning::plan::{
+    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphPageRankParams,
+    graph_result_schema_for_vertex_type,
+};
 use query_planning::{
     admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     error::QueryErrorCode,
@@ -5,14 +14,20 @@ use query_planning::{
 };
 use query_runtime::{
     observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
-    runtime::resident::GpuResidentInputMap,
+    runtime::resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle, ProducerExecutionIdentity},
 };
 
 use super::*;
+#[cfg(feature = "cugraph")]
+use crate::exec::graph_algorithm::{
+    bounded_betweenness::validate_betweenness_seed_policy_for_vertex_count, statistics::runtime_graph_statistics_probe,
+};
 use crate::{
     dimension_pruning::local_dimension_pruning_resolver,
     exec::{
-        ExecutionMetrics, QueryExecutionRequest, admit_query_plan, execute_query_plan as engine_execute_query_plan,
+        ExecutionMetrics, QueryExecutionRequest, admit_query_plan,
+        bounded::compiled::{CompiledGpuResource, scheduler::CompiledTaskExecutor, state::CompiledPipelineState},
+        execute_query_plan as engine_execute_query_plan,
     },
     rapids_backend::rapids_analysis_context,
 };
@@ -897,6 +912,214 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     assert_eq!(passthrough_batch.num_rows(), 2);
     assert_eq!(int32_values(passthrough_batch, 0), vec![Some(2), Some(4)]);
     assert_eq!(int32_values(passthrough_batch, 1), vec![Some(200), Some(400)]);
+    let repeated = execute_query_plan_with_gpu_inputs(&context, &passthrough_plan, &passthrough_inputs)
+        .expect("borrowed inputs remain reusable after their compiled read");
+    assert_eq!(int32_values(repeated.output().as_host_arrow().unwrap(), 1), vec![Some(200), Some(400)]);
+    let admitted =
+        admit_query_plan(&passthrough_plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+            .unwrap();
+    let outcome = engine_execute_query_plan(
+        &context,
+        QueryExecutionRequest::admitted(&admitted).with_owned_gpu_inputs(passthrough_inputs),
+    );
+    let (owned, _, _) = outcome.into_parts();
+    let owned = owned.expect("owned inputs use the same compiled execution contract");
+    assert_eq!(int32_values(owned.as_host_arrow().unwrap(), 1), vec![Some(200), Some(400)]);
+}
+
+#[test]
+fn compiled_gpu_executor_retires_owned_input_after_last_source_read_and_preserves_aliases() {
+    struct InputRetirementExecutor<'a> {
+        inner: CompiledGpuTaskExecutor<'a>,
+        identity: &'a Arc<ProducerExecutionIdentity>,
+        source_owner_counts: Vec<usize>,
+    }
+
+    impl CompiledTaskExecutor for InputRetirementExecutor<'_> {
+        type Resource = CompiledGpuResource;
+
+        fn execute_task(
+            &mut self,
+            task: &PipelineTask,
+            state: &mut CompiledPipelineState<Self::Resource>,
+        ) -> Result<Vec<(ResidentResourceId, Self::Resource)>> {
+            let outputs = self.inner.execute_task(task, state)?;
+            if task.kind() == PipelineTaskKind::GpuResidentSource {
+                self.source_owner_counts.push(Arc::strong_count(self.identity));
+            }
+            Ok(outputs)
+        }
+
+        fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
+            self.inner.release_resource(resource, payload)
+        }
+
+        fn cleanup_after_error(&mut self) -> Result<()> {
+            self.inner.cleanup_after_error()
+        }
+    }
+
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("compiled resident input requires CUDA"));
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let first = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+    let second = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("input", Arc::clone(&schema)).with_row_count_upper_bound(3),
+    ));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Int32, false),
+        Field::new("derived", DataType::Int32, false),
+    ]));
+    let mut branches = Vec::new();
+    for (source, offset) in [(first, 1), (first, 2), (second, 3)] {
+        let outputs = projection_outputs(
+            vec![
+                Expr::column("value"),
+                Expr::binary(Expr::column("value"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(offset))),
+            ],
+            Arc::clone(&output_schema),
+        );
+        branches.push(builder.add_projection(source, outputs).unwrap());
+    }
+    let union = builder.add_union(branches, output_schema).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
+    let admitted = admit_query_plan(&plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
+        .expect("resident aliases and repeated source occurrences are supported");
+    let context = bounded_context(Arc::clone(&runtime), &plan);
+    let metrics = ExecutionMetrics::detached("owned_input_retirement");
+    let metrics_context = metrics.scope_context(&context).unwrap();
+    let input_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+    let input = GpuResultHandle::new(
+        &metrics_context,
+        GpuDataFrame::new(
+            CudfDataFrame::from_record_batch(metrics_context.shared_runtime().unwrap().as_ref(), &input_batch).unwrap(),
+        ),
+        schema,
+    )
+    .unwrap()
+    .with_producer_execution_plan(plan.clone());
+    let identity = input.producer_execution_identity().unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert("input".to_string(), input);
+    let (_, inputs) = QueryExecutionRequest::admitted(&admitted).with_owned_gpu_inputs(inputs).into_parts();
+    let executor = CompiledGpuTaskExecutor::new_owned(
+        &metrics_context,
+        &plan,
+        admitted.policy(),
+        admitted.pipeline(),
+        inputs,
+        &metrics,
+    )
+    .unwrap();
+    let mut executor = InputRetirementExecutor { inner: executor, identity: &identity, source_owner_counts: vec![] };
+    let scheduler = CompiledPipelineScheduler::new(admitted.pipeline()).unwrap();
+    scheduler.run(&mut executor).expect("owned source aliases survive input retirement");
+    let (last_owner_count, earlier_owner_counts) = executor.source_owner_counts.split_last().unwrap();
+    assert!(!earlier_owner_counts.is_empty(), "distinct source bindings must exercise repeated input reads");
+    assert!(earlier_owner_counts.iter().all(|count| *count == 2), "remaining readers retain the input owner");
+    assert_eq!(*last_owner_count, 1, "the final scheduled read releases the input owner");
+    let output = executor.inner.take_host_output().unwrap();
+    let mut actual = int32_values(&output, 0).into_iter().zip(int32_values(&output, 1)).collect::<Vec<_>>();
+    actual.sort();
+    let expected =
+        (1..=3).flat_map(|value| (1..=3).map(move |offset| (Some(value), Some(value + offset)))).collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(metrics.snapshot().boundary.gpu_resident_input_handoffs, executor.source_owner_counts.len() as u64);
+
+    let wrong_schema = Arc::new(Schema::new(vec![Field::new("other", DataType::Int32, false)]));
+    let wrong_batch =
+        RecordBatch::try_new(Arc::clone(&wrong_schema), vec![Arc::new(Int32Array::from(vec![3, 1, 2]))]).unwrap();
+    let failed_input = GpuResultHandle::new(
+        &metrics_context,
+        GpuDataFrame::new(
+            CudfDataFrame::from_record_batch(metrics_context.shared_runtime().unwrap().as_ref(), &wrong_batch).unwrap(),
+        ),
+        wrong_schema,
+    )
+    .unwrap()
+    .with_producer_execution_plan(plan.clone());
+    let failed_identity = failed_input.producer_execution_identity().unwrap();
+    let mut failed_inputs = GpuResidentInputMap::new();
+    failed_inputs.insert("input".to_string(), failed_input);
+    let mut failed_executor = CompiledGpuTaskExecutor::new_owned(
+        &metrics_context,
+        &plan,
+        admitted.policy(),
+        admitted.pipeline(),
+        failed_inputs,
+        &metrics,
+    )
+    .unwrap();
+    let error = scheduler.run(&mut failed_executor).err().expect("a mismatched resident source must fail");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.gpu_resident_source.read");
+    assert_eq!(Arc::strong_count(&failed_identity), 1, "failed scheduler cleanup releases unread owned inputs");
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn graph_statistics_sizing_avoids_unused_work_and_counts_distinct_endpoint_union() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let graph_options =
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph };
+    let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+    let pagerank = GraphAlgorithmSpec::new(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        graph_options.clone(),
+        params.clone(),
+        graph_result_schema_for_vertex_type(GraphAlgorithm::PageRank, &params, &DataType::Int64),
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&schema))));
+    let graph = builder.add_graph_algorithm(edges, vec![], pagerank.clone()).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
+    let runtime = shared_runtime(suite_backend::Runtime::new().expect("graph sizing requires CUDA"));
+    let context = bounded_context(runtime, &plan);
+    let mut sources = (0..65_536i64).map(|row| row % 9).collect::<Vec<_>>();
+    let mut destinations = (0..65_536i64).map(|row| row % 12 + 5).collect::<Vec<_>>();
+    sources.extend([i64::MIN, i64::MAX]);
+    destinations.extend([i64::MAX, i64::MIN]);
+    let expected_vertices = sources.iter().chain(&destinations).copied().collect::<BTreeSet<_>>().len() as u64;
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from(sources)), Arc::new(Int64Array::from(destinations))],
+    )
+    .unwrap();
+    let frame = CudfDataFrame::from_record_batch(context.shared_runtime().unwrap().as_ref(), &batch).unwrap();
+    let allocations_before = context.attempt_allocation_domain_usage().unwrap().unwrap().total_allocations;
+    assert_eq!(runtime_graph_statistics_probe(&context, &frame, &pagerank).unwrap(), None);
+    let allocations_after = context.attempt_allocation_domain_usage().unwrap().unwrap().total_allocations;
+    assert_eq!(allocations_after, allocations_before, "PageRank has no runtime seed sizing work");
+
+    let params = GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+        seeds: Some(GraphBetweennessSeeds::I64(vec![0])),
+        ..Default::default()
+    });
+    let mut betweenness = GraphAlgorithmSpec::new(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        graph_options,
+        params.clone(),
+        graph_result_schema_for_vertex_type(GraphAlgorithm::BetweennessCentrality, &params, &DataType::Int64),
+    );
+    assert_eq!(runtime_graph_statistics_probe(&context, &frame, &betweenness).unwrap(), None);
+    assert_eq!(context.attempt_allocation_domain_usage().unwrap().unwrap().total_allocations, allocations_before);
+    betweenness.params = GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+        exact_vertex_threshold: 1,
+        ..Default::default()
+    });
+    let copies_before = device_to_device_copy_count_for_test();
+    let count = runtime_graph_statistics_probe(&context, &frame, &betweenness).unwrap().unwrap();
+    assert_eq!(count, expected_vertices);
+    assert_eq!(device_to_device_copy_count_for_test(), copies_before, "endpoint sizing consumes the retained input");
+    let error = validate_betweenness_seed_policy_for_vertex_count(&betweenness, count).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
+    assert_eq!(error.fact_value("actual_vertex_count"), Some(expected_vertices.to_string().as_str()));
 }
 
 #[test]

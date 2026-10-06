@@ -621,6 +621,11 @@ impl ResourceOrdering {
         Self { keys, scope: OrderingScope::Global }
     }
 
+    /// The same ordering over the same extent, stated with `keys`.
+    pub(crate) fn with_keys(&self, keys: Vec<SortExpr>) -> Self {
+        Self { keys, scope: self.scope }
+    }
+
     /// Whether rows carrying this ordering appear in `window`'s order: the
     /// ordering is global, its leading keys are the window's partition keys
     /// in any order, so each partition's rows are adjacent, and the window's

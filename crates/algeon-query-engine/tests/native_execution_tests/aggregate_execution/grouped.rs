@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
 use cudf::Exec;
 
@@ -320,11 +320,25 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
             .facts
             .get("chunk_row_count")
             .and_then(|value| value.parse::<u64>().ok())
-            .expect("partial row should record row-balanced partition input rows");
+            .expect("partial row should record group-key partition input rows");
         diagnostic_input_rows = diagnostic_input_rows.saturating_add(chunk_row_count);
         assert_eq!(partial_strategy.facts.get("source_adjacent_partial").map(String::as_str), Some("true"));
-        assert_eq!(partial_strategy.facts.get("source_chunk_row_group_count").map(String::as_str), Some("3"));
-        assert_eq!(partial_strategy.facts.get("source_chunk_known_row_count").map(String::as_str), Some("6"));
+        assert_eq!(
+            partial_strategy.facts.get("source_adjacent_partition_strategy").map(String::as_str),
+            Some("group_key")
+        );
+        let contributing_row_groups = partial_strategy
+            .facts
+            .get("source_chunk_row_group_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("contributing source row groups");
+        assert!((1..=3).contains(&contributing_row_groups));
+        let contributing_rows = partial_strategy
+            .facts
+            .get("source_chunk_known_row_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("contributing source row count");
+        assert_eq!(contributing_rows, contributing_row_groups * 2);
         assert_eq!(partial_strategy.facts.get("encode_elapsed_ns").map(String::as_str), Some("0"));
         assert_eq!(partial_strategy.facts.get("decode_elapsed_ns").map(String::as_str), Some("0"));
         assert_eq!(
@@ -346,11 +360,12 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         .aggregate_strategy_decisions
         .iter()
         .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge"))
-        .expect("row-balanced source-adjacent aggregate should record final merge strategy");
+        .expect("group-key source-adjacent aggregate should record final merge strategy");
     assert_eq!(final_strategy.node_id, aggregate.to_string());
     assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
     assert_eq!(final_strategy.facts.get("partial_aggregate_count").map(String::as_str), Some("3"));
     assert_eq!(final_strategy.facts.get("partitioned_merge_contract_status").map(String::as_str), Some("available"));
+    assert_eq!(final_strategy.facts.get("partitioned_merge_rehash_skipped").map(String::as_str), Some("true"));
     assert_eq!(metrics.parquet_files, 1);
     assert_eq!(metrics.row_groups_selected, 3);
     assert_eq!(metrics.read_columns, 4);
@@ -652,8 +667,8 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
     assert!(
-        metrics.partial_aggregate_count > 5,
-        "large source estimates should force more row-balanced partitions than non-empty input rows"
+        metrics.partial_aggregate_count <= metrics.partial_aggregate_input_rows + 1,
+        "group-key partitioning should omit empty partitions except the schema carrier"
     );
     assert_eq!(metrics.final_merge_attempts, 1);
     assert!(metrics.final_merge_max_fan_in >= 1);
@@ -809,6 +824,181 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
         ]
     );
 
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_combines_nullable_integer_groups_across_source_lanes() {
+    assert_bounded_native_query_combines_nullable_integer_groups_across_source_lanes(1);
+}
+
+#[test]
+fn bounded_native_query_combines_nullable_integer_groups_across_source_lanes_on_two_lanes() {
+    assert_bounded_native_query_combines_nullable_integer_groups_across_source_lanes(2);
+}
+
+fn assert_bounded_native_query_combines_nullable_integer_groups_across_source_lanes(source_work_per_attempt: usize) {
+    let dir = unique_temp_dir("query-engine-source-adjacent-integer-lanes");
+    let path = dir.join("input.parquet");
+    let row_groups = 16;
+    let rows_per_group = 512;
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, true),
+        Field::new("kind", DataType::UInt64, true),
+        Field::new("value", DataType::Int64, true),
+        Field::new("enabled", DataType::Int64, false),
+    ]));
+    let mut keys = Vec::new();
+    let mut kinds = Vec::new();
+    let mut values = Vec::new();
+    let mut enabled = Vec::new();
+    let mut expected = BTreeMap::new();
+    for row in 0..row_groups * rows_per_group {
+        let position = row % rows_per_group;
+        let key = match position {
+            0..=15 => None,
+            16 => Some(i64::MIN),
+            17 => Some(i64::MAX),
+            18..=319 => Some(0),
+            _ => Some(position as i64 - 400),
+        };
+        let kind = (position % 5 != 0).then_some(u64::MAX - (position % 3) as u64);
+        let value = (position % 7 != 0).then_some((row % 23) as i64 - 11);
+        let keep = row % 11 != 0;
+        keys.push(key);
+        kinds.push(kind);
+        values.push(value);
+        enabled.push(i64::from(keep));
+        if keep {
+            let entry = expected.entry((key, kind)).or_insert((None::<i64>, 0i64, None::<i64>, None::<i64>));
+            if let Some(value) = value {
+                entry.0 = Some(entry.0.unwrap_or(0) + value);
+                entry.1 += 1;
+                entry.2 = Some(entry.2.map_or(value, |minimum| minimum.min(value)));
+                entry.3 = Some(entry.3.map_or(value, |maximum| maximum.max(value)));
+            }
+        }
+    }
+    let input = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int64Array::from(keys)),
+            Arc::new(UInt64Array::from(kinds)),
+            Arc::new(Int64Array::from(values)),
+            Arc::new(Int64Array::from(enabled)),
+        ],
+    )
+    .unwrap();
+    let properties = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+    let mut writer =
+        ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&input_schema), Some(properties)).unwrap();
+    writer.write(&input).unwrap();
+    writer.close().unwrap();
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("group_key", DataType::Int64, true),
+        Field::new("kind", DataType::UInt64, true),
+        Field::new("value", DataType::Int64, true),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("group_key", DataType::Int64, true),
+        Field::new("kind", DataType::UInt64, true),
+        Field::new("sum_value", DataType::Int64, true),
+        Field::new("count_value", DataType::Int64, false),
+        Field::new("min_value", DataType::Int64, true),
+        Field::new("max_value", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![4 * 1024 * 1024; row_groups])
+                .with_projected_row_group_bytes(vec![4 * 1024 * 1024; row_groups], vec![4 * 1024 * 1024; row_groups])
+                .with_row_group_rows(vec![rows_per_group as u64; row_groups]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "kind".to_string(), "value".to_string(), "enabled".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder
+        .add_filter(source, Expr::binary(Expr::column("enabled"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(1))))
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            filter,
+            projection_outputs(
+                vec![Expr::column("key").alias("group_key"), Expr::column("kind"), Expr::column("value")],
+                projected_schema,
+            ),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("group_key"), Expr::column("kind")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value"),
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "count_value"),
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("value"), "min_value"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("value"), "max_value"),
+                ],
+            ),
+            aggregated_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 256 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    })
+    .with_source_work_per_attempt(source_work_per_attempt);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_committed, row_groups as u64);
+    assert_eq!(metrics.row_groups_committed, row_groups as u64);
+    assert_eq!(metrics.source_chunks_retried, 0);
+    // Repeated keys from separate batches and lanes must enter one partial
+    // group, with the aligned final merge retaining their partition identity.
+    assert_eq!(metrics.partial_aggregate_rows, expected.len() as u64);
+    assert!(metrics.aggregate_strategy_decisions.iter().any(|decision| {
+        decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key")
+            && decision
+                .facts
+                .get("source_adjacent_max_partition_fan_in")
+                .and_then(|value| value.parse::<usize>().ok())
+                .is_some_and(|fan_in| fan_in >= 8)
+    }));
+    assert!(metrics.aggregate_strategy_decisions.iter().any(|decision| {
+        decision.facts.get("partitioned_merge_rehash_skipped").map(String::as_str) == Some("true")
+    }));
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), expected.len());
+    let keys = int64_array(batch, 0);
+    let kinds = batch.column(1).as_any().downcast_ref::<UInt64Array>().unwrap();
+    let sums = int64_array(batch, 2);
+    let counts = int64_array(batch, 3);
+    let minima = int64_array(batch, 4);
+    let maxima = int64_array(batch, 5);
+    let observed = (0..batch.num_rows())
+        .map(|row| {
+            (
+                ((!keys.is_null(row)).then(|| keys.value(row)), (!kinds.is_null(row)).then(|| kinds.value(row))),
+                (
+                    (!sums.is_null(row)).then(|| sums.value(row)),
+                    counts.value(row),
+                    (!minima.is_null(row)).then(|| minima.value(row)),
+                    (!maxima.is_null(row)).then(|| maxima.value(row)),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(observed, expected, "source work width {source_work_per_attempt}");
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1495,8 +1685,9 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
     });
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 11);
-    assert_eq!(metrics.source_chunks_committed, 11);
+    assert!(metrics.source_chunks_planned > 1);
+    assert!(metrics.source_chunks_planned < row_group_count as u64);
+    assert_eq!(metrics.source_chunks_committed, metrics.source_chunks_planned);
     assert_eq!(metrics.row_groups_planned, row_group_count as u64);
     assert_eq!(metrics.row_groups_committed, row_group_count as u64);
     assert!(metrics.partial_aggregate_count > 0);
@@ -1506,7 +1697,23 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    assert!(batch.num_rows() <= 4);
+    let mut expected = BTreeMap::new();
+    for row in 0..row_group_count {
+        let flag = if row % 2 == 0 { "A" } else { "R" };
+        let status = if row % 3 == 0 { "F" } else { "O" };
+        *expected.entry((flag.to_string(), status.to_string())).or_insert(0i64) += (row + 1) as i64;
+    }
+    assert_eq!(batch.num_rows(), expected.len());
+    let flags = string_array(batch, 0);
+    let statuses = string_array(batch, 1);
+    let sums = int64_array(batch, 2);
+    let observed = (0..batch.num_rows())
+        .map(|row| {
+            assert!(!sums.is_null(row));
+            ((flags.value(row).to_string(), statuses.value(row).to_string()), sums.value(row))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(observed, expected);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1596,13 +1803,11 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
     let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    // The encoded-byte batching target admits every row group into one raw
-    // batch, whose decoded rows plus stage, partition, and slice copies cannot
-    // fit under this cap; decoded-byte sizing must keep each batch inside it
-    // without falling back to allocator rejections and split retries.
+    // Adaptive defaults must account for decoded rows and staged copies under
+    // this small grant before a raw read reaches the allocator limit.
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 256 * 1024 * 1024,
-        max_source_chunk_bytes: 64 * 1024 * 1024,
+        max_source_chunk_bytes: MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 4,
         min_retry_chunk_row_groups: 1,

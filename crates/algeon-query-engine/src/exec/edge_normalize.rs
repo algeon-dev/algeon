@@ -32,7 +32,8 @@ pub(super) fn execute_edge_normalize(
     let timer = Instant::now();
     let exec_runtime = context.runtime()?;
     let overrides = exec_runtime.exec();
-    let mut frame = project_edge_columns(frame, &node.spec, node_id)?;
+    input = GpuDataFrame::try_new_with_source_residency(project_edge_columns(frame, &node.spec, node_id)?, &input)?;
+    let mut frame = input.frame().clone();
 
     if node.spec.add_reverse {
         let reverse = reverse_edges(&frame, &node.spec, node_id)?;
@@ -46,6 +47,9 @@ pub(super) fn execute_edge_normalize(
         })?;
     }
 
+    input = GpuDataFrame::try_new_with_source_residency(frame, &input)?;
+    let mut frame = input.frame().clone();
+
     if node.spec.dedup != EdgeDedupStrategy::None {
         let mut sort_by = vec![node.spec.edge_columns.source.as_str(), node.spec.edge_columns.destination.as_str()];
         if node.spec.weight_combiner == EdgeWeightCombiner::MinWeight
@@ -53,8 +57,10 @@ pub(super) fn execute_edge_normalize(
         {
             sort_by.push(weight);
         }
-        frame =
-            frame.on(overrides).sort_values(sort_by, CudfSortOptions::new().with_stable(true)).map_err(|error| {
+        let prepared = frame
+            .on(overrides)
+            .prepare_sort_values(sort_by, CudfSortOptions::new().with_stable(true))
+            .map_err(|error| {
                 cudf_query_error(
                     "query_engine.edge_normalize.sort",
                     "failed to sort edges for native edge normalization",
@@ -62,9 +68,8 @@ pub(super) fn execute_edge_normalize(
                 )
                 .with_fact("node_id", node_id)
             })?;
-        frame = frame
-            .on(overrides)
-            .drop_duplicates(
+        frame = prepared
+            .materialize_drop_consecutive_duplicates(
                 DropDuplicatesOptions::builder()
                     .subset(&[node.spec.edge_columns.source.as_str(), node.spec.edge_columns.destination.as_str()][..])
                     .keep(match node.spec.dedup {
@@ -73,6 +78,7 @@ pub(super) fn execute_edge_normalize(
                         EdgeDedupStrategy::KeepLast => DuplicateKeepOption::KeepLast,
                     })
                     .build(),
+                overrides,
             )
             .map_err(|error| {
                 cudf_query_error(

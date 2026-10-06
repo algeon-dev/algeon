@@ -1,33 +1,136 @@
 ---
 sidebar_position: 5
 title: MerRec Marketplace
-description: Source preparation, browsing graphs, audience features, and captured MerRec examples.
+description: Full MerRec source preparation and SQL composition around GPU graph and vector functions.
 ---
 
 # MerRec Marketplace
 
 [MerRec](https://huggingface.co/datasets/mercari-us/merrec) records browsing
-and purchase events from the Mercari US marketplace. The examples use one
-shard from October 2023 and turn it into a graph of product groups that users
-browse in sequence, plus a table of per-user category preferences. Graph,
-clustering, and projection UDTFs then run over those tables.
-
-The examples measure browsing and audience overlap. They leave purchase and
-conversion outcomes unevaluated, and none of the captures estimates revenue
-uplift.
+and purchase events from the Mercari US marketplace. The demo uses all six
+source months. SQL filters and aggregates interaction events into graph inputs;
+cuGraph results can feed further filters, joins, and aggregates in the same
+statement. The item-user PageRank query below filters view events, counts
+repeated interactions as edge weights, and returns the highest-ranked items.
 
 ## At a glance
 
 | Item | Details |
 |---|---|
-| Source | [mercari-us/merrec](https://huggingface.co/datasets/mercari-us/merrec), one shard of the October 2023 partition |
-| Scale | 494,357 events, 358,893 items, and 5,660 users from October 1 to October 30, 2023 |
-| Preparation | The fixture script downloads the sample shard; graph and preference tables are built by SQL on the running server |
+| Source | [mercari-us/merrec](https://huggingface.co/datasets/mercari-us/merrec), May through October 2023, pinned to `dd2b3c6f6f19d4814bb839ee6e8ab41926a14343` |
+| Scale | 1,268,092,738 events, 82,614,392 items, and 5,566,055 users |
+| Files | 2,170 source shards, 166.08 GB compressed; normalized events and items total 90.33 GB |
+| Preparation | The fixture retains all source events and stores the latest attributes once per item |
 | Python packages | `pyarrow`, and the `duckdb` CLI on `PATH` for conversion |
-| Server | `127.0.0.1:50063`; the research configuration uses a 32 GiB device limit and 16 GiB per query |
-| Examples | cuGraph personalized PageRank, Jaccard, cosine, Leiden, and PageRank; cuML HDBSCAN and UMAP; cuVS KMeans and Top-K |
+| Server | `127.0.0.1:50064`; the scale configuration allows a 90 GiB query on a 94 GiB device ledger |
+| Queries | Category engagement, user activity, item-user PageRank, and batched exact and approximate vector search |
 
 ## Examples
+
+- [Item-user PageRank](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/04_item_pagerank.sql)
+  composes an event filter and edge aggregation before cuGraph, then filters
+  item vertices and selects the top 20 scores.
+- [Category engagement](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/01_category_engagement.sql)
+  joins events to item attributes and aggregates view, like, and purchase counts.
+- [User activity](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/02_user_activity.sql)
+  aggregates all events by user and returns the 100 most active users.
+- [Batched vector search](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md#user-vectors-and-batched-search)
+  searches category-preference vectors derived from the complete event range.
+
+The browsing-market visualizations at the end of this page retain their
+original single-shard measurements and vertex identifiers.
+
+## Prepare the data
+
+Run commands from the repository root. The
+[fixture README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/README.md)
+documents acquisition, conversion, and source columns. Download and convert
+all six months on NVMe:
+
+```bash
+MERREC_ROOT=/mnt/algeon-nvme/algeon/fixture/demo/merrec
+fixture/fixture.sh merrec prepare --partition all --download --download-workers 32 \
+  --out-dir "$MERREC_ROOT" --duckdb-memory-limit 32GB --duckdb-threads 8 --force
+```
+
+The converter requires every shard in the selected scope. The 32GB setting
+controls DuckDB host memory during conversion. GPU query capacity is configured
+separately. Stop the server before replacing its registered data files.
+
+## Start the server
+
+```bash
+cargo build --workspace --all-features --release --bin algeon_server
+
+ALGEON_SERVER_CONFIG_FILE="$PWD/fixture/demo/merrec/scripts/scale/server.toml" \
+ALGEON_SERVER_BIND=127.0.0.1:50064 \
+flock -x /tmp/cudf-gpu.lock target/release/algeon_server
+```
+
+The scale configuration targets the development host's 96 GB GPU: a 94 GiB
+device ledger, 1 GiB backend reserve, 90 GiB query limit, and one active
+attempt. Set limits appropriate to the available device capacity on other
+hosts. `native_required` rejects remaining DataFusion CPU operators, including
+relational operators around explicit GPU functions.
+
+## Register the tables
+
+From another terminal, register the complete source tables:
+
+```bash
+MERREC_ROOT=/mnt/algeon-nvme/algeon/fixture/demo/merrec
+MERREC_REPORT="$PWD/target/merrec-scale/full/gpu"
+MERREC_RESULTS="$MERREC_ROOT/scale-results/gpu"
+
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 --register \
+  --data-dir "$MERREC_ROOT/parquet" \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS"
+```
+
+The runner checks registered table locations before recording the input
+manifest. Start a fresh server when changing dataset scope. The graph input is
+computed within the PageRank statement; it requires no saved graph snapshot.
+
+## Run the examples
+
+```bash
+python3 scripts/dev/merrec_run.py --uri grpc://127.0.0.1:50064 \
+  --report-dir "$MERREC_REPORT" --results-dir "$MERREC_RESULTS" \
+  --timeout 1800 --repeats 5 \
+  fixture/demo/merrec/scripts/scale/01_category_engagement.sql \
+  fixture/demo/merrec/scripts/scale/02_user_activity.sql \
+  fixture/demo/merrec/scripts/scale/04_item_pagerank.sql
+```
+
+Each report retains complete output, Flight elapsed time, query statistics,
+and `EXPLAIN GPU` coverage. PageRank elapsed time includes edge preparation,
+graph construction, the algorithm, and result receipt. The
+[scale workflow](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/README.md)
+records CPU comparisons and vector preparation. Graph size is measured after
+edge aggregation and normalization; the source event count is a separate value.
+
+The complete six-month PageRank query has been validated with 87,055,073
+vertices and 1,682,503,472 normalized directed edges representing the undirected
+graph. It completed within the 90 GiB query limit, with a measured allocator
+peak of 89.07 GiB, zero host boundaries, and zero retries. The statement uses
+all six months without an additional time or cohort filter. Five runs completed;
+the median Flight latency excluding the first run was 19.31 seconds on the
+96 GB development GPU with cached source files.
+
+## Tables
+
+| Table | Rows | Contents |
+|---|---:|---|
+| `merrec_events` | 1,268,092,738 | Timestamp, user and item IDs, session, sequence, and event type |
+| `merrec_items` | 82,614,392 | Latest item attributes within the selected six-month range |
+
+## Single-shard browsing results
+
+These saved results use 494,357 events, 358,893 items, and 5,660 users from one
+October source shard. They measure browsing and audience overlap; they do not
+estimate purchase conversion or revenue uplift. Reproduction commands and the
+sample server configuration are in the
+[research guide](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/REPRODUCE.md).
 
 - [Find collectible markets that share an audience with Nintendo games](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx#examples)
   with personalized PageRank and Jaccard.
@@ -45,52 +148,8 @@ uplift.
   with Leiden and weighted PageRank, returning five representative markets for
   each of 22 groups. [Download all 110 rows](/data/merrec-community-capture.json).
 
-## Prepare the data
-
-Run commands from the repository root. The
-[fixture README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/README.md)
-documents acquisition, conversion, and source columns. This command downloads
-the sample shard when raw source files are absent, then converts it into
-`events` and `items` Parquet tables:
-
-```bash
-fixture/fixture.sh merrec prepare --download-sample
-```
-
-The graph and preference tables are built in the next steps, because they
-are SQL queries that run on the server.
-
-## Start the server
-
-```bash
-cargo build --workspace --all-features --release --bin algeon_server
-
-ALGEON_SERVER_CONFIG_FILE="$PWD/docs/research/merrec/server-models.toml" \
-ALGEON_SERVER_BIND=127.0.0.1:50063 \
-flock -x /tmp/cudf-gpu.lock target/release/algeon_server
-```
-
-The configuration sets a 32 GiB device memory limit, a 1 GiB backend reserve,
-a 16 GiB default query limit, one active attempt, and a model root for the
-supervised research probes. The
-[reproduction guide](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/REPRODUCE.md)
-lists the extra Python packages used by the CPU checks.
-
-## Register the tables
-
-From another terminal, register the source tables and build the graph and
-preference snapshots:
-
-```bash
-python3 scripts/dev/merrec_run.py --prepare
-```
-
-The runner connects to `grpc://127.0.0.1:50063`. It registers
-`merrec_events` and `merrec_items`, defines the graph views, runs each
-preparation query, and registers the saved snapshots. Each preparation query
-writes Parquet under `target/merrec-exploration/results/` and a result record
-under `docs/research/merrec/results/`. The runner stops at its first
-preparation error and saves the error record.
+<details>
+<summary>Sample graph, audience features, and validation</summary>
 
 ### Browsing graph
 
@@ -123,17 +182,7 @@ category shares of view events, and repeated views count separately. KMeans,
 HDBSCAN, and UMAP read the same ordered features, with a separate fit in each
 query.
 
-## Run the examples
-
-Copy an example's SQL from its UDTF page into any Flight SQL client
-connected to `127.0.0.1:50063`, or pass a saved query file to the runner:
-
-```bash
-python3 scripts/dev/merrec_run.py \
-  docs/research/merrec/sql/20_cross_category_discovery.sql
-```
-
-## Tables
+### Sample tables
 
 | Table | Rows | Contents |
 |---|---:|---|
@@ -148,7 +197,7 @@ python3 scripts/dev/merrec_run.py \
 The runner also defines views such as `merrec_transitions` and
 `merrec_markets` over the source tables. Those views feed the snapshots above.
 
-## Captured run
+### Recorded results
 
 The [discovery capture](/data/merrec-graph-capture.json) records the executed
 SQL, output schema, query ID, all ten result rows, and one elapsed time of
@@ -176,3 +225,5 @@ has two native fragments and 15 host DataFusion boundaries. The campaign-theme
 statement has five native fragments and zero host boundaries. Their timing
 observations exclude source preparation and provide no controlled performance
 comparison.
+
+</details>

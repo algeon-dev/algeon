@@ -578,6 +578,7 @@ fn lower_unary_math(op: UnaryMathOp, expr: &Expr, output_type: &ArrowDataType) -
     })?;
     let input = lower_expr(expr)?.cast(dtype);
     let evaluated = match op {
+        UnaryMathOp::Negate => -input,
         UnaryMathOp::Sqrt => input.sqrt(),
         UnaryMathOp::Ln => input.log(),
         UnaryMathOp::Exp => input.exp(),

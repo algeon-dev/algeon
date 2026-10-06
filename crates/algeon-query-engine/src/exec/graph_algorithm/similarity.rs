@@ -56,7 +56,7 @@ pub(super) fn execute_similarity(
     let input = inputs.edge_list;
     let resident_key = input.graph_residency().and_then(|descriptor| planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let graph_options = table_graph_options(spec);
     let cugraph_params = similarity_params(spec);
     let algorithm = spec.algorithm;

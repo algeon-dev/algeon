@@ -845,6 +845,10 @@ pub query_planning::execution_contracts::MemoryControlPolicy::max_row_groups_per
 pub query_planning::execution_contracts::MemoryControlPolicy::max_source_chunk_bytes: u64
 pub query_planning::execution_contracts::MemoryControlPolicy::min_retry_chunk_row_groups: usize
 impl query_planning::execution_contracts::MemoryControlPolicy
+pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_RETRY_ATTEMPTS: usize
+pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MAX_SOURCE_CHUNK_BYTES: u64
+pub const query_planning::execution_contracts::MemoryControlPolicy::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: usize
 pub fn query_planning::execution_contracts::MemoryControlPolicy::validate(self) -> query_planning::error::Result<()>
 impl core::convert::From<query_planning::execution_contracts::MemoryControlPolicy> for query_planning::chunk::SourceChunkPlanningPolicy
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::from(query_planning::execution_contracts::MemoryControlPolicy) -> Self
@@ -1089,6 +1093,7 @@ pub fn query_planning::expr::LiteralValue::fmt(&self, &mut core::fmt::Formatter<
 pub enum query_planning::expr::UnaryMathOp
 pub query_planning::expr::UnaryMathOp::Exp
 pub query_planning::expr::UnaryMathOp::Ln
+pub query_planning::expr::UnaryMathOp::Negate
 pub query_planning::expr::UnaryMathOp::Sqrt
 impl core::fmt::Display for query_planning::expr::UnaryMathOp
 pub fn query_planning::expr::UnaryMathOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

@@ -10,13 +10,20 @@ import io
 import json
 from pathlib import Path
 import re
+import shutil
 import sys
+import time
+
+from pyarrow import flight
+import pyarrow.parquet as pq
 
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_CLIENT_PATH = ROOT / "fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_research.py"
 REPORT = ROOT / "docs/research/merrec"
 DATA = ROOT / "target/merrec-exploration/results"
+SOURCE_DATA = ROOT / "fixture/demo/merrec/parquet"
+SOURCE_REGISTRATION = ROOT / "fixture/demo/merrec/scripts/scale/00_register_sources.sql"
 MAX_CSV_ROWS = 100_000
 
 
@@ -55,7 +62,13 @@ def save_record(record):
 
 
 def execute_sql_file(client, path):
-    for index, statement in enumerate(path.read_text().split(";"), start=1):
+    sql = path.read_text()
+    for original, replacement in (
+        ("fixture/demo/merrec/parquet/", str(SOURCE_DATA) + "/"),
+        ("target/merrec-exploration/results/", str(DATA) + "/"),
+    ):
+        sql = sql.replace(original, replacement.replace("'", "''"))
+    for index, statement in enumerate(sql.split(";"), start=1):
         statement = statement.strip()
         if not statement:
             continue
@@ -76,20 +89,68 @@ def execute_sql_file(client, path):
     return True
 
 
+def capture_runtime_artifact(client, name, query_id):
+    path = REPORT / "results" / f"{name}.runtime.jsonl.gz"
+    pending_control = None
+    try:
+        path.unlink(missing_ok=True)
+        if not query_id:
+            return {"status": "skipped", "reason": "query_id_missing"}
+        timeout = client.options.timeout if client.options is not None else -1
+        deadline = time.monotonic() + (min(timeout, 30) if timeout > 0 else 30)
+        remaining = deadline - time.monotonic()
+        while True:
+            options = flight.FlightCallOptions(
+                timeout=remaining,
+                headers=client.options.headers if client.options is not None else None,
+                read_options=client.options.read_options if client.options is not None else None,
+                write_options=client.options.write_options if client.options is not None else None,
+            )
+            frames = iter(client.client.do_action(
+                flight.Action("GetQueryRuntimeArtifact", query_id.encode()), options))
+            control = json.loads(bytes(next(frames).body))
+            if control["runtime_jsonl_follows"]:
+                break
+            if control.get("retryable") is not True:
+                return {"status": "unavailable", "control": control}
+            # Query failure can precede coordinator sealing; only delivery is retried.
+            if pending_control is None:
+                pending_control = control
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "unavailable", "control": pending_control}
+            time.sleep(min(0.1, remaining))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "unavailable", "control": pending_control}
+        runtime_jsonl = bytes(next(frames).body)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(path, "wb") as output:
+            output.write(runtime_jsonl)
+        return {"status": "written", "control": control,
+                "path": str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)}
+    except Exception as error:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        if pending_control is not None and time.monotonic() >= deadline:
+            return {"status": "unavailable", "control": pending_control}
+        return {"status": "error", "error": str(error)}
+
+
 def run_and_export(client, name, sql):
     with contextlib.redirect_stdout(io.StringIO()):
         record = client.run(name, sql)
+    record["runtime_artifact"] = capture_runtime_artifact(client, name, record.get("query_id"))
 
     if record["status"] == "ok":
         if record["rows"] <= MAX_CSV_ROWS:
             export_path = REPORT / "exports" / f"{name}.csv.gz"
             export_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                import pyarrow.parquet as pq
-
                 write_csv_export(pq.read_table(DATA / f"{name}.parquet"), export_path)
                 record["csv_export"] = {"status": "written",
-                                        "path": str(export_path.relative_to(ROOT))}
+                                        "path": str(export_path.relative_to(ROOT))
+                                        if export_path.is_relative_to(ROOT) else str(export_path)}
             except Exception as error:
                 record["csv_export"] = {"status": "error", "error": str(error)}
         else:
@@ -102,10 +163,11 @@ def run_and_export(client, name, sql):
 
 
 def prepare_graph_and_tastes(client):
-    sql_dir = REPORT / "sql"
-    for filename in ("00_register.sql", "01_graph_views.sql"):
-        if not execute_sql_file(client, sql_dir / filename):
-            return False
+    sql_dir = ROOT / "docs/research/merrec/sql"
+    if not register_sources(client):
+        return False
+    if not execute_sql_file(client, sql_dir / "01_graph_views.sql"):
+        return False
 
     for filename in ("prepare_transitions.sql", "prepare_markets.sql"):
         path = sql_dir / filename
@@ -135,19 +197,79 @@ def prepare_graph_and_tastes(client):
     return execute_sql_file(client, sql_dir / "04_register_tastes.sql")
 
 
+def prepare_scale_features(client):
+    sql_dir = ROOT / "fixture/demo/merrec/scripts/scale"
+    if not register_sources(client):
+        return False
+    path = sql_dir / "03_user_features.sql"
+    if run_and_export(client, path.stem, path.read_text())["status"] != "ok":
+        return False
+    return execute_sql_file(client, sql_dir / "00_register_features.sql")
+
+
+def capture_input_manifest(client, registered_data_dir=None):
+    source_paths = {}
+    for name in ("items", "events"):
+        table, _ = client.execute(f"SHOW CREATE TABLE merrec_{name}")
+        definition = table.to_pylist()[0]["definition"]
+        location = re.search(r"\bLOCATION\s+'((?:[^']|'')*)'", definition, re.IGNORECASE)
+        if location is None:
+            raise ValueError(f"merrec_{name} has no external source location")
+        source = Path(location.group(1).replace("''", "'")).resolve()
+        if registered_data_dir is not None and source != (registered_data_dir / f"{name}.parquet").resolve():
+            raise ValueError(f"merrec_{name} already uses {source}; start a fresh server for the requested dataset")
+        source_paths[name] = source
+
+    directories = {path.parent for path in source_paths.values()}
+    if len(directories) != 1:
+        raise ValueError("MerRec source tables belong to different dataset directories")
+    manifest_path = directories.pop().parent / "manifest.json"
+    report_manifest = REPORT / "input_manifest.json"
+    if not manifest_path.is_file():
+        # A reused report directory must not attribute unmanifested inputs to an older dataset.
+        report_manifest.unlink(missing_ok=True)
+        return
+    manifest = json.loads(manifest_path.read_text())
+    for name, source in source_paths.items():
+        if (manifest_path.parent / manifest["tables"][name]["path"]).resolve() != source:
+            raise ValueError(f"manifest does not describe the registered merrec_{name} source")
+    REPORT.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(manifest_path, report_manifest)
+
+
+def register_sources(client):
+    if not execute_sql_file(client, SOURCE_REGISTRATION):
+        return False
+    capture_input_manifest(client, SOURCE_DATA)
+    return True
+
+
 def main(argv=None):
+    global REPORT, DATA, SOURCE_DATA
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="*", type=Path, help="SQL files to execute")
     parser.add_argument("--uri", default="grpc://127.0.0.1:50063")
     setup = parser.add_mutually_exclusive_group()
     setup.add_argument("--register", action="store_true",
-                       help="Execute docs/research/merrec/sql/00_register.sql first")
+                       help="Register the source events and items tables first")
     setup.add_argument("--prepare", action="store_true",
                        help="Build and register MerRec graph and taste snapshots before query files")
+    setup.add_argument("--prepare-scale", action="store_true",
+                       help="Build and register full-scope user features before scale queries")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=180, help="Flight call timeout in seconds")
     parser.add_argument("--suffix", default="", help="Append this to each result name")
+    parser.add_argument("--report-dir", type=Path, default=REPORT,
+                       help="Directory receiving results and CSV exports")
+    parser.add_argument("--results-dir", type=Path, default=DATA,
+                       help="Directory receiving result Parquet")
+    parser.add_argument("--data-dir", type=Path, default=SOURCE_DATA,
+                       help="Directory containing events.parquet and items.parquet")
     args = parser.parse_args(argv)
+
+    REPORT = args.report_dir.resolve()
+    DATA = args.results_dir.resolve()
+    SOURCE_DATA = args.data_dir.resolve()
 
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
@@ -159,7 +281,7 @@ def main(argv=None):
         if not path.is_file():
             parser.error(f"SQL file does not exist: {path}")
 
-    register_path = REPORT / "sql/00_register.sql"
+    register_path = SOURCE_REGISTRATION
     if args.register and not register_path.is_file():
         parser.error(f"registration SQL file does not exist: {register_path}")
 
@@ -167,20 +289,17 @@ def main(argv=None):
     client = research.ResearchClient(args.uri)
     client.options = research.flight.FlightCallOptions(timeout=args.timeout)
 
-    if args.register:
-        register_sql = register_path.read_text()
-        for index, statement in enumerate(register_sql.split(";"), start=1):
-            statement = statement.strip()
-            if not statement:
-                continue
-            try:
-                client.execute(statement)
-            except Exception as error:
-                print(json.dumps({"name": "00_register", "statement": index,
-                                  "status": "error", "error": str(error)}), file=sys.stderr)
-                return 1
-
-    if args.prepare and not prepare_graph_and_tastes(client):
+    try:
+        if args.register and not register_sources(client):
+            return 1
+        if args.prepare and not prepare_graph_and_tastes(client):
+            return 1
+        if args.prepare_scale and not prepare_scale_features(client):
+            return 1
+        if not (args.register or args.prepare or args.prepare_scale):
+            capture_input_manifest(client)
+    except Exception as error:
+        save_record({"name": "prepare", "status": "error", "error": str(error)})
         return 1
 
     had_query_error = False

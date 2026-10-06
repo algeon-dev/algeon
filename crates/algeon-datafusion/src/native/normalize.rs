@@ -366,14 +366,14 @@ fn normalize_native_input(
         }));
     }
     if let Some(window) = plan.downcast_ref::<WindowAggExec>() {
-        let input = normalize_native_input(window.input().as_ref(), candidate, false)?;
+        let input = normalize_native_input(window.input().as_ref(), candidate, true)?;
         return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
             window: NormalizedNativeWindowExec::Unbounded(window),
             input: Box::new(input),
         }));
     }
     if let Some(window) = plan.downcast_ref::<BoundedWindowAggExec>() {
-        let input = normalize_native_input(window.input().as_ref(), candidate, false)?;
+        let input = normalize_native_input(window.input().as_ref(), candidate, true)?;
         return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
             window: NormalizedNativeWindowExec::Bounded(window),
             input: Box::new(input),

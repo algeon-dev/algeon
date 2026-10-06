@@ -46,7 +46,10 @@ pub async fn build_session_context_with_backend(
 }
 
 pub(crate) fn cugraph_sql_config(config: &CugraphServerConfig) -> CugraphSqlConfig {
-    CugraphSqlConfig { default_graph_options: config.default_graph_options.clone() }
+    CugraphSqlConfig {
+        default_graph_options: config.default_graph_options.clone(),
+        host_boundary_config: config.host_boundary_config,
+    }
 }
 
 /// Build the `SessionConfig` for the Flight SQL server from DataFusion's
@@ -99,6 +102,7 @@ mod tests {
         let sql = cugraph_sql_config(cugraph);
 
         assert_eq!(sql.default_graph_options, cugraph.default_graph_options);
+        assert_eq!(sql.host_boundary_config, cugraph.host_boundary_config);
     }
 
     #[test]

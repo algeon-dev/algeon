@@ -313,7 +313,7 @@ cudf_status_t cudf_stable_sort_by_key_ex(
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
                                    cudf_order_t const *column_order,
                                    cudf_null_order_t const *null_precedence,
-                                   int32_t num_keys, cudf_column_handle *out,
+                                   int32_t num_keys, int32_t stable, cudf_column_handle *out,
                                    cudf_exec_options_t const *options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -349,8 +349,11 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
     }
 
     {
-      auto result = cudf::sorted_order(*view, orders, null_orders, exec->stream,
-                                       *exec->mr);
+      auto result = stable != 0
+                        ? cudf::stable_sorted_order(*view, orders, null_orders,
+                                                    exec->stream, *exec->mr)
+                        : cudf::sorted_order(*view, orders, null_orders,
+                                             exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result),
                                         cudf_capture_exec_provenance(*exec));
     }

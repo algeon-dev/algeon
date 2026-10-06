@@ -3,15 +3,15 @@
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Exec, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
     core::error::{FactKeyName, FactValue},
-    frame::dataframe::InfoDetail,
-    ops::sorting,
+    frame::dataframe::{DropDuplicatesOptions, InfoDetail},
+    ops::{sorting, stream_compaction::DuplicateKeepOption},
     testing::prelude::*,
 };
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
     error_context_value, execution_budget_token, last_exec_mr_value, observed_exec_mr_values, reset_exec_observation,
-    run_named_cases, sample_df, series, with_test_runtime,
+    run_named_cases, sample_df, series, series_opt, with_test_runtime,
 };
 
 fn assert_sort_options_validation_error(
@@ -389,6 +389,179 @@ fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
 
     assert_i32_column_eq(&actual, &expected, "id");
     assert_i32_column_eq(&actual, &expected, "tag");
+
+    let identity = df
+        .on(Exec::RETAINED)
+        .prepare_sort_values(Vec::<&str>::new(), SortOptions::new().with_stable(true))
+        .unwrap()
+        .materialize(Exec::RETAINED)
+        .unwrap();
+    assert_i32_column_eq(&identity, &df, "id");
+    assert_i32_column_eq(&identity, &df, "tag");
+}
+
+fn test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties() {
+    let df = DataFrame::from_series([
+        (
+            "src",
+            series_opt(
+                "src",
+                &[
+                    Some(0i64),
+                    Some(1),
+                    Some(0),
+                    Some(1),
+                    None,
+                    None,
+                    Some(2),
+                    Some(2),
+                    Some(3),
+                    Some(3),
+                    Some(4),
+                    Some(4),
+                ],
+            )
+            .unwrap(),
+        ),
+        (
+            "dst",
+            series_opt(
+                "dst",
+                &[
+                    Some(1i64),
+                    Some(0),
+                    Some(1),
+                    Some(0),
+                    Some(7),
+                    Some(7),
+                    None,
+                    None,
+                    Some(4),
+                    Some(4),
+                    Some(5),
+                    Some(5),
+                ],
+            )
+            .unwrap(),
+        ),
+        (
+            "weight",
+            series_opt(
+                "weight",
+                &[
+                    Some(0.0f64),
+                    Some(-0.0),
+                    Some(-0.0),
+                    Some(0.0),
+                    None,
+                    Some(2.0),
+                    Some(f64::NAN),
+                    Some(f64::NAN),
+                    Some(f64::INFINITY),
+                    Some(1.0),
+                    Some(f64::NEG_INFINITY),
+                    Some(1.0),
+                ],
+            )
+            .unwrap(),
+        ),
+        ("edge_id", series("edge_id", &(0..12i32).collect::<Vec<_>>()).unwrap()),
+    ])
+    .unwrap();
+    let reverse = DataFrame::from_series([
+        ("src", df.series("dst").unwrap()),
+        ("dst", df.series("src").unwrap()),
+        ("weight", df.series("weight").unwrap()),
+        ("edge_id", df.series("edge_id").unwrap()),
+    ])
+    .unwrap();
+    let df = df.on(Exec::RETAINED).concat_many(&[&reverse]).unwrap();
+    for nulls_first in [false, true] {
+        let options = SortOptions::new().with_stable(true).with_nulls_first(vec![nulls_first; 3]);
+        for keep in [DuplicateKeepOption::KeepFirst, DuplicateKeepOption::KeepLast, DuplicateKeepOption::KeepNone] {
+            for subset in [&["src", "dst"][..], &["src", "dst", "weight"][..]] {
+                let dedup = DropDuplicatesOptions::builder().subset(subset).keep(keep).build();
+                let expected = df
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight"], options.clone())
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .drop_duplicates(dedup.clone())
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight", "edge_id"], SortOptions::new().with_stable(true))
+                    .unwrap();
+                let actual = df
+                    .on(Exec::RETAINED)
+                    .prepare_sort_values(["src", "dst", "weight"], options.clone())
+                    .unwrap()
+                    .materialize_drop_consecutive_duplicates(dedup, Exec::RETAINED)
+                    .unwrap()
+                    .on(Exec::RETAINED)
+                    .sort_values(["src", "dst", "weight", "edge_id"], SortOptions::new().with_stable(true))
+                    .unwrap();
+                for column in ["src", "dst"] {
+                    assert_eq!(
+                        actual.series(column).unwrap().to_optional_vec::<i64>().unwrap(),
+                        expected.series(column).unwrap().to_optional_vec::<i64>().unwrap(),
+                        "{column}, {keep:?}, {subset:?}, nulls_first={nulls_first}"
+                    );
+                }
+                assert_i32_column_eq(&actual, &expected, "edge_id");
+                let bits = |frame: &DataFrame| {
+                    frame
+                        .series("weight")
+                        .unwrap()
+                        .to_optional_vec::<f64>()
+                        .unwrap()
+                        .into_iter()
+                        .map(|value| value.map(f64::to_bits))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&actual), bits(&expected), "{keep:?}, {subset:?}, nulls_first={nulls_first}");
+            }
+        }
+    }
+}
+
+fn test_prepared_sort_unique_gathers_only_retained_payload_under_cap() {
+    let rows = 262_144usize;
+    let mut columns = vec![
+        ("src".to_string(), series("src", &(0..rows).map(|row| (row % 1024) as i32).collect::<Vec<_>>()).unwrap()),
+        ("dst".to_string(), series("dst", &vec![0i32; rows]).unwrap()),
+    ];
+    for ordinal in 0..16 {
+        let name = format!("payload_{ordinal}");
+        columns.push((name.clone(), series(name, &(0..rows as i64).collect::<Vec<_>>()).unwrap()));
+    }
+    let df = DataFrame::from_series(columns).unwrap();
+    let cap = 12 * 1024 * 1024;
+    assert!(dataframe_device_allocated_size_bytes(&df) > cap);
+    let token = with_test_runtime(|runtime| {
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(cap).with_boundary("sort_unique")).unwrap()
+    });
+    reset_exec_observation();
+    let outcome = token
+        .run("sort_unique", |exec| {
+            df.on(exec)
+                .prepare_sort_values(["src", "dst"], SortOptions::new().with_stable(true))?
+                .materialize_drop_consecutive_duplicates(
+                    DropDuplicatesOptions::builder()
+                        .subset(&["src", "dst"][..])
+                        .keep(DuplicateKeepOption::KeepLast)
+                        .build(),
+                    exec,
+                )
+        })
+        .unwrap();
+    let actual = outcome.value();
+    assert_eq!(actual.num_rows(), 1024);
+    let payload = actual.series("payload_0").unwrap().to_optional_vec::<i64>().unwrap();
+    assert_eq!(payload, ((rows - 1024) as i64..rows as i64).map(Some).collect::<Vec<_>>());
+    let routed_mr = token.memory_resource().testing_raw_handle_value();
+    assert_eq!(actual.series("payload_0").unwrap().as_column().testing_execution_domain_mr_value(), routed_mr);
+    assert!(observed_exec_mr_values().into_iter().all(|value| value == routed_mr));
+    assert!(outcome.report().allocator_high_water_bytes().unwrap() <= cap);
 }
 
 fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
@@ -485,12 +658,12 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
         "stable prepared sorted-order output should retain the device manager resource",
     );
     assert!(
-        prepare_exec_mrs.len() >= 3,
-        "stable prepared sort should observe at least key copy, tie-breaker sequence, and sorted-order execution; got {prepare_exec_mrs:?}",
+        !prepare_exec_mrs.is_empty(),
+        "stable prepared sort must execute with the device manager resource; got {prepare_exec_mrs:?}",
     );
     assert!(
         prepare_exec_mrs.iter().all(|&observed| observed == manager_mr),
-        "stable prepared sort tie-breaker, stable key copies, and sorted-order execution should route through the device manager resource; got {prepare_exec_mrs:?}, expected {manager_mr}",
+        "stable prepared sort execution must route through the device manager resource; got {prepare_exec_mrs:?}, expected {manager_mr}",
     );
     assert_eq!(outcome.report().request().boundary(), "stable_final_sort");
     assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
@@ -614,6 +787,14 @@ fn dataframe_sort_values_tests_cases() {
         (
             "test_prepare_sort_values_stable_matches_sort_values_for_ties",
             test_prepare_sort_values_stable_matches_sort_values_for_ties,
+        ),
+        (
+            "test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties",
+            test_prepared_sort_unique_preserves_nullable_keys_and_weight_ties,
+        ),
+        (
+            "test_prepared_sort_unique_gathers_only_retained_payload_under_cap",
+            test_prepared_sort_unique_gathers_only_retained_payload_under_cap,
         ),
         (
             "test_sorted_order_reservation_matches_retained_prepared_sort_allocation",

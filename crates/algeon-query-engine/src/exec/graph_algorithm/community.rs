@@ -23,7 +23,7 @@ pub(super) fn execute_louvain(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let lv_params = louvain_params(params)?;
 
@@ -66,7 +66,7 @@ pub(super) fn execute_leiden(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let leiden_p = leiden_params(params)?;
     let seed = params.seed;
@@ -114,7 +114,7 @@ pub(super) fn execute_ecg(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let ecg_p = ecg_params(params)?;
     let seed = params.seed;
@@ -162,7 +162,7 @@ pub(super) fn execute_spectral_modularity_maximization(
     };
 
     let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
+    let (edges, _) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let spectral_p = spectral_clustering_params(params)?;
     let (n_clusters, seed) = (params.n_clusters, params.seed);

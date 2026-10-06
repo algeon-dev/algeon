@@ -12,7 +12,7 @@ use crate::exec::{ExecutionMetrics, output::QueryOutput};
 pub(in crate::exec) fn execute_bounded_pipeline(
     context: &ExecutionContext,
     admitted: &AdmittedPlan,
-    gpu_inputs: &GpuResidentInputMap,
+    gpu_inputs: GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {

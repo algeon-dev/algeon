@@ -32,14 +32,6 @@ where
         &mut cugraph::Graph<T>,
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
-    let export = edges.try_prepare_device_table_export().map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
-            "query_engine.graph_algorithm.prepare_table_export",
-            "failed to prepare cuGraph edge-list table export",
-        )
-        .with_source(error)
-    })?;
     let runtime = std::sync::Arc::new(context.runtime()?);
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
         "query_engine.graph_algorithm.resource_handle",
@@ -49,18 +41,35 @@ where
         "query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
     ))?;
-    let _graph_build_range = graph_build_range(operation);
-    let mut graph = graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
-        "query_engine.graph_algorithm.build_graph",
-        "failed to build cuGraph graph from edge-list table",
-    ))?;
+    let mut graph = {
+        let construction_edges = edges;
+        let export = construction_edges.try_prepare_device_table_export().map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::CudfDependencyFailure,
+                "query_engine.graph_algorithm.prepare_table_export",
+                "failed to prepare cuGraph edge-list table export",
+            )
+            .with_source(error)
+        })?;
+        let _graph_build_range = graph_build_range(operation);
+        let mut graph =
+            graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
+                "query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+        graph.synchronize_input_reads().map_err(map_cugraph_error(
+            "query_engine.graph_algorithm.complete_input_reads",
+            "failed to complete cuGraph construction input reads",
+        ))?;
+        graph
+    };
     f(runtime.as_ref(), &entered, &mut graph)
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn project_edge_list(frame: &DataFrame, spec: &GraphAlgorithmSpec) -> Result<(DataFrame, cudf::TypeId)> {
-    let source_type = validate_edge_column(frame, &spec.edge_columns.source, EdgeColumnRole::Vertex)?;
-    let destination_type = validate_edge_column(frame, &spec.edge_columns.destination, EdgeColumnRole::Vertex)?;
+pub(super) fn project_edge_list(frame: DataFrame, spec: &GraphAlgorithmSpec) -> Result<(DataFrame, cudf::TypeId)> {
+    let source_type = validate_edge_column(&frame, &spec.edge_columns.source, EdgeColumnRole::Vertex)?;
+    let destination_type = validate_edge_column(&frame, &spec.edge_columns.destination, EdgeColumnRole::Vertex)?;
     if source_type.id() != destination_type.id() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -80,10 +89,10 @@ pub(super) fn project_edge_list(frame: &DataFrame, spec: &GraphAlgorithmSpec) ->
     if spec.algorithm.consumes_weight()
         && let Some(weight) = &spec.edge_columns.weight
     {
-        validate_edge_column(frame, weight, EdgeColumnRole::Weight)?;
+        validate_edge_column(&frame, weight, EdgeColumnRole::Weight)?;
     }
     if let Some(edge_id) = &spec.edge_columns.edge_id {
-        let edge_id_type = validate_edge_column(frame, edge_id, EdgeColumnRole::EdgeId)?;
+        let edge_id_type = validate_edge_column(&frame, edge_id, EdgeColumnRole::EdgeId)?;
         if edge_id_type.id() != source_type.id() {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,

@@ -1,4 +1,5 @@
 use super::{env::EnvValues, *};
+use crate::cugraph_sql::GpuIslandHostBoundaryConfig;
 
 /// Enables registration of cuGraph SQL functions. Defaults to `true`; set it
 /// to `false` to hide the SQL frontend. A feature-off server still
@@ -13,9 +14,16 @@ pub struct CugraphServerConfig {
     /// Operator-level graph construction defaults used by cuGraph SQL UDTFs.
     /// Named graph arguments still override these values for one call.
     pub default_graph_options: CugraphGraphOptions,
+    /// Cumulative Arrow staging limits, independent of the query device grant.
+    pub host_boundary_config: GpuIslandHostBoundaryConfig,
 }
-pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {
-    let requested = values.any_present([ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV]);
+pub(super) fn cugraph_config(
+    values: &mut EnvValues<'_>,
+    file: &ServerCugraphFileConfig,
+) -> Result<Option<CugraphServerConfig>> {
+    let requested = values.any_present([ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV])
+        || file.max_input_staging_bytes.is_some()
+        || file.max_output_staging_bytes.is_some();
     let enabled = values.optional_bool(ALGEON_SERVER_CUGRAPH_ENABLED_ENV)?.unwrap_or(true);
     if !enabled {
         if requested {
@@ -33,7 +41,18 @@ pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<Cugrap
             parse_cugraph_construction_policy(ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, &raw)?;
     }
 
-    Ok(Some(CugraphServerConfig { default_graph_options }))
+    let defaults = GpuIslandHostBoundaryConfig::default();
+    let input_bytes = file.max_input_staging_bytes.unwrap_or(defaults.max_input_staging_bytes());
+    let output_bytes = file.max_output_staging_bytes.unwrap_or(defaults.max_output_staging_bytes());
+    if input_bytes == 0 {
+        return Err(ServerError::invalid_config("cugraph.max_input_staging_bytes", "must be greater than zero"));
+    }
+    if output_bytes == 0 {
+        return Err(ServerError::invalid_config("cugraph.max_output_staging_bytes", "must be greater than zero"));
+    }
+    let host_boundary_config = GpuIslandHostBoundaryConfig::try_new(input_bytes, output_bytes)
+        .map_err(|error| ServerError::configuration_with_source("invalid cuGraph host staging limits", error))?;
+    Ok(Some(CugraphServerConfig { default_graph_options, host_boundary_config }))
 }
 
 pub(super) fn parse_cugraph_construction_policy(

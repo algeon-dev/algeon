@@ -262,6 +262,7 @@ pub(crate) fn sort_by_key_impl(
 pub(crate) fn sorted_order_impl(
     input: &TableView<'_>,
     ordering: SortKeyConfig<'_>,
+    stable: bool,
     execution: SortExecution<'_>,
 ) -> Result<Column> {
     let operation = execution.operation;
@@ -276,6 +277,7 @@ pub(crate) fn sorted_order_impl(
             params.column_order,
             params.null_precedence,
             num_keys_i32,
+            i32::from(stable),
             &mut out,
             execution.exec_options,
         )

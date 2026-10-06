@@ -8,7 +8,7 @@ use datafusion::{
     sql::{
         parser::Statement as DataFusionSqlStatement,
         sqlparser::ast::{
-            DescribeAlias, ObjectName, ObjectNamePart, Query as SqlQuery, ShowStatementOptions,
+            DescribeAlias, ObjectName, ObjectNamePart, Query as SqlQuery, ShowCreateObject, ShowStatementOptions,
             Statement as SqlStatement, TableFactor, Visit, Visitor,
         },
     },
@@ -55,6 +55,7 @@ impl DatafusionAlgeonFlightSqlService {
             SqlStatement::ShowColumns { show_options, .. } if show_columns_options_are_supported(show_options) => {
                 StatementExecutionDomain::Metadata
             },
+            SqlStatement::ShowCreate { obj_type: ShowCreateObject::Table, .. } => StatementExecutionDomain::Metadata,
             SqlStatement::ExplainTable { describe_alias: DescribeAlias::Describe | DescribeAlias::Desc, .. }
             | SqlStatement::Explain { describe_alias: DescribeAlias::Describe | DescribeAlias::Desc, .. } => {
                 StatementExecutionDomain::Metadata

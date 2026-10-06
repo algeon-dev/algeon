@@ -141,6 +141,7 @@ fn sorted_key_order(
     let sorted_original_codes = sorting::sorted_order_impl(
         &encoded_keys_table,
         sorting::SortKeyConfig::new(Some(&[Order::Ascending]), Some(&[NullOrder::After])),
+        false,
         sorting::SortExecution::new(output_domain, exec_options, operation),
     )
     .map_err(|e| e.reanchor(operation))?;

@@ -11,67 +11,114 @@ described in the KDD 2025 paper *MerRec: A Large-scale Multipurpose Mercari Data
 for Consumer-to-Consumer Recommendation Systems* (Lichi Li, Zainul Abi Din,
 Zhen Tan, Sam London, Tianlong Chen, Ajay Daptardar).
 
-Upstream organizes files across six monthly partitions in 2023:
-`20230501`, `20230601`, `20230701`, `20230801`, `20230901`, and `20231001`.
-Each partition holds approximately 300 to 400 Parquet shards (~65 MB each).
+The pinned source revision is `dd2b3c6f6f19d4814bb839ee6e8ab41926a14343`.
+[`scripts/source_files.json`](scripts/source_files.json) records the byte size and
+SHA-256 of all 2,170 shards across six monthly partitions. Their total compressed
+size is 166,075,974,430 bytes. October has 409 shards and 247,882,433 events;
+the six-month dataset has 1,268,092,738 events. Full conversion retains those
+events and produces 82,614,392 unique items and 5,566,055 users. Item attributes
+are stored once per item; normalized file sizes can be smaller than the raw
+event shards without removing events.
 
-## Acquisition
+## Acquisition and conversion
 
-Download shards using the Hugging Face CLI:
+The default scope is the complete October partition. Missing shards cause an
+error. The converter never substitutes `raw/sample/` for a monthly partition.
+`--download` retrieves missing or wrong-size shards at the pinned revision,
+checks downloaded bytes against the source inventory, and reuses complete files.
 
-```bash
-# Download a single shard for evaluation (~65 MB, ~494K events)
-hf download mercari-us/merrec 20231001/000000000000.parquet \
-  --repo-type dataset --local-dir fixture/demo/merrec/raw
-
-# Download a complete monthly partition (e.g. 20231001)
-hf download mercari-us/merrec --include "20231001/*.parquet" \
-  --repo-type dataset --local-dir fixture/demo/merrec/raw
-```
-
-Alternatively, invoke `fixture/demo/merrec/scripts/prepare.py --download-sample` to retrieve the first shard
-of partition `20231001` directly into `raw/sample/`.
-
-## Conversion
+On the development host, put downloads, final tables, and DuckDB scratch on NVMe:
 
 ```bash
-fixture/fixture.sh merrec prepare
-# same as: python3 fixture/demo/merrec/scripts/prepare.py
+MERREC_ROOT=/mnt/algeon-nvme/algeon/fixture/demo/merrec
+
+# Validate the conversion with 19,022,480 events from 32 complete shards.
+fixture/fixture.sh merrec prepare --download --shards 32 \
+  --raw-dir "$MERREC_ROOT/raw" --out-dir "$MERREC_ROOT/validation-32" \
+  --duckdb-memory-limit 32GB --duckdb-threads 8
+
+# Convert all 247,882,433 October events.
+fixture/fixture.sh merrec prepare --download \
+  --out-dir "$MERREC_ROOT" --duckdb-memory-limit 32GB --duckdb-threads 8 --force
+
+# The formal demo dataset contains all six months, without a row limit.
+fixture/fixture.sh merrec prepare --partition all --download --download-workers 32 \
+  --out-dir "$MERREC_ROOT" --duckdb-memory-limit 32GB --duckdb-threads 8 --force
 ```
 
-The converter requires the `duckdb` CLI and `pyarrow`. DuckDB parses source
-Parquet shards, enforces key constraints, deduplicates item attributes to their
-latest timestamp, and sorts intermediates using external-memory spilling. PyArrow
-streams the sorted tables into Snappy-compressed format 2.6 Parquet with GPU scan
-properties.
+The 32GB DuckDB setting limits its managed host memory on this development host;
+smaller hosts should set their own limit. DuckDB spills sorts and item
+partitioning into `work/`. Item attributes are partitioned by a hash of
+`item_id` into 64 groups before latest-row aggregation. Equal IDs from different
+months share a group. Conversion preserves all selected events and uses NVMe
+for partition files and external sorts; process RSS can exceed DuckDB's managed
+memory limit. Events are sorted once; the streaming Parquet writer assigns
+dense event IDs across row groups after that sort. The GPU query grant is configured separately by the
+server. Arrow reads one source row group at a time, then assembles the configured
+output row groups; decoded dictionary buffers do not accumulate across the file.
+Generated paths in the repository point to the NVMe dataset through
+`parquet/` and `manifest.json` symlinks. With those links, default download and
+scratch directories follow the physical output location as well.
+
+A sample requires an explicit command and a separate destination:
+
+```bash
+fixture/fixture.sh merrec prepare --download-sample \
+  --raw-dir "$MERREC_ROOT/raw" --out-dir "$MERREC_ROOT/sample"
+```
+
+`--input-parquet` accepts a file, directory, or glob for caller-selected sources.
+That scope is recorded as `explicit`; it carries no claim of upstream partition
+completeness. `--shards N` selects the first N complete shards of one month.
+`--limit N` is available only for an explicitly selected subset. Full monthly
+and six-month conversions retain every source event.
+
+The converter requires the `duckdb` CLI and `pyarrow`. DuckDB deduplicates item
+attributes to the latest timestamp across the selected sources and sorts the
+intermediates using external-memory spilling. PyArrow streams the results into
+Snappy-compressed format 2.6 Parquet. Existing tables remain available until both
+replacement tables pass validation; stop serving queries before installing a
+new dataset because the table files are replaced individually.
 
 Options:
 
-- `--partition NAME`: Monthly partition folder under `raw/` (default: `20231001`).
+- `--partition NAME|all`: Complete monthly partition, or all six months (default: `20231001`).
+- `--download`: Acquire missing shards for the selected scope.
+- `--download-workers N`: Concurrent downloads (default: 8).
+- `--download-sample`: Select and acquire the first shard of one month.
+- `--shards N`: Select the first N complete shards of one month.
+- `--raw-dir PATH`: Source directory (default: beside the physical `parquet/` directory).
 - `--input-parquet PATH`: Explicit Parquet file, directory, or glob pattern.
 - `--out-dir PATH`: Directory receiving `parquet/` and `manifest.json`.
-- `--work-dir PATH`: Directory for DuckDB scratch files and intermediate tables.
-- `--event-row-group-rows N`: Row group size for `events` (default: 1,048,576).
-- `--item-row-group-rows N`: Row group size for `items` (default: 131,072).
-- `--limit N`: Limit total input rows read from source files.
-- `--download-sample`: Fetch the first shard from Hugging Face if raw inputs are absent.
-- `--force`: Overwrite existing Parquet tables and manifest.
+- `--work-dir PATH`: DuckDB scratch parent (default: beside the physical `parquet/` directory).
+- `--duckdb-memory-limit SIZE`, `--duckdb-threads N`: Host conversion resources.
+- `--event-row-group-rows N`: Event row group size (default: 1,048,576).
+- `--item-row-group-rows N`: Item row group size (default: 131,072).
+- `--limit N`: Input row limit for explicit subsets.
+- `--skip-sha256`: Omit source hashing on conversion; downloads still verify hashes.
+- `--keep-work`: Retain conversion intermediates.
+- `--force`: Replace existing tables and manifest after validation.
 
 Output layout:
 
 ```
-manifest.json       source file metadata, row counts, and table layouts
+manifest.json       source revision, selection, input rows, counts, and layouts
 parquet/
   items.parquet     one row per unique item_id, sorted by item_id
   events.parquet    one row per interaction event, sorted by (event_time, event_id)
 ```
 
-The conversion verifies these invariants before writing final tables:
+The conversion verifies non-null event keys and action types, non-negative
+prices, and event references to the item table. Output event count must equal
+the source footer row-count sum, or its explicitly requested row limit. The
+manifest records the selected scope and each source file's SHA-256.
 
-- Every event row contains non-null `item_id`, `user_id`, `stime`, `session_id`, `sequence_id`, and `event_id`.
-- Every event references an `item_id` present in `items`.
-- `items.item_id` is unique.
-- Non-null prices are non-negative.
+The item table represents the latest item state within the selected scope.
+Temporal model training must use attributes available at the feature timestamp;
+the existing supervised experiment reads raw events for that purpose.
+
+The [scale demo workflow](scripts/scale/README.md) records server configuration,
+CPU comparisons, batched vector inputs, and the observed graph staging limit.
 
 ## Tables
 
@@ -139,9 +186,9 @@ WHERE e.event_time >= TIMESTAMP '2023-10-01 00:00:00'
 GROUP BY i.c0_name, e.event_type
 ORDER BY event_count DESC;
 
-SELECT session_id, count(*) AS session_events, min(event_time) AS start_time, max(event_time) AS end_time
+SELECT user_id, session_id, count(*) AS session_events, min(event_time) AS start_time, max(event_time) AS end_time
 FROM events
-GROUP BY session_id
+GROUP BY user_id, session_id
 ORDER BY session_events DESC
 LIMIT 10;
 

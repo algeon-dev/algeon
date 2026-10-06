@@ -388,8 +388,10 @@ fn backend_install_with_cugraph_sql_preserves_conflicting_reinstall_error() {
     // builder whose table functions are empty, so the conflicting family
     // projection is the failure.
     let builder = SessionStateBuilder::new().with_config(installed.config().as_ref().unwrap().clone());
-    let conflicting =
-        CugraphSqlConfig { default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() } };
+    let conflicting = CugraphSqlConfig {
+        default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
+        ..Default::default()
+    };
     let error = builder.try_with_cugraph_sql(conflicting).unwrap_err();
     let typed = error.find_algeon_error().expect("structured error");
     assert_eq!(typed.code(), ErrorCode::InvalidRequest);

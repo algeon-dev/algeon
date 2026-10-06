@@ -2848,12 +2848,13 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Sorted order with explicit execution context.\n\n Output is a single INT32 column.\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
+    #[doc = " Sorted order with explicit execution context.\n\n Output is a single INT32 column. A nonzero `stable` preserves the input\n order of rows whose keys compare equal.\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
     pub fn cudf_sorted_order_ex(
         input: cudf_table_view_handle,
         column_order: *const cudf_order_t,
         null_precedence: *const cudf_null_order_t,
         num_keys: i32,
+        stable: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
@@ -2894,6 +2895,16 @@ unsafe extern "C" {
         keep: cudf_duplicate_keep_option_t,
         null_equality: cudf_stream_compaction_null_equality_t,
         out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Return row indices after removing consecutive duplicates in a retained order.\n `row_order` must be a non-null INT32 permutation of the input row indices.\n Equal key rows must be adjacent in that order. First/last refer to that order.\n All input handles and execution resources must remain alive through completion."]
+    pub fn cudf_ordered_unique_indices_ex(
+        input: cudf_table_view_handle,
+        row_order: cudf_column_view_handle,
+        keys: *const core::ffi::c_int,
+        num_keys: core::ffi::c_int,
+        keep: cudf_duplicate_keep_option_t,
+        out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
     #[doc = " Convert string column to lowercase with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]

@@ -375,7 +375,7 @@ fn unsupported_window_frame_category(frame: &WindowFrame, standard_function: boo
 }
 
 fn is_whole_partition_window_frame(frame: &WindowFrame) -> bool {
-    frame.units == WindowFrameUnits::Rows
+    matches!(frame.units, WindowFrameUnits::Rows | WindowFrameUnits::Range)
         && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if value.is_null())
         && matches!(&frame.end_bound, WindowFrameBound::Following(value) if value.is_null())
 }

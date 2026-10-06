@@ -74,6 +74,18 @@ cudf_status_t cudf_unique_ex(cudf_table_view_handle input,
                              cudf_table_handle* out,
                              cudf_exec_options_t const* options);
 
+/// Return row indices after removing consecutive duplicates in a retained order.
+/// `row_order` must be a non-null INT32 permutation of the input row indices.
+/// Equal key rows must be adjacent in that order. First/last refer to that order.
+/// All input handles and execution resources must remain alive through completion.
+cudf_status_t cudf_ordered_unique_indices_ex(cudf_table_view_handle input,
+                                    cudf_column_view_handle row_order,
+                                    int const* keys,
+                                    int num_keys,
+                                    cudf_duplicate_keep_option_t keep,
+                                    cudf_column_handle* out,
+                                    cudf_exec_options_t const* options);
+
 #ifdef __cplusplus
 }
 #endif

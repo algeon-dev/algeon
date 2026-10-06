@@ -48,18 +48,7 @@ pub(in crate::exec::bounded) fn apply_source_adjacent_aggregate_chunk_caps(
     hints: AggregateInputHints,
 ) -> SourceChunkPlanningPolicy {
     let batching_policy = BoundedSourceBatchingPolicy::default();
-    if hints.adjacent_stages {
-        let target_chunk_bytes = batching_policy.source_adjacent_aggregate_target_chunk_bytes();
-        policy.max_source_chunk_bytes =
-            Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
-        policy.mark_downstream_cap("source_adjacent_aggregate_downstream_cap");
-    }
     if hints.grouped_string_key {
-        let target_chunk_bytes = batching_policy.source_adjacent_grouped_aggregate_target_chunk_bytes();
-        policy.max_source_chunk_bytes =
-            Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
-        // Keep string-key grouped aggregates from widening back to whole-file
-        // LocalParquetThroughput morsels while connection quality is unknown.
         policy.max_row_groups_per_chunk = policy
             .max_row_groups_per_chunk
             .min(batching_policy.source_adjacent_grouped_aggregate_max_operator_row_groups());
@@ -410,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn string_key_cap_keeps_384_mib_without_forcing_single_row_group() {
+    fn string_key_row_group_cap_preserves_grant_derived_byte_target() {
         let policy = apply_source_adjacent_aggregate_chunk_caps(
             throughput_like_policy(),
             AggregateInputHints { adjacent_stages: true, grouped_string_key: true },
@@ -420,10 +409,7 @@ mod tests {
             policy.max_row_groups_per_chunk,
             BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS
         );
-        assert_eq!(
-            policy.max_source_chunk_bytes,
-            Some(BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
-        );
+        assert_eq!(policy.max_source_chunk_bytes, Some(32 * 1024 * 1024 * 1024));
         assert_eq!(policy.source_chunk_planning_reason(), "source_adjacent_grouped_aggregate_downstream_cap");
     }
 }

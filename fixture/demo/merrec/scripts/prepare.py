@@ -9,7 +9,7 @@ Output under --out-dir (default: this directory):
 - parquet/events.parquet  one row per interaction event, sorted by (event_time, event_id)
 - manifest.json           source identity, counts, and per-table Parquet layout
 
-DuckDB parses the source parquet, filters invalid rows, checks join and key
+DuckDB parses the source parquet, rejects invalid rows, checks join and key
 invariants, deduplicates item attributes to their latest state, and sorts with
 external-memory spilling. PyArrow then streams the sorted intermediates into
 the final Parquet layout with native GPU scan options.
@@ -42,6 +42,8 @@ import sys
 import tempfile
 import time
 import urllib.request
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,9 +59,9 @@ DEFAULT_PARTITION = "20231001"
 DEFAULT_EVENT_ROW_GROUP_ROWS = 1_048_576
 DEFAULT_ITEM_ROW_GROUP_ROWS = 131_072
 BLOOM_FPP = 0.01
-SAMPLE_SHARD_URL = (
-    "https://huggingface.co/datasets/mercari-us/merrec/resolve/main/20231001/000000000000.parquet"
-)
+SOURCE_FILES = json.loads((Path(__file__).with_name("source_files.json")).read_text())
+SOURCE_REVISION = SOURCE_FILES["revision"]
+PARTITIONS = SOURCE_FILES["partitions"]
 
 ITEM_SCHEMA = pa.schema(
     [
@@ -146,7 +148,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--partition",
         default=DEFAULT_PARTITION,
-        help=f"Monthly partition (default: {DEFAULT_PARTITION})",
+        choices=[*PARTITIONS, "all"],
+        help=f"Complete monthly partition or all six months (default: {DEFAULT_PARTITION})",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        type=Path,
+        help="Source directory (default: beside the physical parquet directory)",
+    )
+    parser.add_argument(
+        "--shards",
+        type=int,
+        help="Use the first N complete shards of one month for scale validation",
     )
     parser.add_argument(
         "--input-parquet",
@@ -161,7 +174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        help="Parent directory for temporary intermediates and DuckDB spills (default: <out-dir>/work)",
+        help="DuckDB scratch parent (default: beside the physical parquet directory)",
     )
     parser.add_argument(
         "--event-row-group-rows",
@@ -189,10 +202,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="Maximum input rows to read from source Parquet",
     )
-    parser.add_argument(
+    acquisition = parser.add_mutually_exclusive_group()
+    acquisition.add_argument(
+        "--download",
+        action="store_true",
+        help="Download missing shards for the selected partition or all six months",
+    )
+    acquisition.add_argument(
         "--download-sample",
         action="store_true",
-        help="Download sample shard from Hugging Face if no raw source files exist",
+        help="Explicitly select and download only the first shard of one month",
+    )
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        default=8,
+        help="Concurrent shard downloads (default: 8)",
     )
     parser.add_argument(
         "--skip-sha256",
@@ -218,7 +243,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--duckdb-threads must be >= 1")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be >= 1")
-    args.work_dir = args.work_dir or args.out_dir / "work"
+    if args.download_workers < 1:
+        parser.error("--download-workers must be >= 1")
+    if args.shards is not None and args.shards < 1:
+        parser.error("--shards must be >= 1")
+    if args.partition == "all" and (args.shards is not None or args.download_sample):
+        parser.error("--shards and --download-sample require one monthly partition")
+    if args.input_parquet and (args.download or args.download_sample or args.shards is not None):
+        parser.error("--input-parquet cannot be combined with --download, --download-sample, or --shards")
+    if args.shards is not None and args.shards > len(PARTITIONS[args.partition]):
+        parser.error(f"partition {args.partition} has only {len(PARTITIONS[args.partition])} shards")
+    if args.download_sample and args.shards is not None:
+        parser.error("--download-sample cannot be combined with --shards")
+    if args.limit is not None and not (args.input_parquet or args.download_sample or args.shards is not None):
+        parser.error("--limit requires an explicit subset (--input-parquet, --download-sample, or --shards)")
+    args.raw_dir = args.raw_dir or (args.out_dir / "parquet").resolve().parent / "raw"
+    # Follow the output link so DuckDB spills share the generated data's filesystem.
+    args.work_dir = args.work_dir or (args.out_dir / "parquet").resolve().parent / "work"
     return args
 
 
@@ -230,13 +271,24 @@ def sql_string(value: Path | str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def download_sample_shard(dest: Path) -> Path:
+def download_shard(partition: str, index: int, dest: Path, metadata: dict[str, Any]) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    log(f"downloading sample shard: {SAMPLE_SHARD_URL} -> {dest}")
+    url = f"https://huggingface.co/datasets/mercari-us/merrec/resolve/{SOURCE_REVISION}/{partition}/{index:012d}.parquet"
+    log(f"downloading {partition}/{index:012d}.parquet -> {dest}")
     tmp_dest = dest.with_suffix(".parquet.tmp")
-    req = urllib.request.Request(SAMPLE_SHARD_URL, headers={"User-Agent": "Algeon-Fixture-Downloader/1.0"})
-    with urllib.request.urlopen(req) as resp, tmp_dest.open("wb") as out:
-        shutil.copyfileobj(resp, out)
+    req = urllib.request.Request(url, headers={"User-Agent": "Algeon-Fixture-Downloader/1.0"})
+    hasher = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp, tmp_dest.open("wb") as out:
+            while chunk := resp.read(8 * 1024 * 1024):
+                out.write(chunk)
+                hasher.update(chunk)
+        if tmp_dest.stat().st_size != metadata["bytes"] or hasher.hexdigest() != metadata["sha256"]:
+            raise SystemExit(f"source integrity check failed: {dest}")
+        pq.ParquetFile(tmp_dest)
+    except BaseException:
+        tmp_dest.unlink(missing_ok=True)
+        raise
     tmp_dest.replace(dest)
     log(f"downloaded {dest} ({dest.stat().st_size:,} bytes)")
     return dest
@@ -261,71 +313,102 @@ def find_input_files(args: argparse.Namespace) -> list[Path]:
             raise SystemExit(f"directory contains no parquet files: {path}")
         raise SystemExit(f"specified --input-parquet path not found: {args.input_parquet}")
 
-    # Check partition subdirectory under raw/
-    part_dir = args.out_dir / "raw" / args.partition
-    if part_dir.is_dir():
-        files = sorted(part_dir.rglob("*.parquet"))
-        if files:
-            return files
+    partitions = list(PARTITIONS) if args.partition == "all" else [args.partition]
+    selected = []
+    for partition in partitions:
+        count = 1 if args.download_sample else (args.shards or len(PARTITIONS[partition]))
+        for index, metadata in enumerate(PARTITIONS[partition][:count]):
+            path = args.raw_dir / partition / f"{index:012d}.parquet"
+            if args.download_sample:
+                path = args.raw_dir / "sample" / f"{partition}_{index:012d}.parquet"
+            selected.append((partition, index, path, metadata))
 
-    # Check sample subdirectory under raw/
-    sample_dir = args.out_dir / "raw" / "sample"
-    if sample_dir.is_dir():
-        files = sorted(sample_dir.glob("*.parquet"))
-        if files:
-            return files
-
-    # Check raw/ directly
-    raw_dir = args.out_dir / "raw"
-    if raw_dir.is_dir():
-        files = sorted(raw_dir.glob("*.parquet"))
-        if files:
-            return files
-        subfiles = sorted(raw_dir.rglob("*.parquet"))
-        if subfiles:
-            return subfiles
-
-    if args.download_sample:
-        target = args.out_dir / "raw" / "sample" / f"{args.partition}_000000000000.parquet"
-        download_sample_shard(target)
-        return [target]
-
-    return []
+    missing = [entry for entry in selected if not entry[2].is_file() or entry[2].stat().st_size != entry[3]["bytes"]]
+    if missing and not (args.download or args.download_sample):
+        raise SystemExit(
+            f"incomplete MerRec source: {len(missing)} of {len(selected)} selected shards missing or wrong size; "
+            "pass --download to acquire the selected scope, or --download-sample for an explicit sample"
+        )
+    if missing:
+        with ThreadPoolExecutor(max_workers=args.download_workers) as executor:
+            list(executor.map(lambda entry: download_shard(*entry), missing))
+    return [entry[2] for entry in selected]
 
 
-def duckdb_script(
-    args: argparse.Namespace,
-    input_files: list[Path],
-    items_path: Path,
-    events_path: Path,
-    stats_path: Path,
-) -> str:
+def duckdb_settings(args: argparse.Namespace) -> list[str]:
     settings = [".mode trash", f"SET temp_directory = {sql_string(args.work_dir / 'duckdb-tmp')};"]
     settings.append("SET preserve_insertion_order = true;")
     if args.duckdb_memory_limit:
         settings.append(f"SET memory_limit = {sql_string(args.duckdb_memory_limit)};")
     if args.duckdb_threads:
         settings.append(f"SET threads = {args.duckdb_threads};")
+    return settings
 
+
+def source_sql(args: argparse.Namespace, input_files: list[Path]) -> str:
     file_list = ", ".join(sql_string(p) for p in input_files)
     limit_clause = f" LIMIT {args.limit}" if args.limit is not None else ""
+    # A limited selection is materialized once so repeated scans retain identical rows.
+    source_kind = "TABLE" if args.limit is not None else "VIEW"
+    return f"CREATE {source_kind} src AS SELECT * FROM read_parquet([{file_list}]){limit_clause};"
 
-    return "\n".join(
-        settings
-        + [
-            ".print load merrec parquet",
-            f"""
-CREATE TABLE src AS
-SELECT * FROM read_parquet([{file_list}]){limit_clause};
+
+def partition_items(args: argparse.Namespace, input_files: list[Path]) -> list[Path]:
+    fields = ", ".join(name for name in ITEM_SCHEMA.names if name != "category_path")
+    partition_dir = args.work_dir / "item-source"
+    # Equal item IDs share a bucket, keeping latest-row aggregation bounded across months.
+    run_duckdb("\n".join(duckdb_settings(args) + [
+        source_sql(args, input_files),
+        """
 SELECT CASE WHEN count(*) FILTER (item_id IS NULL OR user_id IS NULL OR stime IS NULL OR session_id IS NULL OR sequence_id IS NULL OR event_id IS NULL) > 0
             THEN error('merrec source has rows without item_id, user_id, stime, session_id, sequence_id, or event_id')
             WHEN count(*) FILTER (price IS NOT NULL AND price < 0) > 0
             THEN error('merrec source has negative prices') END
 FROM src;
 """,
+        *([f"COPY src TO {sql_string(args.work_dir / 'selected.parquet')} (FORMAT parquet, COMPRESSION snappy);"]
+          if args.limit is not None else []),
+        ".print partition item attributes",
+        f"COPY (SELECT {fields}, stime, hash(item_id) % 64 AS bucket FROM src) "
+        f"TO {sql_string(partition_dir)} (FORMAT parquet, COMPRESSION snappy, PARTITION_BY (bucket));",
+    ]))
+    partitions = sorted(partition_dir.glob("bucket=*"))
+    if not partitions:
+        empty_partition = partition_dir / "bucket=0"
+        empty_partition.mkdir(parents=True, exist_ok=True)
+        run_duckdb("\n".join(duckdb_settings(args) + [
+            source_sql(args, input_files),
+            f"COPY (SELECT {fields}, stime FROM src WHERE false) TO "
+            f"{sql_string(empty_partition / 'empty.parquet')} (FORMAT parquet, COMPRESSION snappy);",
+        ]))
+        partitions = [empty_partition]
+    return partitions
+
+
+def duckdb_script(
+    args: argparse.Namespace,
+    input_files: list[Path],
+    item_partitions: list[Path],
+    items_path: Path,
+    events_path: Path,
+    stats_path: Path,
+) -> str:
+    item_fields = ", ".join(f"{name} := {name}" for name in ITEM_SCHEMA.names if name != "category_path")
+    item_parts = args.work_dir / "item-latest"
+    item_parts.mkdir()
+    commands = duckdb_settings(args) + [source_sql(args, input_files)]
+    for index, partition in enumerate(item_partitions):
+        commands.extend([
+            f".print deduplicate items {index + 1}/{len(item_partitions)}",
+            f"COPY (SELECT latest.* FROM (SELECT arg_max(struct_pack({item_fields}), stime) AS latest "
+            f"FROM read_parquet({sql_string(partition / '*.parquet')}) GROUP BY item_id)) "
+            f"TO {sql_string(item_parts / f'{index:02d}.parquet')} (FORMAT parquet, COMPRESSION snappy);",
+        ])
+    return "\n".join(
+        commands + [
             ".print build items",
-            """
-CREATE TABLE items AS
+            f"""
+CREATE VIEW items AS
 SELECT
     item_id::BIGINT AS item_id,
     nullif(trim(product_id), '') AS product_id,
@@ -347,18 +430,12 @@ SELECT
     nullif(trim(color), '') AS color,
     shipper_id::SMALLINT AS shipper_id,
     nullif(trim(shipper_name), '') AS shipper_name
-FROM (
-    SELECT *,
-           row_number() OVER (PARTITION BY item_id ORDER BY stime DESC) AS rn
-    FROM src
-)
-WHERE rn = 1;
+FROM read_parquet({sql_string(item_parts / '*.parquet')});
 """,
             ".print build events",
             """
-CREATE TABLE events AS
+CREATE VIEW events AS
 SELECT
-    (row_number() OVER (ORDER BY stime, item_id, user_id) - 1)::BIGINT AS event_id,
     stime::TIMESTAMP_MS AS event_time,
     user_id::BIGINT AS user_id,
     item_id::BIGINT AS item_id,
@@ -368,12 +445,13 @@ SELECT
     event_id AS event_type
 FROM src;
 SELECT CASE WHEN count(*) > 0 THEN error('events reference item_id missing from items') END
-FROM events e ANTI JOIN items i USING (item_id);
+FROM src e ANTI JOIN items i USING (item_id);
 """,
             ".print write sorted items",
             f"COPY (SELECT * FROM items ORDER BY item_id) TO {sql_string(items_path)} (FORMAT parquet, COMPRESSION snappy);",
             ".print write sorted events",
-            f"COPY (SELECT * FROM events ORDER BY event_time, event_id) TO {sql_string(events_path)} (FORMAT parquet, COMPRESSION snappy);",
+            f"COPY (SELECT * FROM events ORDER BY event_time, item_id, user_id) TO {sql_string(events_path)} (FORMAT parquet, COMPRESSION snappy);",
+            f"CREATE OR REPLACE VIEW events AS SELECT * FROM read_parquet({sql_string(events_path)});",
             ".print collect counts",
             f"""
 COPY (
@@ -409,8 +487,9 @@ def bloom_options(layout: TableLayout, row_group_rows: int, table_rows: int) -> 
 def rewrite(layout: TableLayout, source: Path, destination: Path, row_group_rows: int) -> None:
     """Stream DuckDB sorted intermediate into final Parquet layout with GPU options."""
     reader = pq.ParquetFile(source)
-    if reader.schema_arrow.names != layout.schema.names:
-        raise SystemExit(f"{source}: columns {reader.schema_arrow.names} do not match {layout.schema.names}")
+    source_columns = layout.schema.names[1:] if layout == EVENTS else layout.schema.names
+    if reader.schema_arrow.names != source_columns:
+        raise SystemExit(f"{source}: columns {reader.schema_arrow.names} do not match {source_columns}")
     tmp_path = destination.with_suffix(".parquet.tmp")
     writer = pq.ParquetWriter(
         tmp_path,
@@ -424,8 +503,12 @@ def rewrite(layout: TableLayout, source: Path, destination: Path, row_group_rows
     )
     written = 0
     try:
-        for batch in reader.iter_batches(batch_size=row_group_rows):
-            table = pa.Table.from_batches([batch]).cast(layout.schema)
+        for table in output_row_groups(reader, row_group_rows):
+            if layout == EVENTS:
+                # Assign dense IDs after sorting, avoiding a window followed by a second global sort.
+                event_ids = pa.array(range(written, written + table.num_rows), type=pa.int64())
+                table = table.add_column(0, layout.schema.field("event_id"), event_ids)
+            table = table.cast(layout.schema)
             writer.write_table(table, row_group_size=row_group_rows)
             written += table.num_rows
             log(f"{layout.name}: wrote {written:,}/{reader.metadata.num_rows:,} rows")
@@ -435,6 +518,26 @@ def rewrite(layout: TableLayout, source: Path, destination: Path, row_group_rows
         raise
     writer.close()
     tmp_path.replace(destination)
+
+
+def output_row_groups(reader: pq.ParquetFile, row_group_rows: int) -> Iterator[pa.Table]:
+    pending = []
+    rows = 0
+    for index in range(reader.metadata.num_row_groups):
+        # A cross-row-group Arrow iterator retains decoded dictionary buffers.
+        for batch in reader.iter_batches(batch_size=row_group_rows, row_groups=[index]):
+            offset = 0
+            while offset < batch.num_rows:
+                count = min(row_group_rows - rows, batch.num_rows - offset)
+                pending.append(batch.slice(offset, count))
+                rows += count
+                offset += count
+                if rows == row_group_rows:
+                    yield pa.Table.from_batches(pending)
+                    pending = []
+                    rows = 0
+    if pending:
+        yield pa.Table.from_batches(pending)
 
 
 def verify(layout: TableLayout, path: Path, expected_rows: int) -> dict[str, Any]:
@@ -486,60 +589,85 @@ def file_digest(path: Path, skip_sha256: bool) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.perf_counter()
-    input_files = find_input_files(args)
-    if not input_files:
-        raise SystemExit(
-            f"source Parquet not found under {args.out_dir / 'raw'}; "
-            f"see fixture/demo/merrec/README.md or pass --download-sample / --input-parquet"
-        )
-
     parquet_dir = args.out_dir / "parquet"
     manifest_path = args.out_dir / "manifest.json"
     outputs = [parquet_dir / "items.parquet", parquet_dir / "events.parquet", manifest_path]
     existing = [path for path in outputs if path.exists()]
     if existing and not args.force:
         raise SystemExit(f"output exists: {', '.join(map(str, existing))}; pass --force to replace it")
-    for path in existing:
-        if path == manifest_path and path.is_symlink():
-            continue
-        path.unlink()
+
+    input_files = find_input_files(args)
+    sources = [file_digest(p, args.skip_sha256) for p in input_files]
+    input_rows = sum(pq.ParquetFile(path).metadata.num_rows for path in input_files)
+    if not args.input_parquet and not args.skip_sha256:
+        for path, source in zip(input_files, sources, strict=True):
+            partition = path.name.split("_")[0] if args.download_sample else path.parent.name
+            index = int(path.stem.split("_")[-1])
+            if source["sha256"] != PARTITIONS[partition][index]["sha256"]:
+                raise SystemExit(f"source integrity check failed: {path}")
+    expected_events = min(input_rows, args.limit) if args.limit is not None else input_rows
+    selection = (
+        "explicit" if args.input_parquet else
+        "sample" if args.download_sample else
+        "shards" if args.shards is not None else
+        "all" if args.partition == "all" else "partition"
+    )
+    log(f"scope={selection}, partition={args.partition}, {len(input_files)} shards, {expected_events:,} events")
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
     args.work_dir = Path(tempfile.mkdtemp(prefix="merrec-", dir=args.work_dir))
     parquet_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the usable tables until both replacements pass validation.
+    staging_dir = Path(tempfile.mkdtemp(prefix=".merrec-", dir=parquet_dir.resolve().parent))
     sorted_items = args.work_dir / "items.sorted.parquet"
     sorted_events = args.work_dir / "events.sorted.parquet"
     stats_path = args.work_dir / "stats.json"
 
     try:
         log(f"DuckDB: reading {len(input_files)} source files")
-        run_duckdb(duckdb_script(args, input_files, sorted_items, sorted_events, stats_path))
+        item_partitions = partition_items(args, input_files)
+        conversion_inputs = [args.work_dir / "selected.parquet"] if args.limit is not None else input_files
+        run_duckdb(duckdb_script(args, conversion_inputs, item_partitions, sorted_items, sorted_events, stats_path))
         counts = json.loads(stats_path.read_text(encoding="utf-8").splitlines()[0])
+        if counts["events"] != expected_events:
+            raise SystemExit(f"event count mismatch: {counts['events']}, expected {expected_events}")
         tables = {}
         for layout, source, row_group_rows, expected_rows in (
             (ITEMS, sorted_items, args.item_row_group_rows, counts["items"]),
             (EVENTS, sorted_events, args.event_row_group_rows, counts["events"]),
         ):
-            destination = parquet_dir / f"{layout.name}.parquet"
+            destination = staging_dir / f"{layout.name}.parquet"
             rewrite(layout, source, destination, row_group_rows)
             tables[layout.name] = verify(layout, destination, expected_rows)
             tables[layout.name]["row_group_rows"] = row_group_rows
+        manifest = {
+            "generator": GENERATOR,
+            "generated_at_unix": int(time.time()),
+            "dataset": {
+                "source": SOURCE,
+                "partition": args.partition,
+                "selection": selection,
+                "revision": SOURCE_REVISION if not args.input_parquet else None,
+                "input_rows": input_rows,
+                "row_limit": args.limit,
+            },
+            "sources": sources,
+            "counts": counts,
+            "layout": {"compression": "SNAPPY", "format_version": "2.6", "sorting_columns_metadata": False},
+            "tables": tables,
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+        }
+        manifest_target = manifest_path.resolve()
+        staged_manifest = manifest_target.with_suffix(".json.tmp")
+        staged_manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        for layout in (ITEMS, EVENTS):
+            (staging_dir / f"{layout.name}.parquet").replace(parquet_dir / f"{layout.name}.parquet")
+        # Preserve the repository's manifest symlink when installing the new file.
+        staged_manifest.replace(manifest_target)
     finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
         if not args.keep_work:
             shutil.rmtree(args.work_dir, ignore_errors=True)
-
-    sources = [file_digest(p, args.skip_sha256) for p in input_files]
-    manifest = {
-        "generator": GENERATOR,
-        "generated_at_unix": int(time.time()),
-        "dataset": {"source": SOURCE, "partition": args.partition},
-        "sources": sources,
-        "counts": counts,
-        "layout": {"compression": "SNAPPY", "format_version": "2.6", "sorting_columns_metadata": False},
-        "tables": tables,
-        "elapsed_ms": (time.perf_counter() - started) * 1000.0,
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     log(f"complete: {counts['events']:,} events, {counts['items']:,} items -> {parquet_dir}")
     return 0
 

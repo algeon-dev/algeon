@@ -37,7 +37,7 @@ pub(super) fn execute_bfs(
 
     let resident_key = input.graph_residency().and_then(|descriptor| planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
-    let (mut edges, vertex_type) = project_edge_list(&input, spec)?;
+    let (mut edges, vertex_type) = project_edge_list(input, spec)?;
     let options = table_graph_options(spec);
     let bfs_p = bfs_params(params)?;
     let predicate_columns = BfsPredicateColumns::from_side_inputs(
@@ -931,7 +931,7 @@ fn project_bfs_inputs(
     sanitized_edges: &DataFrame,
     side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<(DataFrame, BfsPredicateColumns)> {
-    let (mut edges, vertex_type) = project_edge_list(sanitized_edges, spec)?;
+    let (mut edges, vertex_type) = project_edge_list(sanitized_edges.clone(), spec)?;
     let predicate_columns = BfsPredicateColumns::from_side_inputs(
         context,
         params,
@@ -1451,7 +1451,7 @@ pub(super) fn execute_sssp(
     };
 
     let input = input.into_frame();
-    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let (edges, vertex_type) = project_edge_list(input, spec)?;
     let source_vertex = sssp_source_vertex(&params.source_vertex, &inputs.side_inputs, vertex_type)?;
     let options = table_graph_options(spec);
     let sssp_p = sssp_params(params)?;
