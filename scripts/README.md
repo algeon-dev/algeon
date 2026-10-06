@@ -4,6 +4,9 @@
 remaining tooling is grouped by responsibility so developers do not need to
 search an undifferentiated script list.
 
+Read [AGENTS.md](AGENTS.md) before maintaining build, CI, or packaging tooling;
+it links to the maintenance contracts in the website's test and build guides.
+
 | Directory | Responsibility |
 | --- | --- |
 | `build/` | Shared Cargo build-script support, build-policy checks, and CPU packaging policy |

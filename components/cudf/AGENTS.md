@@ -1,17 +1,13 @@
 # AGENTS.md
 
-## Working principles
-
-- Fix ownership, execution, memory, or FFI gaps in the layer that owns them;
-  do not hide them behind a DataFrame-specific workaround.
-- Keep changes scoped and preserve unrelated worktree edits, generated output,
-  caches, and native build trees.
+Follow the root [AGENTS.md](../../AGENTS.md) for shared development and
+validation rules.
 
 ## Project boundaries
 
 `components/cudf` provides service-facing Rust DataFrame and runtime integration
-over libcudf. Query planning and runtime ownership follow the root
-`algeon-datafusion` ownership map.
+over libcudf. Query planning and runtime ownership follow the
+[module boundaries](../../website/docs/design/index.mdx#crates-and-ownership).
 
 - Safe APIs belong in `algeon-cudf/`; the C++ shim and raw FFI belong in
   `algeon-cudf-sys/`; cross-library ownership and synchronization vocabulary
@@ -51,14 +47,8 @@ over libcudf. Query planning and runtime ownership follow the root
 ## Build and test
 
 ```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo +nightly fmt --all --check
 cargo nt -E 'package(algeon-cudf) | package(algeon-cudf-sys) | package(algeon-interop)'
 ```
-
-Run focused checks first, then broaden validation with the change's blast
-radius. Report exact commands and selected native prefix or GPU environment for
-native work.
 
 ## Testing and repository policy
 
@@ -66,8 +56,6 @@ native work.
   an installed libcudf prefix, while `CUDF_CPP_BUILD_DIR` names a preconfigured
   build tree. When both are set, the install prefix takes precedence; preserve
   build fingerprints.
-- Native source and component checks run from the monorepo root. The root
-  `scripts/check_all.sh` is the only full gate.
 - Checked-in production and test-support bindings are maintained only through
   `scripts/dev/bindings.sh cudf [--check]`.
 - Keep the cuDF submodule pin and C++ shim ABI synchronized. Test both Rust

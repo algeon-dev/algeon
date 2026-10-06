@@ -1,20 +1,13 @@
 # AGENTS.md
 
-## Working principles
-
-- Fix the owning runtime, interop, FFI, or native-discovery contract instead of
-  hiding a failure in an algorithm wrapper. Extend `cudf`, `components/cuvs/cuvs`,
-  or `components/algeon-interop` when the missing ownership or execution
-  primitive belongs there.
-- Keep changes scoped. Preserve unrelated worktree edits and avoid
-  opportunistic cleanup, generated-file churn, or native rebuilds outside the
-  task.
+Follow the root [AGENTS.md](../../AGENTS.md) for shared development and
+validation rules.
 
 ## Project boundaries
 
 `components/cuvs` is the runtime-bound Rust integration for the scoped cuVS
-surface used by Algeon. SQL planning, runtime admission, and query
-execution follow the root `algeon-datafusion` ownership map.
+surface used by Algeon. SQL planning, runtime admission, and query execution
+follow the [module boundaries](../../website/docs/design/index.mdx#crates-and-ownership).
 
 - Safe algorithm, tensor, ownership, and completion APIs belong in
   `algeon-cuvs/`; raw generated C bindings and native discovery belong in
@@ -52,8 +45,6 @@ execution follow the root `algeon-datafusion` ownership map.
 ## Build and test
 
 ```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo +nightly fmt --all --check
 cargo nt -E 'package(algeon-cuvs) | package(algeon-cuvs-sys)'
 
 # Native-free workspace and checked-binding contracts
@@ -62,9 +53,7 @@ DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked \
 scripts/dev/bindings.sh cuvs --check
 ```
 
-Run focused checks first, then broaden validation with the change's blast
-radius. Native-free maintenance checks do not establish full native or GPU
-validation.
+Native-free maintenance checks do not establish full native or GPU validation.
 
 ## Testing and repository policy
 

@@ -1,5 +1,8 @@
 # cuML component guidance
 
+Follow the root [AGENTS.md](../../AGENTS.md) for shared development and
+validation rules.
+
 ## Boundaries and supported surface
 
 - `algeon-cuml` owns safe algorithm and runtime-resource APIs. `algeon-cuml-sys`
@@ -43,10 +46,8 @@
 bash scripts/ci/check_native_sources.sh cuml
 bash scripts/dev/bindings.sh cuml --check
 bash scripts/build/build_libcuml.sh
-cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo nt -E 'package(algeon-cuml) | package(algeon-cuml-sys)'
 ```
 
-The native build requires canonical cuDF/RMM and cuVS install prefixes. These
-commands describe validation steps, not passing results. Use
-`bash scripts/check_all.sh` only when a full pre-merge gate is requested.
+The native build requires canonical cuDF/RMM and cuVS install prefixes. Select
+the relevant checks under the root validation policy.

@@ -14,6 +14,10 @@ them. DataFusion's standard operators run on the CPU and often split input
 across partitions. Algeon's adapter translates supported parts of the completed
 plan into native IR, then replaces them with a GPU execution wrapper.
 
+The public optimizer rule name also serves as its deduplication key. Use
+[`ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/session.rs)
+when registering or deduplicating the rule; its declaration defines the value.
+
 ## Walk through a grouped aggregate {/* #translate-the-work */}
 
 Consider `orders` registered from local Parquet files, with `customer_id`
@@ -50,8 +54,8 @@ ProjectionExec: customer_id, sum(orders.amount) AS total
           DataSourceExec: Parquet, projection=[customer_id, amount, status]
 ```
 
-Lowering reconstructs the SQL aggregate from the partial state and final
-merge expressions. The native IR retains a grouped aggregate plus the row
+Lowering models partial state and final merge explicitly to reconstruct the SQL
+aggregate. The native IR retains a grouped aggregate plus the row
 predicate and result projection. Before compilation, the adapter changes the
 sink to `DeferredHostArrow`, preserving the host result contract while leaving
 materialization to the wrapper. The simplified native shape is:
@@ -224,10 +228,12 @@ may still become GPU fragments. Explicit graph, vector and ML functions also
 form GPU fragments. Transfers at CPU/GPU boundaries are part of the cost of
 such a mixed plan.
 
-`PlanningReport` records each candidate as selected, unsupported with a
-structured reason, or supported but not selected by cost. A missing memory
-estimate does not establish lack of GPU support. Allocation limits are
-enforced during execution.
+Native support requires a correct kernel, supported types and correct semantics.
+An operator missing any of these is structured unsupported. `PlanningReport`
+records each candidate once as selected, unsupported with the first unmet
+contract, or supported but not selected by cost, with structured reasons.
+A missing memory estimate cannot reject a candidate. Allocation limits are
+enforced during [execution](./admission.mdx#allocation-enforcement).
 
 ## Require GPU execution {/* #baseline-preservation-and-final-plan-requirements */}
 

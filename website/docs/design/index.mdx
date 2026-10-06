@@ -28,15 +28,24 @@ management around it.
 
 ## Module boundaries {/* #crates-and-ownership */}
 
-The adapter contains DataFusion-specific translation and result wrappers.
-`query-planning` owns the intermediate representation (**IR**), an explicit
-description of sources, operations and their dependencies. `query-runtime`
-owns access to the device and the lifetime of each attempt. `query-engine`
-executes the compiled schedule using both contracts.
+The intermediate representation (**IR**) describes sources, operations and
+their dependencies. Ownership across the query crates is:
+
+| Crate | Contracts it owns | Source directory |
+| --- | --- | --- |
+| `algeon-datafusion` | DataFusion-dependent lowering, execution wrappers and integration | `crates/algeon-datafusion` |
+| `query-planning` | IR, optimizer, capability, proof, admission contracts and compiled pipeline | `crates/algeon-query-planning` |
+| `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation and metrics | `crates/algeon-query-runtime` |
+| `query-engine` | Native execution composition | `crates/algeon-query-engine` |
 
 The adapter imports each query crate directly. The engine imports planning
 and runtime; runtime imports planning. These three query crates have no
-DataFusion dependency.
+DataFusion dependency. Imports come from the crate that owns the item; query
+crates do not re-export another crate's modules as a facade. Public adapter
+signatures may use owner-crate types, with an adapter re-export for each exposed
+type. The
+[owner-type policy](https://github.com/algeon-dev/algeon/blob/main/.config/policies/public-api/algeon-datafusion-owner-types.tsv)
+records that disposition.
 
 Below them, the GPU component crates provide Rust APIs over NVIDIA's RAPIDS
 libraries:
@@ -52,6 +61,9 @@ The adapter, runtime and engine call the components they need directly.
 Component APIs bind operations to a CUDA stream and memory resource; native
 RAPIDS libraries perform the work. Shared interop contracts preserve buffer
 ownership across library boundaries.
+
+Backend memory models belong to their component owners. IR, facts, schedules
+and admission contracts remain backend neutral.
 
 ## Follow the data
 

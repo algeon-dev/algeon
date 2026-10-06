@@ -1,25 +1,30 @@
 # AGENTS.md
 
+Before editing, read the applicable `AGENTS.md` files along each target path,
+including nested guidance not loaded at startup. Component contracts live in
+`components/{cudf,cugraph,cuvs,cuml}/AGENTS.md`. For build, CI, or packaging
+maintenance (including configuration outside `scripts/`), also read
+[scripts/AGENTS.md](scripts/AGENTS.md).
+
 ## Working principles
 
-- Fix the owning abstraction or contract, not a failing query with an adapter
-  workaround. Extend `cudf`, `cugraph`, or `cuvs` when the gap belongs there.
-- Keep changes scoped: preserve unrelated worktree edits, public behavior, and
-  contract tests unless the task changes them; avoid opportunistic cleanup.
-- Grow the system in layers: start from the smallest version that works end to
-  end, and add each capability on top of a product that already works; never
-  trade a working product for unfinished complexity.
-
-## Subtractive development
-
-- Prefer extending existing code over adding parallel paths and the smallest
-  change that fully solves the current requirement. Reuse or consolidate
-  existing paths within the task; ask only when doing so requires an
+- Fix gaps in the owning abstraction or contract, including component runtime,
+  interop, FFI, and native discovery; avoid adapter or algorithm workarounds.
+- Preserve unrelated edits, submodule state, generated output, caches, native
+  build trees, public behavior, and contract tests unless the task changes them.
+  Avoid opportunistic cleanup and native rebuilds outside the task.
+- Start with the smallest working end-to-end version; add capabilities while
+  keeping the product working.
+- Prefer the smallest change that fully solves the requirement. Check existing
+  capabilities and types before adding dependencies or parallel paths. Reuse
+  or consolidate within scope, with one truth source; ask only for an
   unrequested public-contract change or expansion of scope.
-- Never add speculative abstractions, configuration, or "just in case"
-  fallbacks; every defensive branch should protect a supported input, failure
-  mode, or invariant. Remove redundant paths involved in the requested change
-  only after confirming that no supported caller or contract requires them.
+- Add abstractions, configuration, or defensive branches only for supported
+  inputs, failure modes, or invariants. Remove redundant paths only after
+  confirming no supported caller or contract requires them.
+- Before adding an operator, identify its allocation, facts, lifetime,
+  diagnostics and test owners in existing code. Ask for clarification only
+  when unresolved ownership affects the contract.
 
 ## Comments
 
@@ -34,97 +39,41 @@
 
 ## Technical writing and anti-slop
 
-- Never attribute human actions, consciousness, or feelings to algorithms,
-  data, or compilers (e.g. do not write `the planner decides`, `the data tells
-  us`, or `the engine understands`). Name the specific condition, hardware
-  constraint, or user input.
-- The em-dash character (`—`) is banned across code comments and technical
-  documentation. Use commas, semicolons, parentheses, or separate sentences.
-- Do not list three generic adjectives (e.g. `fast, reliable, and scalable`,
-  `flexible, robust, and extensible`).
-- Avoid theatrical binary contrasts and colon reveals such as `It is not about
-  X; it is about Y` or `The reality: X`.
-- Vary sentence length and shape; runs of same-length, subject-verb-object
-  sentences read as generated text.
+- Name specific conditions, hardware constraints, or user inputs; never
+  attribute human actions, consciousness, or feelings to algorithms, data, or
+  compilers.
+- Do not use em-dashes in comments or technical documentation, generic
+  adjective triplets, theatrical binary contrasts, or colon reveals.
+- Vary sentence length and shape.
 - Every paragraph must advance a concrete invariant, benchmark number,
   architectural boundary, or API contract. Delete any sentence that functions
   purely as ungrounded promotional uplift.
 - Omit conversational filler, flattery, and apologies. State changed files,
   line ranges, non-obvious rationale, verification commands and outcomes, and
   open technical decisions directly.
-- Prose about the GPU query engine, physical optimization, or CUDA memory
-  allocation follows
+- Before writing about the GPU query engine, physical optimization, or CUDA
+  memory allocation, read and follow
   [`.config/policies/algeon_domain_anti_slop.md`](.config/policies/algeon_domain_anti_slop.md).
 
-## Project boundaries
+## Contract sources
 
-`algeon-datafusion` lowers DataFusion physical plans to the native IR and
-executes them through `query-planning`, `query-runtime`, and `query-engine`
-and the Rust components under `components/`. It depends on each of those crates
-directly and imports every item from its owner; no crate re-exports another
-crate's modules as a facade. DataFusion-dependent code belongs in
-`crates/algeon-datafusion`; IR, optimizer, capability, proof, admission
-contracts, and pipeline belong in
-`crates/algeon-query-planning`; attempt lifecycle, query service, device ledger,
-immutable grants, cache, observation, and metrics belong in
-`crates/algeon-query-runtime`; native execution composition belongs in
-`crates/algeon-query-engine`. Public signatures may name owner-crate types; the
-adapter re-exports each one it exposes, and
-`.config/policies/public-api/algeon-datafusion-owner-types.tsv` records that
-disposition.
+Read the linked sections before changing the corresponding area. These local
+website sources own the design and behavior contracts; update the owner
+document, implementation and affected tests together when a contract changes.
+Keep other guidance as links to those definitions, without duplicate contracts.
 
-- `cudf`, `cugraph`, `cuvs`, and `cuml` are members of the root workspace. Every
-  published package carries an `algeon-` prefix, because the bare RAPIDS names
-  are taken on crates.io (`cudf`/`cudf-sys` by a third party, `cuvs`/`cuvs-sys`
-  by NVIDIA's rapidsai/cuvs). `[workspace.dependencies]` maps each one through
-  a `package = "algeon-…"` alias under its bare key, so Rust imports stay
-  `cudf`, `cugraph`, `cuvs`, and `cuml`, and `dep:` feature strings keep
-  resolving.
-  Directory names match package names; refer to layers by their bare alias.
-  Every renamed crate pins `[lib] name` explicitly: without it Cargo derives the
-  library name from the package name, so a rename silently moves `use
-  query_engine::…` and the `public-api` snapshots, which record library names.
-- Each crate declares `publish` directly: the release closure as
-  `publish = ["crates-io"]`, everything else as `publish = false`. Never set
-  `[workspace.package].publish`; inheriting it once silently reverted the
-  whole closure to unpublishable. `scripts/ci/check_workspace_publication.py`
-  holds the allowlist and fails closed.
-- Native sources are the root-registered submodules at
-  `components/cudf/cudf`, `components/cugraph/cugraph`, and
-  `components/cuvs/cuvs`, and `components/cuml/cuml`; native defaults live
-  under `target/native/`.
-- The root `.gitmodules`, `Cargo.lock`, workspace, and `scripts/check_all.sh`
-  are the only source registry, lockfile, workspace, and full validation gate.
-- Default members are the adapter, `workloads`, and `query-engine`.
-  Bench, tools, and examples are explicit non-default members.
-- Linux only. MSRV is Rust 1.95; formatting requires nightly.
+| Task | Required source |
+| --- | --- |
+| Query crate or GPU component ownership and dependencies | [Module boundaries](website/docs/design/index.mdx#crates-and-ownership) |
+| Native operators, lowering, planning reports or schedules | [Native lowering](website/docs/design/native-lowering.mdx) and [GPU execution](website/docs/design/gpu-execution.mdx) |
+| Admission, allocation, attempt lifecycle, resident facts or metrics | [Memory and query lifetime](website/docs/design/admission.mdx) |
+| Error types, mappings or DataFusion error boundaries | [Error handling](website/docs/integration/handling-errors.mdx) |
+| Workspace manifests, publication or native builds | [Build overview](website/docs/build/overview.md) and [Prerequisites](website/docs/build/prerequisites.md) |
+| Running checks, adding tests or maintaining CI | [Tests](website/docs/build/tests.md), including the relevant maintainer sections |
 
-## Native GPU engine core
-
-- Support requires a correct kernel, types, and semantics; an operator lacking one is structured unsupported. A missing memory estimate is never a reason to reject.
-- Admission issues a service-configured cap, not a predicted requirement: `query-planning` proves the plan is executable, `query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `query-engine` executes.
-- The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
-- Every production query-engine execution belongs to one attempt. A plain
-  DataFusion execution creates an internal attempt at its execution boundary;
-  component runtimes may be used independently.
-- Each native fragment runs one compiled schedule. An attempt owns one
-  admission claim and one immutable grant. Every native fragment the attempt
-  executes shares that grant, including sequential executions such as a CTAS
-  input and its result, and deferred refinement stays inside it. A fragment
-  planned after the claim joins the grant when the granted device provides
-  every capability the fragment requires; otherwise it fails with a typed
-  error. The grant is released once the attempt is terminal and no fragment is
-  running. A second admission claim returns a typed error before queue or
-  ledger mutation. Keep one authoritative ledger per device.
-- Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
-- Keep one truth source; consolidate redundant constructors, flags, matchers, or ledgers within the requested change, preserving supported callers and contracts.
-- Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
-- `PlanningReport` records each candidate once as selected, not supported
-  (with the first contract it misses), or not selected by cost, with
-  structured reasons.
-- Keep backend memory models in component owners and IR, facts, schedules, and admission backend neutral.
-- Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners from existing code. Ask only if unresolved ownership affects the contract.
-- The ledger is integer accounting, not a residency oracle; model aggregate partial/final state explicitly.
+Machine-readable configuration and owner-crate constants/rustdoc define exact
+values and API signatures. Reconcile discrepancies with the linked contracts
+before changing behavior; drafts, blog posts and examples are not normative.
 
 ## Imports
 
@@ -139,49 +88,21 @@ disposition.
   doc links, calls through imported modules, sibling private modules, and enum
   translation matches. Gate imports with the same `cfg` as their uses.
 
-## Build and test
+## Validation policy
 
-Use `--workspace --all-features` for ordinary Cargo build, check, lint, and test
-commands and select tests with nextest filtersets, never `-p`: one build
-configuration keeps those commands warm. Keep two explicit feature-coverage
-exceptions in `scripts/check_all.sh`: the existing
-`cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going`
-package shards, whose union must match that command's `--print-command-list`
-output; and a shipped server clippy lane that selects only the `algeon_server`
-binary through its manifest, with `--no-default-features`, the packaging feature
-set, `--locked`, and `-D warnings`. The shipped lane does not select tests,
-examples, or all targets, and uses its own persistent target directory.
-Packaging and this lane read the shipped feature set from one source. The full
-gate requires both exceptions to pass; focused and `--fast` runs remain partial
-validation.
+Select commands from the [test guide](website/docs/build/tests.md) for the
+contracts affected. Broaden focused checks only when failures or scope warrant
+it. Ordinary implementation work finishes after the relevant focused lint and
+behavior tests pass, with no task-related failures. Read-only reviews and
+prose-only edits need no Cargo or GPU checks unless requested.
 
-`cargo nt` is `cargo nextest run --workspace --all-features`.
+Run the full gate only for pre-merge validation or an explicit request; follow
+the guide's launch and monitoring instructions. Report focused, `--fast` and
+failure-only reruns as partial validation. For native work, report commands,
+selected native prefixes, loader paths and GPU environment.
 
-```bash
-cargo +nightly fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nt -E 'package(<package>)'           # what you changed
-cargo nt -E 'rdeps(<package>)'             # everything downstream
-cargo nt -E '<same filterset>' -R latest   # rerun only failures
-bash scripts/check_all.sh --fast           # policy, fmt, CPU tests (partial)
-bash scripts/check_all.sh                  # full pre-merge gate
-```
-
-Select commands by the change's blast radius; they are not a checklist for
-every task. The full gate outlives a single tool call: start it with `nohup`
-and poll `target/check-all/latest/summary.tsv`. Full validation is one
-complete gate run on the final source state; `--fast`, focused runs, and
-`-R latest` reruns are partial.
-
-Run focused checks first and broaden when the affected contracts or failures
-warrant it. Finish when the requested work and relevant checks are complete,
-with no unresolved task-related failures. For ordinary implementation work,
-passing the relevant focused lint and behavior tests is the stopping
-condition. Run the full gate only for pre-merge validation or when the task
-explicitly requests it. Report a focused run as partial; do not automatically
-expand it into the full gate. Read-only reviews and prose-only edits do not
-require Cargo or GPU checks unless requested. The non-default bench package
-uses the same commands: `cargo nt -E 'package(bench)'`.
+Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
+artifacts; cleanup is never implicit.
 
 ## Writing tests
 
@@ -198,45 +119,12 @@ uses the same commands: `cargo nt -E 'package(bench)'`.
 - A new test must fail when the code under test is reverted; if it does not,
   delete it.
 
-## Testing and repository policy
-
-- GPU tests take `/tmp/cudf-gpu.lock` through nextest's run-wrapper: shared for
-  the `gpu` group, exclusive for `gpu-exclusive`. Do not wrap nextest or
-  `scripts/check_all.sh` in `flock`; non-test GPU commands (benchmarks, servers,
-  tools) still take the lock themselves.
-- `.config/nextest.toml` is the only test-lane source: CPU tests are opt-in by a
-  `_cpu` target suffix or a listed binary, `_gpu_exclusive` targets and tests
-  under a `gpu_exclusive` module run alone, and every other test runs in the
-  `gpu` group.
-- Do not add external-service E2E tests to Cargo test targets; invoke them
-  explicitly through `cargo run -p tools --all-features`.
-- Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
-  artifacts; cleanup is never implicit.
-- `scripts/check_all.sh` is the only top-level script entry. Build tooling lives
-  in `scripts/build/`, CI helpers in `scripts/ci/`, manual helpers in
-  `scripts/dev/`, and policy data in `.config/policies/`.
-- Keep `components/algeon-build-support` (library `rapids_build_support`)
-  std-only: it is the build-dependency shared by every package whose build
-  script links RAPIDS native libraries, so it must not depend on anything that
-  is built after it.
-
 ## Public contracts
 
-- Treat reports, TSV families, metrics, and native execution-plan wrappers as
-  explicit contracts. Algeon has no external consumers before its first
-  release, so each output format has exactly one shape: change it in place,
-  atomically with all workspace consumers, goldens, and fixtures. Do not add or
-  bump version numbers, keep an old shape beside the new one, branch a reader
-  on a version, or fabricate values for removed behavior. A format identifier
-  names the format only: no `.vN`, `_vN`, or `-vN` suffix, no integer `version`
-  or `schema_version` field, no `=N` header value. Fingerprint domain tags are
-  hash inputs, not formats. Name a metric in
-  `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES` after its meaning and unit, and
-  rename it when they change.
-- TSV, DataFusion metrics, and `QueryMetrics` are projections of the runtime
-  observation snapshot, not a second event store.
+- Reports, TSV families, metrics, and native execution-plan wrappers are
+  contracts. Update each format atomically in place with its workspace
+  consumers, goldens and fixtures; retain no legacy shapes, version-dependent
+  readers or invented values for removed behavior. Format identifiers, fields
+  and headers carry no version numbers; fingerprint domain tags are hash inputs
+  and exempt.
 - Preserve workload environment variables and item shapes.
-- Keep `crates/algeon-datafusion/src/error.rs` errors structured; convert to `DataFusionError` only at
-  the DataFusion boundary.
-- `algeon_datafusion_native` (`ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`) is
-  public and is the rule deduplication key.
