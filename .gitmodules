@@ -1,12 +1,15 @@
 [submodule "components/cudf/cudf"]
 	path = components/cudf/cudf
 	url = https://github.com/algeon-dev/cudf.git
+	branch = algeon-26.08
 [submodule "components/cugraph/cugraph"]
 	path = components/cugraph/cugraph
 	url = https://github.com/algeon-dev/cugraph.git
+	branch = algeon-26.08
 [submodule "components/cuvs/cuvs"]
 	path = components/cuvs/cuvs
 	url = https://github.com/algeon-dev/cuvs.git
+	branch = algeon-26.08
 [submodule "components/cuml/cuml"]
 	path = components/cuml/cuml
 	url = https://github.com/rapidsai/cuml.git
