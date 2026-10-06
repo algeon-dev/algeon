@@ -266,7 +266,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             native_context.statistical_aggregate_execution_mode(),
             native_context.planning_policy(),
         )
-        .map_err(relation_execution_error::<S>)?;
+        .map_err(|error| relation_execution_error(&self.spec, error))?;
         let outcome = execute_query_plan(
             native_context,
             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&uploaded.inputs),
@@ -298,7 +298,8 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let outcome =
             self.execute_staged(native_context, task_context, staged, RelationFunctionSink::GpuResident).await?;
-        let output = metrics.finalize_query_outcome(outcome).map_err(relation_execution_error::<S>)?;
+        let output =
+            metrics.finalize_query_outcome(outcome).map_err(|error| relation_execution_error(&self.spec, error))?;
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -553,7 +554,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                             .await?;
                         let (output, deferred_metrics) = metrics
                             .finalize_query_outcome_for_deferred_host(outcome, context_lease)
-                            .map_err(relation_execution_error::<S>)?;
+                            .map_err(|error| relation_execution_error(exec.spec(), error))?;
                         let QueryOutput::GpuResident(handle) = output else {
                             return Err(Error::new(
                                 ErrorCode::InvalidExecutionPlan,
@@ -665,8 +666,12 @@ pub(crate) fn add_projected_relation_source(
     )
 }
 
-fn relation_execution_error<S: RelationFunctionSpec>(error: QueryError) -> Error {
-    Error::from_native_with_blocking_diagnostics(S::TEXT.operations.execute, S::TEXT.messages.execution_failed, error)
+fn relation_execution_error<S: RelationFunctionSpec>(spec: &S, error: QueryError) -> Error {
+    Error::from_native_with_blocking_diagnostics(
+        S::TEXT.operations.execute,
+        format!("{}: {}", spec.operation_name(), S::TEXT.messages.execution_failed),
+        error,
+    )
 }
 
 #[cfg(test)]

@@ -172,20 +172,22 @@ Use `gpu_describe_function('<udtf>')` for the catalog contract and `gpu_validate
 The six `cuml_*` UDTFs accept dense `Float32` features only, either as
 ordered wide columns or a `vector` column containing `FixedSizeList<Float32>`
 (or a uniform `List<Float32>` / `LargeList<Float32>`). Features must be finite;
-there is no implicit numeric cast. Every relation requires a non-null `id`
-of type `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Repeated IDs are
-allowed because `row_ordinal UInt64` identifies each output row.
+there is no implicit numeric cast. Every relation requires an `id` of type
+`Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Repeated IDs are
+allowed because `row_ordinal UInt64` identifies each output row. Schema
+nullability is not checked for IDs, features, or labels; a null value fails the
+query with an invalid-input error that names the column.
 
 For logistic regression and both random-forest UDTFs, `training` requires
-a non-null `label` column. Classifiers require `Int32` labels; the regressor
+a `label` column. Classifiers require `Int32` labels; the regressor
 requires finite `Float32` targets. The separate `predict` relation rejects
 `label`. Unsupervised `input` treats every non-`id` wide column as a feature,
 including a column named `label`.
 
 TSVD outputs `pc_<i> Float32`; UMAP outputs `dim_<i> Float32`.
 HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
-Supervised output is `prediction Int32` for classifiers or `prediction Float32`
-for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
+Supervised output is `prediction Int32` and `probability Float32` for
+classifiers, or `prediction Float32` for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
 with the relation's input ID type. See [cuML SQL inputs](../cuml/ml-inputs.mdx)
 for relation bindings and [cuML UDTFs](../cuml/udtfs/index.mdx) for
 UDTF-specific output contracts.

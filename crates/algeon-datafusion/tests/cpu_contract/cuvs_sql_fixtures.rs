@@ -40,6 +40,8 @@ fn context_with_state(state: SessionState) -> SessionContext {
     register_table(&ctx, "query_vectors", vector_schema("query_id", DataType::Utf8, false, 2));
     register_table(&ctx, "one_dim_queries", vector_schema("query_id", DataType::Utf8, false, 1));
     register_table(&ctx, "nullable_vectors", vector_schema("item_id", DataType::Int64, true, 2));
+    register_table(&ctx, "nullable_list_vectors", nullable_list_schema(DataType::List));
+    register_table(&ctx, "nullable_fixed_vectors", nullable_list_schema(|item| DataType::FixedSizeList(item, 2)));
     register_table(&ctx, "bad_id_vectors", vector_schema("item_id", DataType::Float32, false, 2));
     ctx
 }
@@ -96,10 +98,18 @@ pub fn cuvs_cugraph_native_context() -> SessionContext {
     ctx
 }
 
-fn vector_schema(id_name: &str, id_type: DataType, nullable_features: bool, dimensions: usize) -> SchemaRef {
-    let mut fields = vec![Field::new(id_name, id_type, false)];
-    fields.extend((0..dimensions).map(|index| Field::new(format!("d{index}"), DataType::Float32, nullable_features)));
+/// `nullable` declares the ID and every feature field nullable.
+fn vector_schema(id_name: &str, id_type: DataType, nullable: bool, dimensions: usize) -> SchemaRef {
+    let mut fields = vec![Field::new(id_name, id_type, nullable)];
+    fields.extend((0..dimensions).map(|index| Field::new(format!("d{index}"), DataType::Float32, nullable)));
     Arc::new(Schema::new(fields))
+}
+
+/// An ID and a vector column that are nullable, with nullable elements, like
+/// a list built by `ARRAY_AGG` or `MAKE_ARRAY`.
+fn nullable_list_schema(vector: impl FnOnce(Arc<Field>) -> DataType) -> SchemaRef {
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    Arc::new(Schema::new(vec![Field::new("item_id", DataType::Int64, true), Field::new("vector", vector(item), true)]))
 }
 
 fn register_table(ctx: &SessionContext, name: &str, schema: SchemaRef) {

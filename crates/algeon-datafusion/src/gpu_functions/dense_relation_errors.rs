@@ -91,28 +91,6 @@ impl DenseRelationErrorContext {
         .with_log_safe_fact("expected_type", expected)
     }
 
-    /// Nullable feature/vector-element field rejection, with a remedy fact:
-    /// `WHERE column IS NOT NULL` filters rows but does not change the
-    /// DataFusion schema's nullability, so it cannot satisfy this contract.
-    pub(crate) fn nullable_feature_field(
-        &self,
-        operation: &'static str,
-        relation_role: &'static str,
-        field: &str,
-    ) -> Error {
-        self.invalid_call(
-            operation,
-            "nullable_feature_field",
-            format!("{} {relation_role} feature field must be non-nullable", self.family),
-        )
-        .with_client_detail(ClientDetail::Field { name: field.to_string() })
-        .with_fact(
-            "remedy",
-            "wrap the column with COALESCE(column, <fallback>) or CAST a null-free expression; \
-             WHERE column IS NOT NULL does not change schema nullability",
-        )
-    }
-
     pub(crate) fn feature_disabled(&self, operation: &'static str) -> Error {
         Error::new(ErrorCode::UnsupportedOperator, self.execute_operation, self.feature_disabled_message)
             .with_log_safe_fact(self.operation_fact, operation)

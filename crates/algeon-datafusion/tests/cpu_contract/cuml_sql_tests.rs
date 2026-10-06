@@ -54,8 +54,8 @@ use datafusion::{
 use query_planning::plan::MlForestModelDigest;
 use query_planning::plan::{
     CumlOutputContract, MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract,
-    MlForestPrecision, VectorElementType, ml_embedding_output_schema, ml_forest_output_schema,
-    ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+    MlForestPrecision, VectorElementType, ml_classification_output_schema, ml_embedding_output_schema,
+    ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema, vector_pca_output_schema,
 };
 #[cfg(feature = "cuml")]
 use tokio::runtime::Builder;
@@ -83,15 +83,31 @@ fn context_with(config: CumlSqlConfig) -> SessionContext {
         .unwrap();
     }
     let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
+        Field::new("id", DataType::Int64, true),
         Field::new("d0", DataType::Float32, true),
-        Field::new("d1", DataType::Float32, false),
+        Field::new("d1", DataType::Float32, true),
     ]));
     ctx.register_table(
         "nullable_vectors",
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![RecordBatch::new_empty(schema)]]).unwrap()),
     )
     .unwrap();
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    for (name, vector) in [
+        ("nullable_list_vectors", DataType::List(Arc::clone(&item))),
+        ("nullable_fixed_vectors", DataType::FixedSizeList(Arc::clone(&item), 2)),
+    ] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("vector", vector, true),
+            Field::new("label", DataType::Int32, true),
+        ]));
+        ctx.register_table(
+            name,
+            Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![RecordBatch::new_empty(schema)]]).unwrap()),
+        )
+        .unwrap();
+    }
     let schema = Arc::new(Schema::new(
         iter::once(Field::new("id", DataType::Int64, false))
             .chain((0..4).map(|index| Field::new(format!("d{index}"), DataType::Float32, false)))
@@ -475,6 +491,34 @@ fn json_literal_for_docs(value: &serde_json::Value) -> String {
     }
 }
 
+/// The relation field contract and the limitations carry the null-value
+/// contract; capturing them from a server must reproduce the live descriptor.
+#[tokio::test]
+async fn captured_relation_roles_and_limitations_equal_the_catalog_descriptors() {
+    let ctx = context();
+    let spec_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../website/gpu-function-specs/cuml");
+    for descriptor in CUML_OPERATION_REGISTRY {
+        let name = descriptor.sql_function_name;
+        let captured: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(spec_directory.join(format!("{name}.json"))).unwrap()).unwrap();
+        let described = ctx
+            .sql(&format!("SELECT relation_roles_json, limitations_json FROM gpu_describe_function('{name}')"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        for (column, key) in ["relation_roles_json", "limitations_json"].into_iter().enumerate() {
+            let live = described[0].column(column).as_any().downcast_ref::<StringArray>().unwrap().value(0);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(captured[key].as_str().unwrap()).unwrap(),
+                serde_json::from_str::<serde_json::Value>(live).unwrap(),
+                "{name}.{key} drifted from its captured spec; run website/scripts/capture-gpu-function-specs.sh"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn sql_schemas_match_ir_and_physical_nodes() {
     let models = ForestModels::new();
@@ -499,9 +543,8 @@ async fn sql_schemas_match_ir_and_physical_nodes() {
                     CumlOperation::Hdbscan => ml_hdbscan_output_schema(DataType::Int64),
                     CumlOperation::Umap => ml_embedding_output_schema(DataType::Int64, 2),
                     CumlOperation::LogisticRegression | CumlOperation::RandomForestClassifier =>
-                        ml_predictions_output_schema(DataType::Int64, DataType::Int32),
-                    CumlOperation::RandomForestRegressor =>
-                        ml_predictions_output_schema(DataType::Int64, DataType::Float32),
+                        ml_classification_output_schema(DataType::Int64),
+                    CumlOperation::RandomForestRegressor => ml_regression_output_schema(DataType::Int64),
                     CumlOperation::ForestPredict =>
                         ml_forest_output_schema(DataType::Int64, MlForestOutputContract::Score),
                 }
@@ -623,8 +666,7 @@ async fn supervised_sql_bindings_check_labels_dimensions_and_predict_id_type() {
     let node = find_logical(&first).unwrap();
     assert_eq!(
         node.schema().as_ref(),
-        &DFSchema::try_from(ml_predictions_output_schema(DataType::Utf8View, DataType::Int32).as_ref().clone())
-            .unwrap()
+        &DFSchema::try_from(ml_classification_output_schema(DataType::Utf8View).as_ref().clone()).unwrap()
     );
     for (statement, reason) in [
         (
@@ -646,10 +688,6 @@ async fn supervised_sql_bindings_check_labels_dimensions_and_predict_id_type() {
         (
             "SELECT * FROM cuml_logistic_regression(training => (SELECT id, d0, d1, label FROM training_int64_labels), predict => (SELECT id, d0, d1 FROM vectors))",
             "unsupported_type",
-        ),
-        (
-            "SELECT * FROM cuml_logistic_regression(training => (SELECT id, d0, d1, label FROM training_nullable_labels), predict => (SELECT id, d0, d1 FROM vectors))",
-            "nullable_label",
         ),
         (
             "SELECT * FROM cuml_logistic_regression(training => (SELECT id, d0, d1, label FROM training_vectors), predict => (SELECT id, d0 FROM vectors))",
@@ -700,24 +738,56 @@ async fn random_forest_sql_rejects_wrong_labels_and_classifier_only_criterion() 
     assert_eq!(schema["properties"]["training"]["properties"]["label"]["const"], "label");
 }
 
+/// Schema nullability is not part of the input contract: null values fail at
+/// execution, so nullable-typed IDs, features, list vectors and labels plan,
+/// and the result keeps its non-null schema with the input ID type.
+#[tokio::test]
+async fn nullable_typed_relations_plan_with_the_canonical_non_null_output_schema() {
+    let ctx = context();
+    for (table, projection) in [
+        ("nullable_vectors", "id, d0, d1"),
+        ("nullable_list_vectors", "id, vector"),
+        ("nullable_fixed_vectors", "id, vector"),
+    ] {
+        let plan = ctx
+            .state()
+            .create_logical_plan(&format!(
+                "SELECT * FROM cuml_tsvd(input => (SELECT {projection} FROM {table}), n_components => 1)"
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("{table}: {error}"));
+        assert_eq!(
+            find_logical(&plan).unwrap().schema().as_ref(),
+            &DFSchema::try_from(vector_pca_output_schema(DataType::Int64, 1).as_ref().clone()).unwrap(),
+            "{table}"
+        );
+    }
+    for (training, predict) in [
+        ("SELECT id, d0, d1, label FROM training_nullable_labels", "SELECT id, d0, d1 FROM nullable_vectors"),
+        ("SELECT id, vector, label FROM nullable_list_vectors", "SELECT id, vector FROM nullable_fixed_vectors"),
+    ] {
+        let plan = ctx
+            .state()
+            .create_logical_plan(&format!(
+                "SELECT * FROM cuml_logistic_regression(training => ({training}), predict => ({predict}))"
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("{training}: {error}"));
+        assert_eq!(
+            find_logical(&plan).unwrap().schema().as_ref(),
+            &DFSchema::try_from(ml_classification_output_schema(DataType::Int64).as_ref().clone()).unwrap(),
+            "{training}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn schema_rejections_preserve_structured_reasons_and_float32_support() {
     let ctx = context();
-    for (table, reason) in [("double_vectors", None), ("nullable_vectors", Some("nullable_feature_field"))] {
-        let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, table, 1)).await.unwrap_err();
-        let typed = error.find_algeon_error().unwrap();
-        if let Some(reason) = reason {
-            assert_eq!(typed.fact_value("reason"), Some(reason));
-            if reason == "nullable_feature_field" {
-                let remedy = typed.fact_value("remedy").expect("nullable feature rejection carries a remedy fact");
-                assert!(remedy.contains("COALESCE"), "{remedy}");
-                assert!(remedy.contains("IS NOT NULL"), "{remedy}");
-            }
-        } else {
-            assert_eq!(typed.code(), ErrorCode::UnsupportedType);
-            assert_eq!(typed.fact_value("expected_type"), Some("Float32"));
-        }
-    }
+    let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "double_vectors", 1)).await.unwrap_err();
+    let typed = error.find_algeon_error().unwrap();
+    assert_eq!(typed.code(), ErrorCode::UnsupportedType);
+    assert_eq!(typed.fact_value("expected_type"), Some("Float32"));
     let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "vectors", 3)).await.unwrap_err();
     assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("component_count_exceeds_dimension"));
 }

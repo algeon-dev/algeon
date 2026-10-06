@@ -1,0 +1,113 @@
+This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
+1,268,092,738 events from May through October 2023.
+
+### Which active shoppers will buy next month?
+
+The statement builds two cohorts from raw events. Each cohort holds the
+shoppers with at least 20 views in the 92 days before a cutoff, with ten
+behavior features over those 92 days and the last 30 of them: views,
+likes, intent actions (cart taps, offers, checkout starts), purchases and
+purchase value, plus the mean price of the listings they interacted with. Every count is log-scaled. The label
+is a completed purchase in the 30 days after the cutoff.
+
+The training cohort uses the 2023-08-01 cutoff and holds 1,938,873
+shoppers. The evaluation cohort uses 2023-09-01 and holds 2,017,739
+shoppers, of whom 38,925 (1.93%) buy in the next 30 days.
+
+The captured statements use only the predicted class, so the training
+relation keeps every positive and the negatives whose ID is divisible by 20,
+about one in 20. The native path has no integer modulo yet, so the sample is
+written as `ROUND(CAST(id AS DOUBLE) / 20.0) = CAST(id AS DOUBLE) / 20.0`.
+With the classes rebalanced, the model's positive class becomes a
+high-propensity audience. The classifiers now also return `probability`, so a
+later run can rank shoppers by it and choose the audience size without
+rebalancing. The final `UNION ALL`
+compares it with a rule a marketer might use first: shoppers who bought in
+the last 30 days.
+
+| Audience | Shoppers flagged | Buyers reached | Precision | Recall |
+|---|---:|---:|---:|---:|
+| Logistic regression | 115,095 | 20,795 | 18.1% | 53.4% |
+| Random forest | 123,622 | 21,230 | 17.2% | 54.5% |
+| Bought in the last 30 days | 55,404 | 14,107 | 25.5% | 36.2% |
+
+Both models flag about 6% of the evaluation cohort and reach 53-55% of the
+next month's buyers. The purchase rule reaches 36% with a smaller audience.
+Logistic regression and the random forest land within a point of each
+other, so the extra model capacity buys nothing on these ten features. The
+choice between them belongs to feature work, not to the algorithm. Logistic regression flagged between 115,050 and 115,095 shoppers across
+the three captured runs; the table shows the first run. The evaluation uses
+one later month, and the label counts completed purchases in this dataset
+only.
+
+<details>
+<summary>Executed SQL: logistic regression</summary>
+
+```sql
+WITH train AS (
+  SELECT e.user_id AS id,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,
+    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_time >= TIMESTAMP '2023-05-01 00:00:00' AND e.event_time < TIMESTAMP '2023-08-31 00:00:00'
+  GROUP BY e.user_id
+  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20
+),
+test AS (
+  SELECT e.user_id AS id,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,
+    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,
+    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,
+    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv
+  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
+  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'
+  GROUP BY e.user_id
+  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20
+),
+pred AS (
+  SELECT id, prediction FROM cuml_logistic_regression(
+    training => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price, COALESCE(label, CAST(0 AS INT)) AS label FROM train WHERE label = 1 OR ROUND(CAST(id AS DOUBLE) / 20.0) = CAST(id AS DOUBLE) / 20.0 ORDER BY id),
+    predict => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price FROM test ORDER BY id),
+    max_iter => 2000)
+)
+SELECT 'model' AS audience, SUM(p.prediction) AS flagged, SUM(p.prediction * t.label) AS buyers_flagged,
+       SUM(t.label) AS buyers, CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(p.prediction) AS precision,
+       CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(t.label) AS recall
+FROM pred p JOIN test t ON t.id = p.id
+UNION ALL
+SELECT 'bought in last 30 days', SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END), SUM(label),
+       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),
+       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(label)
+FROM test;
+```
+
+</details>
+
+<details>
+<summary>Executed SQL: random forest</summary>
+
+The random forest statement differs only in the model call:
+`cuml_random_forest_classifier(..., n_trees => 100, max_depth => 12, seed => 42)`.
+
+</details>
+
+The logistic regression statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 29.85 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 21.70 GiB of the 90 GiB query limit. The random forest statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 31.23 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 21.70 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-propensity.json) with the executed SQL, query IDs, timings, and all result rows.

@@ -1,7 +1,7 @@
-use cudf::{DataType, Exec, Series, TypeId, runtime::ExecutionBindingId};
+use cudf::{DataType, DenseMatrixLayout, Exec, Series, TypeId, runtime::ExecutionBindingId};
 
 use crate::{
-    DeviceBuffer, DeviceMatrix, Error, ErrorCode, FailurePhase, MatrixLayout, Result,
+    ClassPrediction, DeviceBuffer, DeviceMatrix, Error, ErrorCode, FailurePhase, MatrixLayout, Result,
     error::{check_status, error, from_cudf, invalid_input},
     labels::{adopt_labels, validate_class_labels},
     resources::CumlResources,
@@ -29,18 +29,6 @@ unsafe extern "C" {
         change_tol: f64,
         objective: *mut f64,
         iterations: *mut i32,
-    ) -> cuml_sys::cuml_status_t;
-    fn cuml_glm_qn_predict(
-        handle: cuml_sys::cuml_handle_t,
-        input: *const f32,
-        rows: i32,
-        columns: i32,
-        classes: i32,
-        column_major: i32,
-        coefficients: *const f32,
-        loss: i32,
-        fit_intercept: i32,
-        predictions: *mut f32,
     ) -> cuml_sys::cuml_status_t;
 }
 
@@ -231,7 +219,11 @@ impl LogisticRegressionModel {
         ))
     }
 
-    pub fn predict(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<Series> {
+    /// Most probable class of each input row and its probability, from cuML's
+    /// decision function. Binary models apply the logistic sigmoid to the
+    /// score of class 1; softmax models normalize the per-class scores, as
+    /// cuML's `predict_proba` does.
+    pub fn predict(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<ClassPrediction> {
         const OP: &str = "LogisticRegressionModel::predict";
         let rows = i32::try_from(input.rows()).map_err(|_| size_error(OP, "row count exceeds i32"))?;
         let columns = i32::try_from(input.columns()).map_err(|_| size_error(OP, "feature count exceeds i32"))?;
@@ -247,16 +239,23 @@ impl LogisticRegressionModel {
                 "model, input, and resources must share a binding and feature shape",
             ));
         }
+        // Binary logistic loss stores one score per row, softmax one per class.
+        let scores_per_row = if self.n_classes == 2 { 1 } else { self.n_classes };
+        let scores_len = input
+            .rows()
+            .checked_mul(scores_per_row)
+            .filter(|len| i32::try_from(*len).is_ok())
+            .ok_or_else(|| size_error(OP, "score count exceeds i32"))?;
         resources.validate_exact_binding(OP)?;
-        let mut predictions = DeviceBuffer::new(resources, input.rows())?;
+        let mut scores = DeviceBuffer::new(resources, scores_len)?;
         let input_ptr = input.as_ptr();
         let coefficients_ptr = self.coefficients.as_ptr()?.cast();
-        let predictions_ptr = predictions.as_mut_ptr()?.cast();
+        let scores_ptr = scores.as_mut_ptr()?.cast();
         resources.with_native(OP, |handle| {
             // SAFETY: model and input buffers remain alive for the native call.
             check_status(
                 unsafe {
-                    cuml_glm_qn_predict(
+                    cuml_sys::cuml_glm_qn_decision_function(
                         handle,
                         input_ptr.cast(),
                         rows,
@@ -266,45 +265,23 @@ impl LogisticRegressionModel {
                         coefficients_ptr,
                         self.loss,
                         i32::from(self.fit_intercept),
-                        predictions_ptr,
+                        scores_ptr,
                     )
                 },
                 OP,
             )
         })?;
-        predictions.validate_finite(OP)?;
-        let predicted = Series::from_column(predictions.into_column()?).map_err(|e| from_cudf(OP, e))?;
-        let min = predicted.on(Exec::RETAINED).min_value::<f32>().map_err(|e| from_cudf(OP, e))?;
-        let indices =
-            predicted.on(Exec::RETAINED).astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))?;
-        let max_index = indices.on(Exec::RETAINED).max_value::<i32>().map_err(|e| from_cudf(OP, e))?;
-        if min.is_none_or(|value| value < 0.0) || max_index.is_none_or(|value| value >= self.n_classes as i32) {
-            return Err(error(
-                ErrorCode::OutputOutOfRange,
-                FailurePhase::OutputValidation,
-                OP,
-                "QN predictions must be integral class indices in 0..n_classes",
-            ));
+        scores.validate_finite(OP)?;
+        let flat = scores.into_column()?;
+        let runtime = resources.runtime();
+        if scores_per_row == 1 {
+            let score = Series::from_column(flat).map_err(|e| from_cudf(OP, e))?;
+            return ClassPrediction::from_logistic_score(runtime, score, OP);
         }
-        let roundtrip =
-            indices.on(Exec::RETAINED).astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
-        // Equality reduces the device comparison mask to one host boolean.
-        if !predicted
-            .on(Exec::RETAINED)
-            .eq(&roundtrip)
-            .map_err(|e| from_cudf(OP, e))?
-            .on(Exec::RETAINED)
-            .all_value()
-            .map_err(|e| from_cudf(OP, e))?
-        {
-            return Err(error(
-                ErrorCode::OutputOutOfRange,
-                FailurePhase::OutputValidation,
-                OP,
-                "QN predictions must be integral class indices in 0..n_classes",
-            ));
-        }
-        Ok(indices)
+        let columns = runtime
+            .unpack_dense_matrix(flat, input.rows(), scores_per_row, DenseMatrixLayout::RowMajor)
+            .map_err(|e| from_cudf(OP, e))?;
+        ClassPrediction::from_softmax_scores(runtime, columns, OP)
     }
 }
 

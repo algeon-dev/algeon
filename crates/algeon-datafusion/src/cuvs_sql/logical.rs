@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use super::{
     CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
-    error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
+    error::{field_not_found, invalid_call, unsupported_type},
     options::{dense_relation_function, validate_options},
 };
 use crate::{
@@ -287,13 +287,6 @@ fn validate_relation_binding(
 ) -> Result<(Option<usize>, VectorElementType)> {
     let role = binding.relation_role().as_str();
     let id = resolve_field(operation, schema, role, binding.id())?;
-    if id.is_nullable() {
-        return Err(invalid_call(
-            operation,
-            "nullable_id_field",
-            format!("cuVS {role} ID field '{}' must be non-nullable", binding.id()),
-        ));
-    }
     if RelationIdType::from_data_type(id.data_type()).is_none() {
         return Err(unsupported_type(
             operation,
@@ -325,13 +318,6 @@ fn validate_relation_binding(
         },
         DenseVectorBinding::VectorColumn(column) => {
             let field = resolve_field(operation, schema, role, column)?;
-            if field.is_nullable() {
-                return Err(invalid_call(
-                    operation,
-                    "nullable_vector_field",
-                    format!("cuVS {role} vector field '{column}' must be non-nullable"),
-                ));
-            }
             match field.data_type() {
                 DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
                     let element = require_supported_vector_element(operation, role, column, element)?;
@@ -346,10 +332,7 @@ fn validate_relation_binding(
                     role,
                     column,
                     actual,
-                    format!(
-                        "FixedSizeList, List, or LargeList with non-null {} elements",
-                        supported_vector_elements(operation)
-                    ),
+                    format!("FixedSizeList, List, or LargeList with {} elements", supported_vector_elements(operation)),
                 )),
             }
         },
@@ -381,9 +364,6 @@ fn require_supported_vector_element(
     name: &str,
     field: &FieldRef,
 ) -> Result<VectorElementType> {
-    if field.is_nullable() {
-        return Err(nullable_feature_field(operation, role, name));
-    }
     let element = VectorElementType::from_data_type(field.data_type())
         .filter(|element| operation.descriptor().element_support(*element).is_some())
         .ok_or_else(|| {

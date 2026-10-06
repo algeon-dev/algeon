@@ -15,8 +15,9 @@ use query_planning::{
         MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision,
         MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding,
         MlRelationRole, MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder,
-        VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema,
-        ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_classification_output_schema,
+        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
+        vector_pca_output_schema,
     },
     policy::PlanningPolicy,
     source::{GpuResidentSource, SourceNode},
@@ -69,13 +70,13 @@ fn supervised_plan_for(
         },
         _ => unreachable!("supervised fixture"),
     };
-    let prediction_type =
-        if algorithm == MlAlgorithm::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 };
+    let output_schema = if algorithm == MlAlgorithm::RandomForestRegressor {
+        ml_regression_output_schema(DataType::Utf8)
+    } else {
+        ml_classification_output_schema(DataType::Utf8)
+    };
     let root = builder
-        .add_ml_algorithm(
-            vec![training, predict],
-            MlAlgorithmSpec::new(algorithm, params, ml_predictions_output_schema(DataType::Utf8, prediction_type)),
-        )
+        .add_ml_algorithm(vec![training, predict], MlAlgorithmSpec::new(algorithm, params, output_schema))
         .unwrap();
     builder.finish_with_host_sink(root).unwrap()
 }
@@ -160,9 +161,10 @@ fn supervised_bindings_validate_both_relations_and_compile_role_order() {
     pipeline.validate().unwrap();
     let task = pipeline.tasks().iter().find(|task| task.plan_node() == Some(plan.root_id())).unwrap();
     assert_eq!(task.input_resources().len(), 2);
+    preflight_query_plan(&supervised_plan(Some((DataType::Int32, true)), false, 2))
+        .expect("a nullable label type is admitted; a null label fails at execution");
     for (label, predict_label, dimensions, reason) in [
         (None, false, 2, "missing_label"),
-        (Some((DataType::Int32, true)), false, 2, "nullable_label"),
         (Some((DataType::Int64, false)), false, 2, "unsupported_type"),
         (Some((DataType::Int32, false)), true, 2, "predict_relation_has_label"),
         (Some((DataType::Int32, false)), false, 3, "feature_dimension_mismatch"),
@@ -532,7 +534,7 @@ fn optimizer_remaps_both_supervised_inputs() {
                     bindings.remove(0),
                     bindings.remove(0),
                 )),
-                ml_predictions_output_schema(DataType::Utf8, DataType::Int32),
+                ml_classification_output_schema(DataType::Utf8),
             ),
         )
         .unwrap();

@@ -163,6 +163,42 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     for reason in ["validation_reason=non_finite_vector_value", "non_finite_count=1", "remedy=replace or reject"] {
         assert!(status.message().contains(reason), "{status:?}");
     }
+
+    // Schema nullability is not part of the input contract: nullable-typed
+    // columns without null values run, and a real null fails the query with an
+    // invalid-input status that names the function, relation role, and column.
+    let nullable = execute_batches(
+        &mut client,
+        "SELECT id, cluster_id \
+         FROM cuvs_kmeans(\
+             input => (SELECT CASE WHEN item_id < 0 THEN NULL ELSE item_id END AS id, \
+                 CASE WHEN item_id < 0 THEN NULL ELSE d0 END AS d0, d1 FROM dataset_vectors), \
+             n_clusters => 2, init => 'kmeans++')",
+    )
+    .await;
+    assert_nonempty(&nullable);
+    let status = execute_error_status(
+        &mut client,
+        "SELECT id, cluster_id \
+         FROM cuvs_kmeans(\
+             input => (SELECT item_id AS id, \
+                 CASE WHEN item_id = 2 THEN NULL ELSE d0 END AS d0, d1 FROM dataset_vectors), \
+             n_clusters => 2)",
+    )
+    .await;
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status:?}");
+    for expected in ["cuvs_kmeans", "relation_role=input", "reason=null_feature_value", "null_count=1", "(column 'd0')"]
+    {
+        assert!(status.message().contains(expected), "{expected}: {status:?}");
+    }
+    assert_eq!(
+        status.metadata().get("x-algeon-error-code").and_then(|code| code.to_str().ok()),
+        Some("cudf_invalid_input")
+    );
+    assert_eq!(
+        status.metadata().get("x-algeon-reason").and_then(|reason| reason.to_str().ok()),
+        Some("null_feature_value")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

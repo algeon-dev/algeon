@@ -91,6 +91,141 @@ pub(super) fn relation_id_series_for(
     })
 }
 
+/// Columns of one dense relation whose values the executor validates before
+/// any GPU resource is created.
+pub(super) struct RelationColumns<'a> {
+    pub(super) role: &'static str,
+    /// Position of the relation among the node's inputs.
+    pub(super) input: usize,
+    pub(super) row_id: &'a VectorRowIdBinding,
+    pub(super) vector: &'a DenseVectorBinding,
+    pub(super) label: Option<&'a str>,
+}
+
+/// The null-bearing value a relation rejects, with the reason it reports.
+#[derive(Clone, Copy)]
+enum NullValues {
+    Id,
+    Feature,
+    Label,
+    VectorRow,
+    VectorValue,
+}
+
+impl NullValues {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Id => "null_id_value",
+            Self::Feature => "null_feature_value",
+            Self::Label => "null_label_value",
+            Self::VectorRow => "null_vector_row",
+            Self::VectorValue => "null_vector_value",
+        }
+    }
+
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Id => "relation ID column contains null values",
+            Self::Feature => "relation feature column contains null values",
+            Self::Label => "relation label column contains null values",
+            Self::VectorRow => "relation vector column contains null rows",
+            Self::VectorValue => "relation vector column contains null elements",
+        }
+    }
+}
+
+/// The caller's data holds a null where the function accepts none, so the
+/// failure is an input error naming the relation role and column. Schema
+/// nullability is not part of this contract; only values are.
+fn null_values_error(
+    ops: &DenseRelationOperations,
+    node_id: NodeId,
+    algorithm: &str,
+    role: &'static str,
+    column: &str,
+    values: NullValues,
+    null_count: Option<usize>,
+) -> QueryError {
+    let error = QueryError::new(QueryErrorCode::CudfInvalidInput, ops.pack, values.message())
+        .with_fact("node_id", node_id)
+        .with_fact("algorithm", algorithm)
+        .with_fact("relation_role", role)
+        .with_fact("column", column)
+        .with_fact("reason", values.reason())
+        .with_fact(
+            "remedy",
+            "remove the null rows with WHERE column IS NOT NULL or replace the nulls with COALESCE in the relation subquery",
+        );
+    match null_count {
+        Some(null_count) => error.with_fact("null_count", null_count),
+        None => error,
+    }
+}
+
+/// Rejects null ids, wide feature values and labels of one relation. List
+/// vector columns are proven while their export is prepared, and
+/// [`list_export_error`] names the column for those failures.
+pub(super) fn require_null_free_relation(
+    ops: &DenseRelationOperations,
+    inputs: DenseRelationInputs<'_>,
+    node_id: NodeId,
+    algorithm: &str,
+    relation: RelationColumns<'_>,
+) -> Result<()> {
+    let RelationColumns { role, input, row_id, vector, label } = relation;
+    let frame = relation_input_for(ops, inputs, input, node_id, role)?.frame();
+    let ids = match row_id {
+        VectorRowIdBinding::Column(column) => Some((column.as_str(), NullValues::Id)),
+        VectorRowIdBinding::RowIndex => None,
+    };
+    let features = match vector {
+        DenseVectorBinding::Columns(columns) => columns.as_slice(),
+        DenseVectorBinding::VectorColumn(_) => &[],
+    }
+    .iter()
+    .map(|column| (column.as_str(), NullValues::Feature));
+    let labels = label.map(|column| (column, NullValues::Label));
+    for (column, values) in ids.into_iter().chain(features).chain(labels) {
+        let series = frame.series(column).map_err(|error| {
+            cudf_query_error(ops.pack, "failed to read a relation column for null validation", error)
+                .with_fact("node_id", node_id)
+                .with_fact("relation_role", role)
+                .with_fact("column", column)
+        })?;
+        let null_count = series.null_count();
+        if null_count != 0 {
+            return Err(null_values_error(ops, node_id, algorithm, role, column, values, Some(null_count)));
+        }
+    }
+    Ok(())
+}
+
+/// Projects a failure to prove a list vector column for export. cuDF rejects
+/// null rows and null elements by reason; the relation role and column name
+/// are known only here.
+pub(super) fn list_export_error(
+    ops: &DenseRelationOperations,
+    message: &'static str,
+    error: cudf::Error,
+    node_id: NodeId,
+    algorithm: &str,
+    relation: (&'static str, &str),
+) -> QueryError {
+    let (role, column) = relation;
+    let values = match error.detail_value("reason") {
+        Some("null_vector_row") => Some(NullValues::VectorRow),
+        Some("null_vector_value") => Some(NullValues::VectorValue),
+        _ => None,
+    };
+    match values {
+        Some(values) => null_values_error(ops, node_id, algorithm, role, column, values, None).with_source(error),
+        None => cudf_query_error(ops.pack, message, error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+            .with_fact("column", column),
+    }
+}
+
 pub(super) fn require_series_contract_for(
     ops: &DenseRelationOperations,
     series: &Series,
@@ -249,10 +384,14 @@ pub(super) fn pack_dense_relation_for(
         })?;
         let field_index = field_index(schema, column, node_id, role, pack_operation)?;
         let validated = batch.try_prepare_uniform_list_export(field_index).map_err(|error| {
-            cudf_query_error(pack_operation, "failed to prove uniform List vector offsets and finite values", error)
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
+            list_export_error(
+                ops,
+                "failed to prove uniform List vector offsets and finite values",
+                error,
+                node_id,
+                algorithm,
+                (role, column),
+            )
         })?;
         require_element(validated.element(), element, node_id, algorithm, role, pack_operation)?;
         let dimension = validated.dimension();
@@ -329,14 +468,14 @@ pub(super) fn pack_dense_relation_for(
             })?;
             let field_index = field_index(schema, column, node_id, role, pack_operation)?;
             let validated = batch.try_prepare_fixed_size_list_export(field_index).map_err(|error| {
-                cudf_query_error(
-                    pack_operation,
+                list_export_error(
+                    ops,
                     "failed to prove the FixedSizeList vector child range and finite values",
                     error,
+                    node_id,
+                    algorithm,
+                    (role, column),
                 )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
             })?;
             require_element(validated.element(), element, node_id, algorithm, role, pack_operation)?;
             validated.pack_active_child_into_runtime(runtime, layout).map_err(|error| {

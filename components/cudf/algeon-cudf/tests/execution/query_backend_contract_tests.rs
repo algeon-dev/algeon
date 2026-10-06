@@ -1647,6 +1647,14 @@ fn uniform_list_export_rejects_root_and_child_nulls() {
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
 
+    // A null row of width zero, as SQL `CASE ... THEN NULL` produces, is a null row and not a dimension error.
+    let empty_null =
+        uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 2], vec![Some(1.0), Some(2.0)], Some(vec![true, false]));
+    let error =
+        empty_null.try_prepare_uniform_list_export(0).expect_err("dense vector export must reject null list rows");
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
+
     let child_null =
         uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 4], vec![Some(1.0), None, Some(3.0), Some(4.0)], None);
     let error =

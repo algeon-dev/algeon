@@ -6,7 +6,7 @@ use cudf::{
 };
 
 use crate::{
-    DeviceBuffer, DeviceMatrix, MatrixLayout, Result,
+    ClassPrediction, DeviceBuffer, DeviceMatrix, MatrixLayout, Result,
     error::{ErrorCode, FailurePhase, check_status, error, from_cudf, invalid_input},
     resources::CumlResources,
 };
@@ -72,6 +72,15 @@ pub enum ForestOutputKind {
     ClassIndex { classes: usize },
     /// `n` Float32 values per row.
     Vector(usize),
+}
+
+impl ForestOutput {
+    pub(crate) fn native(self) -> cuml_sys::cuml_forest_output_t {
+        match self {
+            Self::Scores => cuml_sys::CUML_FOREST_OUTPUT_SCORES,
+            Self::ClassIndex => cuml_sys::CUML_FOREST_OUTPUT_CLASS_INDEX,
+        }
+    }
 }
 
 impl ForestOutputKind {
@@ -223,10 +232,6 @@ impl ForestInferenceModel {
             return Err(error(ErrorCode::EmptyInput, FailurePhase::Preflight, IMPORT, "forest checkpoint is empty"));
         }
         resources.validate_exact_binding(IMPORT)?;
-        let native_output = match output {
-            ForestOutput::Scores => cuml_sys::CUML_FOREST_OUTPUT_SCORES,
-            ForestOutput::ClassIndex => cuml_sys::CUML_FOREST_OUTPUT_CLASS_INDEX,
-        };
         let mut raw = std::ptr::null_mut();
         let mut metadata = empty_metadata();
         resources.with_native(IMPORT, |handle| {
@@ -237,7 +242,7 @@ impl ForestInferenceModel {
                         handle,
                         checkpoint.as_ptr(),
                         checkpoint.len(),
-                        native_output,
+                        output.native(),
                         &mut raw,
                         &mut metadata,
                     )
@@ -406,6 +411,22 @@ impl ForestPrediction {
             ForestOutputKind::Score | ForestOutputKind::Vector(_) => self.into_scores(),
             ForestOutputKind::ClassIndex { classes } => self.into_class_index(classes).map(|series| vec![series]),
         }
+    }
+
+    /// Reduces per-class probabilities to each row's most probable class and
+    /// that probability, from the output of a single inference pass. The
+    /// model must return at least two Float32 scores per row, as a fitted
+    /// random forest classifier imported with [`ForestOutput::Scores`] does;
+    /// scores outside `[0, 1]` fail validation.
+    pub fn into_class_prediction(self) -> Result<ClassPrediction> {
+        if !matches!(self.kind, ForestOutputKind::Vector(_)) {
+            return Err(invalid_input(
+                ASSEMBLE,
+                "class probabilities require a model with at least two scores per row",
+            ));
+        }
+        let runtime = Arc::clone(&self.runtime);
+        ClassPrediction::from_probabilities(&runtime, self.into_scores()?, ASSEMBLE)
     }
 
     fn into_scores(self) -> Result<Vec<Series>> {

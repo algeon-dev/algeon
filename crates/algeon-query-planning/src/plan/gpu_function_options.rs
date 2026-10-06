@@ -208,14 +208,14 @@ pub(crate) fn dense_relation_binding_schema(elements: &[VectorElementType]) -> V
         "type": "object", "additionalProperties": false, "required": ["id", "vector"],
         "properties": {
             "id": {"type": "string", "minLength": 1,
-                "description": "Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows."},
+                "description": "Logical row ID column; a null ID fails the query. IDs may repeat; result ordinals disambiguate physical rows."},
             "vector": {"description": "Choose exactly one dense-vector binding shape.", "oneOf": [
                 {"type": "object", "additionalProperties": false, "required": ["columns"], "properties": {
                     "columns": {"type": "array", "minItems": 1, "uniqueItems": true,
-                        "description": format!("Ordered, unique non-null {elements_label} feature columns; order defines vector dimensions."),
+                        "description": format!("Ordered, unique {elements_label} feature columns without null values; order defines vector dimensions."),
                         "items": {"type": "string", "minLength": 1}}}},
                 {"type": "object", "additionalProperties": false, "required": ["column"], "properties": {
-                    "column": {"type": "string", "minLength": 1, "description": format!("One non-null {list_types} column.")}}}
+                    "column": {"type": "string", "minLength": 1, "description": format!("One {list_types} column without null rows or null elements.")}}}
             ]}
         }
     })
@@ -444,9 +444,9 @@ pub(crate) fn validate_option_value(
 /// Binding from one native relation to a dense vector matrix.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DenseVectorBinding {
-    /// Separate non-null columns of one supported element type packed in the listed order.
+    /// Separate columns of one supported element type packed in the listed order.
     Columns(Vec<String>),
-    /// One non-null fixed-size or variable-size list column of a supported element type.
+    /// One fixed-size or variable-size list column of a supported element type.
     VectorColumn(String),
 }
 

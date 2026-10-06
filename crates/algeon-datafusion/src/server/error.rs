@@ -2196,7 +2196,6 @@ mod tests {
         let cases = [
             (context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32"), Code::Unimplemented),
             (context.field_not_found("cuml_tsvd", "input", FIELD), Code::InvalidArgument),
-            (context.nullable_feature_field("cuml_tsvd", "input", FIELD), Code::InvalidArgument),
             (context.input_ordering_key_not_projected("cuml_tsvd", "input", FIELD.to_string()), Code::InvalidArgument),
             (
                 Error::from_native_with_blocking_diagnostics(

@@ -11,7 +11,8 @@ as GPU UDTFs (user-defined table functions) in DataFusion SQL sessions. `cuml_ts
 transforms a truncated singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
 membership probabilities, and `cuml_umap` produces a manifold embedding.
 `cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
-labels from a `training` relation and classify a separate `predict` relation.
+labels from a `training` relation and classify a separate `predict` relation,
+returning each row's class and its probability.
 `cuml_random_forest_regressor` fits finite Float32 targets; their prediction
 step imports the fitted forest into nvForest and scores the predict features
 on the GPU. `cuml_forest_predict` scores an `input` relation against a

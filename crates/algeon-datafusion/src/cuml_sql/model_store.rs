@@ -20,6 +20,16 @@ use super::{
 };
 use crate::error::{Error, ErrorCode, Result};
 
+/// Configuration key that supplies the models root, as the server reports it
+/// in `config_field` and the `required_option` rejection fact.
+pub(super) const MODELS_ROOT_OPTION: &str = "models.root";
+
+/// Rejection text for a forest call or validation without a models root. It
+/// names both configuration surfaces, because the same session code serves the
+/// server and embedded sessions.
+pub(super) const MODEL_ROOT_UNCONFIGURED_MESSAGE: &str = "cuml_forest_predict requires a models root: set `root` in the \
+     `[models]` table of the server configuration file, or `CumlSqlConfig::model_store` for an embedded session";
+
 /// Output the SQL `output` option requests from a forest model.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ForestOutputRequest {
@@ -106,11 +116,8 @@ pub(super) fn bind_operation_model(
         return Err(feature_disabled(operation));
     }
     let Some(store) = store else {
-        return Err(invalid_call(
-            operation,
-            "model_root_unconfigured",
-            "cuml_forest_predict requires a configured models root",
-        ));
+        return Err(invalid_call(operation, "model_root_unconfigured", MODEL_ROOT_UNCONFIGURED_MESSAGE)
+            .with_log_safe_fact("required_option", MODELS_ROOT_OPTION));
     };
     load_snapshot(operation, store, reference).map(|snapshot| Some(Arc::new(snapshot)))
 }

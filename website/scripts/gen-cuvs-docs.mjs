@@ -174,9 +174,9 @@ function renderVectorBindingShapes(spec) {
   const bindingOption = Object.values(spec.options_schema.properties || {}).find(option => option?.properties?.vector?.oneOf);
   if (!bindingOption) {
     return [
-      `Each relation subquery must project a non-null ${code('id')} field followed by either one or more non-null feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or one non-null list vector field named ${code('vector')}.`,
+      `Each relation subquery must project an ${code('id')} field followed by either one or more feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or one list vector field named ${code('vector')}.`,
       '',
-      'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.',
+      'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`. Nullable field types are accepted; a null ID, feature value, list row, or list element fails the query.',
     ].join('\n');
   }
   const binding = bindingOption.properties;

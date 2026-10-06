@@ -81,7 +81,7 @@ Each relation argument is a parenthesized `SELECT` subquery. Metadata validation
 
 ### Vector binding shapes
 
-Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+Each relation subquery projects an `id` and either Float32 feature columns in dimension order or one `vector` list column of Float32 values. For classification, `training` also projects Int32 `label`; regression requires finite Float32 `label`. The `predict` relation omits it. Nullable field types are accepted; a null ID, feature value, list row, list element, or label fails the query.
 
 The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
 

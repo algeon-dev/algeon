@@ -10,13 +10,14 @@ use datafusion::{
 #[cfg(feature = "server")]
 use query_planning::plan::MlForestModelDigest;
 use query_planning::plan::{
-    MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, ml_embedding_output_schema, ml_forest_output_schema,
-    ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+    MlAlgorithmParams, MlForestModelSnapshot, RelationIdType, ml_classification_output_schema,
+    ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
+    vector_pca_output_schema,
 };
 
 use super::{
     CumlOperation, CumlValidatedOptions, DenseVectorBinding,
-    error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
+    error::{field_not_found, invalid_call, unsupported_type},
     options::{CumlParams, dense_relation_function, validate_options},
 };
 use crate::{
@@ -96,13 +97,6 @@ impl CumlLogicalNode {
                 .schema()
                 .field_with_unqualified_name(binding.id())
                 .map_err(|_| field_not_found(operation, role, binding.id()))?;
-            if id.is_nullable() {
-                return Err(invalid_call(
-                    operation,
-                    "nullable_id_field",
-                    format!("cuML {role} ID field '{}' must be non-nullable", binding.id()),
-                ));
-            }
             if RelationIdType::from_data_type(id.data_type()).is_none() {
                 return Err(unsupported_type(
                     operation,
@@ -131,9 +125,6 @@ impl CumlLogicalNode {
                         if target_type == DataType::Float32 { "Float32" } else { "Int32" },
                     ));
                 }
-                if field.is_nullable() {
-                    return Err(invalid_call(operation, "nullable_label", "cuML training label must not be nullable"));
-                }
             }
             if role == "predict"
                 && (binding.label().is_some() || input.schema().field_with_unqualified_name("label").is_ok())
@@ -154,13 +145,6 @@ impl CumlLogicalNode {
                 },
                 DenseVectorBinding::VectorColumn(column) => {
                     let field = resolve_feature(operation, input, role, column)?;
-                    if field.is_nullable() {
-                        return Err(invalid_call(
-                            operation,
-                            "nullable_vector_field",
-                            format!("cuML {role} vector field '{column}' must be non-nullable"),
-                        ));
-                    }
                     match field.data_type() {
                         DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
                             require_float32(operation, role, column, element)?;
@@ -176,7 +160,7 @@ impl CumlLogicalNode {
                                 role,
                                 column,
                                 actual,
-                                "FixedSizeList, List, or LargeList with non-null Float32 elements",
+                                "FixedSizeList, List, or LargeList with Float32 elements",
                             ));
                         },
                     }
@@ -273,9 +257,9 @@ impl CumlLogicalNode {
                     MlAlgorithmParams::LogisticRegression(_) | MlAlgorithmParams::RandomForestClassifier(_),
                 ),
                 _,
-            ) => ml_predictions_output_schema(id_type, DataType::Int32),
+            ) => ml_classification_output_schema(id_type),
             (CumlParams::Algorithm(MlAlgorithmParams::RandomForestRegressor(_)), _) => {
-                ml_predictions_output_schema(id_type, DataType::Float32)
+                ml_regression_output_schema(id_type)
             },
             (CumlParams::Algorithm(MlAlgorithmParams::ForestPredict(params)), _) => {
                 ml_forest_output_schema(id_type, params.model.output())
@@ -353,9 +337,6 @@ fn resolve_feature<'a>(
 }
 
 fn require_float32(operation: CumlOperation, role: &'static str, name: &str, field: &FieldRef) -> Result<()> {
-    if field.is_nullable() {
-        return Err(nullable_feature_field(operation, role, name));
-    }
     if field.data_type() != &DataType::Float32 {
         return Err(unsupported_type(operation, role, name, field.data_type(), "Float32"));
     }

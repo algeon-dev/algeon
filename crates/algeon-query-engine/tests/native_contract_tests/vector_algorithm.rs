@@ -202,11 +202,6 @@ fn vector_validation_rejects_invalid_bindings_parameters_and_output_schema() {
     let missing_feature = builder.finish_with_host_sink(root).unwrap();
     assert_preflight_reason(&missing_feature, "missing_feature_column");
 
-    let nullable_schema =
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("x", DataType::Float32, true)]));
-    let nullable_feature = pca_plan_with_schema(nullable_schema, 1, vector_pca_output_schema(DataType::Int64, 1));
-    assert_preflight_reason(&nullable_feature, "unsupported_feature_type");
-
     let zero_k = knn_plan_with_k(0);
     assert_preflight_reason(&zero_k, "zero_k");
 
@@ -251,6 +246,49 @@ fn vector_column_binding_validates_fixed_size_list_element_type_after_relational
         non_vector_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("non_vector_input", schema)));
     preflight_query_plan(&non_vector_builder.finish_with_host_sink(non_vector_source).unwrap())
         .expect("numeric FixedSizeList remains valid as a relational carry column");
+}
+
+/// Schema nullability is not part of the input contract: null IDs, features,
+/// list rows, and list elements fail at execution instead of at planning.
+#[test]
+fn nullable_typed_ids_features_and_list_vectors_are_admitted() {
+    let nullable_wide = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("x0", DataType::Float32, true),
+        Field::new("x1", DataType::Float32, true),
+    ]));
+    preflight_query_plan(&pca_plan_with_schema(nullable_wide, 1, vector_pca_output_schema(DataType::Int64, 1)))
+        .expect("nullable-typed ID and wide features are admitted");
+
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    for vector in [
+        DataType::List(Arc::clone(&item)),
+        DataType::LargeList(Arc::clone(&item)),
+        DataType::FixedSizeList(Arc::clone(&item), 2),
+    ] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("embedding", vector.clone(), true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
+        let params = VectorPcaParams::new(
+            VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
+            1,
+        );
+        let root = builder
+            .add_vector_algorithm(
+                vec![input],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::Pca,
+                    VectorAlgorithmParams::Pca(params),
+                    vector_pca_output_schema(DataType::Int64, 1),
+                ),
+            )
+            .unwrap();
+        preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
+            .unwrap_or_else(|error| panic!("nullable-typed {vector:?} is admitted: {error}"));
+    }
 }
 
 #[test]

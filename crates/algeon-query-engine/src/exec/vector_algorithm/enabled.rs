@@ -13,11 +13,14 @@ use cuvs::{
     KMeansModel, KMeansParams, MatrixLayout, OwnedMatrix, PairwiseElement, PcaOutputBuffers, PcaParams, PcaSolver,
     ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
-use query_planning::plan::{
-    DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorCagraBuildAlgo,
-    VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit, VectorKMeansMetric,
-    VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
-    VectorTopKParams,
+use query_planning::{
+    capability::VectorInputRole,
+    plan::{
+        DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
+        VectorCagraBuildAlgo, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit,
+        VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
+        VectorRelationBinding, VectorTopKParams,
+    },
 };
 use query_runtime::observability::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
@@ -30,8 +33,9 @@ use super::assembly::{
 use crate::exec::{
     GpuDataFrame,
     dense_relation::{
-        DenseRelationInputs, VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for,
-        relation_dimension, relation_element_type_for, relation_input_for, size_overflow_for,
+        DenseRelationInputs, RelationColumns, VECTOR_OPERATIONS, checked_output_rows, list_export_error,
+        matrix_bytes_for, pack_dense_relation_for, relation_dimension, relation_element_type_for, relation_input_for,
+        require_null_free_relation, size_overflow_for,
     },
     *,
 };
@@ -113,6 +117,21 @@ pub(in crate::exec) fn execute_vector_algorithm(
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE_OPERATION)?;
     let inputs = DenseRelationInputs::new(&node.inputs, inputs);
+    for binding in node.spec.params.relation_bindings() {
+        require_null_free_relation(
+            &VECTOR_OPERATIONS,
+            inputs,
+            node_id,
+            node.spec.algorithm.as_str(),
+            RelationColumns {
+                role: VectorInputRole::for_vector_input(node, binding.input).as_str(),
+                input: binding.input,
+                row_id: &binding.row_id,
+                vector: &binding.vector,
+                label: None,
+            },
+        )?;
+    }
     // Vector operators do not have an independent workspace estimate. Use
     // the context's allocation member for the boundary: the live member makes
     // cuVS's device-current temporaries domain-accounted before resources are
@@ -1383,14 +1402,14 @@ fn with_relation_tensor<E: DeviceElement, T>(
                 },
             };
             let validated = match batch.try_prepare_fixed_size_list_export(field_index).map_err(|error| {
-                cudf_query_error(
-                    PACK_OPERATION,
+                list_export_error(
+                    &VECTOR_OPERATIONS,
                     "failed to prove the FixedSizeList vector child range and finite values",
                     error,
+                    node_id,
+                    algorithm.as_str(),
+                    (role, column),
                 )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
             }) {
                 Ok(validated) => validated,
                 Err(error) => {
@@ -1511,10 +1530,14 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
     })?;
     let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
     let validated = batch.try_prepare_uniform_list_export(field_index).map_err(|error| {
-        cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
+        list_export_error(
+            &VECTOR_OPERATIONS,
+            "failed to prove uniform List vector offsets and finite values",
+            error,
+            node_id,
+            algorithm.as_str(),
+            (role, column),
+        )
     })?;
     require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
     let rows = validated.rows();

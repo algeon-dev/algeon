@@ -5,12 +5,14 @@ use serde_json::{Map, Value, json};
 
 use super::{
     CUML_OPERATION_REGISTRY, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
-    model_store::{CumlModelStore, bind_operation_model},
+    model_store::{CumlModelStore, MODEL_ROOT_UNCONFIGURED_MESSAGE, MODELS_ROOT_OPTION, bind_operation_model},
     options::{dense_relation_function, validate_options},
 };
 use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
-    dense_relation::{resolve_schema_only_input, schema_json, validation_error, validation_request_schema},
+    dense_relation::{
+        NULL_VALUES_CONTRACT, resolve_schema_only_input, schema_json, validation_error, validation_request_schema,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,11 +67,16 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
         let availability = self.operation_availability(operation);
         if !availability.is_available() {
             let reason = availability.unavailable_reason().expect("unavailable cuML functions have a reason");
+            let model_root_unconfigured = reason == "model_root_unconfigured";
+            let mut details = json!({"provider": "cuml", "operation": operation.as_name(), "availability": {"available": false, "reason": reason}});
+            if model_root_unconfigured {
+                details["required_option"] = json!(MODELS_ROOT_OPTION);
+            }
             return GpuCallValidation {
                 valid: false,
                 error_code: Some(reason.to_string()),
-                message: if reason == "model_root_unconfigured" {
-                    "cuml_forest_predict requires a configured models root"
+                message: if model_root_unconfigured {
+                    MODEL_ROOT_UNCONFIGURED_MESSAGE
                 } else {
                     "cuML execution requires the cuml Cargo feature"
                 }
@@ -79,7 +86,7 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
                 normalized_call: request.normalized_json(),
                 output_schema: json!({}),
                 would_execute_gpu: false,
-                details: json!({"provider": "cuml", "operation": operation.as_name(), "availability": {"available": false, "reason": reason}}),
+                details,
             };
         }
         let mut inputs = Vec::new();
@@ -161,16 +168,16 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
     let relation_roles = descriptor.relation_roles.iter().map(|role| {
         let supervised = matches!(descriptor.operation, CumlOperation::LogisticRegression | CumlOperation::RandomForestClassifier | CumlOperation::RandomForestRegressor);
         let mut fields = json!({
-            "id": {"required": true, "nullable": false, "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]},
-            "features": {"element_types": descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>(),
+            "id": {"required": true, "null_values": NULL_VALUES_CONTRACT, "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]},
+            "features": {"null_values": NULL_VALUES_CONTRACT, "element_types": descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>(),
                 "one_of": [
-                    {"shape": "wide", "rule": if supervised { "Every non-id, non-label field is a non-null Float32 feature; projection order defines vector dimension order." } else { "Every non-id field is a non-null Float32 feature; projection order defines vector dimension order." }},
-                    {"shape": "list", "field": "vector", "rule": if supervised { "The non-null vector field is FixedSizeList, List, or LargeList of non-null Float32 elements; training also contains label." } else { "The non-null vector field is FixedSizeList, List, or LargeList of non-null Float32 elements, with no other non-id fields." }}
+                    {"shape": "wide", "rule": if supervised { "Every non-id, non-label field is a Float32 feature; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query." } else { "Every non-id field is a Float32 feature; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query." }},
+                    {"shape": "list", "field": "vector", "rule": if supervised { "The vector field is FixedSizeList, List, or LargeList of Float32 elements; training also contains label. Nullable field and element types are accepted and a null row or element fails the query." } else { "The vector field is FixedSizeList, List, or LargeList of Float32 elements, with no other non-id fields. Nullable field and element types are accepted and a null row or element fails the query." }}
                 ]},
         });
         if supervised {
             fields["label"] = if *role == MlRelationRole::Training {
-                json!({"required": true, "nullable": false, "data_types": [if operation == CumlOperation::RandomForestRegressor { "Float32" } else { "Int32" }]})
+                json!({"required": true, "null_values": NULL_VALUES_CONTRACT, "data_types": [if operation == CumlOperation::RandomForestRegressor { "Float32" } else { "Int32" }]})
             } else {
                 json!({"allowed": false})
             };

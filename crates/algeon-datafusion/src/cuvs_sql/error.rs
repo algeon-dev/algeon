@@ -38,10 +38,6 @@ pub(super) fn unsupported_type(
     ERRORS.unsupported_type(operation.descriptor().sql_function_name, relation_role, field, actual, expected)
 }
 
-pub(super) fn nullable_feature_field(operation: CuvsOperation, relation_role: &'static str, field: &str) -> Error {
-    ERRORS.nullable_feature_field(operation.descriptor().sql_function_name, relation_role, field)
-}
-
 pub(super) fn feature_disabled(operation: CuvsOperation) -> Error {
     ERRORS.feature_disabled(operation.descriptor().sql_function_name)
 }

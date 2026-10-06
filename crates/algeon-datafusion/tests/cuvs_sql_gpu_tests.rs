@@ -8,7 +8,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     cuvs_sql::CuvsAlgoExec,
-    error::DataFusionErrorExt,
+    error::{DataFusionErrorExt, ErrorCode},
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
@@ -24,7 +24,7 @@ use arrow::{
         ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int64Array, ListArray, StringArray,
         UInt8Array, UInt32Array,
     },
-    buffer::OffsetBuffer,
+    buffer::{NullBuffer, OffsetBuffer},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -36,6 +36,7 @@ use cudf::testing::arrow::{
 use datafusion::physical_plan::{execute_stream, metrics::MetricsSet};
 use datafusion::{
     datasource::MemTable,
+    error::DataFusionError,
     execution::SessionStateBuilder,
     physical_plan::{ExecutionPlan, collect, displayable},
     prelude::{ParquetReadOptions, SessionContext},
@@ -356,6 +357,178 @@ async fn top_k_rejects_k_above_evaluated_list_dimension() {
     let error = collect(plan, ctx.task_ctx()).await.expect_err("evaluated list dimension must bound k");
     assert_eq!(error.find_algeon_error().and_then(|error| error.fact_value("reason")), Some("k_exceeds_dimension"));
     close_cuvs_test_backend(backend, ctx);
+}
+
+/// Dataset or query relations whose fields are nullable by schema but hold no
+/// null value: nullable-typed wide columns, lists built in SQL, which
+/// DataFusion computes on the CPU with always-nullable fields, and stored
+/// columns that carry a validity mask without a null (`masked_*` tables).
+const NULLABLE_TYPED_DATASETS: [&str; 5] = [
+    "SELECT CASE WHEN item_id < 0 THEN NULL ELSE item_id END AS id, \
+            CASE WHEN item_id < 0 THEN NULL ELSE d0 END AS d0, CASE WHEN item_id < 0 THEN NULL ELSE d1 END AS d1 \
+     FROM dataset_vectors",
+    "SELECT item_id AS id, make_array(d0, d1) AS vector FROM dataset_vectors",
+    "SELECT CASE WHEN item_id < 0 THEN NULL ELSE item_id END AS id, \
+            CASE WHEN item_id < 0 THEN NULL ELSE make_array(d0, d1) END AS vector FROM dataset_vectors",
+    "SELECT item_id AS id, d0, d1 FROM masked_vectors",
+    "SELECT item_id AS id, vector FROM masked_list_vectors",
+];
+
+/// Lists aggregated per entity with `ARRAY_AGG`: group order is unspecified,
+/// so the result is compared without distance ties.
+const ARRAY_AGG_DATASET: &str = "SELECT id, array_agg(v ORDER BY k) AS vector FROM (\
+         SELECT item_id AS id, 0 AS k, d0 AS v FROM dataset_vectors \
+         UNION ALL SELECT item_id AS id, 1 AS k, d1 AS v FROM dataset_vectors) GROUP BY id";
+
+#[tokio::test]
+async fn nullable_typed_null_free_relations_match_the_non_null_results() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    register_masked_tables(&ctx);
+    let query = |dataset: &str, k: usize| {
+        format!(
+            "SELECT query_id, neighbor_id, rank, distance FROM cuvs_brute_force_knn(\
+                 dataset => ({dataset}), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+                 k => {k}, metric => 'l2_expanded') ORDER BY query_ordinal, rank"
+        )
+    };
+    let non_null = "SELECT item_id AS id, d0, d1 FROM dataset_vectors";
+    let oracle = collect(plan_sql(&ctx, &query(non_null, 2)).await, ctx.task_ctx()).await.expect("non-null oracle");
+    for dataset in NULLABLE_TYPED_DATASETS {
+        let actual = collect(plan_sql(&ctx, &query(dataset, 2)).await, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{dataset}: {error}"));
+        assert_eq!(format!("{actual:?}"), format!("{oracle:?}"), "{dataset}");
+    }
+    let oracle = collect(plan_sql(&ctx, &query(non_null, 1)).await, ctx.task_ctx()).await.expect("k = 1 oracle");
+    let actual = collect(plan_sql(&ctx, &query(ARRAY_AGG_DATASET, 1)).await, ctx.task_ctx())
+        .await
+        .expect("ARRAY_AGG list dataset");
+    assert_eq!(format!("{actual:?}"), format!("{oracle:?}"));
+
+    let pca = |input: &str| {
+        format!("SELECT id, pc_0 FROM cuvs_pca(input => ({input}), n_components => 1) ORDER BY row_ordinal")
+    };
+    let oracle = collect(plan_sql(&ctx, &pca(non_null)).await, ctx.task_ctx()).await.expect("non-null PCA oracle");
+    for input in NULLABLE_TYPED_DATASETS {
+        let actual = collect(plan_sql(&ctx, &pca(input)).await, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{input}: {error}"));
+        assert_eq!(format!("{actual:?}"), format!("{oracle:?}"), "{input}");
+    }
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn null_ids_features_and_list_values_fail_naming_the_function_role_and_column() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let cases = [
+        (
+            "cuvs_brute_force_knn",
+            "dataset",
+            "id",
+            "null_id_value",
+            "SELECT CASE WHEN item_id = 2 THEN NULL ELSE item_id END AS id, d0, d1 FROM dataset_vectors",
+        ),
+        (
+            "cuvs_brute_force_knn",
+            "dataset",
+            "d1",
+            "null_feature_value",
+            "SELECT item_id AS id, d0, CASE WHEN item_id = 2 THEN NULL ELSE d1 END AS d1 FROM dataset_vectors",
+        ),
+        (
+            "cuvs_brute_force_knn",
+            "dataset",
+            "vector",
+            "null_vector_row",
+            "SELECT item_id AS id, CASE WHEN item_id = 2 THEN NULL ELSE make_array(d0, d1) END AS vector \
+             FROM dataset_vectors",
+        ),
+        (
+            "cuvs_brute_force_knn",
+            "dataset",
+            "vector",
+            "null_vector_value",
+            "SELECT item_id AS id, make_array(d0, CASE WHEN item_id = 2 THEN NULL ELSE d1 END) AS vector \
+             FROM dataset_vectors",
+        ),
+    ];
+    for (function, role, column, reason, relation) in cases {
+        let sql = format!(
+            "SELECT * FROM {function}(\
+                 dataset => ({relation}), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+                 k => 1, metric => 'l2_expanded')"
+        );
+        let error = collect(plan_sql(&ctx, &sql).await, ctx.task_ctx()).await.expect_err(&sql);
+        assert_null_input_error(&error, function, role, column, reason);
+    }
+    // PCA packs through the shared dense-relation path rather than the zero-copy tensor path.
+    for (column, reason, relation) in [
+        (
+            "d0",
+            "null_feature_value",
+            "SELECT item_id AS id, CASE WHEN item_id = 2 THEN NULL ELSE d0 END AS d0, d1 FROM dataset_vectors",
+        ),
+        (
+            "vector",
+            "null_vector_value",
+            "SELECT item_id AS id, make_array(d0, CASE WHEN item_id = 2 THEN NULL ELSE d1 END) AS vector \
+             FROM dataset_vectors",
+        ),
+    ] {
+        let sql = format!("SELECT * FROM cuvs_pca(input => ({relation}), n_components => 1)");
+        let error = collect(plan_sql(&ctx, &sql).await, ctx.task_ctx()).await.expect_err(&sql);
+        assert_null_input_error(&error, "cuvs_pca", "input", column, reason);
+    }
+    close_cuvs_test_backend(backend, ctx);
+}
+
+/// The `dataset_vectors` rows with nullable fields whose arrays carry an
+/// all-valid null buffer: a mask is present, no value is null.
+fn register_masked_tables(ctx: &SessionContext) {
+    let valid = |len: usize| Some(NullBuffer::new_valid(len));
+    let ids = Int64Array::new(vec![0_i64, 1, 2, 3].into(), valid(4));
+    let d0 = Float32Array::new(vec![0.0_f32, 2.0, 0.0, 3.0].into(), valid(4));
+    let d1 = Float32Array::new(vec![0.0_f32, 0.0, 2.0, 3.0].into(), valid(4));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, true),
+        Field::new("d0", DataType::Float32, true),
+        Field::new("d1", DataType::Float32, true),
+    ]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(ids.clone()) as ArrayRef, Arc::new(d0), Arc::new(d1)])
+            .expect("masked wide fixture");
+    ctx.register_table("masked_vectors", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+
+    let item = Arc::new(Field::new("item", DataType::Float32, true));
+    let values = Float32Array::new(vec![0.0_f32, 0.0, 2.0, 0.0, 0.0, 2.0, 3.0, 3.0].into(), valid(8));
+    let vectors = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(vec![0_i32, 2, 4, 6, 8].into()),
+        Arc::new(values),
+        valid(4),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, true),
+        Field::new("vector", DataType::List(item), true),
+    ]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(ids) as ArrayRef, Arc::new(vectors)])
+        .expect("masked list fixture");
+    ctx.register_table("masked_list_vectors", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+fn assert_null_input_error(error: &DataFusionError, function: &str, role: &str, column: &str, reason: &str) {
+    let typed = error.find_algeon_error().unwrap_or_else(|| panic!("typed error expected: {error:?}"));
+    assert_eq!(typed.code(), ErrorCode::CudfInvalidInput, "{error}");
+    assert!(typed.message().contains(function), "{}", typed.message());
+    assert_eq!(typed.fact_value("relation_role"), Some(role), "{error}");
+    assert_eq!(typed.fact_value("reason"), Some(reason), "{error}");
+    let detail = typed.client_detail().expect("the null column travels as client detail");
+    assert_eq!(detail.value("column"), Some(column), "{error}");
 }
 
 #[tokio::test]

@@ -736,19 +736,18 @@ pub(crate) fn validate_dense_relation_binding(
                         .with_fact("column", column)
                 })?;
                 let current_type = VectorElementType::from_data_type(field.data_type());
-                if current_type.is_none() || field.is_nullable() {
+                if current_type.is_none() {
                     return Err(with_supported_types(
                         QueryError::new(
                             QueryErrorCode::UnsupportedType,
                             "query_engine.vector_algorithm.validate",
-                            "vector feature columns must have a non-null supported element type",
+                            "vector feature columns must have a supported element type",
                         )
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                         .with_fact("reason", "unsupported_feature_type")
                         .with_fact("column", column)
-                        .with_fact("data_type", format!("{:?}", field.data_type()))
-                        .with_fact("nullable", field.is_nullable()),
+                        .with_fact("data_type", format!("{:?}", field.data_type())),
                         supported_types,
                     ));
                 }
@@ -779,16 +778,6 @@ pub(crate) fn validate_dense_relation_binding(
                     .with_fact("reason", "missing_feature_column")
                     .with_fact("column", column)
             })?;
-            if field.is_nullable() {
-                return Err(with_supported_types(
-                    vector_algorithm_error("vector column must be non-nullable")
-                        .with_fact("node_id", node_id)
-                        .with_fact("relation_role", role)
-                        .with_fact("reason", "unsupported_feature_type")
-                        .with_fact("column", column),
-                    supported_types,
-                ));
-            }
             let (element, dimension) = match field.data_type() {
                 DataType::FixedSizeList(element, dimension) if *dimension > 0 => (element, Some(*dimension as usize)),
                 DataType::List(element) | DataType::LargeList(element) => (element, None),
@@ -808,16 +797,6 @@ pub(crate) fn validate_dense_relation_binding(
                     ));
                 },
             };
-            if element.is_nullable() {
-                return Err(with_supported_types(
-                    vector_algorithm_error("vector column elements must be non-null")
-                        .with_fact("node_id", node_id)
-                        .with_fact("relation_role", role)
-                        .with_fact("reason", "unsupported_feature_type")
-                        .with_fact("column", column),
-                    supported_types,
-                ));
-            }
             let element_type = VectorElementType::from_data_type(element.data_type()).ok_or_else(|| {
                 with_supported_types(
                     vector_algorithm_error("vector column element type is not supported")
@@ -857,18 +836,17 @@ pub(crate) fn validate_dense_relation_binding(
                     .with_fact("reason", "missing_row_id_column")
                     .with_fact("column", column)
             })?;
-            if RelationIdType::from_data_type(field.data_type()).is_none() || field.is_nullable() {
+            if RelationIdType::from_data_type(field.data_type()).is_none() {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "query_engine.vector_algorithm.validate",
-                    "vector row-id columns must be non-null Int32, Int64, Utf8, LargeUtf8, or Utf8View values",
+                    "vector row-id columns must be Int32, Int64, Utf8, LargeUtf8, or Utf8View values",
                 )
                 .with_fact("node_id", node_id)
                 .with_fact("relation_role", role)
                 .with_fact("reason", "unsupported_row_id_type")
                 .with_fact("column", column)
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-                .with_fact("nullable", field.is_nullable()));
+                .with_fact("data_type", format!("{:?}", field.data_type())));
             }
             Ok(DenseRelationValidation { id_type: field.data_type().clone(), ..relation })
         },

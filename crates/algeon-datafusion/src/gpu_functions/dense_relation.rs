@@ -20,6 +20,10 @@ use super::{
 };
 use crate::error::{DataFusionErrorExt, Error, ErrorCode, Result};
 
+/// Descriptor value for relation fields whose Arrow nullability is not checked
+/// and whose values must be null-free: execution fails the query on a null.
+pub(crate) const NULL_VALUES_CONTRACT: &str = "rejected_at_execution";
+
 /// Typed reads of one call's canonical options. Canonicalization fills every
 /// option a definition declares with its value or default and checks its kind,
 /// so a failed read means the canonical object and the definitions disagree.
@@ -503,7 +507,7 @@ pub(crate) fn adapter_validation_error(
         (None, None, _) => "options".to_string(),
     };
     details["path"] = Value::String(path);
-    for key in ["argument", "relation_role", "field", "actual_type", "expected_type"] {
+    for key in ["argument", "relation_role", "field", "actual_type", "expected_type", "required_option"] {
         if let Some(value) = detail(key) {
             details[key] = Value::String(value.to_string());
         }

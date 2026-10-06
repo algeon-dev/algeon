@@ -15,7 +15,8 @@ use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
     REQUIRED_FEATURE_DISABLED,
     dense_relation::{
-        adapter_validation_error, resolve_schema_only_input, schema_json, validation_error, validation_request_schema,
+        NULL_VALUES_CONTRACT, adapter_validation_error, resolve_schema_only_input, schema_json, validation_error,
+        validation_request_schema,
     },
 };
 
@@ -174,10 +175,11 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                 "fields": {
                     "id": {
                         "required": true,
-                        "nullable": false,
+                        "null_values": NULL_VALUES_CONTRACT,
                         "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]
                     },
                     "features": {
+                        "null_values": NULL_VALUES_CONTRACT,
                         "element_types": descriptor.vector_element_support.iter().map(|support| support.element.as_str()).collect::<Vec<_>>(),
                         "element_metric_support": descriptor.vector_element_support.iter().map(|support| json!({
                             "element": support.element.as_str(), "metrics": support.metrics,
@@ -185,12 +187,12 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                         "one_of": [
                             {
                                 "shape": "wide",
-                                "rule": "Every non-id field is a non-null feature of the same supported element type; projection order defines vector dimension order."
+                                "rule": "Every non-id field is a feature of the same supported element type; projection order defines vector dimension order. A nullable field type is accepted and a null value fails the query."
                             },
                             {
                                 "shape": "list",
                                 "field": "vector",
-                                "rule": "The non-null vector field is FixedSizeList, List, or LargeList of a supported element type, with no other non-id fields."
+                                "rule": "The vector field is FixedSizeList, List, or LargeList of a supported element type, with no other non-id fields. Nullable field and element types are accepted and a null row or element fails the query."
                             }
                         ]
                     }

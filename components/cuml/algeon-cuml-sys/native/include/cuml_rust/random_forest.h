@@ -67,11 +67,13 @@ cuml_status_t cuml_rf_regressor_fit(cuml_handle_t handle,
                                     int32_t input_row_major,
                                     cuml_rf_forest_t* out_forest);
 // Imports the fitted forest into nvForest on the handle's device and stream
-// without a checkpoint round trip. A classifier imports with class-index
-// output, where ties resolve to the lowest index; a regressor imports with
-// score output. The intermediate Treelite model is freed before returning.
+// without a checkpoint round trip. Score output of a classifier is one
+// probability per class, averaged across trees; class-index output resolves
+// ties to the lowest index. A regressor has one score and no class index. The
+// intermediate Treelite model is freed before returning.
 cuml_status_t cuml_rf_forest_import(cuml_handle_t handle,
                                     cuml_rf_forest_t forest,
+                                    cuml_forest_output_t output,
                                     cuml_forest_model_t* out_model,
                                     cuml_forest_metadata_t* out_metadata);
 cuml_status_t cuml_rf_forest_destroy(cuml_rf_forest_t forest);

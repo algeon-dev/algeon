@@ -29,8 +29,9 @@ mod enabled {
             MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelFacts, MlForestModelFormat,
             MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams, MlHdbscanParams,
             MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlTsvdParams, MlUmapInit,
-            MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding, ml_embedding_output_schema,
-            ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+            MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding, ml_classification_output_schema,
+            ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_regression_output_schema,
+            vector_pca_output_schema,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -285,13 +286,13 @@ mod enabled {
             },
             _ => unreachable!("supervised fixture"),
         };
-        let output_type =
-            if algorithm == MlAlgorithm::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 };
+        let output_schema = if algorithm == MlAlgorithm::RandomForestRegressor {
+            ml_regression_output_schema(DataType::Utf8)
+        } else {
+            ml_classification_output_schema(DataType::Utf8)
+        };
         let root = builder
-            .add_ml_algorithm(
-                vec![training, predict],
-                MlAlgorithmSpec::new(algorithm, params, ml_predictions_output_schema(DataType::Utf8, output_type)),
-            )
+            .add_ml_algorithm(vec![training, predict], MlAlgorithmSpec::new(algorithm, params, output_schema))
             .unwrap();
         let plan = builder.finish_with_host_sink(root).unwrap();
         let context = backend_context();
@@ -371,15 +372,15 @@ mod enabled {
         for classes in [2, 3] {
             let (result, observation) = execute_supervised(MlAlgorithm::LogisticRegression, classes, None, classes);
             let QueryOutput::HostArrow(output) = result.expect("fit and classify") else { panic!("host output") };
-            assert_eq!(
-                output.schema().as_ref(),
-                ml_predictions_output_schema(DataType::Utf8, DataType::Int32).as_ref()
-            );
+            assert_eq!(output.schema().as_ref(), ml_classification_output_schema(DataType::Utf8).as_ref());
             let ids = output.column(1).as_any().downcast_ref::<StringArray>().unwrap();
             let predictions = output.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
+            let probabilities = output.column(3).as_any().downcast_ref::<Float32Array>().unwrap();
             for i in 0..classes {
                 assert_eq!(ids.value(i), format!("p{i}"));
                 assert_eq!(predictions.value(i), i as i32);
+                // The predicted class is the most probable of `classes`.
+                assert!((1.0 / classes as f32..=1.0).contains(&probabilities.value(i)), "row {i}");
             }
             let stages = observation
                 .events()
@@ -435,6 +436,8 @@ mod enabled {
                 let predictions = output.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
                 let accuracy = (0..12).filter(|&row| predictions.value(row) == (row / 6) as i32).count() as f32 / 12.0;
                 assert!(accuracy >= 0.95, "RF training-set accuracy {accuracy}");
+                let probabilities = output.column(3).as_any().downcast_ref::<Float32Array>().unwrap();
+                assert!((0..12).all(|row| (0.5..=1.0).contains(&probabilities.value(row))));
             } else {
                 let predictions = output.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
                 let mse = (0..12)
@@ -506,7 +509,7 @@ mod enabled {
         let (result, observation) = execute_supervised(MlAlgorithm::LogisticRegression, 2, None, 0);
         let QueryOutput::HostArrow(output) = result.expect("empty predict") else { panic!("host output") };
         assert_eq!(output.num_rows(), 0);
-        assert_eq!(output.schema().as_ref(), ml_predictions_output_schema(DataType::Utf8, DataType::Int32).as_ref());
+        assert_eq!(output.schema().as_ref(), ml_classification_output_schema(DataType::Utf8).as_ref());
         assert!(
             !observation.events().iter().any(|event| matches!(&event.payload,
             RuntimeObservationPayload::OperatorStage(stage) if stage.stage_kind == RuntimeOperatorStageKind::MlNative))
@@ -781,7 +784,7 @@ mod enabled {
                 MlAlgorithmSpec::new(
                     MlAlgorithm::RandomForestClassifier,
                     MlAlgorithmParams::RandomForestClassifier(params),
-                    ml_predictions_output_schema(DataType::Int64, DataType::Int32),
+                    ml_classification_output_schema(DataType::Int64),
                 ),
             )
             .unwrap();

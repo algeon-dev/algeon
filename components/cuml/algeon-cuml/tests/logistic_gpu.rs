@@ -1,7 +1,18 @@
 use std::sync::Arc;
 
-use cudf::{DenseMatrixLayout, Runtime, RuntimeBuilder, testing::device_copy};
-use cuml::{CumlResources, DeviceMatrix, ErrorCode, LogisticRegressionModel, LogisticRegressionParams};
+use cudf::{DenseMatrixLayout, Runtime, RuntimeBuilder, Series, TypeId, testing::device_copy};
+use cuml::{CumlResources, DeviceMatrix, ErrorCode, LogisticRegressionModel, LogisticRegressionParams, MatrixLayout};
+
+fn coefficients(runtime: &Runtime, model: &LogisticRegressionModel) -> Vec<f32> {
+    let buffer = model.coefficients();
+    // SAFETY: the buffer is a live Float32 allocation bound to the runtime's execution binding.
+    let column = unsafe {
+        runtime
+            .column_from_device_ptr(buffer.as_ptr().expect("coefficient pointer"), buffer.len(), TypeId::Float32)
+            .expect("coefficient column")
+    };
+    Series::from_column(column).expect("coefficient series").to_vec_strict::<f32>().expect("Float32 coefficients")
+}
 
 #[test]
 fn logistic_regression_adopts_labels_from_another_runtime() {
@@ -29,8 +40,8 @@ fn logistic_regression_adopts_labels_from_another_runtime() {
         "foreign labels require a device copy"
     );
     assert_eq!(
-        adopted.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
-        baseline.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+        adopted.predict(&resources, &input).unwrap().class.to_vec_strict::<i32>().unwrap(),
+        baseline.predict(&resources, &input).unwrap().class.to_vec_strict::<i32>().unwrap(),
     );
 }
 
@@ -60,8 +71,9 @@ fn logistic_regression_fit_and_predict_binary_and_multiclass() {
     assert!(fit.objective.is_finite());
     assert!(fit.iterations <= 200);
     let predictions = model.predict(&resources, &input).expect("binary predictions");
-    assert_eq!(predictions.len(), x0.len());
-    let predicted = predictions.to_vec_strict::<i32>().expect("Int32 predictions");
+    assert_eq!(predictions.class.len(), x0.len());
+    assert_eq!(predictions.probability.dtype().expect("dtype").id(), TypeId::Float32);
+    let predicted = predictions.class.to_vec_strict::<i32>().expect("Int32 predictions");
     assert_eq!(predicted, [0, 0, 0, 0, 1, 1, 1, 1]);
 
     let multi =
@@ -76,7 +88,7 @@ fn logistic_regression_fit_and_predict_binary_and_multiclass() {
     .expect("multiclass logistic fit");
     assert_eq!(multi_model.n_classes(), 3);
     assert!(multi_fit.objective.is_finite());
-    assert_eq!(multi_model.predict(&resources, &input).expect("multiclass predictions").len(), 8);
+    assert_eq!(multi_model.predict(&resources, &input).expect("multiclass predictions").class.len(), 8);
 
     for (values, expected, reason) in [
         ([0_i32, 0, 0, 0, 2, 2, 2, 2], ErrorCode::LabelOutOfRange, "labels_not_contiguous"),
@@ -107,6 +119,101 @@ fn logistic_regression_fit_and_predict_binary_and_multiclass() {
             .code(),
         ErrorCode::UnsupportedDtype
     );
+}
+
+/// Overlapping classes keep fitted probabilities away from 0 and 1, so the
+/// comparison with the host decision function exercises the transformation.
+#[test]
+fn logistic_regression_probabilities_follow_the_decision_function() {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let rows = 15_usize;
+    let x0 = (0..rows).map(|i| (i as f32 - 7.0) * 0.4).collect::<Vec<_>>();
+    let x1 = (0..rows).map(|i| ((i * 7) % 5) as f32 - 2.0).collect::<Vec<_>>();
+    let packed = runtime
+        .pack_columns(
+            &[&runtime.column_from_slice(&x0).unwrap(), &runtime.column_from_slice(&x1).unwrap()],
+            DenseMatrixLayout::ColumnMajor,
+        )
+        .expect("matrix");
+    let packed = packed.validate().expect("finite features");
+    let input = DeviceMatrix::from_validated(&packed).expect("matrix view");
+    assert_eq!(input.layout(), MatrixLayout::ColumnMajor);
+    let params = LogisticRegressionParams { max_iter: 500, ..Default::default() };
+    let binary = [0_i32, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1];
+    let three = [0_i32, 0, 1, 0, 0, 1, 0, 1, 1, 2, 1, 2, 2, 1, 2];
+
+    // Binary: one coefficient vector [w0, w1, intercept]; class 1 has probability sigmoid(z).
+    let (model, _) =
+        LogisticRegressionModel::fit(&resources, &input, &runtime.series(&binary).unwrap(), params).unwrap();
+    let w = coefficients(&runtime, &model);
+    let prediction = model.predict(&resources, &input).expect("binary prediction");
+    let (class, probability) =
+        (prediction.class.to_vec_strict::<i32>().unwrap(), prediction.probability.to_vec_strict::<f32>().unwrap());
+    for row in 0..rows {
+        let z = f64::from(w[0]) * f64::from(x0[row]) + f64::from(w[1]) * f64::from(x1[row]) + f64::from(w[2]);
+        let positive = 1.0 / (1.0 + (-z).exp());
+        let (expected_class, expected) = if z > 0.0 { (1, positive) } else { (0, 1.0 - positive) };
+        assert_eq!(class[row], expected_class, "row {row}");
+        assert!(
+            (f64::from(probability[row]) - expected).abs() <= 1e-5,
+            "row {row}: {} vs {expected}",
+            probability[row]
+        );
+        assert!(probability[row] >= 0.5);
+    }
+    assert!(probability.iter().any(|value| *value < 0.99), "overlapping classes must not saturate: {probability:?}");
+
+    // Softmax: coefficients are a 3 x 3 column-major block; the last column is the intercept.
+    let (model, _) =
+        LogisticRegressionModel::fit(&resources, &input, &runtime.series(&three).unwrap(), params).unwrap();
+    let w = coefficients(&runtime, &model);
+    let prediction = model.predict(&resources, &input).expect("softmax prediction");
+    let (class, probability) =
+        (prediction.class.to_vec_strict::<i32>().unwrap(), prediction.probability.to_vec_strict::<f32>().unwrap());
+    for row in 0..rows {
+        let z = (0..3)
+            .map(|c| {
+                f64::from(w[c]) * f64::from(x0[row]) + f64::from(w[3 + c]) * f64::from(x1[row]) + f64::from(w[6 + c])
+            })
+            .collect::<Vec<_>>();
+        let max = z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let expected = 1.0 / z.iter().map(|value| (value - max).exp()).sum::<f64>();
+        assert_eq!(i64::from(class[row]), z.iter().position(|value| *value == max).unwrap() as i64, "row {row}");
+        assert!(
+            (f64::from(probability[row]) - expected).abs() <= 1e-5,
+            "row {row}: {} vs {expected}",
+            probability[row]
+        );
+        assert!(probability[row] >= 1.0 / 3.0);
+    }
+    assert!(probability.iter().any(|value| *value < 0.99), "overlapping classes must not saturate: {probability:?}");
+}
+
+#[test]
+fn logistic_regression_predicts_a_single_row() {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let pack = |values: &[f32]| {
+        let column = runtime.column_from_slice(values).expect("features");
+        runtime.pack_columns(&[&column], DenseMatrixLayout::ColumnMajor).expect("matrix")
+    };
+    let training = pack(&[-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0]);
+    let training = training.validate().expect("finite features");
+    let labels = runtime.series(&[0_i32, 0, 0, 0, 1, 1, 1, 1]).expect("labels");
+    let (model, _) = LogisticRegressionModel::fit(
+        &resources,
+        &DeviceMatrix::from_validated(&training).unwrap(),
+        &labels,
+        LogisticRegressionParams { max_iter: 200, ..Default::default() },
+    )
+    .expect("fit");
+    let single = pack(&[3.5]);
+    let single = single.validate().expect("finite features");
+    let prediction =
+        model.predict(&resources, &DeviceMatrix::from_validated(&single).unwrap()).expect("one-row predict");
+    assert_eq!(prediction.class.to_vec_strict::<i32>().unwrap(), [1]);
+    assert!(prediction.probability.to_vec_strict::<f32>().unwrap()[0] > 0.5);
 }
 
 // cuML's default logger sink (cuml/common/logger.hpp default_sink) writes to the file named by

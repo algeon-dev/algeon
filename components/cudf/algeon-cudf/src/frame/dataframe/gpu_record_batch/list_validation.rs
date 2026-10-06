@@ -342,6 +342,12 @@ fn fixed_size_list_width_bounds(
     Ok((minimum, maximum))
 }
 
+fn null_vector_row_error(field_index: usize, operation: &'static str) -> Error {
+    Error::new_with(ErrorCode::NullUnexpected, operation, "List<Float32> vector rows must not contain nulls")
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("reason", "null_vector_row")
+}
+
 pub(super) fn validate_uniform_list_offsets(
     view: &ColumnView<'_>,
     producer: &Arc<Column>,
@@ -359,6 +365,12 @@ pub(super) fn validate_uniform_list_offsets(
         .with_detail("field_index", field_index.to_string())
         .with_detail("row_count", "0")
         .with_detail("remedy", "provide at least one vector row or use a trusted FixedSizeList schema dimension"));
+    }
+
+    // A null row has no vector and an arbitrary offset width, usually zero. Reporting it first keeps
+    // the failure from surfacing as a dimension error.
+    if view.null_count().map_err(|error| error.reanchor_if_needed(operation))? != 0 {
+        return Err(null_vector_row_error(field_index, operation));
     }
 
     let (widths, root_offset) = uniform_list_offset_widths(view, rows, field_index, operation)?;
@@ -698,13 +710,7 @@ fn check_list_export_root(
         .with_detail("export_root_offset", root.offset().to_string()));
     }
     if !validity_proves_no_nulls(root.validity()) {
-        return Err(Error::new_with(
-            ErrorCode::NullUnexpected,
-            operation,
-            "validated List<Float32> vector rows must not contain nulls",
-        )
-        .with_detail("field_index", contract.field_index.to_string())
-        .with_detail("reason", "null_vector_row"));
+        return Err(null_vector_row_error(contract.field_index, operation));
     }
 
     let (offsets_buffer_id, child_column_id) = match root.layout() {
