@@ -25,7 +25,7 @@ WITH fans AS (
 SELECT b.brand_name, f.fans, ROUND(r.similarity * f.fans) AS shared_fans, r.similarity AS overlap
 FROM cugraph_overlap(
   edges => (SELECT src, dst FROM fans),
-  vertex_pairs => (SELECT CAST(12630 AS BIGINT) AS first, brand_id AS second
+  vertex_pairs => (SELECT 12630 AS first, brand_id AS second
                    FROM brand_fans WHERE fans >= 2000 AND brand_id <> 12630),
   directed => false
 ) r
@@ -67,4 +67,4 @@ recommendations for lululemon shoppers, or to spot which smaller labels
 depend on that audience. The scores measure shared likes, not purchases or
 substitution.
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 5.66 s, including planning, every step of the statement, and result receipt. Each plan had 3 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 17.20 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-brand-overlap.json) with the executed SQL, query IDs, timings, and all result rows.
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 6.12 s, including planning, every step of the statement, and result receipt. Each plan had 3 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 17.20 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-brand-overlap.json) with the executed SQL, query IDs, timings, and all result rows.

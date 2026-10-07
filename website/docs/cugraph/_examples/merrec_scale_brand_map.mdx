@@ -21,11 +21,13 @@ crowded center belong to brands whose fans like many other brands, such as
 Nike, Disney and Handmade. The islands at the edge are worlds with a
 tightly shared audience, such as medical scrubs, golf, cameras and bridal
 wear. Each world's label is an editorial summary of its most-liked brands.
-ForceAtlas2 placed brands differently in each of the three captured runs
-even with `seed => 42`. After aligning the runs, only about half of each
-brand's ten nearest map neighbors stayed the same, while the world colors
-come from Leiden and did not change. The map shows the first run; read it
-for regions, not for individual brand distances.
+The `seed` option fixes only the starting positions. ForceAtlas2 adds forces
+with floating-point atomics, so
+[coordinates differ in every run](../../design/gpu-table-functions.mdx#reproducibility).
+Across the three captured runs, 51% of each brand's ten nearest
+map neighbors stayed the same on average. The world colors come from Leiden and grouped the brands identically in all three runs. The map
+shows the first run; read it for regions, not for individual brand
+distances.
 
 <details>
 <summary>Executed SQL</summary>
@@ -77,4 +79,4 @@ ORDER BY l.brand_id;
 
 </details>
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 17.73 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the map data](/data/merrec-brand-map.json) with the executed SQL, query IDs, timings, and every brand's coordinates.
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 17.74 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the map data](/data/merrec-brand-map.json) with the executed SQL, query IDs, timings, and every brand's coordinates.

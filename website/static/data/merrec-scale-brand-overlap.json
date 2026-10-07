@@ -1,14 +1,14 @@
 {
  "name": "07_brand_overlap",
  "sql_file": "fixture/demo/merrec/scripts/scale/07_brand_overlap.sql",
- "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), brand_fans AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans, ROUND(r.similarity * f.fans) AS shared_fans, r.similarity AS overlap\nFROM cugraph_overlap(\n  edges => (SELECT src, dst FROM fans),\n  vertex_pairs => (SELECT CAST(12630 AS BIGINT) AS first, brand_id AS second\n                   FROM brand_fans WHERE fans >= 2000 AND brand_id <> 12630),\n  directed => false\n) r\nJOIN brand_fans f ON f.brand_id = r.second\nJOIN brands b ON b.brand_id = r.second\nORDER BY r.similarity DESC, b.brand_name\nLIMIT 25;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), brand_fans AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans, ROUND(r.similarity * f.fans) AS shared_fans, r.similarity AS overlap\nFROM cugraph_overlap(\n  edges => (SELECT src, dst FROM fans),\n  vertex_pairs => (SELECT 12630 AS first, brand_id AS second\n                   FROM brand_fans WHERE fans >= 2000 AND brand_id <> 12630),\n  directed => false\n) r\nJOIN brand_fans f ON f.brand_id = r.second\nJOIN brands b ON b.brand_id = r.second\nORDER BY r.similarity DESC, b.brand_name\nLIMIT 25;\n",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "07_brand_overlap_r1",
-   "query_id": "912e2509-16f3-4f40-b050-96383d78803a",
-   "elapsed_s": 6.534339644946158,
+   "query_id": "45ef8e9f-8e75-4dfe-9d80-626b6f52aa48",
+   "elapsed_s": 6.692228448111564,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 18469687337,
@@ -16,8 +16,8 @@
   },
   {
    "name": "07_brand_overlap_r2",
-   "query_id": "9c4466df-9e74-457c-a884-f2d176f31fc6",
-   "elapsed_s": 5.520592118031345,
+   "query_id": "4ffc8676-754a-4718-a6b5-822f3c4f3497",
+   "elapsed_s": 6.433745871996507,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 18469687337,
@@ -25,15 +25,15 @@
   },
   {
    "name": "07_brand_overlap_r3",
-   "query_id": "d75bb5f7-6259-483d-b4c6-f6136d9168eb",
-   "elapsed_s": 5.790679406025447,
+   "query_id": "c38872b4-92bb-4928-98c4-0dff8f8a42f9",
+   "elapsed_s": 5.8014438059180975,
    "native_fragments": 3,
    "host_boundaries": 0,
    "allocator_peak_bytes": 18469687337,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 5.655635762028396,
+ "median_elapsed_s_after_first": 6.117594838957302,
  "rows": 25,
  "identical_results_across_runs": true,
  "schema": [

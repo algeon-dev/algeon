@@ -12,7 +12,7 @@ WITH fans AS (
 SELECT b.brand_name, f.fans, ROUND(r.similarity * f.fans) AS shared_fans, r.similarity AS overlap
 FROM cugraph_overlap(
   edges => (SELECT src, dst FROM fans),
-  vertex_pairs => (SELECT CAST(12630 AS BIGINT) AS first, brand_id AS second
+  vertex_pairs => (SELECT 12630 AS first, brand_id AS second
                    FROM brand_fans WHERE fans >= 2000 AND brand_id <> 12630),
   directed => false
 ) r

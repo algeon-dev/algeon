@@ -27,11 +27,17 @@ type CommunityRows = {
 
 export default function MarketCollections({
   data,
+  initialProductId,
 }: {
   data: MarketCollectionCapture;
+  // Leiden community numbers change between runs, so the initial view is
+  // chosen by a market that belongs to it rather than by its number.
+  initialProductId?: string;
 }): React.ReactElement {
   const id = useId();
-  const [selectedId, setSelectedId] = useState(11);
+  const [selectedId, setSelectedId] = useState<number | null>(
+    () => data.records.find(row => row.product_id === initialProductId)?.community ?? null,
+  );
   const communities = useMemo(() => {
     const byId = new Map<number, MarketRow[]>();
     for (const row of data.records) {

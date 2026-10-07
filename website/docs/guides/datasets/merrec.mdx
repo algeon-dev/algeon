@@ -267,8 +267,8 @@ available. The campaign-theme query fits eight KMeans groups, joins their
 assignments to source shares, averages those shares with equal weight for each
 user, and applies Top-K to the category means.
 
-The collection statement includes host window processing: its captured plan
-has two native fragments and 15 host DataFusion boundaries. The campaign-theme
+The collection statement runs natively: its captured plan has three native
+fragments and zero host DataFusion boundaries. The campaign-theme
 statement has five native fragments and zero host boundaries. Their timing
 observations exclude source preparation and provide no controlled performance
 comparison.

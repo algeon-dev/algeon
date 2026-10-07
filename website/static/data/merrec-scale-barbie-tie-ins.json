@@ -1,39 +1,39 @@
 {
  "name": "10_barbie_tie_ins",
  "sql_file": "fixture/demo/merrec/scripts/scale/10_barbie_tie_ins.sql",
- "sql": "WITH likes AS (\n  SELECT e.user_id, i.brand_id,\n         CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00' THEN 0 ELSE 1 END AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n  GROUP BY e.user_id, i.brand_id,\n           CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00' THEN 0 ELSE 1 END\n), before_graph AS (\n  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst FROM likes WHERE after_release = 0\n), after_graph AS (\n  SELECT -(user_id + 1) AS src, CAST(brand_id AS BIGINT) AS dst FROM likes WHERE after_release = 1\n), fans AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id,\n         SUM(1 - after_release) AS fans_before, SUM(after_release) AS fans_after\n  FROM likes GROUP BY brand_id\n), ppr_before AS (\n  SELECT vertex, value FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM before_graph),\n    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),\n    directed => false)\n), ppr_after AS (\n  SELECT vertex, value FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM after_graph),\n    personalization => (SELECT CAST(2595 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value),\n    directed => false)\n), pr_before AS (\n  SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM before_graph), directed => false)\n), pr_after AS (\n  SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM after_graph), directed => false)\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       pb.value / rb.value AS lift_before,\n       pa.value / ra.value AS lift_after,\n       (pa.value / ra.value) / (pb.value / rb.value) AS lift_change\nFROM ppr_after pa\nJOIN pr_after ra ON ra.vertex = pa.vertex\nJOIN ppr_before pb ON pb.vertex = pa.vertex\nJOIN pr_before rb ON rb.vertex = pa.vertex\nJOIN fans f ON f.brand_id = pa.vertex\nJOIN brands b ON b.brand_id = pa.vertex\nWHERE pa.vertex > 0 AND pa.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
- "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 2595 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 2595\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
+ "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
  "runs": [
   {
    "name": "10_barbie_tie_ins_r1",
-   "query_id": "10964c19-428d-4cec-8ade-4f653387a10b",
-   "elapsed_s": 5.256239730981179,
+   "query_id": "9b0fd703-9457-4460-af6a-0125f617b01b",
+   "elapsed_s": 5.12756303884089,
    "native_fragments": 7,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 14232892097,
+   "allocator_peak_bytes": 14149643786,
    "query_limit_bytes": 96636764160
   },
   {
    "name": "10_barbie_tie_ins_r2",
-   "query_id": "e83fedd7-8458-4ff6-8704-5f913fa1a1f2",
-   "elapsed_s": 4.985350469010882,
+   "query_id": "c9a91978-2084-403e-bcee-2b9165245a7d",
+   "elapsed_s": 4.864564677001908,
    "native_fragments": 7,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 14232892097,
+   "allocator_peak_bytes": 14149643786,
    "query_limit_bytes": 96636764160
   },
   {
    "name": "10_barbie_tie_ins_r3",
-   "query_id": "d15078c3-ed36-4b3a-9290-af270872e6e8",
-   "elapsed_s": 4.895125667913817,
+   "query_id": "037d2d16-9f5a-4bf2-9204-6248b80f8b19",
+   "elapsed_s": 4.8780221859924495,
    "native_fragments": 7,
    "host_boundaries": 0,
-   "allocator_peak_bytes": 14232892097,
+   "allocator_peak_bytes": 14149643786,
    "query_limit_bytes": 96636764160
   }
  ],
- "median_elapsed_s_after_first": 4.9402380684623495,
+ "median_elapsed_s_after_first": 4.871293431497179,
  "rows": 25,
  "identical_results_across_runs": true,
  "schema": [

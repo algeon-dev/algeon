@@ -1,17 +1,13 @@
 WITH october AS (
-  SELECT user_id, session_id, MIN(event_id) AS first_event
+  SELECT DISTINCT user_id, session_id
   FROM merrec_events
   WHERE event_time >= TIMESTAMP '2023-10-01 00:00:00'
-  GROUP BY user_id, session_id
-), sessions AS (
-  SELECT session_id, MIN(first_event) AS session_vertex FROM october GROUP BY session_id
 ), components AS (
   SELECT vertex, component FROM cugraph_weakly_connected_components(
-    edges => (SELECT -(o.user_id + 1) AS src, s.session_vertex AS dst
-              FROM october o JOIN sessions s ON s.session_id = o.session_id),
+    edges => (SELECT CONCAT('user:', CAST(user_id AS VARCHAR)) AS src, session_id AS dst FROM october),
     directed => false)
 ), user_components AS (
-  SELECT component, COUNT(*) AS users FROM components WHERE vertex < 0 GROUP BY component
+  SELECT component, COUNT(*) AS users FROM components WHERE STARTS_WITH(vertex, 'user:') GROUP BY component
 )
 SELECT CASE WHEN users = 1 THEN '1 user'
             WHEN users <= 10 THEN '2-10 users'

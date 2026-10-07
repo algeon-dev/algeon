@@ -39,16 +39,15 @@ WITH fans AS (
         FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id) n ON n.brand_id = w.brand_id
 ), ranked AS (
   SELECT world, brand_name, fans,
-         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk
+         ROW_NUMBER() OVER (PARTITION BY world ORDER BY fans DESC, brand_name) AS rk,
+         COUNT(*) OVER (PARTITION BY world) AS brands,
+         SUM(fans) OVER (PARTITION BY world) AS fan_links
   FROM members
-), sizes AS (
-  SELECT world, COUNT(*) AS brands, SUM(fans) AS fan_links FROM members GROUP BY world
 )
-SELECT s.world, s.brands, s.fan_links, r.rk, r.brand_name, r.fans
-FROM ranked r JOIN sizes s ON s.world = r.world
-WHERE r.rk <= 5 AND s.brands >= 15
-ORDER BY s.fan_links DESC, r.rk
-;
+SELECT world, brands, fan_links, rk, brand_name, fans
+FROM ranked
+WHERE rk <= 5 AND brands >= 15
+ORDER BY fan_links DESC, rk;
 ```
 
 The query returns 190 rows. The table below shows
@@ -78,7 +77,7 @@ Power tools sit with kitchen appliances (Milwaukee, DeWALT, Ninja,
 KitchenAid). Golf, cameras, bridal wear and streetwear each form their own
 world. A merchandising team could start navigation collections or campaign
 audiences from these groups. The world numbers in the capture are labels
-from this Leiden fit; three runs returned the same partition. The names in the table are editorial summaries
+from this Leiden fit; the three captured runs grouped the brands identically, under different world numbers. The names in the table are editorial summaries
 of each world's top brands.
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 9.41 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-shopping-worlds.json) with the executed SQL, query IDs, timings, and all result rows.
+The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 9.11 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 54.46 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-shopping-worlds.json) with the executed SQL, query IDs, timings, and all result rows.

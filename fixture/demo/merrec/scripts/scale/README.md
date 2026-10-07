@@ -171,7 +171,7 @@ tolerance of `1e-6`. Equal-distance profiles account for some ID differences.
 
 ## Full-scale exploration demos
 
-Files `07` through `27` hold the full-scale examples published on the
+Files `07` through `29` hold the full-scale examples published on the
 algorithm pages. Each SQL file is one statement over the registered source
 tables, except the ANN files, which read the prepared `mr_taste64` table.
 
@@ -188,7 +188,7 @@ tables, except the ANN files, which read the prepared `mr_taste64` table.
 | `15` to `21` | Brute-force kNN, CAGRA, IVF-Flat, IVF-PQ | All-shopper neighbor graph timing and recall |
 | `28`, `29` | Brute-force kNN, CAGRA | The same search for 10,000 query shoppers |
 | `22_shopper_personas.sql` | KMeans, Top-K | Persona size, buyer share, and GMV per shopper |
-| `23_propensity_logreg.sql`, `24_propensity_forest.sql` | Logistic regression, random forest classifier | Next-month buyers against a recent-purchase rule |
+| `23_propensity_logreg.sql`, `24_propensity_forest.sql` | Logistic regression, random forest classifier | Next-month buyers ranked by classifier probability against a recent-purchase rule |
 | `25_gmv_forecast.sql` | Random forest regressor | Share of next-month GMV held by the top-ranked shoppers |
 | `26_propensity_training_features.sql` | none | Training features for the offline XGBoost model |
 | `27_propensity_xgboost.sql` | Forest predict | Ranked audiences from XGBoost scores |
@@ -237,35 +237,38 @@ The training script needs `pyarrow` and `xgboost`. The algorithm pages
 report the median Flight latency of runs 2 and 3, the native fragment and
 host boundary counts, and the query allocator peak of each statement.
 
-Captures on 2026-10-06 used a release server built from `cbb98dd0a` with the
-uncommitted LAG/LEAD and ECG validation fixes, the configuration above, and
+Captures on 2026-10-07 used a release server built from commit `10586fb3d`
+plus uncommitted engine fixes (whole-input `OVER ()` windows, temporal casts
+and checked timestamp arithmetic, union inputs that read one producer twice,
+and rejection and memory-failure diagnostics), the configuration above, and
 cached source files. Single-run statements report that run's latency.
 
 | File | Runs | Median after first (s) | Native fragments | Host boundaries | Allocator peak (GiB) |
 |---|---:|---:|---:|---:|---:|
-| `07_brand_overlap.sql` | 3 | 5.66 | 3 | 0 | 17.20 |
-| `08_brand_twins.sql` | 3 | 6.96 | 3 | 0 | 74.74 |
-| `09_shopping_worlds.sql` | 3 | 9.41 | 4 | 0 | 54.46 |
-| `10_barbie_tie_ins.sql` | 3 | 4.94 | 7 | 0 | 13.26 |
-| `11_brand_map.sql` | 3 | 17.73 | 7 | 0 | 54.46 |
-| `12_session_audit.sql` | 3 | 5.08 | 2 | 0 | 21.16 |
-| `13_pokemon_lookalikes.sql` | 3 | 26.09 | 6 | 0 | 25.06 |
-| `15_ann_exact.sql` | 3 | 42.03 | 4 | 0 | 3.87 |
-| `16_ann_cagra.sql` | 3 | 8.99 | 4 | 0 | 4.56 |
-| `17_ann_ivf_flat.sql` | 3 | 8.57 | 4 | 0 | 4.55 |
-| `18_ann_ivf_pq.sql` | 3 | 4.80 | 4 | 0 | 4.55 |
-| `19_ann_recall_cagra.sql` | 1 | 99.01 | 10 | 0 | 6.12 |
-| `20_ann_recall_ivf_flat.sql` | 1 | 98.60 | 10 | 0 | 6.11 |
-| `21_ann_recall_ivf_pq.sql` | 1 | 93.87 | 10 | 0 | 5.43 |
-| `22_shopper_personas.sql` | 3 | 49.98 | 7 | 0 | 29.14 |
-| `23_propensity_logreg.sql` | 3 | 29.86 | 4 | 0 | 21.70 |
-| `24_propensity_forest.sql` | 3 | 31.23 | 4 | 0 | 21.70 |
-| `25_gmv_forecast.sql` | 3 | 30.42 | 4 | 0 | 21.79 |
-| `27_propensity_xgboost.sql` | 3 | 14.68 | 3 | 0 | 21.58 |
-| `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.09 |
-| `29_ann_cagra_10k.sql` | 3 | 8.30 | 4 | 0 | 2.09 |
+| `07_brand_overlap.sql` | 3 | 6.12 | 3 | 0 | 17.20 |
+| `08_brand_twins.sql` | 3 | 6.68 | 3 | 0 | 74.74 |
+| `09_shopping_worlds.sql` | 3 | 9.11 | 4 | 0 | 54.46 |
+| `10_barbie_tie_ins.sql` | 3 | 4.87 | 7 | 0 | 13.18 |
+| `11_brand_map.sql` | 3 | 17.74 | 7 | 0 | 54.46 |
+| `12_session_audit.sql` | 3 | 2.30 | 2 | 0 | 20.04 |
+| `13_pokemon_lookalikes.sql` | 3 | 21.88 | 7 | 0 | 25.06 |
+| `15_ann_exact.sql` | 3 | 43.18 | 4 | 0 | 3.87 |
+| `16_ann_cagra.sql` | 3 | 8.79 | 4 | 0 | 4.56 |
+| `17_ann_ivf_flat.sql` | 3 | 8.50 | 4 | 0 | 4.55 |
+| `18_ann_ivf_pq.sql` | 3 | 4.79 | 4 | 0 | 4.55 |
+| `19_ann_recall_cagra.sql` | 1 | 95.50 | 10 | 0 | 6.12 |
+| `20_ann_recall_ivf_flat.sql` | 1 | 96.14 | 10 | 0 | 6.11 |
+| `21_ann_recall_ivf_pq.sql` | 1 | 91.67 | 10 | 0 | 6.11 |
+| `22_shopper_personas.sql` | 3 | 49.39 | 7 | 0 | 29.14 |
+| `23_propensity_logreg.sql` | 3 | 24.78 | 4 | 0 | 21.79 |
+| `24_propensity_forest.sql` | 3 | 27.36 | 4 | 0 | 21.79 |
+| `25_gmv_forecast.sql` | 3 | 30.06 | 4 | 0 | 21.79 |
+| `27_propensity_xgboost.sql` | 3 | 14.89 | 3 | 0 | 21.58 |
+| `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.12 |
+| `29_ann_cagra_10k.sql` | 3 | 8.03 | 4 | 0 | 2.12 |
 
-Results that vary between runs: ForceAtlas2 coordinates, KMeans persona
-sizes (no seed option), the lookalike count (19,122 or 19,125, from distance
-ties), logistic regression flags (115,050 to 115,095), and ANN mean distances.
-
+Results that vary between runs: ForceAtlas2 coordinates, Leiden community
+numbers (the grouping itself repeated), KMeans persona sizes, the lookalike
+count (19,124 or 19,125, from distance ties), logistic regression buyer
+counts (by up to 12), and ANN mean distances. The other statements returned
+identical rows in all three runs.
