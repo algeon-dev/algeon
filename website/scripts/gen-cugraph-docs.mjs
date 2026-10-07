@@ -28,14 +28,16 @@ const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 const UDTFS_DIR = join(DOCS_DIR, 'udtfs');
 const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cugraph/latest/';
 
+// Sidebar order: the families whose GPU advantage shows on the demo pages
+// (centrality, community, all-pairs similarity, layout) come first.
 const FAMILIES = {
-  centrality: { label: 'Centrality', position: 2 },
-  community: { label: 'Community', position: 3 },
-  traversal: { label: 'Traversal', position: 4 },
+  centrality: { label: 'Centrality', position: 1 },
+  community: { label: 'Community', position: 2 },
+  similarity: { label: 'Similarity', position: 3 },
+  layout: { label: 'Layout', position: 4 },
   connectivity: { label: 'Connectivity', position: 5 },
   structure: { label: 'Structure', position: 6 },
-  similarity: { label: 'Similarity', position: 7 },
-  layout: { label: 'Layout', position: 1 },
+  traversal: { label: 'Traversal', position: 7 },
 };
 
 const ALGORITHMS = {

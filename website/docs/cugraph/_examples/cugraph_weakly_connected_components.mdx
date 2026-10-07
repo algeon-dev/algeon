@@ -2,10 +2,18 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import MerRecScaleSessions from './merrec_scale_sessions.mdx';
 
-{/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
-
 <Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
+<TabItem value="merrec" label="MerRec" default>
+
+### Is `session_id` a per-user session key?
+
+<MerRecScaleSessions />
+
+</TabItem>
+
+<TabItem value="citation-network" label="Citation network">
+
+{/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -50,12 +58,6 @@ The displayed groups have no citation links to the main component in this
 snapshot. Their representative papers suggest subject areas for a separate
 search. Missing links in this corpus do not establish that the research fields
 are disconnected in the wider literature.
-
-</TabItem>
-
-<TabItem value="merrec" label="MerRec marketplace">
-
-<MerRecScaleSessions />
 
 </TabItem>
 </Tabs>

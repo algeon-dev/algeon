@@ -1,0 +1,35 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/citation-investigation-capture.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+A catalog editor wants to compare citation-based groups with existing research
+labels. SQL selects papers from 2010 onward with one of ten AI `primary_fos`
+labels, keeps edges within that set and runs Louvain. It then counts the
+catalog labels within each returned community.
+
+<CodeBlock language="sql">{capture.communities.sql}</CodeBlock>
+
+These are the five captured groups larger than 2,500 papers. The listed fields
+cover only part of each community.
+
+<Table>
+<thead><tr><th>Papers in group</th><th>Three most common catalog fields, with paper counts</th></tr></thead>
+<tbody>{capture.communities.rows.filter(row => row.rn === 1).map(row => <tr key={row.members}><td>{row.members.toLocaleString('en-US')}</td><td>{capture.communities.rows.filter(field => field.members === row.members).map(field => `${field.primary_fos} (${field.n.toLocaleString('en-US')})`).join('; ')}</td></tr>)}</tbody>
+</Table>
+
+The 7,172-paper community combines convolutional neural network and deep
+learning labels in similar numbers. The 3,859-paper community is dominated
+by reinforcement learning. Citation structure and catalog fields agree to
+different degrees across these groups.
+
+The query keeps graph construction, Louvain and label aggregation together.
+An editor can examine disagreements before changing a taxonomy. Stability
+across algorithms or time windows has not been tested, and community IDs are
+local labels.
+
+<div className="fineprint">
+
+The [capture](/data/citation-investigation-capture.json) records the query and
+all returned field counts.
+
+</div>

@@ -1,0 +1,82 @@
+---
+sidebar_position: 3
+slug: /reference/native-evaluation-semantics
+description: Which native expressions can fail a query, on which rows, and how CASE, AND and OR limit that evaluation.
+---
+
+# Native Evaluation Semantics
+
+[Native SQL Support](./native-sql-support.mdx) lists what the GPU path
+evaluates. This page states what happens on the rows it evaluates: which
+operations can fail the query, which rows they fail on, and where the result
+can differ from DataFusion. The rule throughout is that native evaluation
+fails on the same rows as DataFusion and never fails where DataFusion
+succeeds. A row with a null operand never fails.
+
+## Checked operations
+
+| Operation | Fails the query when | Other behavior |
+| --- | --- | --- |
+| Integer `+`, `-`, `*`, unary minus | Never. | Wraps on overflow, as DataFusion does for column values. |
+| Integer `/`, `%` | The divisor is zero, or the dividend is the minimum signed value and the divisor is `-1` for `/`. | `x % -1` is `0`. |
+| Floating-point `%` | Never. | IEEE `fmod`: the sign of the dividend; `NaN` for a zero divisor or an infinite dividend. |
+| Decimal `/` | The divisor is zero, or scaling the dividend leaves the `i128` range. | DataFusion computes `dividend * 10^k / divisor` in checked `i128` arithmetic, where the result scale is the dividend scale plus 4, capped at 38. A quotient with more digits than the result precision is not an error. Decimal `%` is not native. |
+| `CAST` to an integer type | A valid value is outside the target range, or a float is `NaN` or infinite. | Floats and decimals truncate toward zero first. |
+| `CAST` to `Decimal128(p, s)` | A valid value does not fit precision `p` after rescaling, or a float is `NaN` or infinite. | Rounds half away from zero where it drops digits; a float is rounded as `round(10^s * value)` in `Float64`. |
+| `CAST` of a timestamp or duration to a finer unit | The stored count times the unit ratio leaves `Int64`. | `TIMESTAMP(0)` to `TIMESTAMP(9)` fails beyond 9,223,372,036 seconds from the epoch, about 292 years. A `DATE` fails at microsecond and nanosecond resolution the same way, from 106,752 days at nanosecond resolution. |
+| `CAST` of a timestamp or duration to a coarser unit | Never. | Divides and truncates toward zero: `-1500` milliseconds is `-1` second, `-1` nanosecond is `0` seconds. A timestamp cast to `DATE` floors to the calendar date, so `-1` nanosecond is the day before the epoch. |
+| `CAST` of a timestamp or duration to `BIGINT`, or of an integer to a timestamp | Never. | The stored count in the type's own unit, with no rescaling. |
+| Timestamp `-` timestamp, timestamp `+`/`-` duration | The result leaves `Int64`, which takes operands more than 292 years apart at nanosecond resolution. | Does not wrap: Arrow checks these even for the wrapping SQL operators. DataFusion casts the coarser of two units to the finer one first, with the checked cast above. A timestamp plus an `INTERVAL` is a calendar computation and is not checked this way. |
+
+## Guarded evaluation
+
+DataFusion evaluates a `CASE` branch only on the rows its condition selects:
+`ELSE` where no condition is true, each `WHEN` after the first where no earlier
+`WHEN` selected the row, and in `CASE base WHEN value` the `value` only where
+`base` is not null. A null condition counts as not true. For `l AND r` it skips
+`r` on some batches where `l` is false, and for `l OR r` where `l` is true.
+
+The native evaluator visits every row. Lowering therefore sets the fallible
+operand to null on the rows DataFusion would not evaluate: the divisor of an
+integer `/` or `%`, the right operand of a timestamp `+` or `-`, and the input
+of a cast that range-checks. For `AND` the operation runs where the left
+operand is true or null, and for `OR` where it is false or null. A decided row
+takes its value from the left operand alone, so results do not change.
+
+```sql
+CASE WHEN n <> 0 THEN total / n END     -- never divides by zero
+CASE WHEN n >= 0 THEN total / n END     -- fails on a row with n = 0, as on DataFusion
+WHERE n <> 0 AND total / n > 1          -- never divides by zero
+WHERE n >= 0 AND total / n > 1          -- fails on a row with n = 0, as on DataFusion
+```
+
+- A decimal `/` and a timestamp `+` or `-` are always guarded, because any
+  pair of operands can overflow. A literal integer divisor other than `0` and
+  `-1`, and a cast whose target holds every value of the source type, cannot
+  fail and are evaluated as they are.
+- A nested `CASE` applies the restrictions of every enclosing branch.
+- Each `WHEN` condition, or `AND`/`OR` term, that divides, casts or does
+  timestamp arithmetic doubles the restrictions of the branches or terms after
+  it. A chain of about eight such conditions stays on DataFusion.
+- Native evaluation is more permissive in one case: DataFusion skips the right
+  operand only on some batches, and when it evaluates a decided row that fails,
+  DataFusion fails the query while native evaluation returns the result.
+
+## Where checked operations are not evaluated
+
+Integer `/`, any `%`, and timestamp `+` or `-` are not evaluated inside reader
+predicates or join residual conditions. A reader predicate with one of them
+stays a filter after the scan, and a join residual with one of them keeps the
+join on DataFusion. A join residual with a decimal `/` keeps the join on
+DataFusion as well.
+
+<div className="fineprint">
+
+These rules are pinned by the semantic contract tests in
+[`algeon-cudf`](https://github.com/algeon-dev/algeon/tree/main/components/cudf/algeon-cudf/tests/semantic_contracts_gpu),
+the expression contract tests in
+[`algeon-datafusion`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/src/native/expression_contract/tests.rs)
+and the CPU comparison tests in
+[`native_runtime_pruning_tests_gpu`](https://github.com/algeon-dev/algeon/blob/main/crates/algeon-datafusion/tests/native_runtime_pruning_tests_gpu/scalar_expressions.rs).
+
+</div>

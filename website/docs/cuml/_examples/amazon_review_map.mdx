@@ -1,0 +1,31 @@
+import CodeBlock from '@theme/CodeBlock';
+import reviewMap from '@site/src/data/amazonReviewMap.json';
+import capture from '@site/static/data/amazon-reviews-capture.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+A two-dimensional projection can help choose reviews to read together, but
+coordinates alone do not explain a complaint. This query projects 9,967
+sampled low-rating headphone reviews from 1,024 dimensions and joins the
+output IDs to product names and review text.
+
+<CodeBlock language="sql">{capture.queries.headphone_umap2.sql}</CodeBlock>
+
+Three records from the saved projection illustrate the returned coordinates
+and source text. They are examples of the output, not a selected cluster.
+
+<Table>
+<thead><tr><th>Review ID</th><th>x</th><th>y</th><th>Original text</th></tr></thead>
+<tbody>{reviewMap.points.slice(0, 3).map(row => <tr key={row.id}><td>{row.id}</td><td>{row.x.toFixed(3)}</td><td>{row.y.toFixed(3)}</td><td>{row.text}</td></tr>)}</tbody>
+</Table>
+
+UMAP's output is a relation that can be joined to the review records in the
+same statement. The text remains available to check any explanation proposed
+from a projection. Two-dimensional distance is not a defect score or proof
+that reviews describe the same issue; the projection does not label topics.
+
+<div className="fineprint">
+
+The [capture](/data/amazon-reviews-capture.json) records the query and the fixed
+1,200-record website sample drawn from its 9,967 rows.
+
+</div>

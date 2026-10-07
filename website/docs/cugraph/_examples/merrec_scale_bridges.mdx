@@ -1,0 +1,57 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/merrec-scale-world-bridges.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+export const n = value => value.toLocaleString('en-US');
+
+Once brands are grouped into worlds, a merchandiser wants to know which
+brands sit between them: the entries a shopper passes through on the way
+from one audience to another. Betweenness centrality counts how often a
+brand lies on the shortest paths between other brands in the similarity
+graph. Brands that connect many worlds are candidates for cross-world
+navigation, or for exclusion from a collection that should stay inside one
+world.
+
+The statement builds the same Jaccard graph as the worlds query: 5,000
+brands, edges where the shared-fan similarity reaches 0.02. Leiden assigns
+the worlds and `cugraph_betweenness_centrality` scores the same edges. A
+join of each brand's graph neighbors to their world labels counts how many
+worlds the brand touches directly.
+
+<CodeBlock language="sql" className="no-collapse" folds={[
+  {to: '), worlds AS (', label: 'the fan graph, the 5,000 brands and the Jaccard call'},
+  {from: '), brands AS (', label: 'brand names and the final join'},
+]}>{capture.sql}</CodeBlock>
+
+<Table>
+<thead><tr><th>Brand</th><th>Fans</th><th>Graph neighbors</th><th>Worlds among neighbors</th><th>Betweenness</th></tr></thead>
+<tbody>{capture.records.map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{n(row.fans)}</td><td>{n(row.neighbors)}</td><td>{row.worlds_reached}</td><td>{row.betweenness.toFixed(4)}</td></tr>)}</tbody>
+</Table>
+
+The connectors are mostly sellers and generic labels that the catalog
+stores in its brand field. Department stores and retailers (Walmart,
+JCPenney, Macy's, Claire's), house brands (Mainstays, Better Homes &
+Gardens) and catch-all entries (As Seen on TV, Customized & Personalized,
+Eyeshadow, US Vintage) hold most of the first fifteen positions, each with
+neighbors in roughly 40 of the worlds. Samsung is the manufacturer with the
+highest score; its 98 neighbors span 13 worlds. A merchandising team that
+builds collections from the worlds should treat these entries as navigation
+hubs, or remove them before the collection is assembled, and the catalog
+team gains a list of brand entries that behave like stores.
+
+Betweenness depends on the graph the statement defines. A different
+similarity threshold changes which paths exist, and a brand with few
+neighbors can score highly when it is the only link between two worlds. The
+world counts use the Leiden labels of the same execution. Jaccard, Leiden
+and betweenness run in one plan, and the similarity relation feeds both
+graph calls and the neighbor join without leaving the GPU.
+
+<div className="fineprint">
+
+{capture.runs.length > 1
+  ? `The statement ran ${capture.runs.length} times on the scale server configuration in native_required mode. The median Flight latency of runs 2 to ${capture.runs.length} was ${capture.median_elapsed_s_after_first.toFixed(2)} s, including planning, every step of the statement and result receipt.`
+  : `The statement ran once on the scale server configuration in native_required mode, with a Flight latency of ${capture.runs[0].elapsed_s.toFixed(2)} s.`}
+{' '}Each plan had {capture.runs[0].native_fragments} native fragments and {capture.runs[0].host_boundaries === 0 ? 'zero' : capture.runs[0].host_boundaries} host DataFusion boundaries; the largest query allocator peak was {(Math.max(...capture.runs.map(run => run.allocator_peak_bytes)) / 2 ** 30).toFixed(2)} GiB of the {(capture.runs[0].query_limit_bytes / 2 ** 30).toFixed(0)} GiB query limit.
+The [capture](/data/merrec-scale-world-bridges.json) contains the executed SQL, query IDs, timings and every result row.
+
+</div>

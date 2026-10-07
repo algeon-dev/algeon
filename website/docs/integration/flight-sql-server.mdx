@@ -58,9 +58,44 @@ their TOML equivalents.
 
 ## Start the citation demo server
 
-Follow the [citation network walkthrough](../guides/datasets/citation-network.mdx#start-the-server)
-to start a local cuGraph server, register the Parquet tables, and run PageRank.
-The walkthrough includes the server configuration and client commands.
+The [citation investigation](../guides/datasets/citation-network.mdx) uses
+Parquet files produced by the
+[citation fixture](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/citation_network/README.md).
+With those files available, enable cuGraph in the server configuration above
+before starting it:
+
+```bash
+export ALGEON_SERVER_CUGRAPH_ENABLED=true
+```
+
+Run the server from the repository root. In a connected SQL client, register
+the paper records and the two sort orders of the citation edges:
+
+```sql
+CREATE OR REPLACE EXTERNAL TABLE citation_edges
+STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/edges_by_src.parquet';
+CREATE OR REPLACE EXTERNAL TABLE citation_edges_by_dst
+STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/edges_by_dst.parquet';
+CREATE OR REPLACE EXTERNAL TABLE papers
+STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/profiles_by_paper_id.parquet';
+```
+
+Submit each statement separately. The three tables supply the citation-path,
+bibliography and community queries on the investigation page. Examples that
+use author or field links also need these registrations:
+
+```sql
+CREATE OR REPLACE EXTERNAL TABLE paper_authors
+STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/paper_authors.parquet';
+CREATE OR REPLACE EXTERNAL TABLE paper_fos
+STORED AS PARQUET LOCATION 'fixture/demo/citation_network/v1/parquet/paper_fos.parquet';
+```
+
+Registrations last until the server stops. The saved SQL includes any
+additional views that its algorithm inputs require. The default
+`native_preferred` mode supports the bibliography example's mixed execution
+path; inspect a changed query with
+[GPU coverage validation](./gpu-coverage-validation.mdx).
 
 ## Connect with ADBC
 

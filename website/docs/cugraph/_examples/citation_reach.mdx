@@ -1,0 +1,54 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/citation-investigation-capture.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+### How does BERT connect to the original LSTM paper?
+
+A researcher wants a short reading route between two papers. Citation edges
+run from the citing paper to its reference. The query selects BERT and LSTM
+by title and year, follows those edges with BFS, and joins the path to titles.
+
+<CodeBlock language="sql">{capture.path.sql}</CodeBlock>
+
+<ol>{capture.path.rows.map(row => <li key={row.path_index}>{row.title} ({row.year})</li>)}</ol>
+
+BFS returns one shortest path, with two citation steps. Its paper IDs can be
+joined to catalog records in the same statement, making the graph result a
+reading list. A citation path does not establish a causal history of ideas.
+
+**Follow-up: compare the other shortest routes.** A relational query checks
+which papers BERT cites that also cite LSTM.
+
+<CodeBlock language="sql">{capture.path_check.sql}</CodeBlock>
+
+It returns ten intermediate papers, including *Attention is all you need*.
+The BERT → Transformer → LSTM route is therefore another reading option.
+
+<div className="fineprint">
+
+The [capture](/data/citation-investigation-capture.json) includes all ten
+records and an independent check of these edges.
+
+</div>
+
+### How many papers cite AlexNet within three steps?
+
+A researcher assessing citation reach needs counts at each distance, without
+counting one paper repeatedly. Reversing the edges follows papers that cite
+AlexNet and then papers that cite those papers.
+
+<CodeBlock language="sql">{capture.reach.sql}</CodeBlock>
+
+<Table>
+<thead><tr><th>Shortest distance from AlexNet</th><th>Papers</th><th>Mean publication year</th></tr></thead>
+<tbody>{capture.reach.rows.slice(1).map(row => <tr key={row.distance}><td>{row.distance} {row.distance === 1 ? 'step' : 'steps'}</td><td>{row.papers.toLocaleString('en-US')}</td><td>{row.avg_year.toFixed(1)}</td></tr>)}</tbody>
+</Table>
+
+The three layers contain 151,243 papers, excluding AlexNet itself. Each paper
+appears at its shortest distance. SQL defines the edge direction before BFS
+and aggregates the returned distances, expressing both the traversal and the
+report in one query.
+
+The count describes reach within the April 2020 graph, not causal influence.
+Restricting citing papers by year would answer a different question; that
+comparison has not been run here.

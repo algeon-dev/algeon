@@ -99,13 +99,17 @@ query has 4.9 million papers and 45.6 million citation edges.
 
 ## Where to start
 
+- The [MerRec demos](https://algeon.dev/guides/datasets/merrec): eight
+  statements over 1.27 billion marketplace events, from the brands that
+  moved toward Barbie's audience to a campaign list built from a graph
+  algorithm, a vector search and a trained model in one statement.
 - [Build & Test](https://algeon.dev/build) for a source build or the Docker
   image.
 - [Integrating Algeon](https://algeon.dev/integration) to embed a session or
   start the server.
 - The [cuGraph](https://algeon.dev/cugraph), [cuVS](https://algeon.dev/cuvs),
-  and [cuML](https://algeon.dev/cuml) SQL APIs; the cuGraph pages include
-  runnable examples over a public citation network.
+  and [cuML](https://algeon.dev/cuml) SQL APIs, each with captured examples
+  over the demo datasets.
 - [Introducing Algeon](https://algeon.dev/blog/introducing-algeon) for the
   vision, the reasoning behind the design, and how Algeon could fit alongside
   an existing data platform.

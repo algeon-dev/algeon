@@ -1,16 +1,6 @@
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+The [MerRec](../../guides/datasets/merrec.mdx) evaluation covers 2,017,739 shoppers. A forest ranks them using ten behavior features from the preceding 92 days. The captured top 1% holds 38.1% of the next month's listed-price GMV; ranking by past spend finds 35.2%. A loyalty team could compare the extra three percentage points with its model training and maintenance cost.
 
-### How concentrated is next month's spending, and can a forest find the big spenders?
-
-This statement reuses the cohorts of the
-[purchase propensity example](../udtfs/cuml_logistic_regression.mdx?dataset=merrec#examples):
-ten log-scaled behavior features from the 92 days before a cutoff, for
-shoppers with at least 20 views. The target is the log of one plus the
-purchase value (GMV) of the next 30 days. The forest trains on the August 1
-cohort and scores the September 1 cohort. SQL then ranks the 2,017,739
-evaluation shoppers three ways and measures the share of their next-month
-GMV held by the top 1% and top 5% of each ranking.
+The forest trains on shoppers active before August 1 and scores those active before September 1. SQL compares its ranking with past spend and recent intent actions, using the next 30 days of purchases for evaluation.
 
 | Ranking | Top 1% share of next-month GMV | Top 5% share |
 |---|---:|---:|
@@ -18,15 +8,7 @@ GMV held by the top 1% and top 5% of each ranking.
 | Past 92-day GMV | 35.2% | 60.0% |
 | Intent actions in the last 30 days | 15.6% | not computed |
 
-The evaluation cohort's next-month GMV is $2,538,509 across 2,017,739 shoppers.
-
-Spending is concentrated: one shopper in a hundred accounts for more than a
-third of the next month's GMV. Ranking by past spend already finds most of
-it. The forest raises the top 1% share by about three percentage points.
-Recent intent actions alone, such as cart taps and offers, rank far worse.
-A loyalty or VIP program can start from past spend, and the model adds a
-modest gain on top. The evaluation covers one later month, and GMV is the
-sum of listed prices.
+The evaluation covers one later month. Its $2,538,509 GMV is the sum of listed prices, and the table does not measure revenue caused by targeting shoppers.
 
 <details>
 <summary>Executed SQL</summary>
@@ -90,5 +72,3 @@ FROM ranked;
 ```
 
 </details>
-
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 30.06 s, including planning, every step of the statement, and result receipt. Each plan had 4 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 21.79 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-gmv-forecast.json) with the executed SQL, query IDs, timings, and all result rows.

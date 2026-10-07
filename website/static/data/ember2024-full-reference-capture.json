@@ -1,0 +1,327 @@
+{
+  "name": "ember2024_full_historical_exact_search",
+  "dataset": "EMBER2024",
+  "scope": {
+    "train_corpus": "All 1,560,000 deduplicated Win32 training files, weeks 0–51",
+    "test_queries": "First 10,000 Win32 held-out test files by id, weeks 52–63",
+    "features": "512 normalized histogram bins; ID and vector are search inputs; labels and families join after search",
+    "k": 10
+  },
+  "sql_file": "fixture/demo/ember2024/scripts/scale/01_historical_exact_search.sql",
+  "sql": "-- Exact squared-L2 reference search over full Win32 train dataset and test queries.\n-- Corpus: full deduplicated Win32 training dataset (~1.56M files) across weeks 0-51.\n-- Queries: 10,000 held-out Win32 test queries from weeks 52-63.\n-- Post-search enrichment joins query and neighbor metadata only after vector search.\nWITH train_index AS (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_train v\n    JOIN ember_metadata_train m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n), test_queries AS (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_test v\n    JOIN ember_metadata_test m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n    LIMIT 10000\n)\nSELECT n.query_ordinal,\n       n.query_id,\n       qm.week_id AS query_week,\n       qm.label AS query_label,\n       n.rank,\n       n.neighbor_id,\n       tm.week_id AS neighbor_week,\n       tm.label AS neighbor_label,\n       tm.sha256 AS neighbor_sha256,\n       tm.family AS neighbor_family,\n       n.distance\nFROM cuvs_brute_force_knn(\n    dataset => (SELECT id, vector FROM train_index ORDER BY id),\n    queries => (SELECT id, vector FROM test_queries ORDER BY id),\n    k => 10,\n    metric => 'l2_expanded'\n) n\nJOIN ember_metadata_test qm ON qm.id = n.query_id\nJOIN ember_metadata_train tm ON tm.id = n.neighbor_id\nORDER BY n.query_ordinal, n.rank;\n",
+  "query_id": "8bf31405-342b-452d-98bf-9142ebd8f43a",
+  "status": "ok",
+  "schema": "query_ordinal: uint64 not null\nquery_id: int64 not null\nquery_week: int32 not null\nquery_label: int32 not null\nrank: uint32 not null\nneighbor_id: int64 not null\nneighbor_week: int32 not null\nneighbor_label: int32 not null\nneighbor_sha256: string_view not null\nneighbor_family: string_view not null\ndistance: float not null",
+  "row_count": 100000,
+  "first_query_top_10": [
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 1,
+      "neighbor_id": 2751446,
+      "neighbor_week": 27,
+      "neighbor_label": 1,
+      "neighbor_sha256": "172fc1137e71f409b86bab2cfa518807cb0819aba1362e316537c2eabc663f1f",
+      "neighbor_family": "cosmu",
+      "distance": 7.534027099609375e-05
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 2,
+      "neighbor_id": 3779432,
+      "neighbor_week": 37,
+      "neighbor_label": 1,
+      "neighbor_sha256": "aee14fc7b0e7cdd31ab2a9023120397331e8207c49e6e17c8fb96c5f6834bdd9",
+      "neighbor_family": "cosmu",
+      "distance": 9.655952453613281e-05
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 3,
+      "neighbor_id": 4070733,
+      "neighbor_week": 40,
+      "neighbor_label": 1,
+      "neighbor_sha256": "48fe80b76cc87aefd4391a97ae77d8ec82290076c1e9a405d5ae4334da2f69be",
+      "neighbor_family": "cosmu",
+      "distance": 0.00010585784912109375
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 4,
+      "neighbor_id": 4575939,
+      "neighbor_week": 45,
+      "neighbor_label": 1,
+      "neighbor_sha256": "4592059a661a3cd2d80c5229cdfea7e8af1ff1192c7d89315e955b62804ce1e2",
+      "neighbor_family": "cosmu",
+      "distance": 0.000156402587890625
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 5,
+      "neighbor_id": 3166252,
+      "neighbor_week": 31,
+      "neighbor_label": 1,
+      "neighbor_sha256": "6bbaa962698a5ca64dfcc3785af4e72f30856c7631c299daf8e58a48b412a9a3",
+      "neighbor_family": "cosmu",
+      "distance": 0.00019168853759765625
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 6,
+      "neighbor_id": 1950009,
+      "neighbor_week": 19,
+      "neighbor_label": 1,
+      "neighbor_sha256": "49da18650e79aa1971cc21db2507338f21abbf7e5feae89736edb4c2b467515f",
+      "neighbor_family": "wacatac",
+      "distance": 0.0002980232238769531
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 7,
+      "neighbor_id": 1943279,
+      "neighbor_week": 19,
+      "neighbor_label": 1,
+      "neighbor_sha256": "175e3fa7d86a676e15666a5c70a2b4f2be5d76ea3b488f166bcea7fb3ef71c0c",
+      "neighbor_family": "wacatac",
+      "distance": 0.000316619873046875
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 8,
+      "neighbor_id": 3888153,
+      "neighbor_week": 38,
+      "neighbor_label": 1,
+      "neighbor_sha256": "f65ed9d1c0f3f1c05b049acae8cce41a735354b51453d58230c0e8a624859b02",
+      "neighbor_family": "cosmu",
+      "distance": 0.00031685829162597656
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 9,
+      "neighbor_id": 2454135,
+      "neighbor_week": 24,
+      "neighbor_label": 1,
+      "neighbor_sha256": "431c45aa8bc12bbd2924d6fc0e5fc4c8adae0fb522142f49f671bc71f05beb47",
+      "neighbor_family": "cosmu",
+      "distance": 0.00033593177795410156
+    },
+    {
+      "query_ordinal": 0,
+      "query_id": 10021000,
+      "query_week": 52,
+      "query_label": 1,
+      "rank": 10,
+      "neighbor_id": 4471877,
+      "neighbor_week": 44,
+      "neighbor_label": 1,
+      "neighbor_sha256": "2fe2a3e784922df062b5154fc4b3c770034791ea0463b3c3f62554332fc64bd4",
+      "neighbor_family": "cosmu",
+      "distance": 0.0003757476806640625
+    }
+  ],
+  "execution": {
+    "source": "target/ember2024-scale/report/results/01_historical_exact_search.stats.txt.gz",
+    "path": "native",
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "query_grant_bytes": 96636764160
+  },
+  "validation": {
+    "json_preview_matches_parquet": true,
+    "result_parquet_rows": 100000,
+    "full_corpus_cpu_recall_oracle": "not recorded"
+  },
+  "source_artifacts": {
+    "result_json": "target/ember2024-scale/report/results/01_historical_exact_search.json",
+    "result_parquet": "target/ember2024-scale/results/01_historical_exact_search.parquet"
+  },
+  "ivf_flat": {
+    "sql_file": "fixture/demo/ember2024/scripts/scale/03_historical_ivf_flat_search.sql",
+    "sql": "-- IVF-Flat approximate reference search over the same full Win32 train dataset and test queries.\n-- Index is built query-locally with 1024 lists and searched with 32 probes.\n-- Corpus: full deduplicated Win32 training dataset (~1.56M files).\n-- Queries: 10,000 held-out Win32 test queries from weeks 52-63.\nWITH train_index AS (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_train v\n    JOIN ember_metadata_train m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n), test_queries AS (\n    SELECT v.id, v.histogram AS vector\n    FROM ember_research_vectors_test v\n    JOIN ember_metadata_test m ON m.id = v.id\n    WHERE m.file_type = 'Win32'\n    ORDER BY v.id\n    LIMIT 10000\n)\nSELECT n.query_ordinal,\n       n.query_id,\n       qm.week_id AS query_week,\n       qm.label AS query_label,\n       n.rank,\n       n.neighbor_id,\n       tm.week_id AS neighbor_week,\n       tm.label AS neighbor_label,\n       tm.sha256 AS neighbor_sha256,\n       tm.family AS neighbor_family,\n       n.distance\nFROM cuvs_ivf_flat(\n    dataset => (SELECT id, vector FROM train_index ORDER BY id),\n    queries => (SELECT id, vector FROM test_queries ORDER BY id),\n    k => 10,\n    metric => 'l2_expanded',\n    n_lists => 1024,\n    n_probes => 32\n) n\nJOIN ember_metadata_test qm ON qm.id = n.query_id\nJOIN ember_metadata_train tm ON tm.id = n.neighbor_id\nORDER BY n.query_ordinal, n.rank;\n",
+    "query_id": "ed67f5c2-2ac5-4b42-910d-bb859cc1adcd",
+    "status": "ok",
+    "row_count": 100000,
+    "first_query_top_10": [
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 1,
+        "neighbor_id": 2751446,
+        "neighbor_week": 27,
+        "neighbor_label": 1,
+        "neighbor_sha256": "172fc1137e71f409b86bab2cfa518807cb0819aba1362e316537c2eabc663f1f",
+        "neighbor_family": "cosmu",
+        "distance": 7.296667172340676e-05
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 2,
+        "neighbor_id": 3779432,
+        "neighbor_week": 37,
+        "neighbor_label": 1,
+        "neighbor_sha256": "aee14fc7b0e7cdd31ab2a9023120397331e8207c49e6e17c8fb96c5f6834bdd9",
+        "neighbor_family": "cosmu",
+        "distance": 9.364917787024751e-05
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 3,
+        "neighbor_id": 4070733,
+        "neighbor_week": 40,
+        "neighbor_label": 1,
+        "neighbor_sha256": "48fe80b76cc87aefd4391a97ae77d8ec82290076c1e9a405d5ae4334da2f69be",
+        "neighbor_family": "cosmu",
+        "distance": 0.00010284063318977132
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 4,
+        "neighbor_id": 4575939,
+        "neighbor_week": 45,
+        "neighbor_label": 1,
+        "neighbor_sha256": "4592059a661a3cd2d80c5229cdfea7e8af1ff1192c7d89315e955b62804ce1e2",
+        "neighbor_family": "cosmu",
+        "distance": 0.00015277844795491546
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 5,
+        "neighbor_id": 3166252,
+        "neighbor_week": 31,
+        "neighbor_label": 1,
+        "neighbor_sha256": "6bbaa962698a5ca64dfcc3785af4e72f30856c7631c299daf8e58a48b412a9a3",
+        "neighbor_family": "cosmu",
+        "distance": 0.00018919540161732584
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 6,
+        "neighbor_id": 1950009,
+        "neighbor_week": 19,
+        "neighbor_label": 1,
+        "neighbor_sha256": "49da18650e79aa1971cc21db2507338f21abbf7e5feae89736edb4c2b467515f",
+        "neighbor_family": "wacatac",
+        "distance": 0.00029304964118637145
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 7,
+        "neighbor_id": 1943279,
+        "neighbor_week": 19,
+        "neighbor_label": 1,
+        "neighbor_sha256": "175e3fa7d86a676e15666a5c70a2b4f2be5d76ea3b488f166bcea7fb3ef71c0c",
+        "neighbor_family": "wacatac",
+        "distance": 0.00031116095487959683
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 8,
+        "neighbor_id": 3888153,
+        "neighbor_week": 38,
+        "neighbor_label": 1,
+        "neighbor_sha256": "f65ed9d1c0f3f1c05b049acae8cce41a735354b51453d58230c0e8a624859b02",
+        "neighbor_family": "cosmu",
+        "distance": 0.00031391173251904547
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 9,
+        "neighbor_id": 2454135,
+        "neighbor_week": 24,
+        "neighbor_label": 1,
+        "neighbor_sha256": "431c45aa8bc12bbd2924d6fc0e5fc4c8adae0fb522142f49f671bc71f05beb47",
+        "neighbor_family": "cosmu",
+        "distance": 0.00033253259607590735
+      },
+      {
+        "query_ordinal": 0,
+        "query_id": 10021000,
+        "query_week": 52,
+        "query_label": 1,
+        "rank": 10,
+        "neighbor_id": 4471877,
+        "neighbor_week": 44,
+        "neighbor_label": 1,
+        "neighbor_sha256": "2fe2a3e784922df062b5154fc4b3c770034791ea0463b3c3f62554332fc64bd4",
+        "neighbor_family": "cosmu",
+        "distance": 0.0003732966724783182
+      }
+    ],
+    "parameters": {
+      "n_lists": 1024,
+      "n_probes": 32
+    },
+    "execution": {
+      "path": "native",
+      "native_fragments": 4,
+      "host_boundaries": 0
+    },
+    "validation": {
+      "json_preview_matches_parquet": true,
+      "full_corpus_recall_oracle": "not recorded"
+    },
+    "source_artifacts": {
+      "result_json": "target/ember2024-scale/report/results/03_historical_ivf_flat_search.json",
+      "result_parquet": "target/ember2024-scale/results/03_historical_ivf_flat_search.parquet"
+    }
+  },
+  "cagra_attempt": {
+    "sql_file": "fixture/demo/ember2024/scripts/scale/02_historical_cagra_search.sql",
+    "query_id": "253223a4-33d3-4c69-a43d-2786b584e86c",
+    "status": "error",
+    "source_result": "target/ember2024-scale/report/results/02_historical_cagra_search.json",
+    "error_summary": "Index construction failed in the full-corpus run; no result rows or full-cohort recall were captured."
+  }
+}

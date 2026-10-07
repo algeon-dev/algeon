@@ -1,10 +1,17 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import MerRecScaleBarbie from './merrec_scale_barbie.mdx';
-import MerRecCollections from './merrec_collections.mdx';
 
 <Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
+<TabItem value="merrec" label="MerRec" default>
+
+### Which brands grew closer to Barbie's audience?
+
+<MerRecScaleBarbie />
+
+</TabItem>
+
+<TabItem value="citation-network" label="Citation network">
 
 {/* Hand-owned examples for cugraph_pagerank. NOT generated; safe to edit. */}
 
@@ -93,17 +100,6 @@ LIMIT 6;
 Automata theory, information theory, the classic algorithms textbook, and the
 ALGOL report: the view's `WHERE` clause restricts the graph to one era, and
 the algorithm re-ranks the field within it.
-
-</TabItem>
-
-<TabItem value="merrec" label="MerRec marketplace">
-
-<MerRecScaleBarbie />
-
-</TabItem>
-<TabItem value="merrec-shard" label="MerRec single shard">
-
-<MerRecCollections />
 
 </TabItem>
 </Tabs>

@@ -1,23 +1,19 @@
 ---
 sidebar_position: 7
 sidebar_label: Handling Errors
-description: Understand error ownership, DataFusion and Flight boundaries, retry evidence, and safe diagnostics in Algeon.
+description: Read Algeon error identities from DataFusion errors and Flight SQL statuses, and decide on retry from attempt evidence.
 ---
 
-# Error Handling Design
+# Handling Errors
 
 Every Algeon-owned adapter failure carries a stable machine-readable `code`, a
 coarse `kind`, and a `status` that says whether the condition is permanent,
-temporary, or persistent, in addition to a human-readable message. An
-application can find that identity inside a `DataFusionError` that wraps a
-DataFusion adapter error, or read it from gRPC metadata over Flight SQL, and
-should make decisions from those typed fields, never from formatted error
-text. Algeon keeps an error typed at the layer that owns the failure and
-converts it only when crossing a real boundary. Ordinary DataFusion errors
-that carry no Algeon identity, and transport errors below the server, keep
-their own policies: nothing in this guide upgrades them to Algeon errors.
-
-The typical native-execution path is:
+temporary or persistent, beside a human-readable message. An application finds
+that identity inside a `DataFusionError` or in Flight SQL gRPC metadata, and
+should decide from those typed fields, never from formatted error text.
+Ordinary DataFusion errors and transport errors below the server keep their
+own policies; [Error ownership](../design/errors.mdx) covers how errors are
+created and what each surface discloses.
 
 ~~~text
 cuDF / cuGraph / cuVS
@@ -27,59 +23,27 @@ cuDF / cuGraph / cuVS
   -> embedded application or Flight SQL status
 ~~~
 
-Normal native-planning declines do not enter this path. `NotSupported` and
-`NotSelectedByCost` are candidate outcomes in a `PlanningReport`, not error
-codes or `DataFusionError`s, and the original DataFusion plan remains
-executable. A malformed plan, an unsatisfied final-plan requirement, or a
-runtime failure is an error.
-
-## Ownership by layer
-
-| Layer | Error type | Responsibility |
-| --- | --- | --- |
-| `query-planning` | `QueryError` | Canonical DataFusion-independent error taxonomy plus IR, optimizer, capability, proof, and admission failures. |
-| `query-runtime` | planning's `QueryError` | Attempt lifecycle, query service, device ledger, grant, cache, observation, and metric failures; it does not define another taxonomy. |
-| `query-engine` | planning's `QueryError` | Native execution failures. |
-| DataFusion adapter | `algeon_datafusion::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
-| DataFusion traits | `DataFusionError` | Framework boundary only. Algeon errors cross it as a typed `External` source. |
-| DataFusion server module | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics under `algeon_datafusion::server`; the `algeon-server` package only launches it. |
-
-Fix a missing classification at its owner. If a cuDF or cuGraph error lacks the
-typed information Algeon needs, extend the owning component crate instead of
-parsing its message in the adapter.
-
-## One identity, several projections
-
-An adapter `Error` carries:
+## One identity, several projections {/* #one-identity-several-projections */}
 
 | Field | Use |
 | --- | --- |
 | `code` | Most specific stable machine identity. |
-| `kind` | Coarse grouping derived from `code`; useful for protocol and aggregate policy. |
-| `status` | Coarse source condition derived from `code`: `Permanent`, `Temporary`, or `Persistent`. |
+| `kind` | Coarse grouping derived from `code`, for protocol and aggregate policy. |
+| `status` | Coarse source condition derived from `code`: `Permanent`, `Temporary` or `Persistent`. |
 | `operation` | Stable dotted identifier for the operation that added this boundary context. |
 | `message` | Human diagnostic text. |
-| `facts` | Structured diagnostic context. Raw by default. |
+| `facts` | Structured diagnostic context, raw by default. |
 | `source` | Original typed cause chain. |
 
-`kind` and `status` are mappings, not independent classifications. Add a new
-`code` first, then update the exhaustive mappings and contract tests.
+Do not parse `Display` or `Debug` output, since adapter `Error::Display` emits
+only the human message and native `QueryError` formatting can contain raw
+facts and source text for trusted in-process use.
 
-Do not parse `Display` or `Debug`. Adapter `Error::Display` intentionally emits
-only its human message. Native `QueryError` formatting is for trusted
-in-process diagnostics only and can contain raw facts and source text.
+## Find the Algeon error {/* #crossing-datafusion */}
 
-## Crossing DataFusion
-
-`From<Error> for DataFusionError` performs one conversion:
-
-```rust
-DataFusionError::External(Box::new(algeon_error))
-```
-
-DataFusion may wrap that value in context, diagnostics, shared errors, or error
-collections. Use `DataFusionErrorExt::find_algeon_error()` rather than matching
-one `External` layer:
+`From<Error> for DataFusionError` wraps the error once as
+`DataFusionError::External`. DataFusion may add context, diagnostics, shared
+errors or collections around it, and `find_algeon_error()` searches them:
 
 ```rust
 use datafusion::common::DataFusionError;
@@ -101,234 +65,99 @@ fn record_failure(error: &DataFusionError) {
 }
 ```
 
-The search is deterministic depth-first pre-order and bounded by both depth
-and total node count. It follows standard source chains and visits every
-`DataFusionError::Collection` branch in order, returning the first Algeon
-error it reaches, not the most severe one. A `None` result only means no
-Algeon error was found within that budget; it does not prove that branches
-beyond the budget contain no Algeon identity. When there is no match, keep the
-application's existing DataFusion policy. There is deliberately no blanket
-conversion in the other direction.
+The search walks source chains and each `DataFusionError::Collection` branch
+in deterministic depth-first pre-order, bounded by depth and total node count,
+and returns the first Algeon error it reaches, whatever its severity. A `None` result means only that
+none was found within that budget; keep the application's existing DataFusion
+policy then.
 
-## Creating and wrapping errors
+## Retry and recovery are evidence-based {/* #retry-and-recovery-are-evidence-based */}
 
-Create the error where the failed contract is known:
-
-- Use the shared `QueryError` for DataFusion-independent planning, runtime, and
-  engine behavior; add its canonical code and mappings in
-  `query-planning`.
-- Use adapter `Error` for DataFusion-specific planning, wrappers, and public
-  integration behavior.
-- A `QueryError` reaching the adapter is converted at that boundary (the
-  constructor is contributor-internal, not a public integration entry point).
-  The conversion maps the native code and preserves native code, kind,
-  status, operation, message, non-colliding facts, and source. Contributors
-  find the canonical construction rules in the owner rustdoc
-  (`crates/algeon-query-planning/src/error.rs`, `crates/algeon-datafusion/src/error.rs`); integrators
-  only need the public constructors and `find_algeon_error()` shown above.
-- Use the existing typed lower-layer constructors and provenance at cuDF,
-  cuGraph, or cuVS boundaries. Their mappings use enums and status, not message
-  text.
-
-Configuration validation failures use `invalid_configuration` at both layers,
-never a plan code. The input is a service, backend, device, or server setting,
-so the code has kind `invalid_input` and status `permanent`. The runtime
-reports the setting name from the device profile (the same name as the TOML key
-under `[[admission.device_profiles]]`), the configured value, the limit it was
-checked against, and the largest accepted value where one exists. Byte values
-print as exact bytes followed by GiB truncated to two decimals, for example
-`102005473280 bytes (95.00 GiB)`. `invalid_plan` and `invalid_execution_plan`
-remain for malformed query plans and engine-internal consistency checks.
-
-Operations should be stable dotted identifiers. Messages explain the failure
-to a human. Facts carry machine-readable context needed for policy or
-diagnosis, and the source preserves the original cause. Do not create a second
-error taxonomy in a feature module or transport adapter.
-
-Use the result type owned by the current layer: native `Result<T>` across
-planning, runtime, and engine, adapter `Result<T>` before DataFusion, and
-DataFusion's result type in DataFusion traits. Let `?` perform the single
-adapter-to-DataFusion conversion.
-
-Once native GPU execution starts, a failure closes the attempt; Algeon does not
-replay the retained CPU plan. Native-owned failures stay typed, while a
-DataFusion-owned boundary failure keeps its DataFusion identity.
-
-## Retry and recovery are evidence-based
-
-`ErrorStatus` describes the source condition; it is not permission to retry:
+`ErrorStatus` describes the source condition and grants no permission to retry:
 
 | Status | Meaning |
 | --- | --- |
 | `Temporary` | The condition may clear, but the error alone does not prove when or how to retry. |
 | `Persistent` | A dependency failure is known or observed to continue; stop automatic retry and escalate. |
-| `Permanent` | Do not automatically retry the same request. It normally needs different input, configuration, capability, or code; cancellation is also terminal. |
+| `Permanent` | Do not retry the same request automatically, since it normally needs different input, configuration, capability or code; cancellation is also terminal. |
 
-There is no adapter `Error::is_retryable()`. Engine-internal bounded retries
-are owned by the exact execution operator and recognize only their explicit
-resource cases.
+There is no adapter `Error::is_retryable()`. To recover from an attempted query:
 
-For a failure returned while admission is still being attempted, use
-`QueryAdmissionOutcome::from_error` (or `from_error_with_queue_bounds`). After
-a handle has been published, use `from_execution_error`; a post-admission OOM
-is an execution failure, not queue capacity that can be retroactively waited
-on. This projection is policy-neutral: the application still decides whether
-to queue, shed, or return a protocol error.
-
-For an attempted query, the authoritative recovery signal is the sealed
-`QueryAttemptReport::retry_advice`. It is derived only after terminal outcome,
-GPU cleanup, capacity disposition, device health, native-fault isolation, and
-resource evidence are committed. Queue evidence can advise backoff; an exact
-reservation or allocation limit can require configuration change; proven
-device-local quarantine can allow another eligible device; unknown isolation
-can require backend recovery. Missing evidence remains indeterminate.
-
-The engine never retries from this advice. A caller must satisfy its paired
-prerequisite and submit a new attempt. Cancellation, drop, and panic do not
-become retries, and transport delivery failure does not rewrite the sealed
-attempt outcome.
-
-Recovering from an attempted query follows the attempt lifecycle, not the
-error value alone:
-
-1. Classify the returned error at the correct boundary:
-   `QueryAdmissionOutcome::from_error` while admission is still being
-   attempted, `from_execution_error` after a handle has been published.
+1. Classify the returned error with `QueryAdmissionOutcome::from_error` (or
+   `from_error_with_queue_bounds`) while admission is still being attempted,
+   and with `from_execution_error` after a handle has been published.
 2. Retain the attempt completion the service published for the attempt.
-3. Wait for the sealed `QueryAttemptReport` and read its `retry_advice`,
-   derived only after terminal outcome, GPU cleanup, capacity disposition,
-   device health, native-fault isolation, and resource evidence are
-   committed. Satisfy the advice's paired prerequisite before submitting a
-   new attempt.
+3. Wait for the sealed `QueryAttemptReport`, read its `retry_advice`, and
+   satisfy the advice's paired prerequisite before submitting a new attempt.
 
-Receiving an execution error is not proof that cleanup finished. The sealed
-report is the only signal that binds the recovery advice to completed
-cleanup.
+An execution error does not prove that cleanup finished; only the sealed
+report binds the advice to completed cleanup. [Retry
+evidence](../design/errors.mdx#retry-evidence) lists what the advice can say.
 
-## Diagnostics and disclosure
+## Flight SQL status {/* #flight-sql-boundary */}
 
-Treat raw facts and source chains as trusted in-process diagnostics. They may
-contain query literals, object paths, identifiers, backend messages, or
-credentials.
+The built-in server looks for a typed adapter error first. An ordinary
+DataFusion error gets a server-private classification for its gRPC code and
+no public Algeon identity.
 
-- Adapter `with_fact` stays hidden from log and retained-diagnostic
-  projections. `with_log_safe_fact` is an explicit opt-in for bounded
-  operational classifications; sanitizing and truncating remain defense in
-  depth.
-- `QueryError::to_json()` includes raw native facts and source text. Do not use
-  it as a client response.
-- Sealed attempt reports project a bounded allowlist from the primary failure;
-  they do not copy arbitrary messages or facts.
-- Preserve the typed source for internal diagnosis unless the owning boundary
-  deliberately omits it because the foreign text can expose a sensitive
-  location.
+| Error kind | gRPC code | Client message |
+| --- | --- | --- |
+| `cancelled` | `CANCELLED` | The error message. |
+| `not_found`, `permission_denied`, `unauthenticated` | `NOT_FOUND`, `PERMISSION_DENIED`, `UNAUTHENTICATED` | The error message, or fixed text for a source failure. |
+| `planning`, `invalid_input` | `INVALID_ARGUMENT` | The error message. |
+| `unsupported` | `UNIMPLEMENTED` | The error message. |
+| `resource_exhausted` | `RESOURCE_EXHAUSTED` | Text naming the change the request needs. |
+| `execution`, `dependency_failure`, `invariant_violation`, `internal` | `INTERNAL` | Static text pointing at `GetQueryStats`. |
 
-## Flight SQL boundary
+- `invalid_configuration` has kind `invalid_input`. `algorithm_did_not_converge`
+  returns `FAILED_PRECONDITION`.
+- The static text refers to `GetQueryStats` for the query id in the status's
+  `x-algeon-query-id` metadata. Every failure of a registered statement
+  (`GetFlightInfo` planning, `DoGet`, `DoPut` updates, prepared statement
+  actions) carries it; metadata RPCs such as `GetCatalogs` do not.
 
-The built-in server first looks for a typed adapter error. Ordinary DataFusion
-errors receive a server-private classification for gRPC presentation, but that
-does not give them a public Algeon identity for embedded callers.
+Every status built from an adapter `Error` carries `x-algeon-error-code`,
+`x-algeon-error-kind`, `x-algeon-error-status` and `x-algeon-error-operation`,
+followed by the [projected facts](../design/errors.mdx#projected-facts) that
+apply.
 
-The server maps cancellation, auth, not-found, invalid/planning, unsupported,
-and resource kinds to their matching gRPC codes. Configuration errors
-(`invalid_configuration`) have kind `invalid_input` and map to
-`INVALID_ARGUMENT`. Execution, dependency, invariant, and internal failures use
-`INTERNAL`. Client messages are narrowed for source, dependency, invariant, and
-internal failures; logs and retained diagnostics keep the separate structured
-fields and bounded safe projection.
+### Memory failures {/* #memory-failures */}
 
-A narrowed `INTERNAL` message is static text. It states that the full
-diagnostic is available through the `GetQueryStats` action for the query id in
-the `x-algeon-query-id` metadata of the same status. The statement boundary
-adds that metadata to every failure of a registered statement: planning
-(`GetFlightInfo`), `DoGet`, `DoPut` updates, and the prepared statement
-actions. Metadata RPCs such as `GetCatalogs` register no query and carry no
-query id.
+For `query_memory_limit_exceeded`, `device_out_of_memory` and
+`device_allocation_failed`, the message names the operation and the requested,
+peak and grant bytes it carries, each also in GiB. It then asks the caller to
+filter or project earlier, split the query, or raise the query memory cap,
+since an unchanged resubmission fails again. A device allocation failure also
+points at the sealed attempt report.
 
-A native memory failure names the operation and the memory facts the native
-layers recorded. For `query_memory_limit_exceeded`, `device_out_of_memory`, and
-`device_allocation_failed`, the message states the native operation, the
-requested bytes, the allocation peak, and the query grant, each in bytes and
-GiB. The peak is the highest byte count the allocator recorded for the failing
-scope, including the working set of the failing operation, so a request that
-failed against the grant did not fit beside it. An operation that runs under a
-budget token reports the peak of its stream's allocator member. Any other
-operation reports the peak of the attempt's allocation domain, whose limit is
-the grant. The message carries no current-usage figure, because a sample taken
-once the error is returned reflects the working set the failing operation has
-already released. The remedy follows: reduce what the failing operation holds
-by filtering or projecting earlier or by splitting the query, or raise the
-query memory cap. An unchanged resubmission fails again. A device allocation
-failure also points at the sealed attempt report for retry guidance. A figure
-the error does not carry is left out of the message. `GetQueryStats` keeps the
-requested, peak, grant, and current byte counts as facts of its
-`[structured_error]` section. The `allocator_high_water_bytes` column of its
-`[execution]` row holds the peak of the attempt's allocation domain, for failed
-attempts as well as successful ones.
+| Fact | Meaning |
+| --- | --- |
+| `native_operation`, `budget_operation` | Code identifier of the failing operation. |
+| `requested_allocation_bytes` | The allocation that failed. |
+| `budget_peak_bytes` | The highest byte count recorded for the failing scope, including the failing operation's working set. |
+| `budget_bytes` | The query grant. |
+| `budget_current_bytes` | Usage sampled after the failing operation released its working set, kept out of the message. |
 
-One code-specific exception: a non-converged native algorithm
-(`algorithm_did_not_converge`) returns `FAILED_PRECONDITION` with an
-actionable message naming the algorithm, the iterations reached, and the
-configured limits, plus matching `algorithm`, `iterations`,
-`max_iterations`, and `epsilon` metadata. It is a parameter problem to fix,
-not a condition to blindly retry. The message ends with the parameters that
-make the algorithm converge, taken from the native layer's `remedy` fact:
-Katz centrality asks for a lower `alpha` (below 1/lambda_max, the reciprocal
-of the largest adjacency eigenvalue) or a higher `max_iterations`; HITS and
-eigenvector centrality ask for a higher `max_iterations` or `epsilon`.
+### Non-converged algorithms {/* #algorithm-did-not-converge */}
 
-Every status created from an adapter `Error` includes these metadata fields:
+An `algorithm_did_not_converge` message names the algorithm, the iterations
+reached and the configured limits, with matching `algorithm`, `iterations`, `max_iterations` and
+`epsilon` metadata. Retrying unchanged repeats it. The message ends with the
+native layer's `remedy`. Katz centrality asks for a lower `alpha` (below
+1/lambda_max, the reciprocal of the largest adjacency eigenvalue) or a higher
+`max_iterations`; HITS and eigenvector centrality ask for a higher
+`max_iterations` or `epsilon`.
 
-- `x-algeon-error-code`
-- `x-algeon-error-kind`
-- `x-algeon-error-status`
-- `x-algeon-error-operation`
+### Strict unsupported rejection {/* #strict-unsupported-rejection */}
 
-The server also projects only `unsupported_column`, `unsupported_column_type`,
-`unsupported_column_role`, `blocking_kind`, `blocking_subject`,
-`predicate_role`, `reason`, `required_option`,
-`algorithm`, `iterations`, `max_iterations`, `epsilon`, and `native_message`
-when present. For the resource-exhausted kind it additionally projects
-`native_operation`, `budget_operation`, `requested_allocation_bytes`,
-`budget_bytes`, `budget_current_bytes`, and `budget_peak_bytes`. Each key is
-the fact name with `x-algeon-` prepended and underscores written as hyphens,
-for example `x-algeon-requested-allocation-bytes`. The operation values are
-code identifiers. The byte values are re-rendered from a parsed integer, so a
-fact that is not a number is omitted. `budget_current_bytes` is the usage
-sampled after the failing operation released its working set, and
-`budget_peak_bytes` includes that working set. `native_message` is projected only for client-actionable
-validation kinds (cancellation, not-found, permission, auth, planning,
-invalid-input, unsupported): internal, dependency, invariant, and execution
-failures never carry raw native text in metadata, however their status
-message reads. A cuGraph precondition failure is invalid input, and its
-`native_message` ends with libcugraph's reason without source location, for
-example `SSSP source vertex is not in the graph`. Query and correlation identifiers are added by the statement
-boundary. The source chain is retained locally, not emitted as metadata.
-Client-visible fact selection is independent of `with_log_safe_fact`. Attach
-`native_message` as a trusted in-process diagnostic whose content is already
-safe to expose on the allowlisted validation paths; the server gate decides
-the projection, not the producer.
-
-Metadata values must be transmittable ASCII and are capped at 256 bytes per
-value with a `...` marker. Values that cannot cross the wire (for example
-non-ASCII schema details) are omitted and listed under
-`x-algeon-omitted-facts`; the full diagnosis stays available in the
-status message and query stats.
-
-### Strict unsupported rejection
-
-With the `NoDataFusionCpu` final-plan requirement, an unsupported native column
-cannot remain on the executable DataFusion plan. The outer adapter error code
-is `final_plan_requirement_unsatisfied`, and Flight returns `InvalidArgument`.
-For an unsupported list projection, the status message itself identifies the
-first blocking field in schema order, its exact diagnostic Arrow type, and its
-stable role:
+Under the `NoDataFusionCpu` final-plan requirement, an unsupported column
+cannot stay on the DataFusion plan. The code is
+`final_plan_requirement_unsatisfied`, Flight returns `InvalidArgument`, and the
+message names the first blocking field in schema order, its Arrow type and role:
 
 ~~~text
 GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`
 ~~~
-
-That status also carries the matching structured metadata:
 
 | Metadata key | Example value |
 | --- | --- |
@@ -337,92 +166,25 @@ That status also carries the matching structured metadata:
 | `x-algeon-unsupported-column-type` | `List(Decimal128(10, 2))` |
 | `x-algeon-unsupported-column-role` | `projected` |
 
-The terminal `GetQueryStats` structured error retains the same facts as
-`fact.reason`, `fact.unsupported_column`, `fact.unsupported_column_type`, and
-`fact.unsupported_column_role`. Flight metadata and query stats are additional
-machine-readable projections; they do not replace the actionable status
-message. The existing allowlist and masking rules still apply, so raw facts and
-the source chain are not exposed.
-
-The four projections do not carry identical bytes. The status message keeps
-the full actionable text, including non-ASCII column names. Metadata carries
-only ASCII values capped at 256 bytes with a `...` marker; a non-ASCII column
-name is omitted from metadata and listed under
-`x-algeon-omitted-facts`. Query stats retain the structured facts
-without the wire encoding limits. The column name never enters operational
-logs or `Debug` output. Compare projections per surface (message, metadata,
-logs, query stats) rather than asserting four equal strings.
-
-When the first blocking candidate is not a column type, the status message
-names the plan element that blocked it, with the instruction to list every
-blocking candidate with `EXPLAIN GPU`:
+`GetQueryStats` retains each as `fact.<name>`, such as
+`fact.unsupported_column`. When the first blocker is some other
+[plan element](../reference/gpu-coverage-report.mdx#what-blocked-a-candidate),
+the message names it, or stays generic when the producing site cannot name one:
 
 ~~~text
 GPU execution does not support cast from Int64 to Int32 in `CAST(buys AS INT)`; EXPLAIN GPU lists every blocking candidate
 ~~~
 
-The element is one of the kinds in
-[GPU coverage validation](./gpu-coverage-validation.mdx#what-blocked-a-candidate),
-and a site that cannot name one leaves the generic message. The status carries
-`x-algeon-blocking-kind` (a fixed vocabulary such as `cast`, `aggregate_function`,
-or `operator`, which is also a log-safe fact next to `reason`) and
-`x-algeon-blocking-subject` (the text above without the trailing instruction).
-Query stats retain them as `fact.blocking_kind` and `fact.blocking_subject`.
-The text quotes the caller's SQL and type names, so it follows the unsupported
-column disclosure model: it reaches the status message, the metadata, and query
-stats, never `Error::message()` or operational logs, and a non-ASCII text is
-omitted from metadata and listed under `x-algeon-omitted-facts`. A column type
-keeps its three `unsupported_column` fields, and `blocking_kind` is
-`column_type` for it.
+That status carries `x-algeon-blocking-kind`, from a fixed vocabulary such as
+`cast`, `aggregate_function` or `operator` (`column_type` for a column), and
+`x-algeon-blocking-subject`, the text before the instruction. Each surface
+carries these names under its own [disclosure rules](../design/errors.mdx#disclosure-model).
 
-Protocol policy outside the built-in server belongs to the application. The
-embedded REST example intentionally maps typed errors before applying its
-ordinary DataFusion fallback, and does not expose raw facts wholesale.
+### Rejections in EXPLAIN GPU {/* #rejections-in-explain-gpu */}
 
-### Rejections in EXPLAIN GPU
-
-[`EXPLAIN GPU`](./gpu-coverage-validation.mdx#rejected-statements) plans its
-statement without executing it, so a statement that fails planning returns a
-`rejected` summary row where execution returns a status. The row carries what
-the status would: `reason_code` is the `x-algeon-error-code` value, and
-`detail_json.detail` is the status message, composed by the same client
-projection. Caller schema detail joins the text as it joins the status message,
-and a failure kind that returns the static internal-failure message above
-returns it in `detail`. The row carries no `x-algeon-*` metadata.
-
-One clause differs. A status message that names a blocking plan element ends
-with the pointer to `EXPLAIN GPU`, and `detail` ends before it, because the
-candidate rows of the same result already list every blocker. For an
-`APPROX_PERCENTILE_CONT` aggregate under `native_required`, execution returns
-
-~~~text
-GPU execution does not support aggregate function approx_percentile_cont; EXPLAIN GPU lists every blocking candidate
-~~~
-
-and the summary row carries
-`"detail":"GPU execution does not support aggregate function approx_percentile_cont"`.
-
-The Rust coverage API adds one field for the process that plans: the
-[`trusted_diagnostic`](./gpu-coverage-validation.mdx#rust-surface) of a
-rejection holds the source-chain text that the static internal-failure message
-withholds. It is never part of the summary row, `coverage_json` or any status.
-
-## Extending the contract
-
-When adding an error:
-
-1. Add the most specific code at the owning layer.
-2. Update code-to-kind and code-to-status mappings; do not infer either from
-   the variant name.
-3. Map native codes exhaustively at the adapter boundary while preserving the
-   original native classification.
-4. Decide explicitly whether any fact is raw, log-safe, attempt-report-safe,
-   or Flight-visible. These are separate disclosure choices.
-5. Extend the existing error, admission, attempt-report, or Flight contract
-   tests. A useful regression test must fail when the mapping or boundary
-   behavior is reverted.
-
-The canonical implementation points are `crates/algeon-datafusion/src/error.rs`, `crates/algeon-datafusion/src/error/code.rs`,
-`crates/algeon-query-planning/src/error.rs`,
-`crates/algeon-query-runtime/src/observability/attempt_report.rs`,
-`crates/algeon-query-engine/src/exec/`, and `crates/algeon-datafusion/src/server/error.rs`.
+[`EXPLAIN GPU`](./gpu-coverage-validation.mdx#rejected-statements) returns a
+`rejected` summary row where execution returns a status. Its `reason_code` is
+the `x-algeon-error-code` value, and `detail_json.detail` is the status message
+without the trailing `EXPLAIN GPU` pointer or any `x-algeon-*` metadata. The
+[rejected summary row](../reference/gpu-coverage-report.mdx#rejected-summary-row)
+reference has the remaining rules.

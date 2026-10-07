@@ -14,11 +14,19 @@ terms the design pages use.
 - [Native SQL Support](./native-sql-support.mdx) - which relational
   operators, expressions, aggregates, windows, joins, and sources run on the
   GPU.
-- [Data Type Support](./data-type-support.md) - Arrow, cuDF, and cuGraph data
-  type support boundaries.
+- [Native Evaluation Semantics](./native-evaluation-semantics.mdx) - which
+  native expressions can fail a query, on which rows, and how `CASE`, `AND`
+  and `OR` limit that.
+- [Data Type Support](./data-type-support.md) - which Arrow types the GPU
+  path holds or only carries, and what the UDTF families accept.
 - [GPU UDTF Catalog API](./gpu-udtf-catalog.mdx) - the common
-  cuGraph/cuVS catalog, descriptor, and static-validation schema reference.
-- [Benchmarks](./benchmarks/index.mdx) - CPU and GPU benchmark results for DataFusion
-  Algeon.
+  cuGraph, cuVS and cuML catalog, descriptor, and static-validation schema reference.
+- [GPU Coverage Report](./gpu-coverage-report.mdx) - the columns, JSON
+  fields, blocking kinds, remedies and runtime caveats of
+  `algeon_explain_coverage` and `EXPLAIN GPU`.
+- [Benchmarks](./benchmarks/index.mdx) - where NVIDIA publishes the GPU
+  library benchmarks, and Algeon's own TPC-H and TPC-DS runs.
 - [Glossary](./glossary.md) - one-line definitions of Algeon-specific terms,
   linking to the owning contract pages.
+- [Roadmap](./roadmap.md) - what is being worked on next, what waits for an
+  upstream release or an adopter, and what waits for hardware.

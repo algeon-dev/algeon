@@ -44,108 +44,10 @@
   outline-offset: 4px;
 }
 
-.examples {
-  margin-bottom: 1.75rem;
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 12px;
-  background: var(--ifm-background-surface-color);
-}
-
-.examples :global(.tabs-container) {
-  margin-bottom: 0;
-}
-
-.examples :global(.tabs) {
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  padding: 0.5rem 0.5rem 0;
-  border-bottom: 1px solid var(--ifm-color-emphasis-200);
-}
-
-.examples :global(.tabs__item) {
-  padding: 0.5rem 0.875rem 0.625rem;
-  border-bottom-width: 2px;
-  border-radius: 6px 6px 0 0;
+.heroNote {
+  margin: 1rem 0 0;
   color: var(--ifm-font-color-secondary);
   font-size: 0.9375rem;
-  font-weight: 500;
-}
-
-.examples :global(.tabs__item--active) {
-  color: var(--ifm-heading-color);
-}
-
-.examples :global([role='tabpanel']) {
-  padding: 0 1.25rem 1rem;
-}
-
-.examples :global([role='tabpanel']) pre {
-  font-size: 0.8125rem;
-  line-height: 1.5;
-}
-
-.examples :global(.theme-code-block) {
-  margin-bottom: 0.75rem;
-  box-shadow: none;
-  border: 1px solid var(--ifm-color-emphasis-200);
-}
-
-.exampleEyebrow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.5rem;
-  margin-bottom: 0.375rem;
-  color: var(--ifm-font-color-secondary);
-  font-size: 0.8125rem;
-}
-
-.exampleEyebrow > span {
-  padding: 0 0.4375rem;
-  border: 1px solid var(--ifm-color-primary);
-  border-radius: 999px;
-  color: var(--ifm-color-primary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1.35rem;
-}
-
-.exampleQuestion {
-  margin-bottom: 0.25rem;
-  color: var(--ifm-heading-color);
-  font-size: 1.1875rem;
-  font-weight: 650;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
-  text-wrap: balance;
-}
-
-.exampleHow {
-  max-width: 78ch;
-  margin-bottom: 0.75rem;
-  color: var(--ifm-font-color-secondary);
-  font-size: 0.9375rem;
-  line-height: 1.55;
-}
-
-.exampleFooter {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.375rem 1.5rem;
-  margin-top: 0.75rem;
-  color: var(--ifm-font-color-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-}
-
-.exampleFooter > span:first-child {
-  flex: 1 1 32ch;
-  max-width: 70ch;
-}
-
-.exampleFooter > span:last-child {
-  white-space: nowrap;
 }
 
 :global(.theme-doc-markdown):has(.hero) > :global(.alert--warning) {
@@ -165,13 +67,5 @@
 
   .lead {
     font-size: 1rem;
-  }
-
-  .examples :global([role='tabpanel']) {
-    padding: 0.25rem 0.875rem 1rem;
-  }
-
-  .exampleQuestion {
-    font-size: 1.0625rem;
   }
 }

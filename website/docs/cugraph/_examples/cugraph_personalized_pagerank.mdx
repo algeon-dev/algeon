@@ -1,13 +1,20 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import MerRecScaleBarbie from './merrec_scale_barbie.mdx';
-import MerRecDiscovery from './merrec_discovery.mdx';
 import EmberImportReview from './ember2024_import_review.mdx';
 
 {/* Hand-owned examples for cugraph_personalized_pagerank. NOT generated; safe to edit. */}
 
 <Tabs queryString="dataset">
-<TabItem value="citation-network" label="Citation network" default>
+<TabItem value="merrec" label="MerRec" default>
+
+### Which brands grew closer to Barbie's audience?
+
+<MerRecScaleBarbie />
+
+</TabItem>
+
+<TabItem value="citation-network" label="Citation network">
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -54,17 +61,9 @@ ranked beyond BERT's direct references.
 
 </TabItem>
 
-<TabItem value="merrec" label="MerRec marketplace">
-
-<MerRecScaleBarbie />
-
-</TabItem>
-<TabItem value="merrec-shard" label="MerRec single shard">
-
-<MerRecDiscovery />
-
-</TabItem>
 <TabItem value="ember2024" label="EMBER2024 import review">
+
+### What connects these files to the seed?
 
 <EmberImportReview />
 

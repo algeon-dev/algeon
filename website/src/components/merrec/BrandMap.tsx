@@ -183,7 +183,7 @@ export default function BrandMap({data}: {data: BrandMapCapture}): React.ReactEl
           <div className={styles.panelHeading}>
             <i className={styles.swatch} />
             <h4>{`${selectedWorld.label}: top ${topBrands.length} brands by fans`}</h4>
-            <span>{`${integer.format(selectedWorld.brands)} brands, ${integer.format(selectedWorld.fans)} fans in this world`}</span>
+            <span>{`${integer.format(selectedWorld.brands)} brands, ${integer.format(selectedWorld.fans)} brand–fan links in this world`}</span>
           </div>
           <ol className={styles.topList}>
             {topBrands.map(dot => (

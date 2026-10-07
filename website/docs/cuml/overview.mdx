@@ -6,34 +6,50 @@ description: SQL-visible cuML decomposition, clustering, embedding, classificati
 
 # cuML SQL API
 
-Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml)
-as GPU UDTFs (user-defined table functions) in DataFusion SQL sessions. `cuml_tsvd` fits and
-transforms a truncated singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
-membership probabilities, and `cuml_umap` produces a manifold embedding.
-`cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
-labels from a `training` relation and classify a separate `predict` relation,
-returning each row's class and its probability.
-`cuml_random_forest_regressor` fits finite Float32 targets; their prediction
-step imports the fitted forest into nvForest and scores the predict features
-on the GPU. `cuml_forest_predict` scores an `input` relation against a
-pretrained XGBoost, LightGBM, or Treelite forest file read from a
-server-configured models root, rather than fitting a model in the statement.
-Each result includes `row_ordinal` and an `id` from the relation supplying
-output rows.
+Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml) as
+GPU UDTFs (user-defined table functions) in DataFusion SQL sessions. A UDTF
+either fits a model inside the statement (TSVD, HDBSCAN, UMAP, logistic
+regression, random forests) or scores rows with a pretrained XGBoost,
+LightGBM or Treelite forest (`cuml_forest_predict`). Each result carries a
+`row_ordinal` and the `id` of the row it describes.
+
+## UDTFs
+
+Start with [cuML UDTFs](./udtfs/index.mdx) to choose a decomposition,
+clustering, embedding, classification, regression or pretrained-forest
+UDTF and read its generated option and output schema.
+
+## Discovery and validation
+
+Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
+for the shared list, describe, validate, and execute workflow. The detailed
+column and request schemas are in the
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
 
 ## Questions to explore
 
 Each question opens a captured example on its UDTF page. The examples read
-the [demo datasets](../guides/datasets/index.mdx); prepare one before running
-its queries.
+the [demo investigations](../guides/datasets/index.mdx), which connect
+results to source records.
+
+### MerRec
+
+The [MerRec investigation](../guides/datasets/merrec.mdx) prepares shopper
+behavior features with SQL over 1.27 billion events, then scores or fits
+models on them in the same statement.
+
+- [Which 5,000 shoppers should a Pokemon campaign reach?](../guides/datasets/merrec.mdx#audience-funnel) (`cuml_forest_predict` ranking the union of a `cugraph_personalized_pagerank` audience and a `cuvs_brute_force_knn` audience)
+- [Can an existing model improve a fixed-size buyer shortlist?](./udtfs/cuml_forest_predict.mdx?dataset=merrec#examples) (`cuml_forest_predict`)
+- [How concentrated is next month's spending, and can a forest find the big spenders?](./udtfs/cuml_random_forest_regressor.mdx#examples) (`cuml_random_forest_regressor`)
 
 ### EMBER2024
 
-Extracted features for malware files: all 6,315 files in the challenge split,
-which holds only malicious files, plus 1% samples of the train and test splits.
+Extracted file features from EMBER2024. Classifier comparisons use 1.56M
+Win32 training files and 359,994 later test files. The separate challenge
+cohort contains 6,315 malicious files.
 
-- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuml_forest_predict.mdx#examples) (`cuml_forest_predict`, `cuvs_top_k`)
-- [How much analyst review does each classifier leave for a new quarter?](./udtfs/cuml_logistic_regression.mdx#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
+- [How many mistakes does each classifier make in a later quarter?](./udtfs/cuml_logistic_regression.mdx#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
+- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuml_forest_predict.mdx?dataset=ember2024#examples) (`cuml_forest_predict`, `cuvs_top_k`)
 - [Which missed Win32 files should an analyst group for batch review?](./udtfs/cuml_hdbscan.mdx#examples) (`cuvs_pca`, `cuml_hdbscan`)
 - [Where do the challenge histograms sit in a two-dimensional UMAP view?](./udtfs/cuml_umap.mdx?dataset=ember2024#examples) (`cuml_umap`)
 
@@ -44,21 +60,6 @@ BGE-M3 text embeddings.
 
 - [Which nearby reviews should a support analyst read together?](./udtfs/cuml_umap.mdx#examples) (`cuml_umap`)
 
-### MerRec marketplace
-
-All 1,268,092,738 Mercari US marketplace events from May through October 2023,
-described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
-question derives per-shopper behavior features from the raw events with SQL.
-
-- [Which active shoppers will buy next month?](./udtfs/cuml_logistic_regression.mdx?dataset=merrec#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
-- [How concentrated is next month's spending, and can a forest find the big spenders?](./udtfs/cuml_random_forest_regressor.mdx?dataset=merrec#examples) (`cuml_random_forest_regressor`)
-- [Can a model trained elsewhere rank next month's buyers inside SQL?](./udtfs/cuml_forest_predict.mdx?dataset=merrec#examples) (`cuml_forest_predict`)
-
-Single-shard captures: per-user category preferences from Mercari US browsing
-events in one October 2023 source shard.
-
-- [Which captured audiences have concentrated preferences, and which have mixed profiles?](./udtfs/cuml_hdbscan.mdx?dataset=merrec-shard#examples) (`cuml_hdbscan`, `cuml_umap`)
-
 ## Input and call shape
 
 Each relation argument (`input`, `training`, or `predict`) is a parenthesized `SELECT` subquery. Ordinary session
@@ -67,10 +68,7 @@ an execution argument. [ML Inputs](./ml-inputs.mdx) specifies the canonical
 `id`, feature layouts, element types, and checks at planning and execution.
 
 For metadata validation, `gpu_validate_call` resolves a registered table or
-view and inspects its schema without evaluating rows. The [GPU UDTF
-Catalog API](../reference/gpu-udtf-catalog.mdx) documents discovery and
-validation. [cuML UDTFs](./udtfs/index.mdx) contains the generated option,
-output, and limitation reference for each cuML UDTF.
+view and inspects its schema without evaluating rows.
 
 ## Execution and lifetime
 
@@ -86,7 +84,8 @@ execution-mode, and `CumlSqlConfig` setup.
 
 The six fitting UDTFs evaluate their input within one statement.
 Models and transforms are released after that call; there is no model cache,
-cross-statement reuse, or serialization. `cuml_forest_predict` instead reads
+cross-statement reuse, or serialization, and no inference for neural
+networks trained in PyTorch. `cuml_forest_predict` instead reads
 and binds a model file from a server-configured models root; without one
 configured, it is listed but unavailable with `model_root_unconfigured`. See
 [Configuration](../integration/configuration.mdx#models-and-forest-inference)

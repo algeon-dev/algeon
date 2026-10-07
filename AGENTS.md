@@ -67,9 +67,9 @@ Keep other guidance as links to those definitions, without duplicate contracts.
 | Query crate or GPU component ownership and dependencies | [Module boundaries](website/docs/design/index.mdx#crates-and-ownership) |
 | Native operators, lowering, planning reports or schedules | [Native lowering](website/docs/design/native-lowering.mdx) and [GPU execution](website/docs/design/gpu-execution.mdx) |
 | Admission, allocation, attempt lifecycle, resident facts or metrics | [Memory and query lifetime](website/docs/design/admission.mdx) |
-| Error types, mappings or DataFusion error boundaries | [Error handling](website/docs/integration/handling-errors.mdx) |
+| Error types, mappings or DataFusion error boundaries | [Error ownership](website/docs/design/errors.mdx) and [Handling errors](website/docs/integration/handling-errors.mdx) |
 | Workspace manifests, publication or native builds | [Build overview](website/docs/build/overview.md) and [Prerequisites](website/docs/build/prerequisites.md) |
-| Running checks, adding tests or maintaining CI | [Tests](website/docs/build/tests.md), including the relevant maintainer sections |
+| Running checks, adding tests or maintaining CI | [Tests](website/docs/build/tests.md) and the [test harness](website/docs/build/test-harness.md) contracts |
 
 Machine-readable configuration and owner-crate constants/rustdoc define exact
 values and API signatures. Reconcile discrepancies with the linked contracts
@@ -105,6 +105,8 @@ Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
 artifacts; cleanup is never implicit.
 
 ## Writing tests
+
+Follow the [test layout contract](website/docs/build/test-harness.md#test-layout).
 
 - Prefer extending existing coverage at the behavior boundary before creating
   new tests.

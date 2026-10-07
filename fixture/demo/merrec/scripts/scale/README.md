@@ -171,8 +171,8 @@ tolerance of `1e-6`. Equal-distance profiles account for some ID differences.
 
 ## Full-scale exploration demos
 
-Files `07` through `29` hold the full-scale examples published on the
-algorithm pages. Each SQL file is one statement over the registered source
+Files `07` through `33` hold the full-scale examples published on the
+algorithm pages and the MerRec investigation guide. Each SQL file is one statement over the registered source
 tables, except the ANN files, which read the prepared `mr_taste64` table.
 
 | File | Algorithms | Question |
@@ -192,6 +192,9 @@ tables, except the ANN files, which read the prepared `mr_taste64` table.
 | `25_gmv_forecast.sql` | Random forest regressor | Share of next-month GMV held by the top-ranked shoppers |
 | `26_propensity_training_features.sql` | none | Training features for the offline XGBoost model |
 | `27_propensity_xgboost.sql` | Forest predict | Ranked audiences from XGBoost scores |
+| `30_audience_funnel.sql` | Personalized PageRank, brute-force kNN, forest predict | Which 5,000 shoppers should a Pokemon campaign reach? Graph affinity, taste lookalikes and an XGBoost ranking, each scored against later purchases |
+| `31_world_bridges.sql` | Jaccard, Leiden, betweenness centrality | Which brands connect the shopping worlds? |
+| `32_barbie_control_hot_wheels.sql`, `33_barbie_control_nike.sql` | Personalized PageRank, PageRank | The Barbie statement with a control seed (Hot Wheels, Nike) |
 
 The like-based brand graphs use distinct user-brand pairs from all
 182,889,825 `item_like` events. User vertices are `-(user_id + 1)`, so they
@@ -237,7 +240,7 @@ The training script needs `pyarrow` and `xgboost`. The algorithm pages
 report the median Flight latency of runs 2 and 3, the native fragment and
 host boundary counts, and the query allocator peak of each statement.
 
-Captures on 2026-10-07 used a release server built from commit `10586fb3d`
+Captures of `07` to `29` on 2026-10-07 used a release server built from commit `10586fb3d`
 plus uncommitted engine fixes (whole-input `OVER ()` windows, temporal casts
 and checked timestamp arithmetic, union inputs that read one producer twice,
 and rejection and memory-failure diagnostics), the configuration above, and
@@ -266,9 +269,17 @@ cached source files. Single-run statements report that run's latency.
 | `27_propensity_xgboost.sql` | 3 | 14.89 | 3 | 0 | 21.58 |
 | `28_ann_exact_10k.sql` | 3 | 0.34 | 4 | 0 | 2.12 |
 | `29_ann_cagra_10k.sql` | 3 | 8.03 | 4 | 0 | 2.12 |
+| `30_audience_funnel.sql` | 3 | 20.80 | 9 | 0 | 18.19 |
+| `31_world_bridges.sql` | 3 | 23.80 | 9 | 0 | 54.74 |
+| `32_barbie_control_hot_wheels.sql` | 3 | 5.02 | 7 | 0 | 13.18 |
+| `33_barbie_control_nike.sql` | 3 | 4.98 | 7 | 0 | 13.15 |
+
+Files `30` to `33` were captured later the same day on a release build of
+`016e6972f` (the same configuration and cached source files); each website
+capture records the `binary_sha256` of the server that produced it.
 
 Results that vary between runs: ForceAtlas2 coordinates, Leiden community
-numbers (the grouping itself repeated), KMeans persona sizes, the lookalike
-count (19,124 or 19,125, from distance ties), logistic regression buyer
+numbers (the grouping itself repeated, in `31` as well), KMeans persona sizes, the lookalike
+count (19,124 to 19,127 across the `13` and `30` captures, from distance ties), logistic regression buyer
 counts (by up to 12), and ANN mean distances. The other statements returned
 identical rows in all three runs.

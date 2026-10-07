@@ -1,0 +1,44 @@
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/citation-investigation-capture.json';
+import Table from '@site/src/theme/MDXComponents/Table';
+
+A researcher wants related reading based on shared references. Candidates are
+papers from 2017 to 2020 with at least ten references and one of four catalog labels:
+natural language processing, language model, machine translation or question
+answering. Papers with the seed's title are excluded.
+
+Jaccard divides shared references by the union of the reference lists. The
+query gives cited papers negative reference-role IDs and citing papers
+positive IDs, allowing an undirected Jaccard call to compare outgoing lists.
+SQL filters the candidates and joins the returned scores to paper metadata.
+
+<CodeBlock language="sql" className="no-collapse">{capture.bibliography.sql}</CodeBlock>
+
+The first three of the saved result rows are:
+
+<Table>
+<thead><tr><th>Paper</th><th>Year</th><th>Jaccard</th></tr></thead>
+<tbody>{capture.bibliography.rows.slice(0, 3).map(row => <tr key={row.title}><td>{row.title}</td><td>{row.year}</td><td>{row.jaccard.toFixed(3)}</td></tr>)}</tbody>
+</Table>
+
+**Follow-up: inspect the shared references.** The leading pair has 22 and 13
+references. This SQL returns their eight shared records, including *Adam*,
+*Sequence to Sequence Learning with Neural Networks*, and *Neural Machine
+Translation by Jointly Learning to Align and Translate*.
+
+<CodeBlock language="sql">{capture.shared_references.sql}</CodeBlock>
+
+<ul>{capture.shared_references.rows.map(row => <li key={row.paper_id}>{row.title} ({row.year})</li>)}</ul>
+
+The score is 8 / (22 + 13 − 8) = 0.296 after rounding. The shared works explain
+what produced the ranking and give the researcher a bibliography to inspect.
+Overlap does not establish topic equivalence or paper quality.
+
+<div className="fineprint">
+
+The [capture](/data/citation-investigation-capture.json) records a
+`native_preferred` run with one host execution boundary for the similarity
+query. It demonstrates composition with SQL but not a fully native execution
+path. The shared-reference result was independently checked.
+
+</div>

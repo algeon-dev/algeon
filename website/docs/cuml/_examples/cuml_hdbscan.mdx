@@ -1,9 +1,3 @@
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-import MerRecAudiences from './merrec_audiences.mdx';
-
-<Tabs queryString="dataset">
-  <TabItem value="ember2024" label="EMBER2024">
 This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
 
 ### Which missed Win32 files should an analyst group for batch review?
@@ -40,8 +34,8 @@ preserves the full SHA values.
 | `0` | 59 | 59 | `snackarcin` | 46 |
 | `2` | 35 | 3 | `fragtor` | 2 |
 
-[Download the JSON capture](/data/ember2024-capture.json), including the SQL,
-all eight result rows, query ID, and execution conditions.
+The [saved capture](/data/ember2024-capture.json) retains the SQL, all eight
+result rows, query ID and execution conditions.
 
 ```sql
 WITH reduced AS (
@@ -96,8 +90,3 @@ numbers across hardware and software environments. The observed execution
 used a dedicated EMBER server and had `partial_native` disposition: PCA and
 HDBSCAN ran on the GPU; the statement also included CPU window processing.
 The saved runtime observation identifies this execution path.
-  </TabItem>
-  <TabItem value="merrec-shard" label="MerRec single shard">
-    <MerRecAudiences />
-  </TabItem>
-</Tabs>

@@ -11,7 +11,7 @@ mold/clang, CMake and host-compiler versions in
 [Prerequisites](./prerequisites.md); checkout-local native selectors in
 [Building from Source](./from-source.md#2-configure-the-build-shell); and
 test-runner, fingerprint, and `target/`-size issues in
-[Tests](./tests.md#maintainer-reference).
+[Test harness](./test-harness.md).
 This page keeps the failures whose error text does not point at the cause.
 
 ## cuGraph configure aborts: private RMM detected

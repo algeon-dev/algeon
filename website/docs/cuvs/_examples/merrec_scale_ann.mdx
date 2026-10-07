@@ -1,39 +1,18 @@
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+A "shoppers like you" feature needs relevant matches for many shoppers. The [MerRec dataset](../../guides/datasets/merrec.mdx) supplies `mr_taste64`, a prepared table of category-view-share vectors for 2,080,743 shoppers with at least 20 views before September 1. Each method returns ten neighbors per shopper. A product team can use the comparison to decide how much match quality it will trade for approximate search.
 
-### When does approximate search pay off for a neighbor graph of every shopper?
+Recall compares neighbor IDs with exact search. Some shoppers have identical vectors, so the last column also checks whether a returned distance is within `1e-5` of the exact tenth-neighbor distance.
 
-A "shoppers like you" feature needs neighbors for every shopper, not for a
-few seeds. The input is a prepared table, `mr_taste64`, with one 64-wide
-taste vector for each of 2,080,743 shoppers: the square root of each
-shopper's view share across the 64 busiest second-level categories, from
-views before September 1, for shoppers with at least 20 such views. Each
-query below searches the table against itself for 10 neighbors per
-shopper, which is 20,807,430 neighbor rows.
+| Method | Exact neighbor IDs kept | Within exact 10th distance |
+|---|---:|---:|
+| Exact brute force | 100% | 100% |
+| CAGRA | 99.3% | 99.9% |
+| IVF-Flat | 98.2% | 99.0% |
+| IVF-PQ | 86.1% | 90.4% |
 
-The timing statements aggregate their output to one row, so Flight latency
-measures index build and search rather than result transfer. A second set
-of statements runs exact search and one approximate method together and
-joins their outputs on `(query_id, neighbor_id)` to measure recall. Many
-shoppers have identical vectors, which makes some neighbor IDs
-interchangeable. The table therefore also reports the share of approximate
-neighbors whose distance is within `1e-5` of the exact tenth-neighbor
-distance.
-
-| Method | Median time (s) | Speed-up | Exact neighbor IDs kept | Within exact 10th distance |
-|---|---:|---:|---:|---:|
-| Exact brute force | 43.18 | 1.0x | 100% | 100% |
-| CAGRA | 8.79 | 4.9x | 99.3% | 99.9% |
-| IVF-Flat | 8.50 | 5.1x | 98.2% | 99.0% |
-| IVF-PQ | 4.79 | 9.0x | 86.1% | 90.4% |
-
-All three methods beat exact search at this batch size. CAGRA keeps more
-than 99% of exact neighbor IDs at about a fifth of the exact time.
-IVF-Flat is close behind, and IVF-PQ is the fastest but loses about one
-neighbor in seven. For 10,000 query shoppers against the same table, the order reverses: exact search took 0.34 s and CAGRA 8.03 s, because every CAGRA call builds its index first. Index construction pays for itself only when the query batch is large.
+CAGRA and IVF-Flat retain more than 98% of exact neighbor IDs for this batch, while IVF-PQ retains 86.1%. These methods build an index within each statement, so a smaller query batch still pays that construction cost. The product team needs both recall and the cost of its expected batch size before choosing a method.
 
 <details>
-<summary>Executed SQL: CAGRA timing and recall</summary>
+<summary>Executed SQL: CAGRA neighbors and recall</summary>
 
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
@@ -69,7 +48,7 @@ LEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;
 </details>
 
 <details>
-<summary>Executed SQL: IVF-Flat timing and recall</summary>
+<summary>Executed SQL: IVF-Flat neighbors and recall</summary>
 
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
@@ -105,7 +84,7 @@ LEFT JOIN exact e ON e.query_id = a.query_id AND e.neighbor_id = a.neighbor_id;
 </details>
 
 <details>
-<summary>Executed SQL: IVF-PQ timing and recall</summary>
+<summary>Executed SQL: IVF-PQ neighbors and recall</summary>
 
 ```sql
 SELECT COUNT(*) AS neighbor_rows, COUNT(DISTINCT query_id) AS shoppers, AVG(distance) AS mean_distance
@@ -239,5 +218,3 @@ ORDER BY id;
 ```
 
 </details>
-
-Each timing statement ran 3 times; the table reports the median of runs 2 to 3, which includes planning, reading `mr_taste64`, index build, search, and receipt of the one-row result. Each recall statement ran once. All seven statements ran in `native_required` mode with zero host DataFusion boundaries, and the largest query allocator peak was 6.12 GiB. [Download the capture](/data/merrec-scale-ann.json) with the executed SQL, query IDs, timings, and all result rows.

@@ -1,105 +1,84 @@
-This example runs on the full [MerRec marketplace dataset](../../guides/datasets/merrec.mdx):
-1,268,092,738 events from May through October 2023.
+import CodeBlock from '@theme/CodeBlock';
+import capture from '@site/static/data/merrec-scale-barbie-tie-ins.json';
+import listingCheck from '@site/static/data/merrec-barbie-listing-check.json';
+import controls from '@site/static/data/merrec-barbie-control-seeds.json';
+import Table from '@site/src/theme/MDXComponents/Table';
 
-### Which brands moved closer to Barbie fans after the July 2023 film release?
+export const tieIns = ['NYX', 'Amc', 'Primark', 'ALDO'];
+export const liftOf = (records, name) => { const row = records.find(record => record.brand_name === name); return row ? `${row.lift_change.toFixed(2)}×` : 'absent from the top 25'; };
 
-Barbie listings drew 732,440 views in June 2023 and 1,408,609 in July, the
-month the film opened. This statement asks which other brands became more
-connected to the Barbie audience at the same time. It builds two user-brand
-like graphs, May-June and July-August, and makes four graph calls, two per
-period:
+A trend analyst wants a shortlist of brands whose audience relationship to
+Barbie changed between May to June and July to August 2023. A later check of product
+names tests whether the change coincides with Barbie-related listings.
 
-- Personalized PageRank restarts every random walk at Barbie (brand `2595`),
-  so its score measures closeness to the Barbie audience.
-- Plain PageRank on the same graph measures overall popularity.
-- `lift = personalized score / global score` removes the popularity
-  baseline. Without it, Mattel, Disney and Nike lead every list.
-- `lift_change` divides the July-August lift by the May-June lift.
+Each period has a graph of distinct user-brand likes. Personalized PageRank
+starts from Barbie; ordinary PageRank supplies each brand's global graph
+score. Their ratio, `lift`, describes relative graph affinity: 1 means the two
+scores are equal. The query ranks the change in that ratio and requires at
+least 1,000 fans per brand in both periods.
 
-```sql
-WITH likes AS (
-  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,
-         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release
-  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id
-  WHERE e.event_type = 'item_like' AND i.brand_id <> 0
-    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'
-    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'
-), lift_before AS (
-  SELECT p.vertex, p.value / r.value AS lift
-  FROM cugraph_personalized_pagerank(
-    edges => (SELECT src, dst FROM likes WHERE NOT after_release),
-    personalization => (SELECT 2595 AS vertex, 1.0 AS value),
-    directed => false) p
-  JOIN cugraph_pagerank(
-    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r
-    ON r.vertex = p.vertex
-), lift_after AS (
-  SELECT p.vertex, p.value / r.value AS lift
-  FROM cugraph_personalized_pagerank(
-    edges => (SELECT src, dst FROM likes WHERE after_release),
-    personalization => (SELECT 2595 AS vertex, 1.0 AS value),
-    directed => false) p
-  JOIN cugraph_pagerank(
-    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r
-    ON r.vertex = p.vertex
-), fans AS (
-  SELECT dst AS brand_id,
-         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,
-         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after
-  FROM likes GROUP BY dst
-), brands AS (
-  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name
-  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id
-)
-SELECT b.brand_name, f.fans_before, f.fans_after,
-       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change
-FROM lift_after la
-JOIN lift_before lb ON lb.vertex = la.vertex
-JOIN fans f ON f.brand_id = la.vertex
-JOIN brands b ON b.brand_id = la.vertex
-WHERE la.vertex > 0 AND la.vertex <> 2595
-  AND f.fans_before >= 1000 AND f.fans_after >= 1000
-ORDER BY lift_change DESC, b.brand_name
-LIMIT 25;
-```
+<CodeBlock language="sql" className="no-collapse">{capture.sql}</CodeBlock>
 
-| Brand | Fans May-Jun | Fans Jul-Aug | Lift May-Jun | Lift Jul-Aug | Lift change |
-|---|---:|---:|---:|---:|---:|
-| NYX | 2,781 | 4,253 | 0.97 | 2.07 | 2.13 |
-| Amc | 2,654 | 2,815 | 0.97 | 1.82 | 1.87 |
-| Primark | 1,966 | 2,987 | 1.10 | 2.04 | 1.85 |
-| ALDO | 4,571 | 6,379 | 0.85 | 1.50 | 1.76 |
-| Taylor Swift | 15,577 | 18,514 | 0.65 | 0.96 | 1.48 |
-| Stoney Clover Lane | 5,156 | 5,420 | 1.06 | 1.50 | 1.42 |
-| Stanley | 16,209 | 16,642 | 0.49 | 0.69 | 1.40 |
-| Dunkin' | 1,580 | 1,459 | 0.73 | 1.01 | 1.39 |
-| Henri Bendel | 1,133 | 1,358 | 0.65 | 0.85 | 1.32 |
-| Dutch Bros | 1,035 | 1,086 | 0.53 | 0.70 | 1.31 |
-| Fresh | 1,136 | 1,325 | 1.33 | 1.74 | 1.31 |
-| Starbucks | 26,096 | 29,130 | 0.76 | 0.98 | 1.29 |
-| BOGG BAG | 4,578 | 3,496 | 0.52 | 0.67 | 1.29 |
-| Farm Rio | 2,782 | 3,044 | 0.50 | 0.64 | 1.28 |
-| Alice + Olivia | 1,279 | 1,511 | 0.63 | 0.81 | 1.28 |
-| HAUS LABORATORIES | 1,111 | 1,361 | 0.72 | 0.92 | 1.27 |
-| Interscope Records | 1,630 | 2,218 | 0.92 | 1.17 | 1.27 |
-| MacKenzie-Childs | 1,270 | 1,758 | 0.58 | 0.73 | 1.26 |
-| ZARA | 38,166 | 48,545 | 0.65 | 0.82 | 1.26 |
-| Bombshell Sportswear | 1,113 | 1,285 | 0.51 | 0.64 | 1.26 |
-| OPI | 2,406 | 3,063 | 0.72 | 0.90 | 1.26 |
-| Dagne Dover | 1,823 | 2,390 | 0.43 | 0.54 | 1.25 |
-| Rothy's | 4,272 | 4,756 | 0.44 | 0.55 | 1.25 |
-| Brahmin | 4,044 | 4,290 | 0.48 | 0.60 | 1.25 |
-| Golden Goose | 2,855 | 3,436 | 0.38 | 0.48 | 1.23 |
+The first four rows are the largest increases. Taylor Swift is included as a
+comparison for the product-name check below.
 
-The top four rows are known Barbie collaborations, and the listings confirm
-them. In July and August, 30.6% of NYX likes were on listings whose name
-contains "Barbie", up from 1.8% in May and June. The other rates are Primark
-24.1% (from 1.6%), ALDO 19.0% (from 0.4%) and the AMC brand 9.2% (from 0%),
-whose listings include cinema promo cups and popcorn tins. OPI and ZARA,
-which also sold Barbie lines, show smaller shifts. Taylor Swift, Stanley and
-the coffee chains rose through shared audience alone; their listings carry
-almost no Barbie names. Nothing in the query names the film: the four graph
-calls and two ratios find the tie-ins from likes. A partnerships or trend
-team can use the same query for any seed brand and date split.
+<Table>
+<thead><tr><th>Brand</th><th>May-June affinity</th><th>July-August affinity</th><th>Change</th></tr></thead>
+<tbody>{capture.records.filter((row, index) => index < 4 || row.brand_name === 'Taylor Swift').map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{row.lift_before.toFixed(2)}</td><td>{row.lift_after.toFixed(2)}</td><td>{row.lift_change.toFixed(2)}×</td></tr>)}</tbody>
+</Table>
 
-The statement ran 3 times on the [scale server configuration](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/scripts/scale/server.toml) in `native_required` mode. The median Flight latency of runs 2 to 3 was 4.87 s, including planning, every step of the statement, and result receipt. Each plan had 7 native fragments and zero host DataFusion boundaries; the largest query allocator peak was 13.18 GiB of the 90 GiB query limit. [Download the capture](/data/merrec-scale-barbie-tie-ins.json) with the executed SQL, query IDs, timings, and all result rows.
+The statement combines the time filters, four graph calls and the brand
+joins in one plan and ran in a median of 4.87 s over three runs. The result
+identifies which records to investigate next; it does not attribute the
+change to a product or claim sales impact.
+
+**Follow-up: check product names.** The graph query did not search names.
+This separate SQL counts like events on listings whose names contain
+"Barbie", using the same periods. Its percentages describe listing-name
+matches, while the earlier ratio describes graph scores.
+
+<CodeBlock language="sql">{listingCheck.queries[0].sql}</CodeBlock>
+
+<Table>
+<thead><tr><th>Brand</th><th>Matching likes, May-June</th><th>Matching likes, July-August</th></tr></thead>
+<tbody>{['NYX', 'Primark', 'ALDO', 'Amc', 'Taylor Swift'].map(name => {
+  const row = listingCheck.records.find(record => record.brand_name === name);
+  return <tr key={name}><td>{name}</td><td>{row.barbie_pct_may_june.toFixed(2)}%</td><td>{row.barbie_pct_july_august.toFixed(2)}%</td></tr>;
+})}</tbody>
+</Table>
+
+NYX's records include "{listingCheck.listing_records.find(row => row.brand_name === 'NYX').name}".
+Taylor Swift's graph score also increased, but only 135 of 164,499 later
+likes were on matching listings. Its change remains unexplained by this check.
+Name matches can include seller descriptions and color names; they do not
+verify a partnership.
+
+**Follow-up: change the seed.** A rise in graph affinity could reflect a
+broad summer trend rather than Barbie. Running the same statement with
+another seed brand tests that. Hot Wheels is a Mattel brand whose collector
+audience overlaps Barbie's; Nike is a large brand with no July event. Only
+the seed literal changes.
+
+<Table>
+<thead><tr><th>Brand</th><th>Barbie seed</th><th>Hot Wheels seed</th><th>Nike seed</th></tr></thead>
+<tbody>{tieIns.map(name => <tr key={name}><td>{name}</td><td>{liftOf(capture.records, name)}</td><td>{liftOf(controls.hot_wheels.records, name)}</td><td>{liftOf(controls.nike.records, name)}</td></tr>)}</tbody>
+</Table>
+
+With Nike as the seed, none of the four brands appears among the 25 largest
+changes. With Hot Wheels, NYX, ALDO and Primark appear with smaller changes
+and AMC is absent, consistent with the Mattel collector audience sharing
+part of the Barbie movement. The two controls separate the Barbie-specific
+movement from a general summer rise; a seasonal baseline over several years
+would need data this snapshot lacks. Item attributes are the latest retained
+values, and the calendar comparison is not an event-date experiment.
+
+<div className="fineprint">
+
+The [graph capture](/data/merrec-scale-barbie-tie-ins.json) includes all 25
+brands with query IDs and timings; all three runs executed natively. The
+[listing capture](/data/merrec-barbie-listing-check.json) holds the
+name-count query, the query that retrieves individual listings, and their
+results. The [control captures](/data/merrec-barbie-control-seeds.json) hold
+both full result lists.
+
+</div>

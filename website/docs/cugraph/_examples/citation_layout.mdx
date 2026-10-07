@@ -1,0 +1,74 @@
+import CodeBlock from '@theme/CodeBlock';
+import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
+import data from '@site/src/components/graph/attentionEgo';
+
+A researcher wants to inspect the references and later papers around
+*Attention is all you need*. The selected graph contains the seed paper,
+its 22 references and its 110 most-cited citers in the April 2020 snapshot.
+The goal is to see the links among those papers with their titles attached.
+
+<CodeBlock language="sql" className="no-collapse">{`CREATE OR REPLACE VIEW attention_seed AS
+SELECT paper_id FROM papers
+WHERE title = 'Attention is all you need' AND year = 2017;
+
+-- Include the seed, its references and its 110 most-cited citers.
+-- Rank citers by the catalog's n_citation count.
+CREATE OR REPLACE VIEW attention_ego_nodes AS
+SELECT paper_id FROM (
+  SELECT e.dst AS paper_id
+  FROM citation_edges e JOIN attention_seed s ON s.paper_id = e.src
+  UNION ALL
+  SELECT src AS paper_id FROM (
+    SELECT e.src, p.n_citation
+    FROM citation_edges_by_dst e
+    JOIN attention_seed s ON s.paper_id = e.dst
+    JOIN papers p ON p.paper_id = e.src
+    ORDER BY p.n_citation DESC, e.src LIMIT 110) t
+  UNION ALL
+  SELECT paper_id FROM attention_seed
+) u GROUP BY paper_id;
+
+-- Keep only citations with both endpoints in the selected neighborhood.
+CREATE OR REPLACE VIEW attention_ego_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN attention_ego_nodes a ON a.paper_id = e.src
+JOIN attention_ego_nodes b ON b.paper_id = e.dst;
+
+-- Use the same subgraph for positions (ForceAtlas2) and group IDs (Louvain).
+WITH layout AS (
+  SELECT vertex, x, y
+  FROM cugraph_force_atlas2(
+    edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 500, seed => 42)),
+community AS (
+  SELECT vertex, community
+  FROM cugraph_louvain(edges => (SELECT src, dst FROM attention_ego_edges)))
+SELECT l.vertex, l.x, l.y, c.community, p.title, p.year
+FROM layout l
+JOIN community c ON c.vertex = l.vertex
+JOIN papers p ON p.paper_id = l.vertex;`}</CodeBlock>
+
+The saved illustration contains {data.nodes.length} papers and {data.edges.length}
+citation links. Of those links, {data.edges.filter(edge => !edge.includes('2963403868')).length}
+connect papers other than the Transformer seed. The Sigma view supports
+hover, selection, dragging and zoom. Its browser layout also moves nodes,
+so displayed positions are not a fixed plot of a single SQL result.
+
+<CitationEgoGraph />
+
+Every selected paper has a direct citation relationship with the Transformer
+by construction. Its connections in this view follow from that selection.
+The additional links, including those involving LSTM and Adam, give a
+researcher related references to inspect within the neighborhood.
+
+SQL defines the subgraph used by both algorithms and joins their outputs
+back to the paper records. A different seed or citer cutoff changes the
+question without requiring a separate graph-analysis program. The view
+covers only this selected neighborhood. Layout distance does not measure
+research influence, and the saved group names are display annotations.
+
+A fixed `seed` controls initial placement, but parallel force accumulation
+can produce different coordinates across runs. Save coordinates when later
+comparisons need the same positions. The
+[ForceAtlas2 reference](../udtfs/layout/cugraph_force_atlas2.mdx) includes an
+example that reuses a layout as the initial positions for another pass.

@@ -1,0 +1,296 @@
+---
+sidebar_position: 6
+sidebar_label: GPU Coverage Report
+description: Columns, JSON fields, blocking kinds, candidate outcomes, remedies and runtime caveats returned by algeon_explain_coverage and EXPLAIN GPU.
+---
+
+# GPU Coverage Report
+
+This page defines every column, JSON field and code that
+`algeon_explain_coverage` and `EXPLAIN GPU` return. It is a lookup reference.
+The calls themselves, how to read a result and what the report does not
+guarantee are covered in [GPU Coverage Validation](../integration/gpu-coverage-validation.mdx).
+
+## Columns {/* #columns */}
+
+The UDTF and Flight SQL return the same Arrow schema.
+
+| Column | Meaning |
+| --- | --- |
+| `query_id` | Flight SQL query identifier; null for an embedded UDTF call with no server query. |
+| `row_kind` | `summary` for final-plan coverage or `candidate` for one native candidate-selection outcome. |
+| `gpu_path` | `native`, `partial_native`, `cpu`, or terminal `rejected`. |
+| `gpu_fragments`, `cpu_boundaries` | Summary-row counts for GPU fragments and DataFusion CPU boundaries. |
+| `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots, defined below the table. |
+| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family and outcome. |
+| `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
+| `remedy_code`, `remedy_kind`, `remedy` | Stable advice for a non-selected candidate; the kind is `user_action`, `config_action`, `engine_gap` or `cpu_preferred`. |
+| `blocking` | One line naming what blocked a `not_supported` candidate; null when the producing site could not name it. |
+| `detail_json` | Summary metadata or candidate detail, its structured `blocking` subject, and cost evidence. |
+| `coverage_json` | The complete structured result on the summary row; null on candidate rows. |
+
+- `physical_root` is the authoritative pre-native root captured by the retained
+  optimizer diagnostics, and it is null when no native optimizer diagnostic
+  exists. `post_native_plan_root` is the completed executable plan's root.
+- A candidate row's `outcome` is `selected`, `not_supported` or
+  `not_selected_by_cost`. The summary row's `outcome` is `accepted_replaced`,
+  `retained_datafusion` or `rejected_before_execution`.
+- When planning produces no executable plan, the summary `gpu_fragments` and
+  `cpu_boundaries` cells are null. They are never reported as zero in that case.
+- A rejected summary adds `detail`, the rejection text, to `detail_json`.
+- Validation accepts one query statement only. Empty input, multiple
+  statements, non-query statements, and direct or view-indirect recursive calls
+  to `algeon_explain_coverage` return a structured terminal result.
+
+## What blocked a candidate {/* #what-blocked-a-candidate */}
+
+`reason_code` says which contract a candidate missed. The `blocking` column and
+the `blocking` object in `detail_json` and in each `coverage_json` candidate
+outcome say which part of the query missed it. The object has a stable `kind`,
+the one-line `text`, and structured fields for that kind:
+
+| `kind` | Names | Fields |
+| --- | --- | --- |
+| `operator` | A physical operator with no native counterpart, such as `ScalarSubqueryExec`. | `operator` |
+| `parent_operator` | A DataFusion operator that keeps a contract the native fragment below it would change. | `operator` |
+| `aggregate_function` | An aggregate function and the unsupported part of its use (listed below the table). | `function`, `defect` |
+| `distributed_aggregate` | Partial and final aggregate stages that differ in group keys, state fields or output type. | `difference` |
+| `window_function` | A window function and the unsupported part of its use (listed below the table). | `function`, `defect`, `frame` |
+| `scalar_function` | A scalar function with no native kernel. | `function`, `expression` |
+| `cast` | A `CAST` or `TRY_CAST` between types with no native conversion. | `source_type`, `target_type`, `expression` |
+| `binary_operator` | A binary operator over operand types it does not support natively, such as `%` on decimals. | `operator`, `left_type`, `right_type`, `expression` |
+| `unary_operator` | A unary operator over an operand type it does not support. | `operator`, `operand_type`, `expression` |
+| `literal` | A literal of a type with no native form. | `data_type`, `expression` |
+| `expression` | A rejected expression, or one the contract could not narrow further. | `expression`, `data_type` |
+| `column_type` | A column whose Arrow type is not native. | `column`, `data_type`, `role` |
+| `ordering` | The declared output ordering, or the input ordering a window needs, that the native plan cannot reproduce. | `required_by`, `ordering` |
+| `compiled_contract` | A rule of the compiled pipeline or plan validation contract, when no operator or expression is the cause. | `reason`, `boundary` |
+
+- An `aggregate_function` defect is the function itself, `DISTINCT`,
+  `ORDER BY`, a `FILTER` that differs between stages, an argument count, a
+  partial stage, grouping sets, or a partitioned input.
+- A `window_function` defect is the function, a missing `ORDER BY`, a frame, or
+  a non-constant offset or default.
+- An `expression` subject includes the type it produced where that type is the
+  cause.
+- `expression` holds the rejected expression in SQL form without column
+  indexes, cut at 160 characters.
+
+The text and the type names can quote the query's own SQL and identifiers.
+`EXPLAIN GPU` returns them to the session that ran the statement, and the
+[disclosure model](../design/errors.mdx#disclosure-model) keeps them out of
+operational logs.
+
+## Final disposition and GPU path {/* #final-disposition-and-gpu-path */}
+
+The final disposition is derived by walking the executable final physical plan.
+Whether an optimizer attempted a native rewrite does not decide it, and
+neither does a single candidate outcome. One report can hold selected and
+not-supported candidates while the completed plan stays mixed.
+
+| Final disposition | `gpu_path` | Meaning |
+| --- | --- | --- |
+| `native` | `native` | The planned path contains no known DataFusion CPU execution. |
+| `mixed` | `partial_native` | The same executable plan contains GPU runtime work and at least one DataFusion CPU boundary. |
+| `datafusion` | `cpu` | The executable plan has no selected GPU runtime node. |
+
+GPU fragments and explicit GPU islands are counted together for `native`.
+
+`rejected` is the planning outcome when no executable plan exists and has no
+final disposition. It is projected as `gpu_path=rejected` with null fragment
+and boundary cells, carries the phase, `reason_code` and `detail` in
+`coverage_json`, and repeats the code and text in the summary row.
+
+Terminal source-resolution failures, an unsupported required GPU island, and a
+failed final-plan requirement are planning errors. An ordinary relational
+capability miss is no error. The unsupported operator stays on DataFusion, and
+when DataFusion CPU execution is allowed each supported subtree below it runs
+as a native fragment if its DataFusion parent keeps its input contracts. The
+final disposition is `mixed` when a fragment is kept and `datafusion`
+otherwise.
+
+### Rejected summary row {/* #rejected-summary-row */}
+
+The fields a rejected row shares with the execution status are described in
+[Rejections in EXPLAIN GPU](../integration/handling-errors.mdx#rejections-in-explain-gpu).
+The remaining rules:
+
+- A failure with an Algeon identity reports its `x-algeon-error-code` as
+  `reason_code`.
+- A DataFusion error without one is classified as the Flight SQL boundary
+  classifies it, for example `sql_parse` or `field_not_found`.
+- `detail` names the caller's field or column where the error does.
+- For a failure whose raw text the server withholds, `detail` is the static
+  internal-failure message. A masked error stays masked in the report.
+- When the status message names a blocking plan element, it ends with
+  `; EXPLAIN GPU lists every blocking candidate`, and `detail` ends before that
+  clause.
+- `detail` can quote the query's own SQL and identifiers; it reaches the
+  session that ran the statement and stays out of operational logs.
+
+Under `native_required`, `SELECT APPROX_PERCENTILE_CONT(x, 0.5) FROM t` returns
+`GPU execution does not support aggregate function approx_percentile_cont` as
+`detail`. Its `not_supported` candidate row repeats the subject in `blocking`
+as `aggregate function approx_percentile_cont`.
+
+## Candidate outcomes {/* #candidate-outcomes */}
+
+`coverage_json.candidate_outcomes` retains relational candidate-selection
+diagnostics from the native optimizer. Each entry has one of these `outcome`
+values:
+
+| Outcome | Meaning | Evidence |
+| --- | --- | --- |
+| `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind` and `category` are absent. |
+| `not_supported` | The candidate is outside the native capability contract, or its DataFusion parent could not keep it. | `reason_code`, `reason_kind`, candidate shape (`detail`) and category. |
+| `not_selected_by_cost` | The candidate is native-capable, but a preference rule or cost threshold retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
+
+- A fragment its parent could not keep has reason
+  `native_fragment_parent_contract_unsupported`. The fragment would change the
+  input schema, boundedness, ordering, distribution or co-partitioning the
+  parent relies on.
+- Two preference rules apply whenever DataFusion CPU execution is allowed. The
+  first matches a plan that reads no column data, because every source is a
+  literal with no columns or no rows and no GPU algorithm runs (reason
+  `native_no_column_data_not_selected_by_cost`).
+- The second matches a plan whose every node is a literal source; native
+  execution would only copy host rows to the device and back (reason
+  `native_host_literal_passthrough_not_selected_by_cost`).
+- Otherwise an enabled cost threshold matched. A subtree whose candidate the
+  cost model declines stays on DataFusion whole.
+
+Every candidate carries its stable `candidate_family`, and every non-selected
+candidate carries `remedy_code`, `remedy_kind` and `remedy` in both its table
+row and `coverage_json`. These fields are independent of `final_disposition`.
+The final plan can be native beside candidate diagnostics when another selected
+candidate covers the executable path. A `not_supported` or
+`not_selected_by_cost` outcome keeps that candidate's operators on DataFusion
+inside an executable plan, and the statement is not rejected.
+
+### Remedies for plan shapes {/* #remedies-for-plan-shapes */}
+
+| `reason_code` | `remedy_code` (`remedy_kind`) | When it applies |
+| --- | --- | --- |
+| `native_sort_preserving_merge_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion merged sorted partitions because it planned several partitions. |
+| `native_distributed_aggregate_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion planned partial and final aggregate stages over several partitions. |
+| `native_local_limit_partition_unsupported` | `set_target_partitions_one` (`config_action`) | DataFusion planned a limit that works on each of several partitions. |
+| `native_distributed_aggregate_unsupported` | `unsupported_operator_gap` (`engine_gap`) | The stages remain at one partition, or the single-stage aggregate fails native validation. |
+| `native_sort_preserving_merge_unsupported` | `unsupported_operator_gap` (`engine_gap`) | The merge remains at one partition over union branches, or a sort key fails native validation. |
+| `native_exact_statistical_input_partitioned` | `use_tolerant_statistical_mode` (`config_action`) | The remedy names the [`statistical_aggregate_execution_mode`](../integration/configuration.mdx#native-settings) setting. |
+| `native_partition_preserving_sort_unsupported`, `native_fragment_parent_contract_unsupported`, `native_ordered_output_unsupported` | `partition_sort_gap`, `fragment_parent_contract_gap`, `ordered_output_gap` (`engine_gap`) | The remedy names the DataFusion operator shape native lowering cannot reproduce. |
+| `native_bounded_join_unsupported`, `native_compiled_pipeline_unsupported` | `compiled_contract_gap` (`engine_gap`) | The remedy points at the blocking subject and the capability decision rows. |
+
+- When the extra partitions come from the setting,
+  `SET datafusion.execution.target_partitions = 1` makes DataFusion plan one
+  sort, a single-stage aggregate, and a limit over one partition, all of which
+  lower natively. The Flight SQL server already sets one partition under the
+  `native_required` execution mode.
+- Each branch of a `UNION ALL` is a partition at any setting. An aggregate
+  that reads a union directly, or through the probe side of a join, keeps its
+  partial and final stages at `target_partitions = 1`, and a sort over such a
+  union keeps the merge of its sorted partitions.
+- DataFusion does not merge the stages of a grouping set aggregate (`ROLLUP`,
+  `CUBE`, `GROUPING SETS`).
+- A single-stage aggregate fails native validation when, for example, an
+  aggregate function has no native kernel or a `MEDIAN` sits next to a
+  standard deviation.
+- A sort key fails native validation on the single sort DataFusion plans at one
+  partition for `ORDER BY random()`. After the setting, that query reports
+  `unsupported_expression` for the key.
+- A union on the collected side of a join is merged into one partition, and the
+  setting still removes the stages or the merge there.
+
+## Validation context {/* #validated-under */}
+
+Validation clones the caller's `SessionState`. If that state has an Algeon
+native optimizer rule, the clone receives an isolated copy of the exact
+optimizer configuration after the cloned DataFusion options are applied. Its
+completed-plan requirements are copied too. Validation does not install a
+diagnostic policy and does not plan a second time under another configuration.
+
+`coverage_json.validated_under` records:
+
+| Field | Meaning |
+| --- | --- |
+| `native_optimizer_rule_installed` | Whether the copied session had the native rule. |
+| `optimizer_config_source` | `installed_session_rule` or `native_rule_absent`. |
+| `execution_mode` | The copied native pipeline mode, when a native rule is present. |
+| `final_plan_requirements` | Requirements checked against the exact completed plan, such as `no_datafusion_cpu`. |
+| `session_config_fingerprint`, `optimizer_fingerprint` | Stable comparison stamps for the cloned configuration. |
+| `catalog_snapshot` | `session_state_cloned_at_validation_call`, a label for the clone and no catalog or table-data fingerprint. |
+
+Revalidate after catalog, view, table or configuration changes. The
+fingerprints do not claim that source metadata or table contents are unchanged.
+
+## Runtime caveats {/* #runtime-caveats */}
+
+| Code | Meaning |
+| --- | --- |
+| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait or fail under concurrency; once admitted, each grant is immutable. |
+| `device_memory_runtime_unknown` | Allocation, reservation and retry outcomes depend on data and concurrency. |
+| `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal and Algeon does not replay it on CPU. |
+| `host_output_materialization` | Query output is materialized back to host Arrow outside the GPU-execution promise. |
+| `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight and device checks can still fail at runtime. |
+| `execution_mode_plan_time_only` | Coverage acquires no device grant; capability-first admission and bounded execution happen later for the selected native plan. |
+
+## Rust surface {/* #rust-surface */}
+
+The SQL UDTF and the Rust API use the same validation primitive,
+`validate_query`. The API is `async` because source planning can perform I/O
+against the sources. It never executes the returned plan or performs GPU
+admission.
+
+<details>
+<summary>Rust API</summary>
+
+```rust
+use algeon_datafusion::{
+    gpu_coverage::{QueryGpuPlanningOutcome, validate_query},
+    planner::FinalPlanDisposition,
+};
+
+let coverage = validate_query(&ctx, "SELECT count(*) FROM lineitem").await?;
+
+match &coverage.planning_outcome {
+    QueryGpuPlanningOutcome::Planned(plan) => match plan.disposition() {
+        FinalPlanDisposition::Native => {}
+        FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
+            for outcome in &coverage.candidate_outcomes {
+                eprintln!(
+                    "{} reason_code={} reason_kind={} category={} detail={}",
+                    outcome.selection.as_str(),
+                    outcome.reason_code.as_deref().unwrap_or("absent"),
+                    outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
+                    outcome.category.as_deref().unwrap_or("absent"),
+                    outcome.detail,
+                );
+                if let Some(remedy) = outcome.remedy {
+                    eprintln!("{} {}: {}", remedy.code, remedy.kind.as_str(), remedy.guidance);
+                }
+                if let Some(blocking) = &outcome.blocking {
+                    eprintln!("blocked by {}: {}", blocking.kind(), blocking.text());
+                }
+            }
+        }
+    },
+    QueryGpuPlanningOutcome::Rejected(rejection) => {
+        eprintln!("{} {}: {}", rejection.phase.as_str(), rejection.reason_code, rejection.detail);
+    }
+}
+
+println!("{}", coverage.to_json());
+```
+
+</details>
+
+A rejection has two texts. `detail` is the client-safe message described under
+[Rejected statements](../integration/gpu-coverage-validation.mdx#rejected-statements).
+For a failure whose raw text a server withholds, such as an Arrow, Parquet or
+I/O error raised while planning, it is the static internal-failure message. That
+message points at `GetQueryStats` and a query id, which an embedded session
+does not have. `trusted_diagnostic` holds the source-chain text of the same
+failure for the process that planned it, including foreign error messages and
+local paths. A rejection that only the validator makes repeats `detail` there.
+`to_json`, the `EXPLAIN GPU` rows and the Flight status never carry
+`trusted_diagnostic`. A caller that forwards a rejection to a client forwards
+`detail`.

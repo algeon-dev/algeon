@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import React, {useState} from 'react';
 import styles from './styles.module.css';
 import {
@@ -261,7 +262,7 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
   return (
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
-        <div className={styles.scroll}>
+        <div className={clsx(styles.scroll, 'thin-scrollbar')}>
           <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : 'img'}
             aria-label={ariaLabel}
             style={{maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW), display: 'block',

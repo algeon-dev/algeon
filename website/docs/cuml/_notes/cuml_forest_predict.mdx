@@ -1,0 +1,35 @@
+## Model files {/* #model-files */}
+
+The `model` argument names a file beneath the `root` of the server's
+[`[models]` table](../../integration/configuration.mdx#models-and-forest-inference).
+The server opens that directory once at startup and resolves every `model`
+beneath the opened directory. Renaming or replacing `root` later, or a symlink
+among its ancestors, does not redirect lookups; pointing the server at a new
+directory takes a restart. Lookup uses `openat2(2)`, which requires Linux 5.6
+or newer.
+
+A `model` value is a path relative to `root`. Relative symlinks that stay
+beneath `root` are followed, and only regular files are accepted.
+
+| Condition | Rejection code |
+| --- | --- |
+| `model` is an absolute path or contains a `..` component. | `model_path_rejected` |
+| An absolute symlink, or a symlink whose target leaves `root`, appears in the path. | `model_path_rejected`, rejection `outside_root` |
+| The path names a FIFO, a directory or another special file. | `model_path_rejected`, rejection `not_regular_file` |
+| The file is larger than `max_model_bytes`. | `model_too_large` |
+| nvForest cannot parse the file, or the model is multi-target. | `model_rejected` |
+| The lookup keeps racing concurrent renames or mounts under `root`. | `model_path_rejected`, rejection `resolution_retry_exhausted` |
+| Over Flight SQL, the file changes between `GetFlightInfo` and `DoGet`, or between preparing and executing a prepared statement. | `model_changed` |
+
+- An `outside_root` symlink is rejected without looking up its target.
+- A statement that fails with `model_changed` must be planned again.
+
+The statement reads and binds the model once at planning, and `EXPLAIN` shows
+its SHA-256 digest as `model=sha256:<first 12 hex>`. The server reads and
+parses the file synchronously on each planning pass (`GetFlightInfo`, `DoGet`,
+and prepared statement creation). A large model therefore adds its read and
+parse time to the planning latency of every statement that names it.
+
+Every file reachable beneath `root`, including hard links and bind mounts
+placed there, is trusted as a model source. `root` and its subdirectories must
+not be writable by untrusted users.

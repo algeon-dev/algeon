@@ -250,7 +250,7 @@ test commands, and select tests with nextest filtersets rather than `-p`. One
 build configuration keeps those commands warm and avoids unnecessary artifact
 rebuilds. The full gate keeps two feature-coverage exceptions, the
 feature-isolation shards and the shipped-server clippy lane, described in
-[Tests](website/docs/build/tests.md#harness-internals). `cargo nt` is the
+[Tests](website/docs/build/test-harness.md#harness-internals). `cargo nt` is the
 workspace alias for `cargo nextest run --workspace --all-features`.
 
 Focused component validation uses the same commands for every native wrapper:

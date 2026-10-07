@@ -1,193 +1,99 @@
 ---
-sidebar_position: 3
-description: Arrow, cuDF, cuGraph, cuVS, and cuML data type support boundaries for native Algeon execution.
+sidebar_position: 4
+description: Which Arrow types the GPU relational path holds, which it only carries, and what the UDTF families accept.
 ---
 
 # Data Type Support
 
-Algeon checks Arrow data types before a whole relational candidate
-enters native execution. A candidate with an unsupported type keeps the
-executable DataFusion baseline. A `NoDataFusionCpu` final-plan requirement
-instead rejects a completed plan that retains DataFusion CPU execution.
-
-This page covers column representation: which Arrow types the GPU execution
-path (Algeon's "native" path) can hold, and what it can do with each. Operator
-and function support is documented separately in
-[Native SQL Support](./native-sql-support.mdx), and the exact physical plan
-should be checked with
+Algeon checks Arrow types before a relational candidate enters native
+execution. A candidate with an unsupported type keeps the DataFusion baseline,
+and a `NoDataFusionCpu` final-plan requirement rejects it instead. Operator and
+function support is on [Native SQL Support](./native-sql-support.mdx); the
+plan for one query is checked with
 [`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx).
 
-Two levels of support appear below:
+The table uses two levels of support.
 
-- **Full support**: the column can be used anywhere the operator allows: in
-  expressions, predicates, join keys, grouping keys, sort keys, and aggregate
-  or window inputs.
-- **Carry support** (also written "carry/projection"): the column can be read
-  from a source, selected, aliased, kept through row selection, `UNION ALL`,
-  and the non-key side of a join or aggregation, and returned unchanged. It
-  does not mean the column can be used in an expression, a join key, a
-  grouping key, a sort key, or an aggregate input. A candidate that uses a
-  carry-only column in one of those positions keeps the DataFusion baseline.
+| Support | Where the column may appear |
+| --- | --- |
+| Full | Anywhere the operator allows: expressions, predicates, join keys, grouping keys, sort keys, aggregate and window inputs. |
+| Carry | Read from a source, selected, aliased, kept through row selection, `UNION ALL` and the non-key side of a join or aggregation, and returned unchanged. |
 
-The carry matrices further down list exactly which types are carry-only and
-what the output schema preserves for each.
+A candidate that uses a Carry column as an expression value, a key, a sort or
+partition value, a literal, or an aggregate or window input keeps the
+DataFusion baseline.
 
-## Native relational columns
+## Relational columns
 
-The native engine has a cuDF representation for these Arrow data types:
-
-- `Boolean`
-- Signed integers: `Int8`, `Int16`, `Int32`, `Int64`
-- Unsigned integers: `UInt8`, `UInt16`, `UInt32`, `UInt64`
-- Floating point: `Float32`, `Float64`
-- `Decimal128` with valid Arrow decimal precision and scale
-- `Decimal32` and `Decimal64` with valid Arrow decimal precision and scale
-  (carry support only)
-- Strings: `Utf8`, `LargeUtf8`, `Utf8View`
-- `Date32`, `Date64`
-- `Time32` and `Time64` at their Arrow-supported resolutions
-- `Timestamp` at second, millisecond, microsecond, or nanosecond resolution
-- `Duration` at second, millisecond, microsecond, or nanosecond resolution
-
-### Narrow-decimal carry matrix
-
-`Decimal32(P, S)` and `Decimal64(P, S)` are carry/projection columns when the
-precision and scale pair passes Arrow's validator:
-
-| Arrow type | Raw fixed-point width | Schema-aware output |
+| Arrow type | Support | Notes |
 | --- | --- | --- |
-| `Decimal32(P, S)` | 4 bytes | `Decimal32(P, S)` |
-| `Decimal64(P, S)` | 8 bytes | `Decimal64(P, S)` |
+| `Boolean` | Full | |
+| `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64` | Full | |
+| `Float32`, `Float64` | Full | |
+| `Decimal128(P, S)` | Full | Valid Arrow precision and scale. |
+| `Utf8`, `LargeUtf8`, `Utf8View` | Full | |
+| `Date32`, `Date64` | Full | Some temporal functions accept `Date32` but not `Date64`; see the function table. |
+| `Time32`, `Time64` | Full | At their Arrow resolutions. |
+| `Timestamp` without a time zone | Full | Second to nanosecond resolution. |
+| `Duration` | Full | Second to nanosecond resolution. |
+| `Timestamp` with a time zone | Carry | |
+| `Decimal32(P, S)`, `Decimal64(P, S)` | Carry | Returned as declared when the query has an Arrow schema; untyped cuDF output maps to `Decimal128(38, S)`. |
+| `List<T>`, `LargeList<T>` | Carry | `T` is `Boolean`, an integer type, `Float32`, `Float64` or a string type. Output keeps `List` versus `LargeList`, the child field and nullability. |
+| `FixedSizeList<T, D>` | Carry | `T` is an integer type, `Float32` or `Float64`; `D` is positive. Output keeps `D`, the child field and nullability. |
+| `Float16`, `Decimal256` | None | |
+| `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView` | None | |
+| `Interval` | None | |
+| `Struct`, `Map`, `Union`, `Dictionary`, `ListView`, `LargeListView`, `RunEndEncoded` | None | |
+| `List`, `LargeList`, `FixedSizeList` with any other child | None | No implicit cast of the child type. |
+| `Null` | None | The untyped null column type. |
 
-Carry paths preserve raw values, nulls, logical width, precision, and scale
-through scans, projections, aliases, row selection, `UNION ALL`, and non-key
-payloads (columns that ride along beside a join or grouping key without being
-one). "Schema-aware output" means the Arrow schema Algeon was given for the
-query; when that schema is present the narrow type is returned as declared.
-Without an external Arrow schema, untyped cuDF Decimal32/64 output retains the
-canonical `Decimal128(38, S)` mapping. Narrow decimals are rejected
-by local capability analysis in expressions, predicates, literals, comparisons,
-casts, join or grouping keys, sort keys, partitions, aggregate inputs, and
-window inputs.
+Native lists use Int32 offsets. Every offset, child length and `rows * D`
+must fit the nonnegative Int32 range; a `LargeList` outside it is rejected,
+not truncated. Each non-null `FixedSizeList` row holds exactly `D` child
+positions. NaN, infinities, signed zero, root and child nulls, and empty valid
+lists are payload values that carry paths preserve.
 
-### Basic-list carry matrix
+## UDTF inputs
 
-`List<T>` and `LargeList<T>` are supported as carry/projection columns for this
-exact set of child types:
+Each UDTF family checks its own input types, separately from the relational
+path. `gpu_describe_function('<udtf>')` returns the contract and
+`gpu_validate_call('<udtf>', '<call_json>')` validates a call before it runs.
 
-| Container | Supported child types |
-| --- | --- |
-| `List<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Utf8`, `LargeUtf8`, `Utf8View` |
-| `LargeList<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Utf8`, `LargeUtf8`, `Utf8View` |
+### cuGraph edge columns
 
-This is representation and carry support, not list-expression support. These
-columns can pass through supported source and projection paths, including as
-non-key payloads, but cannot be scalar or filter values, join keys, grouping or
-sort values, partitions, aggregate inputs, or window inputs. Child types are
-not implicitly cast into this matrix.
+- Source and destination columns use a numeric type listed for the UDTF in
+  the [vertex ID matrix](../cugraph/graph-options.mdx#vertex-id-support-by-udtf),
+  or both are strings (`Utf8`, `LargeUtf8`, `Utf8View`) when the UDTF lists
+  logical string support. String endpoints share one codebook even when their
+  physical types differ, and vertex identity outputs are returned as `Utf8`.
+- Edge weights, when supplied, are `Float32` or `Float64`.
+- `edge_id_col` uses the same numeric domain as the endpoints. String vertex
+  mapping does not support `edge_id_col` or the `include_edge_id*` options.
 
-The Arrow output schema preserves `List` versus `LargeList`, including the
-declared child field and nullability. Native list offsets use a bounded Int32
-representation: active offsets and child lengths must fit the nonnegative
-Int32 range. An out-of-range `LargeList` is rejected rather than truncated.
-NaN, +infinity, -infinity, signed zero, root and child nulls, and empty valid
-lists are payload values preserved by carry paths, not scalar finite-value
-rules.
+### cuVS vector elements
 
-### Numeric fixed-size-list carry matrix
+- Vectors arrive as wide feature columns or one list column, and every
+  feature column and vector binding in a call has the same element type. The
+  [element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-udtf)
+  lists the verified combinations; integer IVF-PQ does not support cosine.
+- Floating elements must be finite. Nothing casts elements implicitly; use
+  `CAST` in the subquery. `Float16` has no cuDF representation.
+- Pairwise `distance` matches its `Float32` or `Float64` input, ANN distance is
+  `Float32` and KMeans `cluster_id` is `Int32`.
 
-`FixedSizeList<T, D>` is supported as a carry/projection column for this exact
-numeric child matrix:
+### cuML feature relations
 
-| Container | Supported child types |
-| --- | --- |
-| `FixedSizeList<T, D>` | `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64` |
+- Features are finite `Float32`, as wide columns or a `vector` column of
+  `FixedSizeList<Float32>`, or a uniform `List<Float32>` or `LargeList<Float32>`.
+  Nothing casts implicitly.
+- Every relation has an `id` of type `Int32`, `Int64`, `Utf8`, `LargeUtf8` or
+  `Utf8View`. Repeated IDs are allowed; `row_ordinal UInt64` identifies each
+  output row, beside an `id` of the input type.
+- Classifiers take `Int32` labels and the regressor finite `Float32` targets
+  in `training`; `predict` rejects a `label` column, and unsupervised `input`
+  treats every non-`id` column as a feature, including one named `label`.
+- Nullability is not checked in the schema; a null value fails the query with
+  an invalid-input error that names the column.
 
-The dimension must be positive. Native import uses cuDF `LIST` offsets, so
-`rows * D` and every synthesized or observed child offset must fit the
-nonnegative Int32 range. Schema-aware Arrow output remains `FixedSizeList`,
-preserving `D`, the declared child field, and root and child nullability; every
-non-null row must have exactly `D` child positions. These columns are
-carry/projection payloads, not scalar or key operands.
-
-Timezone-aware timestamps are also carry types. Temporal scalar functions have
-narrower contracts than relational carry/projection support; for example, some
-date operators accept `Date32` or timezone-free timestamps but not `Date64`.
-
-## Unsupported relational types
-
-These types do not have native execution support today:
-
-- Nested / complex: `Struct`, `Map`, `Union`, `Dictionary`, `ListView`,
-  `LargeListView`, `RunEndEncoded`
-- Numeric / decimal: `Float16`, `Decimal256`
-- Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
-- Temporal: `Interval`
-- `FixedSizeList` with `D <= 0` or a child outside the numeric fixed-size-list
-  matrix, including Boolean, string, decimal, temporal, binary, nested, and
-  other complex children
-- `List` / `LargeList` with any child type outside the basic-list carry matrix,
-  including decimal, temporal, binary, nested-list, and other complex children
-- `Null` (the untyped null column type)
-
-## cuGraph edge columns
-
-:::warning[cuGraph edge columns are stricter]
-cuGraph UDTFs have a narrower edge-table contract:
-
-- Source and destination vertex columns must use one of the numeric types
-  declared for the UDTF in the generated [cuGraph vertex ID support
-  matrix](../cugraph/graph-options.mdx#vertex-id-support-by-udtf), or must
-  both belong to the logical string family (`Utf8`, `LargeUtf8`, `Utf8View`)
-  when that UDTF declares logical string support.
-- Logical string endpoints share one codebook even when their physical Arrow
-  string types differ. Vertex-identity output columns are canonicalized to
-  `Utf8`; numeric scores, distances, counts, coordinates, and opaque labels
-  keep their UDTF-defined numeric types.
-- Edge weight columns, when supplied, must be `Float32` or `Float64`.
-- `edge_id_col`, when supplied for a numeric graph, must use the same numeric
-  vertex-id domain as the edge endpoints. Logical string vertex mapping does
-  not support `edge_id_col` or edge-ID predicate options such as
-  `include_edge_ids_*` and `include_edge_id_col`.
-:::
-
-The metadata UDTFs expose the same contract at runtime. Use
-`gpu_describe_function('<udtf>')` and
-`gpu_validate_call('<udtf>', '<call_json>')` before running a new graph
-call. The validation envelope names the edge table or view under
-`relations.edges.table` and supplies graph bindings under `options`.
-
-## cuVS vector elements
-
-:::warning[cuVS vector types depend on the UDTF and metric]
-cuVS UDTFs accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-udtf) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
-
-Floating elements must be finite. Integer elements have no finite-value scan. No cuVS call implicitly casts vector elements; use `CAST` in the relation subquery. `Float16` is unsupported because cuDF has no Float16 representation.
-:::
-
-Use `gpu_describe_function('<udtf>')` for the catalog contract and `gpu_validate_call('<udtf>', '<call_json>')` for static input validation.
-
-## cuML feature relations
-
-The six `cuml_*` UDTFs accept dense `Float32` features only, either as
-ordered wide columns or a `vector` column containing `FixedSizeList<Float32>`
-(or a uniform `List<Float32>` / `LargeList<Float32>`). Features must be finite;
-there is no implicit numeric cast. Every relation requires an `id` of type
-`Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Repeated IDs are
-allowed because `row_ordinal UInt64` identifies each output row. Schema
-nullability is not checked for IDs, features, or labels; a null value fails the
-query with an invalid-input error that names the column.
-
-For logistic regression and both random-forest UDTFs, `training` requires
-a `label` column. Classifiers require `Int32` labels; the regressor
-requires finite `Float32` targets. The separate `predict` relation rejects
-`label`. Unsupervised `input` treats every non-`id` wide column as a feature,
-including a column named `label`.
-
-TSVD outputs `pc_<i> Float32`; UMAP outputs `dim_<i> Float32`.
-HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
-Supervised output is `prediction Int32` and `probability Float32` for
-classifiers, or `prediction Float32` for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
-with the relation's input ID type. See [cuML SQL inputs](../cuml/ml-inputs.mdx)
-for relation bindings and [cuML UDTFs](../cuml/udtfs/index.mdx) for
-UDTF-specific output contracts.
+[cuML SQL inputs](../cuml/ml-inputs.mdx) describes relation bindings and the
+[cuML UDTF index](../cuml/udtfs/index.mdx) each UDTF's output schema.

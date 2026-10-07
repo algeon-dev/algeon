@@ -1,0 +1,169 @@
+{
+ "name": "31_world_bridges",
+ "sql_file": "fixture/demo/merrec/scripts/scale/31_world_bridges.sql",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 5000\n), similar AS (\n  SELECT first, second, similarity\n  FROM cugraph_jaccard(\n    edges => (SELECT src, dst FROM fans),\n    vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                     FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n    directed => false)\n  WHERE similarity >= 0.02\n), worlds AS (\n  SELECT vertex AS brand_id, community AS world\n  FROM cugraph_leiden(\n    edges => (SELECT first AS src, second AS dst, CAST(similarity AS DOUBLE) AS weight FROM similar),\n    directed => false, resolution => 3, seed => 42)\n), bridges AS (\n  SELECT vertex AS brand_id, value AS betweenness\n  FROM cugraph_betweenness_centrality(\n    edges => (SELECT first AS src, second AS dst FROM similar),\n    directed => false, normalized => true)\n), neighbors AS (\n  SELECT first AS brand_id, second AS neighbor FROM similar\n  UNION ALL SELECT second, first FROM similar\n), reach AS (\n  SELECT n.brand_id, COUNT(*) AS neighbors, COUNT(DISTINCT w.world) AS worlds_reached\n  FROM neighbors n JOIN worlds w ON w.brand_id = n.neighbor\n  GROUP BY n.brand_id\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, t.fans, w.world, r.neighbors, r.worlds_reached, br.betweenness\nFROM bridges br\nJOIN worlds w ON w.brand_id = br.brand_id\nJOIN reach r ON r.brand_id = br.brand_id\nJOIN top_brands t ON t.brand_id = br.brand_id\nJOIN brands b ON b.brand_id = br.brand_id\nORDER BY br.betweenness DESC, b.brand_name\nLIMIT 15;\n",
+ "binary_sha256": "63ecfba9699bd95c403955557c1c19012feb5f721585700bb72da954b1375063",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "31_world_bridges_r1",
+   "query_id": "e318ca6c-2559-4e3a-ab72-9b52255332de",
+   "elapsed_s": 23.984255598858,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58771543391,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "31_world_bridges_r2",
+   "query_id": "9327e2ad-f2ff-445c-8b44-ccb914dba9c9",
+   "elapsed_s": 23.555589423980564,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58771543391,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "31_world_bridges_r3",
+   "query_id": "a66c370e-e880-4a64-a9bc-8609bd4f234c",
+   "elapsed_s": 24.038807870820165,
+   "native_fragments": 9,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 58771543391,
+   "query_limit_bytes": 96636764160
+  }
+ ],
+ "median_elapsed_s_after_first": 23.797198647400364,
+ "rows": 15,
+ "identical_results_across_runs": false,
+ "schema": [
+  "brand_name: string_view",
+  "fans: int64",
+  "world: int64",
+  "neighbors: int64",
+  "worlds_reached: int64",
+  "betweenness: double"
+ ],
+ "records": [
+  {
+   "brand_name": "As Seen on TV",
+   "fans": 7532,
+   "world": 62,
+   "neighbors": 339,
+   "worlds_reached": 37,
+   "betweenness": 0.016985926777124405
+  },
+  {
+   "brand_name": "Claire's",
+   "fans": 9336,
+   "world": 21,
+   "neighbors": 639,
+   "worlds_reached": 44,
+   "betweenness": 0.012742872349917889
+  },
+  {
+   "brand_name": "Customized & Personalized",
+   "fans": 44627,
+   "world": 17,
+   "neighbors": 445,
+   "worlds_reached": 37,
+   "betweenness": 0.012649746611714363
+  },
+  {
+   "brand_name": "Mainstays",
+   "fans": 10007,
+   "world": 62,
+   "neighbors": 541,
+   "worlds_reached": 43,
+   "betweenness": 0.0118991294875741
+  },
+  {
+   "brand_name": "Better Homes & Gardens",
+   "fans": 8468,
+   "world": 6,
+   "neighbors": 484,
+   "worlds_reached": 41,
+   "betweenness": 0.010324093513190746
+  },
+  {
+   "brand_name": "Samsung",
+   "fans": 51338,
+   "world": 17,
+   "neighbors": 98,
+   "worlds_reached": 13,
+   "betweenness": 0.009053600952029228
+  },
+  {
+   "brand_name": "Walmart",
+   "fans": 22097,
+   "world": 6,
+   "neighbors": 589,
+   "worlds_reached": 44,
+   "betweenness": 0.008751538582146168
+  },
+  {
+   "brand_name": "IZOD",
+   "fans": 7719,
+   "world": 23,
+   "neighbors": 359,
+   "worlds_reached": 43,
+   "betweenness": 0.007952889427542686
+  },
+  {
+   "brand_name": "US Vintage",
+   "fans": 12239,
+   "world": 6,
+   "neighbors": 510,
+   "worlds_reached": 42,
+   "betweenness": 0.007170500699430704
+  },
+  {
+   "brand_name": "Gibson",
+   "fans": 3855,
+   "world": 6,
+   "neighbors": 195,
+   "worlds_reached": 18,
+   "betweenness": 0.007044518832117319
+  },
+  {
+   "brand_name": "Eyeshadow",
+   "fans": 2177,
+   "world": 58,
+   "neighbors": 650,
+   "worlds_reached": 41,
+   "betweenness": 0.006859411019831896
+  },
+  {
+   "brand_name": "Original Vintage Style",
+   "fans": 16398,
+   "world": 6,
+   "neighbors": 491,
+   "worlds_reached": 41,
+   "betweenness": 0.006301338784396648
+  },
+  {
+   "brand_name": "JCPenney",
+   "fans": 9911,
+   "world": 26,
+   "neighbors": 712,
+   "worlds_reached": 44,
+   "betweenness": 0.0061621819622814655
+  },
+  {
+   "brand_name": "Macy's",
+   "fans": 12993,
+   "world": 26,
+   "neighbors": 785,
+   "worlds_reached": 44,
+   "betweenness": 0.006098608486354351
+  },
+  {
+   "brand_name": "Ellen Tracy",
+   "fans": 5101,
+   "world": 29,
+   "neighbors": 821,
+   "worlds_reached": 44,
+   "betweenness": 0.005698487162590027
+  }
+ ]
+}

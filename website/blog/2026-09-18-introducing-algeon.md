@@ -379,7 +379,8 @@ to a GPU-resident result that the next statement can read without a second
 upload are all on the list, and each has to fit the ledger and grant model
 everything else uses. cuOpt is the next algorithm family. DuckDB is the
 adapter direction we are considering after DataFusion, and Spark a
-longer-term one; neither is supported today.
+longer-term one; neither is supported today. The
+[roadmap](/reference/roadmap) keeps the current order of work.
 
 The next useful experiment is a complete investigation on a known dataset.
 Define a working set, apply an algorithm, and use its output in the next

@@ -1,0 +1,850 @@
+{
+  "name": "merrec_barbie_listing_check",
+  "captured_at_utc": "2026-10-07T04:53:48.232679+00:00",
+  "method": "Read-only Flight SQL queries against release Algeon; source item names from items.parquet, likes from events.parquet.",
+  "time_windows": {
+    "may_june": "[2023-05-01, 2023-07-01)",
+    "july_august": "[2023-07-01, 2023-09-01)"
+  },
+  "source_files": {
+    "items": {
+      "path": "/mnt/algeon-nvme/algeon/fixture/demo/merrec/parquet/items.parquet",
+      "bytes": 5617682158
+    },
+    "events": {
+      "path": "/mnt/algeon-nvme/algeon/fixture/demo/merrec/parquet/events.parquet",
+      "bytes": 84714360718
+    }
+  },
+  "server": {
+    "binary": "/home/ubuntu/algeon/target/release/algeon_server",
+    "binary_sha256": "2a7d00474c8f4f2409d408119fdc9cf9dbc925712557dfe0de563fff4105d3a9",
+    "config": "/home/ubuntu/algeon/fixture/demo/merrec/scripts/scale/server.toml",
+    "config_text": "[[admission.device_profiles]]\ndevice_ordinal = 0\nmemory_limit_bytes = 100931731456\nbackend_reserve_bytes = 1073741824\ncache_cap_bytes = 0\ndefault_query_limit_bytes = 96636764160\nmax_active_attempts = 1\nsource_work_per_attempt = 2\nstream_pool_size = 8\nworker_count = 4\nlane_count = 4\n\n[native]\nexecution_mode = \"native_required\"\n\n[models]\nroot = \"fixture/demo/merrec/models\"\n",
+    "bind": "127.0.0.1:50065",
+    "gpu_lock": "/tmp/cudf-gpu.lock"
+  },
+  "queries": [
+    {
+      "name": "brand_likes",
+      "sql": "WITH selected_items AS (\n  SELECT item_id, brand_name,\n         LOWER(COALESCE(name, '')) LIKE '%barbie%' AS is_barbie\n  FROM merrec_items\n  WHERE brand_name IN ('NYX', 'Amc', 'Primark', 'ALDO', 'Taylor Swift', 'Stanley', 'OPI', 'ZARA')\n), likes AS (\n  SELECT i.brand_name, i.is_barbie,\n         e.event_time < TIMESTAMP '2023-07-01 00:00:00' AS may_june\n  FROM merrec_events e JOIN selected_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like'\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n)\nSELECT brand_name,\n       SUM(CASE WHEN may_june THEN 1 ELSE 0 END) AS total_likes_may_june,\n       SUM(CASE WHEN NOT may_june THEN 1 ELSE 0 END) AS total_likes_july_august,\n       SUM(CASE WHEN may_june AND is_barbie THEN 1 ELSE 0 END) AS barbie_likes_may_june,\n       SUM(CASE WHEN NOT may_june AND is_barbie THEN 1 ELSE 0 END) AS barbie_likes_july_august\nFROM likes\nGROUP BY brand_name\nORDER BY brand_name;",
+      "query_id": "498a9137-516b-4c3d-8e0d-3eeeb350fb68",
+      "rows": [
+        {
+          "brand_name": "ALDO",
+          "total_likes_may_june": 10668,
+          "total_likes_july_august": 16983,
+          "barbie_likes_may_june": 45,
+          "barbie_likes_july_august": 3233
+        },
+        {
+          "brand_name": "Amc",
+          "total_likes_may_june": 5361,
+          "total_likes_july_august": 5676,
+          "barbie_likes_may_june": 0,
+          "barbie_likes_july_august": 525
+        },
+        {
+          "brand_name": "NYX",
+          "total_likes_may_june": 7720,
+          "total_likes_july_august": 13205,
+          "barbie_likes_may_june": 141,
+          "barbie_likes_july_august": 4043
+        },
+        {
+          "brand_name": "OPI",
+          "total_likes_may_june": 9184,
+          "total_likes_july_august": 14346,
+          "barbie_likes_may_june": 57,
+          "barbie_likes_july_august": 539
+        },
+        {
+          "brand_name": "Primark",
+          "total_likes_may_june": 2760,
+          "total_likes_july_august": 4589,
+          "barbie_likes_may_june": 45,
+          "barbie_likes_july_august": 1105
+        },
+        {
+          "brand_name": "Stanley",
+          "total_likes_may_june": 78723,
+          "total_likes_july_august": 81662,
+          "barbie_likes_may_june": 10,
+          "barbie_likes_july_august": 109
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "total_likes_may_june": 128473,
+          "total_likes_july_august": 164499,
+          "barbie_likes_may_june": 43,
+          "barbie_likes_july_august": 135
+        },
+        {
+          "brand_name": "ZARA",
+          "total_likes_may_june": 162419,
+          "total_likes_july_august": 236157,
+          "barbie_likes_may_june": 90,
+          "barbie_likes_july_august": 4149
+        }
+      ],
+      "stats_file": "target/merrec-vision/brand_likes.stats.txt"
+    },
+    {
+      "name": "top_listings",
+      "sql": "WITH selected_items AS (\n  SELECT item_id, brand_name, name\n  FROM merrec_items\n  WHERE brand_name IN ('NYX', 'Amc', 'Primark', 'ALDO', 'Taylor Swift', 'Stanley', 'OPI', 'ZARA')\n    AND LOWER(COALESCE(name, '')) LIKE '%barbie%'\n), likes AS (\n  SELECT i.brand_name, i.item_id, i.name,\n         SUM(CASE WHEN e.event_time < TIMESTAMP '2023-07-01 00:00:00' THEN 1 ELSE 0 END) AS likes_may_june,\n         SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-01 00:00:00' THEN 1 ELSE 0 END) AS likes_july_august\n  FROM merrec_events e JOIN selected_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like'\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n  GROUP BY i.brand_name, i.item_id, i.name\n), ranked AS (\n  SELECT brand_name, item_id, name, likes_may_june, likes_july_august,\n         ROW_NUMBER() OVER (PARTITION BY brand_name ORDER BY likes_july_august DESC, item_id) AS rank\n  FROM likes\n)\nSELECT brand_name, item_id, name, likes_may_june, likes_july_august, rank\nFROM ranked\nWHERE rank <= 5\nORDER BY brand_name, rank;",
+      "query_id": "964ab009-d562-4d8c-a43a-f9b23cc3fc69",
+      "rows": [
+        {
+          "brand_name": "ALDO",
+          "item_id": 30435660,
+          "name": "NEW Barbie Aldo Crossbody bag",
+          "likes_may_june": 0,
+          "likes_july_august": 63,
+          "rank": 1
+        },
+        {
+          "brand_name": "ALDO",
+          "item_id": 141876705,
+          "name": "Barbie x ALDO purse",
+          "likes_may_june": 0,
+          "likes_july_august": 51,
+          "rank": 2
+        },
+        {
+          "brand_name": "ALDO",
+          "item_id": 84830123,
+          "name": "Aldo × Barbie Quilted Cross Body bag",
+          "likes_may_june": 0,
+          "likes_july_august": 50,
+          "rank": 3
+        },
+        {
+          "brand_name": "ALDO",
+          "item_id": 124927728,
+          "name": "NEW Barbie Aldo Shoulder Bag",
+          "likes_may_june": 0,
+          "likes_july_august": 50,
+          "rank": 4
+        },
+        {
+          "brand_name": "ALDO",
+          "item_id": 45401394,
+          "name": "Barbie x ALDO",
+          "likes_may_june": 0,
+          "likes_july_august": 48,
+          "rank": 5
+        },
+        {
+          "brand_name": "Amc",
+          "item_id": 65042108,
+          "name": "Barbie movie bundle!",
+          "likes_may_june": 0,
+          "likes_july_august": 45,
+          "rank": 1
+        },
+        {
+          "brand_name": "Amc",
+          "item_id": 82718497,
+          "name": "Barbie AMC Popcorn Bucket car convertible dream house brand new",
+          "likes_may_june": 0,
+          "likes_july_august": 23,
+          "rank": 2
+        },
+        {
+          "brand_name": "Amc",
+          "item_id": 60550602,
+          "name": "amc Barbie car official from the Barbie movie",
+          "likes_may_june": 0,
+          "likes_july_august": 22,
+          "rank": 3
+        },
+        {
+          "brand_name": "Amc",
+          "item_id": 191399568,
+          "name": "Barbie AMC Theaters Popcorn Bucket Vessel Car With Doll IN HAND SHIPS ASAP",
+          "likes_may_june": 0,
+          "likes_july_august": 22,
+          "rank": 4
+        },
+        {
+          "brand_name": "Amc",
+          "item_id": 163128937,
+          "name": "Barbie AMC Popcorn Bucket Car Convertible New in Box",
+          "likes_may_june": 0,
+          "likes_july_august": 17,
+          "rank": 5
+        },
+        {
+          "brand_name": "NYX",
+          "item_id": 45361212,
+          "name": "LIMITED EDITION NYX Barbie Flip Phone Mirror",
+          "likes_may_june": 0,
+          "likes_july_august": 68,
+          "rank": 1
+        },
+        {
+          "brand_name": "NYX",
+          "item_id": 112220149,
+          "name": "Barbie NYX Makeup Box",
+          "likes_may_june": 0,
+          "likes_july_august": 55,
+          "rank": 2
+        },
+        {
+          "brand_name": "NYX",
+          "item_id": 2063318,
+          "name": "NYX Barbie Flip Phone Mirror Limited Edition",
+          "likes_may_june": 0,
+          "likes_july_august": 52,
+          "rank": 3
+        },
+        {
+          "brand_name": "NYX",
+          "item_id": 221075789,
+          "name": "Nyx barbie flip phone mirror",
+          "likes_may_june": 0,
+          "likes_july_august": 49,
+          "rank": 4
+        },
+        {
+          "brand_name": "NYX",
+          "item_id": 235938150,
+          "name": "NYX Limited Edition Barbie Flip Phone Mirror - BRAND NEW IN BOX",
+          "likes_may_june": 0,
+          "likes_july_august": 48,
+          "rank": 5
+        },
+        {
+          "brand_name": "OPI",
+          "item_id": 207193509,
+          "name": "OPI Nail Lacquers - Welcome to Barbie Land #B017",
+          "likes_may_june": 8,
+          "likes_july_august": 23,
+          "rank": 1
+        },
+        {
+          "brand_name": "OPI",
+          "item_id": 211285725,
+          "name": "OPI Nail Polish Barbie 2023 Set 3 pcs 0.5 oz/ 15 mL",
+          "likes_may_june": 0,
+          "likes_july_august": 23,
+          "rank": 2
+        },
+        {
+          "brand_name": "OPI",
+          "item_id": 223667195,
+          "name": "OPI Barbie The Movie Full Set + Display 12 pcs (9 colors) 0.5 oz",
+          "likes_may_june": 0,
+          "likes_july_august": 23,
+          "rank": 3
+        },
+        {
+          "brand_name": "OPI",
+          "item_id": 175447332,
+          "name": "OPI Nail Lacquers - Hi Barbie! #B018",
+          "likes_may_june": 10,
+          "likes_july_august": 21,
+          "rank": 4
+        },
+        {
+          "brand_name": "OPI",
+          "item_id": 238480101,
+          "name": "OPI Barbie polish set of 2",
+          "likes_may_june": 0,
+          "likes_july_august": 20,
+          "rank": 5
+        },
+        {
+          "brand_name": "Primark",
+          "item_id": 159141293,
+          "name": "Barbie pillow",
+          "likes_may_june": 0,
+          "likes_july_august": 49,
+          "rank": 1
+        },
+        {
+          "brand_name": "Primark",
+          "item_id": 176458930,
+          "name": "BARBIE X Primark PINK Bow Shaped Throw PILLOW NWT",
+          "likes_may_june": 0,
+          "likes_july_august": 44,
+          "rank": 2
+        },
+        {
+          "brand_name": "Primark",
+          "item_id": 198867468,
+          "name": "Primark Barbie makeup bag",
+          "likes_may_june": 0,
+          "likes_july_august": 43,
+          "rank": 3
+        },
+        {
+          "brand_name": "Primark",
+          "item_id": 114651575,
+          "name": "Barbie x Primark logo cushion pillow",
+          "likes_may_june": 0,
+          "likes_july_august": 40,
+          "rank": 4
+        },
+        {
+          "brand_name": "Primark",
+          "item_id": 226125910,
+          "name": "Barbie the movie throw",
+          "likes_may_june": 0,
+          "likes_july_august": 40,
+          "rank": 5
+        },
+        {
+          "brand_name": "Stanley",
+          "item_id": 47878474,
+          "name": "Stanley \"Ravishing Pink BARBIE” 30oz Tumbler NEW!",
+          "likes_may_june": 0,
+          "likes_july_august": 51,
+          "rank": 1
+        },
+        {
+          "brand_name": "Stanley",
+          "item_id": 181822356,
+          "name": "NWT Stanley 30oz Ravishing Pink “Barbie pink”",
+          "likes_may_june": 0,
+          "likes_july_august": 19,
+          "rank": 2
+        },
+        {
+          "brand_name": "Stanley",
+          "item_id": 104684055,
+          "name": "Barbie Pink Azalea 30 oz Stanley Quencher,  BNWT",
+          "likes_may_june": 0,
+          "likes_july_august": 9,
+          "rank": 3
+        },
+        {
+          "brand_name": "Stanley",
+          "item_id": 113756936,
+          "name": "Stanley Target Exclusive 30 oz Barbie Ravishing Pink 2022",
+          "likes_may_june": 0,
+          "likes_july_august": 9,
+          "rank": 4
+        },
+        {
+          "brand_name": "Stanley",
+          "item_id": 27925977,
+          "name": "Barbie Pink Azalea Quencher 30 oz Stanley Brand New no tags",
+          "likes_may_june": 0,
+          "likes_july_august": 7,
+          "rank": 5
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "item_id": 37796087,
+          "name": "Taylor Swift Ur My Lover Pajama Set,  Barbiecore",
+          "likes_may_june": 0,
+          "likes_july_august": 35,
+          "rank": 1
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "item_id": 10651199,
+          "name": "RARE Taylor Swift Our Song Barbie inspired doll",
+          "likes_may_june": 0,
+          "likes_july_august": 33,
+          "rank": 2
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "item_id": 141100664,
+          "name": "Taylor Swift decorate your own doll barbie rare",
+          "likes_may_june": 8,
+          "likes_july_august": 26,
+          "rank": 3
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "item_id": 126982215,
+          "name": "Taylor Swift Barbie Sticker",
+          "likes_may_june": 0,
+          "likes_july_august": 14,
+          "rank": 4
+        },
+        {
+          "brand_name": "Taylor Swift",
+          "item_id": 24188125,
+          "name": "Long Pond Studio + Our Song Barbie",
+          "likes_may_june": 35,
+          "likes_july_august": 10,
+          "rank": 5
+        },
+        {
+          "brand_name": "ZARA",
+          "item_id": 211286531,
+          "name": "Zara Barbie Mattel Shimmering Body Oil",
+          "likes_may_june": 0,
+          "likes_july_august": 80,
+          "rank": 1
+        },
+        {
+          "brand_name": "ZARA",
+          "item_id": 245803589,
+          "name": "Barbie x Zara perfume",
+          "likes_may_june": 0,
+          "likes_july_august": 55,
+          "rank": 2
+        },
+        {
+          "brand_name": "ZARA",
+          "item_id": 129592742,
+          "name": "Zara Barbie Shimmering Body Oil",
+          "likes_may_june": 0,
+          "likes_july_august": 51,
+          "rank": 3
+        },
+        {
+          "brand_name": "ZARA",
+          "item_id": 230968664,
+          "name": "ZARA BARBIE™ MATTEL EAU DE PARFUM 80 ML (2.71 FL. OZ)",
+          "likes_may_june": 0,
+          "likes_july_august": 47,
+          "rank": 4
+        },
+        {
+          "brand_name": "ZARA",
+          "item_id": 79975842,
+          "name": "ZARA Barbie perfume",
+          "likes_may_june": 0,
+          "likes_july_august": 42,
+          "rank": 5
+        }
+      ],
+      "stats_file": "target/merrec-vision/top_listings.stats.txt"
+    }
+  ],
+  "records": [
+    {
+      "brand_name": "ALDO",
+      "total_likes_may_june": 10668,
+      "total_likes_july_august": 16983,
+      "barbie_likes_may_june": 45,
+      "barbie_likes_july_august": 3233,
+      "barbie_pct_may_june": 0.422,
+      "barbie_pct_july_august": 19.037
+    },
+    {
+      "brand_name": "Amc",
+      "total_likes_may_june": 5361,
+      "total_likes_july_august": 5676,
+      "barbie_likes_may_june": 0,
+      "barbie_likes_july_august": 525,
+      "barbie_pct_may_june": 0.0,
+      "barbie_pct_july_august": 9.249
+    },
+    {
+      "brand_name": "NYX",
+      "total_likes_may_june": 7720,
+      "total_likes_july_august": 13205,
+      "barbie_likes_may_june": 141,
+      "barbie_likes_july_august": 4043,
+      "barbie_pct_may_june": 1.826,
+      "barbie_pct_july_august": 30.617
+    },
+    {
+      "brand_name": "OPI",
+      "total_likes_may_june": 9184,
+      "total_likes_july_august": 14346,
+      "barbie_likes_may_june": 57,
+      "barbie_likes_july_august": 539,
+      "barbie_pct_may_june": 0.621,
+      "barbie_pct_july_august": 3.757
+    },
+    {
+      "brand_name": "Primark",
+      "total_likes_may_june": 2760,
+      "total_likes_july_august": 4589,
+      "barbie_likes_may_june": 45,
+      "barbie_likes_july_august": 1105,
+      "barbie_pct_may_june": 1.63,
+      "barbie_pct_july_august": 24.079
+    },
+    {
+      "brand_name": "Stanley",
+      "total_likes_may_june": 78723,
+      "total_likes_july_august": 81662,
+      "barbie_likes_may_june": 10,
+      "barbie_likes_july_august": 109,
+      "barbie_pct_may_june": 0.013,
+      "barbie_pct_july_august": 0.133
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "total_likes_may_june": 128473,
+      "total_likes_july_august": 164499,
+      "barbie_likes_may_june": 43,
+      "barbie_likes_july_august": 135,
+      "barbie_pct_may_june": 0.033,
+      "barbie_pct_july_august": 0.082
+    },
+    {
+      "brand_name": "ZARA",
+      "total_likes_may_june": 162419,
+      "total_likes_july_august": 236157,
+      "barbie_likes_may_june": 90,
+      "barbie_likes_july_august": 4149,
+      "barbie_pct_may_june": 0.055,
+      "barbie_pct_july_august": 1.757
+    }
+  ],
+  "listing_records": [
+    {
+      "brand_name": "ALDO",
+      "item_id": 30435660,
+      "name": "NEW Barbie Aldo Crossbody bag",
+      "likes_may_june": 0,
+      "likes_july_august": 63,
+      "rank": 1
+    },
+    {
+      "brand_name": "ALDO",
+      "item_id": 141876705,
+      "name": "Barbie x ALDO purse",
+      "likes_may_june": 0,
+      "likes_july_august": 51,
+      "rank": 2
+    },
+    {
+      "brand_name": "ALDO",
+      "item_id": 84830123,
+      "name": "Aldo × Barbie Quilted Cross Body bag",
+      "likes_may_june": 0,
+      "likes_july_august": 50,
+      "rank": 3
+    },
+    {
+      "brand_name": "ALDO",
+      "item_id": 124927728,
+      "name": "NEW Barbie Aldo Shoulder Bag",
+      "likes_may_june": 0,
+      "likes_july_august": 50,
+      "rank": 4
+    },
+    {
+      "brand_name": "ALDO",
+      "item_id": 45401394,
+      "name": "Barbie x ALDO",
+      "likes_may_june": 0,
+      "likes_july_august": 48,
+      "rank": 5
+    },
+    {
+      "brand_name": "Amc",
+      "item_id": 65042108,
+      "name": "Barbie movie bundle!",
+      "likes_may_june": 0,
+      "likes_july_august": 45,
+      "rank": 1
+    },
+    {
+      "brand_name": "Amc",
+      "item_id": 82718497,
+      "name": "Barbie AMC Popcorn Bucket car convertible dream house brand new",
+      "likes_may_june": 0,
+      "likes_july_august": 23,
+      "rank": 2
+    },
+    {
+      "brand_name": "Amc",
+      "item_id": 60550602,
+      "name": "amc Barbie car official from the Barbie movie",
+      "likes_may_june": 0,
+      "likes_july_august": 22,
+      "rank": 3
+    },
+    {
+      "brand_name": "Amc",
+      "item_id": 191399568,
+      "name": "Barbie AMC Theaters Popcorn Bucket Vessel Car With Doll IN HAND SHIPS ASAP",
+      "likes_may_june": 0,
+      "likes_july_august": 22,
+      "rank": 4
+    },
+    {
+      "brand_name": "Amc",
+      "item_id": 163128937,
+      "name": "Barbie AMC Popcorn Bucket Car Convertible New in Box",
+      "likes_may_june": 0,
+      "likes_july_august": 17,
+      "rank": 5
+    },
+    {
+      "brand_name": "NYX",
+      "item_id": 45361212,
+      "name": "LIMITED EDITION NYX Barbie Flip Phone Mirror",
+      "likes_may_june": 0,
+      "likes_july_august": 68,
+      "rank": 1
+    },
+    {
+      "brand_name": "NYX",
+      "item_id": 112220149,
+      "name": "Barbie NYX Makeup Box",
+      "likes_may_june": 0,
+      "likes_july_august": 55,
+      "rank": 2
+    },
+    {
+      "brand_name": "NYX",
+      "item_id": 2063318,
+      "name": "NYX Barbie Flip Phone Mirror Limited Edition",
+      "likes_may_june": 0,
+      "likes_july_august": 52,
+      "rank": 3
+    },
+    {
+      "brand_name": "NYX",
+      "item_id": 221075789,
+      "name": "Nyx barbie flip phone mirror",
+      "likes_may_june": 0,
+      "likes_july_august": 49,
+      "rank": 4
+    },
+    {
+      "brand_name": "NYX",
+      "item_id": 235938150,
+      "name": "NYX Limited Edition Barbie Flip Phone Mirror - BRAND NEW IN BOX",
+      "likes_may_june": 0,
+      "likes_july_august": 48,
+      "rank": 5
+    },
+    {
+      "brand_name": "OPI",
+      "item_id": 207193509,
+      "name": "OPI Nail Lacquers - Welcome to Barbie Land #B017",
+      "likes_may_june": 8,
+      "likes_july_august": 23,
+      "rank": 1
+    },
+    {
+      "brand_name": "OPI",
+      "item_id": 211285725,
+      "name": "OPI Nail Polish Barbie 2023 Set 3 pcs 0.5 oz/ 15 mL",
+      "likes_may_june": 0,
+      "likes_july_august": 23,
+      "rank": 2
+    },
+    {
+      "brand_name": "OPI",
+      "item_id": 223667195,
+      "name": "OPI Barbie The Movie Full Set + Display 12 pcs (9 colors) 0.5 oz",
+      "likes_may_june": 0,
+      "likes_july_august": 23,
+      "rank": 3
+    },
+    {
+      "brand_name": "OPI",
+      "item_id": 175447332,
+      "name": "OPI Nail Lacquers - Hi Barbie! #B018",
+      "likes_may_june": 10,
+      "likes_july_august": 21,
+      "rank": 4
+    },
+    {
+      "brand_name": "OPI",
+      "item_id": 238480101,
+      "name": "OPI Barbie polish set of 2",
+      "likes_may_june": 0,
+      "likes_july_august": 20,
+      "rank": 5
+    },
+    {
+      "brand_name": "Primark",
+      "item_id": 159141293,
+      "name": "Barbie pillow",
+      "likes_may_june": 0,
+      "likes_july_august": 49,
+      "rank": 1
+    },
+    {
+      "brand_name": "Primark",
+      "item_id": 176458930,
+      "name": "BARBIE X Primark PINK Bow Shaped Throw PILLOW NWT",
+      "likes_may_june": 0,
+      "likes_july_august": 44,
+      "rank": 2
+    },
+    {
+      "brand_name": "Primark",
+      "item_id": 198867468,
+      "name": "Primark Barbie makeup bag",
+      "likes_may_june": 0,
+      "likes_july_august": 43,
+      "rank": 3
+    },
+    {
+      "brand_name": "Primark",
+      "item_id": 114651575,
+      "name": "Barbie x Primark logo cushion pillow",
+      "likes_may_june": 0,
+      "likes_july_august": 40,
+      "rank": 4
+    },
+    {
+      "brand_name": "Primark",
+      "item_id": 226125910,
+      "name": "Barbie the movie throw",
+      "likes_may_june": 0,
+      "likes_july_august": 40,
+      "rank": 5
+    },
+    {
+      "brand_name": "Stanley",
+      "item_id": 47878474,
+      "name": "Stanley \"Ravishing Pink BARBIE” 30oz Tumbler NEW!",
+      "likes_may_june": 0,
+      "likes_july_august": 51,
+      "rank": 1
+    },
+    {
+      "brand_name": "Stanley",
+      "item_id": 181822356,
+      "name": "NWT Stanley 30oz Ravishing Pink “Barbie pink”",
+      "likes_may_june": 0,
+      "likes_july_august": 19,
+      "rank": 2
+    },
+    {
+      "brand_name": "Stanley",
+      "item_id": 104684055,
+      "name": "Barbie Pink Azalea 30 oz Stanley Quencher,  BNWT",
+      "likes_may_june": 0,
+      "likes_july_august": 9,
+      "rank": 3
+    },
+    {
+      "brand_name": "Stanley",
+      "item_id": 113756936,
+      "name": "Stanley Target Exclusive 30 oz Barbie Ravishing Pink 2022",
+      "likes_may_june": 0,
+      "likes_july_august": 9,
+      "rank": 4
+    },
+    {
+      "brand_name": "Stanley",
+      "item_id": 27925977,
+      "name": "Barbie Pink Azalea Quencher 30 oz Stanley Brand New no tags",
+      "likes_may_june": 0,
+      "likes_july_august": 7,
+      "rank": 5
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "item_id": 37796087,
+      "name": "Taylor Swift Ur My Lover Pajama Set,  Barbiecore",
+      "likes_may_june": 0,
+      "likes_july_august": 35,
+      "rank": 1
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "item_id": 10651199,
+      "name": "RARE Taylor Swift Our Song Barbie inspired doll",
+      "likes_may_june": 0,
+      "likes_july_august": 33,
+      "rank": 2
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "item_id": 141100664,
+      "name": "Taylor Swift decorate your own doll barbie rare",
+      "likes_may_june": 8,
+      "likes_july_august": 26,
+      "rank": 3
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "item_id": 126982215,
+      "name": "Taylor Swift Barbie Sticker",
+      "likes_may_june": 0,
+      "likes_july_august": 14,
+      "rank": 4
+    },
+    {
+      "brand_name": "Taylor Swift",
+      "item_id": 24188125,
+      "name": "Long Pond Studio + Our Song Barbie",
+      "likes_may_june": 35,
+      "likes_july_august": 10,
+      "rank": 5
+    },
+    {
+      "brand_name": "ZARA",
+      "item_id": 211286531,
+      "name": "Zara Barbie Mattel Shimmering Body Oil",
+      "likes_may_june": 0,
+      "likes_july_august": 80,
+      "rank": 1
+    },
+    {
+      "brand_name": "ZARA",
+      "item_id": 245803589,
+      "name": "Barbie x Zara perfume",
+      "likes_may_june": 0,
+      "likes_july_august": 55,
+      "rank": 2
+    },
+    {
+      "brand_name": "ZARA",
+      "item_id": 129592742,
+      "name": "Zara Barbie Shimmering Body Oil",
+      "likes_may_june": 0,
+      "likes_july_august": 51,
+      "rank": 3
+    },
+    {
+      "brand_name": "ZARA",
+      "item_id": 230968664,
+      "name": "ZARA BARBIE™ MATTEL EAU DE PARFUM 80 ML (2.71 FL. OZ)",
+      "likes_may_june": 0,
+      "likes_july_august": 47,
+      "rank": 4
+    },
+    {
+      "brand_name": "ZARA",
+      "item_id": 79975842,
+      "name": "ZARA Barbie perfume",
+      "likes_may_june": 0,
+      "likes_july_august": 42,
+      "rank": 5
+    }
+  ],
+  "dataset": {
+    "source": "mercari-us/merrec (https://huggingface.co/datasets/mercari-us/merrec)",
+    "revision": "dd2b3c6f6f19d4814bb839ee6e8ab41926a14343",
+    "selection": "all",
+    "partition": "all",
+    "input_rows": 1268092738,
+    "row_limit": null,
+    "counts": {
+      "buy_events": 1124263,
+      "events": 1268092738,
+      "items": 82614392,
+      "max_event_time": "2023-10-31 00:00:00",
+      "min_event_time": "2023-05-01 00:00:00",
+      "sequences": 10387,
+      "sessions": 25864474,
+      "users": 5566055
+    },
+    "manifest_path": "/mnt/algeon-nvme/algeon/fixture/demo/merrec/manifest.json",
+    "parquet": {
+      "items": {
+        "path": "/mnt/algeon-nvme/algeon/fixture/demo/merrec/parquet/items.parquet",
+        "bytes": 5617682158,
+        "rows": 82614392,
+        "row_groups": 631
+      },
+      "events": {
+        "path": "/mnt/algeon-nvme/algeon/fixture/demo/merrec/parquet/events.parquet",
+        "bytes": 84714360718,
+        "rows": 1268092738,
+        "row_groups": 1210
+      }
+    }
+  }
+}

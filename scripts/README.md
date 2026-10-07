@@ -27,6 +27,14 @@ shared for the `gpu` test group and exclusive for `gpu-exclusive`, and takes
 nothing for a CPU test. Its self-test is
 `ci/tests/check_nextest_gpu_lock_tests.sh`.
 
+`ci/check_test_layout.py` checks the test layout contract in the policy phase.
+The full gate repeats it in `orphan-sources` after clippy, using only the
+compiler artifacts named by that run's all-feature and feature-off JSON
+streams. It reports uncovered tracked workspace Rust files and missing
+current dep-info. Its fault-injection suite is
+`python3 scripts/ci/tests/check_test_layout_tests.py`; the contract lives in
+[the test guide](../website/docs/build/test-harness.md#test-layout).
+
 Repository-owned policy data lives in `.config/policies/`; standard tool
 configuration such as `.config/nextest.toml` (the only test-lane source)
 remains at the location expected by that tool. When moving or adding a
