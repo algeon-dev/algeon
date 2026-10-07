@@ -45,9 +45,18 @@ BGE-M3 text embeddings.
 
 ### MerRec marketplace
 
-Per-user category preferences from Mercari US browsing events, October 2023.
+All 1,268,092,738 Mercari US marketplace events from May through October 2023,
+described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
+question derives per-shopper behavior features from the raw events with SQL.
 
-- [Which captured audiences have concentrated preferences, and which have mixed profiles?](./udtfs/cuml_hdbscan.mdx?dataset=merrec#examples) (`cuml_hdbscan`, `cuml_umap`)
+- [Which active shoppers will buy next month?](./udtfs/cuml_logistic_regression.mdx?dataset=merrec#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
+- [How concentrated is next month's spending, and can a forest find the big spenders?](./udtfs/cuml_random_forest_regressor.mdx?dataset=merrec#examples) (`cuml_random_forest_regressor`)
+- [Can a model trained elsewhere rank next month's buyers inside SQL?](./udtfs/cuml_forest_predict.mdx?dataset=merrec#examples) (`cuml_forest_predict`)
+
+Single-shard captures: per-user category preferences from Mercari US browsing
+events in one October 2023 source shard.
+
+- [Which captured audiences have concentrated preferences, and which have mixed profiles?](./udtfs/cuml_hdbscan.mdx?dataset=merrec-shard#examples) (`cuml_hdbscan`, `cuml_umap`)
 
 ## Input and call shape
 

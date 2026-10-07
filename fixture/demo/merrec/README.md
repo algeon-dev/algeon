@@ -160,6 +160,10 @@ CPU comparisons, batched vector inputs, and the observed graph staging limit.
 | `sequence_length` | Int32, not null | Total actions recorded in the sequence |
 | `event_type` | Utf8, not null | Action type (item_view, item_like, item_add_to_cart_tap, offer_make, buy_start, buy_comp) |
 
+`session_id` is not unique per user: in the six-month dataset, 15,138,756 of
+the 25,864,474 distinct values appear for more than one user, and one value
+appears for 54 users. Key sessions by `(user_id, session_id)`.
+
 ## Parquet layout for the GPU engine
 
 - **Types.** All columns use data types supported by the native GPU scan.

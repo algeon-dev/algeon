@@ -1,4 +1,11 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecScaleOverlap from './merrec_scale_overlap.mdx';
+
 {/* Hand-owned examples for cugraph_overlap. NOT generated; safe to edit. */}
+
+<Tabs queryString="dataset">
+<TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -73,3 +80,12 @@ in the candidate's list. Candidate citations to BERT and agreement with its
 claims are outside this measure. Compare with the
 [Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx),
 which divides by the union of both lists.
+
+</TabItem>
+
+<TabItem value="merrec" label="MerRec marketplace">
+
+<MerRecScaleOverlap />
+
+</TabItem>
+</Tabs>

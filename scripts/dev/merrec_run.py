@@ -201,9 +201,10 @@ def prepare_scale_features(client):
     sql_dir = ROOT / "fixture/demo/merrec/scripts/scale"
     if not register_sources(client):
         return False
-    path = sql_dir / "03_user_features.sql"
-    if run_and_export(client, path.stem, path.read_text())["status"] != "ok":
-        return False
+    for filename in ("03_user_features.sql", "14_taste64.sql"):
+        path = sql_dir / filename
+        if run_and_export(client, path.stem, path.read_text())["status"] != "ok":
+            return False
     return execute_sql_file(client, sql_dir / "00_register_features.sql")
 
 

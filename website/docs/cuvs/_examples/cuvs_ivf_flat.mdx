@@ -1,3 +1,13 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import EmberHistoricalSearch from './ember2024_historical_search.mdx';
+import MerRecScaleAnn from './merrec_scale_ann.mdx';
 
-<EmberHistoricalSearch />
+<Tabs queryString="dataset">
+  <TabItem value="ember2024" label="EMBER2024 references" default>
+    <EmberHistoricalSearch />
+  </TabItem>
+  <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecScaleAnn />
+  </TabItem>
+</Tabs>

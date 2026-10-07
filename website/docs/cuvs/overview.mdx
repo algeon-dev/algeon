@@ -50,9 +50,18 @@ which holds only malicious files, plus 1% samples of the train and test splits.
 
 ### MerRec marketplace
 
-Per-user category preferences from Mercari US browsing events, October 2023.
+All 1,268,092,738 Mercari US marketplace events from May through October 2023,
+described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
+question derives per-shopper category vectors from the raw events with SQL.
 
-- [Which category-specific campaign variants could be worth testing?](./udtfs/cuvs_kmeans.mdx?dataset=merrec#examples) (`cuvs_kmeans`, `cuvs_top_k`)
+- [Can a lookalike audience find next season's Pokemon buyers?](./udtfs/cuvs_brute_force_knn.mdx?dataset=merrec#examples) (`cuvs_brute_force_knn`)
+- [When does approximate search pay off for a neighbor graph of every shopper?](./udtfs/cuvs_cagra.mdx?dataset=merrec#examples) (`cuvs_cagra`, `cuvs_ivf_flat`, `cuvs_ivf_pq`)
+- [Which shopper personas bring in the most spending per shopper?](./udtfs/cuvs_kmeans.mdx?dataset=merrec#examples) (`cuvs_kmeans`, `cuvs_top_k`)
+
+Single-shard captures: per-user category preferences from Mercari US browsing
+events in one October 2023 source shard.
+
+- [Which category-specific campaign variants could be worth testing?](./udtfs/cuvs_kmeans.mdx?dataset=merrec-shard#examples) (`cuvs_kmeans`, `cuvs_top_k`)
 
 ## Vector input and call shape
 

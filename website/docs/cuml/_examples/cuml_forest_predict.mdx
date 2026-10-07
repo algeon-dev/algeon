@@ -1,79 +1,13 @@
-This retrospective triage example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import EmberForestReview from './ember2024_forest_review.mdx';
+import MerRecScaleXgboost from './merrec_scale_xgboost.mdx';
 
-### Which high-scoring challenge files should an analyst review first?
-
-The LightGBM model scores all 6,315 challenge files. A score threshold of
-`0.99` selects 1,616 rows before the query's `LIMIT 30`; the output keeps the
-highest-scoring rows with their three largest positive feature-block
-contributions. Challenge labels are not inputs to scoring or ranking. They are
-all positive, so this review queue cannot estimate a false-positive rate or
-score calibration.
-
-The feature-block values are SHAP contributions in raw-margin (log-odds)
-units. The attribution table was prepared separately on CPU with
-`fixture/demo/ember2024/scripts/research_attributions.py`: LightGBM
-`pred_contrib` processed 6,315 rows in 13.311 seconds. The script then summed
-the 2,568 feature contributions into 12 blocks. The SQL calls `cuml_forest_predict` for
-GPU scoring and `cuvs_top_k` over those precomputed grouped values. The CPU
-attribution preparation is not GPU work and is not included in the SQL run.
-
-The CPU LightGBM score comparison passed for all 6,315 rows, with maximum
-absolute error `2.9801783152372252e-8`; threshold decisions agreed for every
-row at the checked thresholds, including `0.99`. Numerical agreement verifies
-the imported model's scoring implementation. Detection metrics require the
-separately evaluated test labels.
-
-On the separate 6,102-file sample from the later test period, the same `0.99`
-threshold detected 2,167 of 3,016 malicious files (71.85%) and produced no
-false positives among 3,086 benign files. The Wilson 95% interval for that
-observed false-positive rate extends up to 0.1243%. The challenge selection
-contains 1,616 of 6,315 positives (25.59%). These cohort-specific measurements
-describe the coverage lost at a high review threshold; a zero count in this
-test sample does not establish a zero operational false-positive rate.
-
-The table shows the first six rows of the 30-row capture. Top-K ranks the 12
-signed feature-block values and SQL keeps only positive values. Negative
-feature groups and the model bias are omitted, so these rows are not complete
-explanations. Positive SHAP contributions describe the model's score
-calculation; they do not establish causal risk effects. Family labels are not
-used by the query.
-
-| SHA-256 prefix | ID | Model score | Rank | Feature block | Positive log-odds contribution |
-| --- | ---: | ---: | ---: | --- | ---: |
-| `8f392dc01595…` | `20001348` | 0.9998510479927063 | 1 | `histogram` | 2.504060745239258 |
-| `8f392dc01595…` | `20001348` | 0.9998510479927063 | 2 | `strings` | 2.249004125595093 |
-| `8f392dc01595…` | `20001348` | 0.9998510479927063 | 3 | `header` | 1.235449790954590 |
-| `7d60904d4ff5…` | `20000677` | 0.9998448491096497 | 1 | `histogram` | 2.653215169906616 |
-| `7d60904d4ff5…` | `20000677` | 0.9998448491096497 | 2 | `strings` | 2.279698133468628 |
-| `7d60904d4ff5…` | `20000677` | 0.9998448491096497 | 3 | `header` | 1.287171244621277 |
-
-[Download the forest review capture](/data/ember2024-capture.json) for all 30
-result rows, the SQL, query ID, CPU comparison, and preparation conditions.
-
-```sql
-SELECT p.id, m.sha256, m.file_type, m.week_id, p.prediction,
-       t.rank, g.group_name, t.value AS positive_log_odds_contribution
-FROM cuml_forest_predict(
-  input => (
-    SELECT id, vector
-    FROM ember_research_vectors_challenge
-    ORDER BY id
-  ),
-  model => 'EMBER2024_all.model',
-  model_format => 'lightgbm'
-) p
-JOIN cuvs_top_k(
-  input => (SELECT id, vector FROM ember_attributions ORDER BY id),
-  k => 3,
-  select => 'max'
-) t ON t.id = p.id
-JOIN ember_feature_groups g ON g.group_index = t.position
-JOIN ember_metadata_challenge m ON m.id = p.id
-WHERE p.prediction >= 0.99 AND t.value > 0
-ORDER BY p.prediction DESC, p.id, t.rank
-LIMIT 30;
-```
-
-The query was captured on a dedicated EMBER server with `native` disposition.
-The CPU attribution step ran before the statement; its duration is recorded
-separately in the capture.
+<Tabs queryString="dataset">
+  <TabItem value="ember2024" label="EMBER2024" default>
+    <EmberForestReview />
+  </TabItem>
+  <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecScaleXgboost />
+  </TabItem>
+</Tabs>

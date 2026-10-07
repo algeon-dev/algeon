@@ -1,7 +1,8 @@
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import AmazonReviewsExample from './cuvs_top_k_amazon.mdx';
-import ForestReviewExample from '../../cuml/_examples/cuml_forest_predict.mdx';
+import ForestReviewExample from '../../cuml/_examples/ember2024_forest_review.mdx';
+import MerRecScalePersonas from './merrec_scale_personas.mdx';
 import MerRecSegments from './merrec_segments.mdx';
 
 <Tabs queryString="dataset">
@@ -12,6 +13,9 @@ import MerRecSegments from './merrec_segments.mdx';
     <ForestReviewExample />
   </TabItem>
   <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecScalePersonas />
+  </TabItem>
+  <TabItem value="merrec-shard" label="MerRec single shard">
     <MerRecSegments />
   </TabItem>
 </Tabs>

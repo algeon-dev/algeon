@@ -1,0 +1,132 @@
+{
+ "23_propensity_logreg": {
+  "name": "23_propensity_logreg",
+  "sql_file": "fixture/demo/merrec/scripts/scale/23_propensity_logreg.sql",
+  "sql": "WITH train AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,\n    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-05-01 00:00:00' AND e.event_time < TIMESTAMP '2023-08-31 00:00:00'\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n),\ntest AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,\n    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n),\npred AS (\n  SELECT id, prediction FROM cuml_logistic_regression(\n    training => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price, COALESCE(label, CAST(0 AS INT)) AS label FROM train WHERE label = 1 OR ROUND(CAST(id AS DOUBLE) / 20.0) = CAST(id AS DOUBLE) / 20.0 ORDER BY id),\n    predict => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price FROM test ORDER BY id),\n    max_iter => 2000)\n)\nSELECT 'model' AS audience, SUM(p.prediction) AS flagged, SUM(p.prediction * t.label) AS buyers_flagged,\n       SUM(t.label) AS buyers, CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(p.prediction) AS precision,\n       CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(t.label) AS recall\nFROM pred p JOIN test t ON t.id = p.id\nUNION ALL\nSELECT 'bought in last 30 days', SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),\n       SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END), SUM(label),\n       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),\n       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(label)\nFROM test;\n",
+  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+  "runs": [
+   {
+    "name": "23_propensity_logreg_r1",
+    "query_id": "3cca6777-8569-48fa-83d9-cbb57fdc0c20",
+    "elapsed_s": 30.258990213042125,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   },
+   {
+    "name": "23_propensity_logreg_r2",
+    "query_id": "3f0ce81a-c1e6-4602-b9af-c3eca681f553",
+    "elapsed_s": 29.83660931501072,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   },
+   {
+    "name": "23_propensity_logreg_r3",
+    "query_id": "12bc5fef-45ce-4563-a1fe-b187a0ab8cb1",
+    "elapsed_s": 29.873160640941933,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   }
+  ],
+  "median_elapsed_s_after_first": 29.854884977976326,
+  "rows": 2,
+  "identical_results_across_runs": false,
+  "schema": [
+   "audience: string",
+   "flagged: int64",
+   "buyers_flagged: int64",
+   "buyers: int64",
+   "precision: double",
+   "recall: double"
+  ],
+  "records": [
+   {
+    "audience": "model",
+    "flagged": 115095,
+    "buyers_flagged": 20795,
+    "buyers": 38925,
+    "precision": 0.18067683218211042,
+    "recall": 0.534232498394348
+   },
+   {
+    "audience": "bought in last 30 days",
+    "flagged": 55404,
+    "buyers_flagged": 14107,
+    "buyers": 38925,
+    "precision": 0.25462060501046857,
+    "recall": 0.3624149004495825
+   }
+  ]
+ },
+ "24_propensity_forest": {
+  "name": "24_propensity_forest",
+  "sql_file": "fixture/demo/merrec/scripts/scale/24_propensity_forest.sql",
+  "sql": "WITH train AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-07-02 00:00:00' AND e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,\n    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-05-01 00:00:00' AND e.event_time < TIMESTAMP '2023-08-31 00:00:00'\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-08-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n),\ntest AS (\n  SELECT e.user_id AS id,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS gmv,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) AS REAL) AS views_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_like' THEN 1 ELSE 0 END) AS REAL) AS likes_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type IN ('item_add_to_cart_tap', 'offer_make', 'buy_start') THEN 1 ELSE 0 END) AS REAL) AS intents_30d,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-08-02 00:00:00' AND e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN 1 ELSE 0 END) AS REAL) AS buys_30d,\n    CAST(SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN i.price ELSE 0 END) / SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' THEN 1 ELSE 0 END) AS REAL) AS mean_price,\n    MAX(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN CAST(1 AS INT) ELSE CAST(0 AS INT) END) AS label,\n    CAST(SUM(CASE WHEN e.event_time >= TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'buy_comp' THEN i.price ELSE 0 END) AS REAL) AS next_gmv\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_time >= TIMESTAMP '2023-06-01 00:00:00' AND e.event_time < TIMESTAMP '2023-10-01 00:00:00'\n  GROUP BY e.user_id\n  HAVING SUM(CASE WHEN e.event_time < TIMESTAMP '2023-09-01 00:00:00' AND e.event_type = 'item_view' THEN 1 ELSE 0 END) >= 20\n),\npred AS (\n  SELECT id, prediction FROM cuml_random_forest_classifier(\n    training => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price, COALESCE(label, CAST(0 AS INT)) AS label FROM train WHERE label = 1 OR ROUND(CAST(id AS DOUBLE) / 20.0) = CAST(id AS DOUBLE) / 20.0 ORDER BY id),\n    predict => (SELECT id, COALESCE(LN(1 + views), CAST(0 AS REAL)) AS views, COALESCE(LN(1 + likes), CAST(0 AS REAL)) AS likes, COALESCE(LN(1 + intents), CAST(0 AS REAL)) AS intents, COALESCE(LN(1 + buys), CAST(0 AS REAL)) AS buys, COALESCE(LN(1 + gmv), CAST(0 AS REAL)) AS gmv, COALESCE(LN(1 + views_30d), CAST(0 AS REAL)) AS views_30d, COALESCE(LN(1 + likes_30d), CAST(0 AS REAL)) AS likes_30d, COALESCE(LN(1 + intents_30d), CAST(0 AS REAL)) AS intents_30d, COALESCE(LN(1 + buys_30d), CAST(0 AS REAL)) AS buys_30d, COALESCE(LN(1 + mean_price), CAST(0 AS REAL)) AS mean_price FROM test ORDER BY id),\n    n_trees => 100, max_depth => 12, seed => 42)\n)\nSELECT 'model' AS audience, SUM(p.prediction) AS flagged, SUM(p.prediction * t.label) AS buyers_flagged,\n       SUM(t.label) AS buyers, CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(p.prediction) AS precision,\n       CAST(SUM(p.prediction * t.label) AS DOUBLE) / SUM(t.label) AS recall\nFROM pred p JOIN test t ON t.id = p.id\nUNION ALL\nSELECT 'bought in last 30 days', SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),\n       SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END), SUM(label),\n       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(CASE WHEN buys_30d > 0 THEN 1 ELSE 0 END),\n       CAST(SUM(CASE WHEN buys_30d > 0 THEN label ELSE 0 END) AS DOUBLE) / SUM(label)\nFROM test;\n",
+  "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+  "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+  "runs": [
+   {
+    "name": "24_propensity_forest_r1",
+    "query_id": "11e1f46c-433e-439b-8736-a7f9da6b54e5",
+    "elapsed_s": 30.962257419945672,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   },
+   {
+    "name": "24_propensity_forest_r2",
+    "query_id": "9105516f-cb67-4427-9fb5-551394201389",
+    "elapsed_s": 31.465588857070543,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   },
+   {
+    "name": "24_propensity_forest_r3",
+    "query_id": "9797c847-919c-403f-ada5-05fa9b27dd7f",
+    "elapsed_s": 30.99405050300993,
+    "native_fragments": 4,
+    "host_boundaries": 0,
+    "allocator_peak_bytes": 23298813879,
+    "query_limit_bytes": 96636764160
+   }
+  ],
+  "median_elapsed_s_after_first": 31.229819680040237,
+  "rows": 2,
+  "identical_results_across_runs": true,
+  "schema": [
+   "audience: string",
+   "flagged: int64",
+   "buyers_flagged: int64",
+   "buyers: int64",
+   "precision: double",
+   "recall: double"
+  ],
+  "records": [
+   {
+    "audience": "model",
+    "flagged": 123622,
+    "buyers_flagged": 21230,
+    "buyers": 38925,
+    "precision": 0.17173318664962547,
+    "recall": 0.545407835581246
+   },
+   {
+    "audience": "bought in last 30 days",
+    "flagged": 55404,
+    "buyers_flagged": 14107,
+    "buyers": 38925,
+    "precision": 0.25462060501046857,
+    "recall": 0.3624149004495825
+   }
+  ]
+ }
+}

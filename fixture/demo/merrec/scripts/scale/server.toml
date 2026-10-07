@@ -12,3 +12,6 @@ lane_count = 4
 
 [native]
 execution_mode = "native_required"
+
+[models]
+root = "fixture/demo/merrec/models"

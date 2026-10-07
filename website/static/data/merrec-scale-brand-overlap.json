@@ -1,0 +1,197 @@
+{
+ "name": "07_brand_overlap",
+ "sql_file": "fixture/demo/merrec/scripts/scale/07_brand_overlap.sql",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), brand_fans AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans, ROUND(r.similarity * f.fans) AS shared_fans, r.similarity AS overlap\nFROM cugraph_overlap(\n  edges => (SELECT src, dst FROM fans),\n  vertex_pairs => (SELECT CAST(12630 AS BIGINT) AS first, brand_id AS second\n                   FROM brand_fans WHERE fans >= 2000 AND brand_id <> 12630),\n  directed => false\n) r\nJOIN brand_fans f ON f.brand_id = r.second\nJOIN brands b ON b.brand_id = r.second\nORDER BY r.similarity DESC, b.brand_name\nLIMIT 25;\n",
+ "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "07_brand_overlap_r1",
+   "query_id": "912e2509-16f3-4f40-b050-96383d78803a",
+   "elapsed_s": 6.534339644946158,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 18469687337,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "07_brand_overlap_r2",
+   "query_id": "9c4466df-9e74-457c-a884-f2d176f31fc6",
+   "elapsed_s": 5.520592118031345,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 18469687337,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "07_brand_overlap_r3",
+   "query_id": "d75bb5f7-6259-483d-b4c6-f6136d9168eb",
+   "elapsed_s": 5.790679406025447,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 18469687337,
+   "query_limit_bytes": 96636764160
+  }
+ ],
+ "median_elapsed_s_after_first": 5.655635762028396,
+ "rows": 25,
+ "identical_results_across_runs": true,
+ "schema": [
+  "brand_name: string_view",
+  "fans: int64",
+  "shared_fans: double",
+  "overlap: double"
+ ],
+ "records": [
+  {
+   "brand_name": "Ivivva",
+   "fans": 2841,
+   "shared_fans": 2097.0,
+   "overlap": 0.7381203770637512
+  },
+  {
+   "brand_name": "CRZ YOGA",
+   "fans": 2089,
+   "shared_fans": 1475.0,
+   "overlap": 0.7060794830322266
+  },
+  {
+   "brand_name": "SET ACTIVE",
+   "fans": 2964,
+   "shared_fans": 1976.0,
+   "overlap": 0.6666666865348816
+  },
+  {
+   "brand_name": "balance athletica",
+   "fans": 4243,
+   "shared_fans": 2742.0,
+   "overlap": 0.6462408900260925
+  },
+  {
+   "brand_name": "Alo",
+   "fans": 15646,
+   "shared_fans": 10002.0,
+   "overlap": 0.6392688155174255
+  },
+  {
+   "brand_name": "Born Primitive",
+   "fans": 2764,
+   "shared_fans": 1703.0,
+   "overlap": 0.6161360144615173
+  },
+  {
+   "brand_name": "Triangl",
+   "fans": 4832,
+   "shared_fans": 2930.0,
+   "overlap": 0.6063741445541382
+  },
+  {
+   "brand_name": "Outdoor Voices",
+   "fans": 4057,
+   "shared_fans": 2423.0,
+   "overlap": 0.5972393155097961
+  },
+  {
+   "brand_name": "Aviator Nation",
+   "fans": 5396,
+   "shared_fans": 3195.0,
+   "overlap": 0.5921052694320679
+  },
+  {
+   "brand_name": "Beyond Yoga",
+   "fans": 3506,
+   "shared_fans": 2068.0,
+   "overlap": 0.5898459553718567
+  },
+  {
+   "brand_name": "Alara",
+   "fans": 2025,
+   "shared_fans": 1175.0,
+   "overlap": 0.5802469253540039
+  },
+  {
+   "brand_name": "Roberta Roller Rabbit",
+   "fans": 2509,
+   "shared_fans": 1451.0,
+   "overlap": 0.5783180594444275
+  },
+  {
+   "brand_name": "vuori",
+   "fans": 9727,
+   "shared_fans": 5499.0,
+   "overlap": 0.5653336048126221
+  },
+  {
+   "brand_name": "Spiritual Gangster",
+   "fans": 2328,
+   "shared_fans": 1302.0,
+   "overlap": 0.5592783689498901
+  },
+  {
+   "brand_name": "Yogalicious",
+   "fans": 2354,
+   "shared_fans": 1306.0,
+   "overlap": 0.5548003315925598
+  },
+  {
+   "brand_name": "BuffBunny",
+   "fans": 6514,
+   "shared_fans": 3577.0,
+   "overlap": 0.5491249561309814
+  },
+  {
+   "brand_name": "L*SPACE",
+   "fans": 2556,
+   "shared_fans": 1398.0,
+   "overlap": 0.5469483733177185
+  },
+  {
+   "brand_name": "Zella",
+   "fans": 3859,
+   "shared_fans": 2092.0,
+   "overlap": 0.5421093702316284
+  },
+  {
+   "brand_name": "Bombshell Sportswear",
+   "fans": 2628,
+   "shared_fans": 1395.0,
+   "overlap": 0.5308219194412231
+  },
+  {
+   "brand_name": "White Fox Boutique",
+   "fans": 8060,
+   "shared_fans": 4274.0,
+   "overlap": 0.5302729606628418
+  },
+  {
+   "brand_name": "Wilfred",
+   "fans": 3140,
+   "shared_fans": 1647.0,
+   "overlap": 0.5245223045349121
+  },
+  {
+   "brand_name": "JoyLab",
+   "fans": 3788,
+   "shared_fans": 1986.0,
+   "overlap": 0.524287223815918
+  },
+  {
+   "brand_name": "NVGTN",
+   "fans": 8048,
+   "shared_fans": 4216.0,
+   "overlap": 0.5238568782806396
+  },
+  {
+   "brand_name": "TNA",
+   "fans": 3955,
+   "shared_fans": 2067.0,
+   "overlap": 0.5226295590400696
+  },
+  {
+   "brand_name": "CALIA by Carrie Underwood",
+   "fans": 5389,
+   "shared_fans": 2807.0,
+   "overlap": 0.520875871181488
+  }
+ ]
+}

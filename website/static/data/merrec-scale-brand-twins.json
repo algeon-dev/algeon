@@ -1,0 +1,258 @@
+{
+ "name": "08_brand_twins",
+ "sql_file": "fixture/demo/merrec/scripts/scale/08_brand_twins.sql",
+ "sql": "WITH fans AS (\n  SELECT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n  GROUP BY e.user_id, i.brand_id\n), top_brands AS (\n  SELECT dst AS brand_id, COUNT(*) AS fans FROM fans GROUP BY dst ORDER BY fans DESC, dst LIMIT 2000\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT ba.brand_name AS brand_a, bb.brand_name AS brand_b,\n       a.fans AS fans_a, b.fans AS fans_b, r.similarity AS jaccard\nFROM cugraph_jaccard(\n  edges => (SELECT src, dst FROM fans),\n  vertex_pairs => (SELECT a.brand_id AS first, b.brand_id AS second\n                   FROM top_brands a JOIN top_brands b ON a.brand_id < b.brand_id),\n  directed => false\n) r\nJOIN top_brands a ON a.brand_id = r.first\nJOIN top_brands b ON b.brand_id = r.second\nJOIN brands ba ON ba.brand_id = r.first\nJOIN brands bb ON bb.brand_id = r.second\nORDER BY r.similarity DESC, brand_a\nLIMIT 30;\n",
+ "binary_sha256": "81bb36641c10bca06a68d0fb8d541694900af84bfdd1cb10265f9a73f54881df",
+ "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
+ "runs": [
+  {
+   "name": "08_brand_twins_r1",
+   "query_id": "ba6a4db8-d41c-484f-80a4-ba019e63bbe8",
+   "elapsed_s": 7.243382817949168,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 80252580231,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "08_brand_twins_r2",
+   "query_id": "aad19994-1dac-45f3-ab9b-91f91bbb1b17",
+   "elapsed_s": 7.283136161975563,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 80252580231,
+   "query_limit_bytes": 96636764160
+  },
+  {
+   "name": "08_brand_twins_r3",
+   "query_id": "dcf087b4-3fda-4051-bb05-8a0dedbc900a",
+   "elapsed_s": 6.627096662065014,
+   "native_fragments": 3,
+   "host_boundaries": 0,
+   "allocator_peak_bytes": 80252580231,
+   "query_limit_bytes": 96636764160
+  }
+ ],
+ "median_elapsed_s_after_first": 6.955116412020288,
+ "rows": 30,
+ "identical_results_across_runs": true,
+ "schema": [
+  "brand_a: string_view",
+  "brand_b: string_view",
+  "fans_a: int64",
+  "fans_b: int64",
+  "jaccard: double"
+ ],
+ "records": [
+  {
+   "brand_a": "Tomorrow X Together",
+   "brand_b": "TXT",
+   "fans_a": 13880,
+   "fans_b": 8267,
+   "jaccard": 0.43578606843948364
+  },
+  {
+   "brand_a": "Rilakkuma",
+   "brand_b": "San-X",
+   "fans_a": 10232,
+   "fans_b": 14392,
+   "jaccard": 0.36739227175712585
+  },
+  {
+   "brand_a": "Baby Tula",
+   "brand_b": "Tula",
+   "fans_a": 3398,
+   "fans_b": 3806,
+   "jaccard": 0.35515424609184265
+  },
+  {
+   "brand_a": "Air Jordan",
+   "brand_b": "Jordan",
+   "fans_a": 123149,
+   "fans_b": 72496,
+   "jaccard": 0.3533264994621277
+  },
+  {
+   "brand_a": "Mugler",
+   "brand_b": "Thierry Mugler",
+   "fans_a": 6232,
+   "fans_b": 5925,
+   "jaccard": 0.34823110699653625
+  },
+  {
+   "brand_a": "Freebird",
+   "brand_b": "Freebird By Steven",
+   "fans_a": 2949,
+   "fans_b": 4173,
+   "jaccard": 0.34377357363700867
+  },
+  {
+   "brand_a": "Hello Kitty",
+   "brand_b": "Sanrio",
+   "fans_a": 72010,
+   "fans_b": 109359,
+   "jaccard": 0.3370266258716583
+  },
+  {
+   "brand_a": "Bandai Tamashii Nations",
+   "brand_b": "SH Figuarts",
+   "fans_a": 19742,
+   "fans_b": 9907,
+   "jaccard": 0.33409827947616577
+  },
+  {
+   "brand_a": "Konami",
+   "brand_b": "Yu-Gi-Oh!",
+   "fans_a": 12915,
+   "fans_b": 8340,
+   "jaccard": 0.3244641125202179
+  },
+  {
+   "brand_a": "Yves Saint Laurent",
+   "brand_b": "YSL Yves Saint Laurent",
+   "fans_a": 22460,
+   "fans_b": 23895,
+   "jaccard": 0.3239746391773224
+  },
+  {
+   "brand_a": "Christian Dior",
+   "brand_b": "Dior",
+   "fans_a": 38883,
+   "fans_b": 37626,
+   "jaccard": 0.32126203179359436
+  },
+  {
+   "brand_a": "A Bathing Ape",
+   "brand_b": "Bape",
+   "fans_a": 12620,
+   "fans_b": 13245,
+   "jaccard": 0.320249080657959
+  },
+  {
+   "brand_a": "BabyBjorn",
+   "brand_b": "BABYBJ\u00d6RN",
+   "fans_a": 2969,
+   "fans_b": 3434,
+   "jaccard": 0.3202061951160431
+  },
+  {
+   "brand_a": "Herm\u00e8s",
+   "brand_b": "HERMES",
+   "fans_a": 8923,
+   "fans_b": 7051,
+   "jaccard": 0.3201652765274048
+  },
+  {
+   "brand_a": "Essentials",
+   "brand_b": "Fear of God",
+   "fans_a": 10099,
+   "fans_b": 11729,
+   "jaccard": 0.31517744064331055
+  },
+  {
+   "brand_a": "Panini",
+   "brand_b": "Topps",
+   "fans_a": 36503,
+   "fans_b": 36718,
+   "jaccard": 0.3148670196533203
+  },
+  {
+   "brand_a": "Toy Biz",
+   "brand_b": "Toybiz",
+   "fans_a": 7008,
+   "fans_b": 6707,
+   "jaccard": 0.3043271601200104
+  },
+  {
+   "brand_a": "Collector's Gallery",
+   "brand_b": "Stray Kids",
+   "fans_a": 10098,
+   "fans_b": 7822,
+   "jaccard": 0.3013797998428345
+  },
+  {
+   "brand_a": "NCT",
+   "brand_b": "SM Entertainment",
+   "fans_a": 14569,
+   "fans_b": 16116,
+   "jaccard": 0.2992209196090698
+  },
+  {
+   "brand_a": "Banpresto",
+   "brand_b": "Good Smile Company",
+   "fans_a": 43473,
+   "fans_b": 40636,
+   "jaccard": 0.29709765315055847
+  },
+  {
+   "brand_a": "Bandai",
+   "brand_b": "Banpresto",
+   "fans_a": 70021,
+   "fans_b": 43473,
+   "jaccard": 0.2914656400680542
+  },
+  {
+   "brand_a": "PINK",
+   "brand_b": "Victoria's Secret",
+   "fans_a": 91079,
+   "fans_b": 140039,
+   "jaccard": 0.2841387093067169
+  },
+  {
+   "brand_a": "Carter's",
+   "brand_b": "Cat & Jack",
+   "fans_a": 70873,
+   "fans_b": 61575,
+   "jaccard": 0.2800000011920929
+  },
+  {
+   "brand_a": "SM Entertainment",
+   "brand_b": "Twice",
+   "fans_a": 16116,
+   "fans_b": 20576,
+   "jaccard": 0.2788233757019043
+  },
+  {
+   "brand_a": "Thrive Causemetics",
+   "brand_b": "Thrive",
+   "fans_a": 2485,
+   "fans_b": 2745,
+   "jaccard": 0.2787286043167114
+  },
+  {
+   "brand_a": "Bowman",
+   "brand_b": "Donruss",
+   "fans_a": 8053,
+   "fans_b": 7271,
+   "jaccard": 0.27159571647644043
+  },
+  {
+   "brand_a": "Barbie",
+   "brand_b": "Mattel",
+   "fans_a": 79520,
+   "fans_b": 118872,
+   "jaccard": 0.26959505677223206
+  },
+  {
+   "brand_a": "BTS",
+   "brand_b": "Twice",
+   "fans_a": 61458,
+   "fans_b": 20576,
+   "jaccard": 0.26466870307922363
+  },
+  {
+   "brand_a": "Fleer",
+   "brand_b": "Upper Deck",
+   "fans_a": 7641,
+   "fans_b": 12982,
+   "jaccard": 0.2627357244491577
+  },
+  {
+   "brand_a": "Microsoft",
+   "brand_b": "Xbox",
+   "fans_a": 68969,
+   "fans_b": 37371,
+   "jaccard": 0.2621958553791046
+  }
+ ]
+}

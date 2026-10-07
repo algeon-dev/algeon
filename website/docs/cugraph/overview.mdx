@@ -41,12 +41,25 @@ DBLP / AMiner V12: 4.9M papers linked by 45.6M citations.
 
 ### MerRec marketplace
 
-Mercari US browsing events from October 2023, built into a graph of product
-groups linked by browsing transitions and shared viewers.
+All 1,268,092,738 Mercari US marketplace events from May through October 2023,
+described on the [MerRec dataset page](../guides/datasets/merrec.mdx). Each
+question builds its brand or session graph from the raw events inside one
+statement.
 
-- [Which collectible categories should accompany a Nintendo games landing page?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_jaccard`)
-- [Which markets draw most of their viewers from the Nintendo Games audience?](./udtfs/similarity/cugraph_cosine.mdx?dataset=merrec#examples) (`cugraph_cosine`, `cugraph_jaccard`)
-- [Which browsing neighborhoods could become draft marketplace collections?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_leiden`, `cugraph_pagerank`)
+- [Which athleisure brands draw most of their fans from lululemon's audience?](./udtfs/similarity/cugraph_overlap.mdx?dataset=merrec#examples) (`cugraph_overlap`)
+- [Which brand entries share almost the same fans?](./udtfs/similarity/cugraph_jaccard.mdx?dataset=merrec#examples) (`cugraph_jaccard`)
+- [Which shopping worlds do shared fans reveal across official categories?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_leiden`, `cugraph_jaccard`)
+- [Which brands moved closer to Barbie fans after the July 2023 film release?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_pagerank`)
+- [What does the marketplace look like when brands sit next to the brands their fans like?](./udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples) (`cugraph_force_atlas2`, `cugraph_leiden`, `cugraph_jaccard`)
+- [Is `session_id` safe to use as a per-user session key?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx?dataset=merrec#examples) (`cugraph_weakly_connected_components`)
+
+Single-shard captures: Mercari US browsing events from one October 2023
+source shard, built into a graph of product groups linked by browsing
+transitions and shared viewers.
+
+- [Which collectible categories should accompany a Nintendo games landing page?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec-shard#examples) (`cugraph_personalized_pagerank`, `cugraph_jaccard`)
+- [Which markets draw most of their viewers from the Nintendo Games audience?](./udtfs/similarity/cugraph_cosine.mdx?dataset=merrec-shard#examples) (`cugraph_cosine`, `cugraph_jaccard`)
+- [Which browsing neighborhoods could become draft marketplace collections?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec-shard#examples) (`cugraph_leiden`, `cugraph_pagerank`)
 
 ### EMBER2024
 
