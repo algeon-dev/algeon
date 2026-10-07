@@ -479,8 +479,8 @@ async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let attempt = fixture.backend().begin_attempt(AttemptOptions::default()).expect("attempt begins");
     let (sealed_sender, sealed) = mpsc::channel();
-    attempt.register_sealed_execution_observer(move |_report, snapshot, native_execution| {
-        sealed_sender.send((snapshot, native_execution)).expect("the test receives the seal");
+    attempt.register_sealed_execution_observer(move |report, snapshot, native_execution| {
+        sealed_sender.send((report, snapshot, native_execution)).expect("the test receives the seal");
     });
 
     let mut stream = attempt.execute_physical_plan(plan, &SessionContext::new()).unwrap();
@@ -488,8 +488,12 @@ async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
         batch.unwrap();
     }
     attempt.completion().await;
-    let (snapshot, native_execution) = sealed.recv_timeout(Duration::from_secs(5)).expect("the attempt seals");
+    let (report, snapshot, native_execution) = sealed.recv_timeout(Duration::from_secs(5)).expect("the attempt seals");
     let actual = native_execution.expect("the native wrapper's metrics seal with the attempt").metrics;
+    let sealed_peak = report
+        .and_then(|report| report.final_domain_usage)
+        .map(|usage| usize::try_from(usage.peak_bytes).unwrap())
+        .expect("the sealed report carries the attempt's final allocation domain sample");
 
     let plans = snapshot.events().iter().filter_map(|event| event.plan_execution_id.clone()).collect::<BTreeSet<_>>();
     assert_eq!(plans.len(), 1, "the query runs one deferred-host plan: {plans:?}");
@@ -507,6 +511,11 @@ async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
         ..NativeDataFusionExecutionMetrics::from_metrics(&projected.clone_inner())
     };
     assert_eq!(actual.device_to_host_materializations, 1, "the cursor copies the one result batch");
+    assert_eq!(
+        actual.allocator_high_water_bytes,
+        Some(sealed_peak),
+        "the plan's final metrics carry the attempt's allocation peak that the sealed report records"
+    );
     assert_eq!(actual, expected, "DataFusion metrics are the projection of the plan's final metrics");
 
     fs::remove_dir_all(dir).unwrap();

@@ -248,12 +248,23 @@ query id.
 A native memory failure names the operation and the memory facts the native
 layers recorded. For `query_memory_limit_exceeded`, `device_out_of_memory`, and
 `device_allocation_failed`, the message states the native operation, the
-requested bytes, the bytes already in use, and the query grant, each in bytes
-and GiB. The remedy follows: reduce what the failing operation holds by
-filtering or projecting earlier or by splitting the query, or raise the query
-memory cap. An unchanged resubmission fails again. A device allocation failure
-also points at the sealed attempt report for retry guidance. A figure the
-error does not carry is left out of the message.
+requested bytes, the allocation peak, and the query grant, each in bytes and
+GiB. The peak is the highest byte count the allocator recorded for the failing
+scope, including the working set of the failing operation, so a request that
+failed against the grant did not fit beside it. An operation that runs under a
+budget token reports the peak of its stream's allocator member. Any other
+operation reports the peak of the attempt's allocation domain, whose limit is
+the grant. The message carries no current-usage figure, because a sample taken
+once the error is returned reflects the working set the failing operation has
+already released. The remedy follows: reduce what the failing operation holds
+by filtering or projecting earlier or by splitting the query, or raise the
+query memory cap. An unchanged resubmission fails again. A device allocation
+failure also points at the sealed attempt report for retry guidance. A figure
+the error does not carry is left out of the message. `GetQueryStats` keeps the
+requested, peak, grant, and current byte counts as facts of its
+`[structured_error]` section. The `allocator_high_water_bytes` column of its
+`[execution]` row holds the peak of the attempt's allocation domain, for failed
+attempts as well as successful ones.
 
 One code-specific exception: a non-converged native algorithm
 (`algorithm_did_not_converge`) returns `FAILED_PRECONDITION` with an
@@ -283,7 +294,9 @@ when present. For the resource-exhausted kind it additionally projects
 the fact name with `x-algeon-` prepended and underscores written as hyphens,
 for example `x-algeon-requested-allocation-bytes`. The operation values are
 code identifiers. The byte values are re-rendered from a parsed integer, so a
-fact that is not a number is omitted. `native_message` is projected only for client-actionable
+fact that is not a number is omitted. `budget_current_bytes` is the usage
+sampled after the failing operation released its working set, and
+`budget_peak_bytes` includes that working set. `native_message` is projected only for client-actionable
 validation kinds (cancellation, not-found, permission, auth, planning,
 invalid-input, unsupported): internal, dependency, invariant, and execution
 failures never carry raw native text in metadata, however their status
@@ -365,6 +378,34 @@ keeps its three `unsupported_column` fields, and `blocking_kind` is
 Protocol policy outside the built-in server belongs to the application. The
 embedded REST example intentionally maps typed errors before applying its
 ordinary DataFusion fallback, and does not expose raw facts wholesale.
+
+### Rejections in EXPLAIN GPU
+
+[`EXPLAIN GPU`](./gpu-coverage-validation.mdx#rejected-statements) plans its
+statement without executing it, so a statement that fails planning returns a
+`rejected` summary row where execution returns a status. The row carries what
+the status would: `reason_code` is the `x-algeon-error-code` value, and
+`detail_json.detail` is the status message, composed by the same client
+projection. Caller schema detail joins the text as it joins the status message,
+and a failure kind that returns the static internal-failure message above
+returns it in `detail`. The row carries no `x-algeon-*` metadata.
+
+One clause differs. A status message that names a blocking plan element ends
+with the pointer to `EXPLAIN GPU`, and `detail` ends before it, because the
+candidate rows of the same result already list every blocker. For an
+`APPROX_PERCENTILE_CONT` aggregate under `native_required`, execution returns
+
+~~~text
+GPU execution does not support aggregate function approx_percentile_cont; EXPLAIN GPU lists every blocking candidate
+~~~
+
+and the summary row carries
+`"detail":"GPU execution does not support aggregate function approx_percentile_cont"`.
+
+The Rust coverage API adds one field for the process that plans: the
+[`trusted_diagnostic`](./gpu-coverage-validation.mdx#rust-surface) of a
+rejection holds the source-chain text that the static internal-failure message
+withholds. It is never part of the summary row, `coverage_json` or any status.
 
 ## Extending the contract
 

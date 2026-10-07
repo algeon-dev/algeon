@@ -17,6 +17,8 @@ use algeon_datafusion::{
         CumlSqlConfig, GpuOptionKind, MlRelationRole, cuml_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
+    gpu_coverage::validate_query,
+    planner::AlgeonNativeOptimizerConfig,
     session::AlgeonSessionStateBuilderExt,
 };
 #[cfg(feature = "cuml")]
@@ -65,9 +67,22 @@ fn context() -> SessionContext {
 }
 
 fn context_with(config: CumlSqlConfig) -> SessionContext {
-    let ctx = SessionContext::new_with_state(
+    register_fixtures(SessionContext::new_with_state(
         SessionStateBuilder::new_with_default_features().try_with_cuml_sql_config(config).unwrap().build(),
-    );
+    ))
+}
+
+fn native_context() -> SessionContext {
+    register_fixtures(SessionContext::new_with_state(
+        SessionStateBuilder::new_with_default_features()
+            .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+            .try_with_cuml_sql_config(CumlSqlConfig::default())
+            .unwrap()
+            .build(),
+    ))
+}
+
+fn register_fixtures(ctx: SessionContext) -> SessionContext {
     for (name, id, feature) in
         [("vectors", DataType::Int64, DataType::Float32), ("double_vectors", DataType::Int64, DataType::Float64)]
     {
@@ -736,6 +751,55 @@ async fn random_forest_sql_rejects_wrong_labels_and_classifier_only_criterion() 
     let schema = cuml_options_json_schema(CumlOperation::RandomForestRegressor);
     assert!(schema["properties"]["max_leaves"].get("default").is_none());
     assert_eq!(schema["properties"]["training"]["properties"]["label"]["const"], "label");
+}
+
+/// A statement that fails validation is a rejected `EXPLAIN GPU` summary whose
+/// `reason_code` and `detail_json.detail` are the code and the client-visible
+/// message that executing the statement returns, including the caller schema
+/// detail the Flight status appends.
+#[tokio::test]
+async fn explain_gpu_rejection_carries_the_code_and_message_execution_returns() {
+    let ctx = native_context();
+    for (statement, schema_detail) in [
+        (
+            "SELECT * FROM cuml_random_forest_regressor(training => (SELECT id, d0 AS x FROM vectors ORDER BY id), predict => (SELECT id, d0 AS x FROM vectors ORDER BY id))",
+            "",
+        ),
+        (
+            "SELECT * FROM cuml_logistic_regression(training => (SELECT id, d0, d1, label FROM training_int64_labels), predict => (SELECT id, d0, d1 FROM vectors))",
+            " (field 'label' has Arrow type `Int64`)",
+        ),
+    ] {
+        let error = ctx.state().create_logical_plan(statement).await.unwrap_err();
+        let typed = error.find_algeon_error().expect(statement);
+        let message = format!("{}{schema_detail}", typed.message());
+
+        let coverage = validate_query(&ctx, statement).await.unwrap();
+        let rejection = coverage.rejection().unwrap_or_else(|| panic!("{statement}: {coverage:?}"));
+        assert_eq!(rejection.reason_code, typed.code().as_str(), "{statement}");
+        assert_eq!(rejection.detail, message, "{statement}");
+
+        let rows = ctx
+            .sql(&format!(
+                "SELECT row_kind, gpu_path, outcome, reason_code, detail_json \
+                 FROM algeon_explain_coverage('{statement}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let [batch] = rows.as_slice() else { panic!("{statement}: {rows:?}") };
+        let column = |index: usize| batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(batch.num_rows(), 1, "a rejection has no candidate rows: {batch:?}");
+        assert_eq!(column(0).value(0), "summary");
+        assert_eq!(column(1).value(0), "rejected");
+        assert_eq!(column(2).value(0), "rejected_before_execution");
+        assert_eq!(column(3).value(0), typed.code().as_str());
+        let detail_json: serde_json::Value = serde_json::from_str(column(4).value(0)).unwrap();
+        assert_eq!(detail_json["reason_code"], typed.code().as_str());
+        assert_eq!(detail_json["detail"], message);
+    }
 }
 
 /// Schema nullability is not part of the input contract: null values fail at

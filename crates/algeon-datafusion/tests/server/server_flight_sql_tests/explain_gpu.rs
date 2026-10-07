@@ -49,6 +49,18 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
         .unwrap();
     assert_eq!(deferred_batch.num_rows(), 1);
     assert_eq!(deferred_gpu_path.value(0), "rejected");
+    // The rejected summary carries the code and the message that executing the
+    // statement returns.
+    let execution_status = unwrap_flight_status(
+        client.execute("SELECT * FROM explain_gpu_missing_relation".to_string(), None).await.unwrap_err(),
+    );
+    assert_eq!(
+        coverage_string(deferred_batch, &deferred_schema, "reason_code", 0),
+        execution_status.metadata().get(ERROR_CODE_METADATA_KEY).unwrap().to_str().unwrap()
+    );
+    let deferred_detail: serde_json::Value =
+        serde_json::from_str(coverage_string(deferred_batch, &deferred_schema, "detail_json", 0)).unwrap();
+    assert_eq!(deferred_detail["detail"], execution_status.message());
 
     let rows_info = client.execute("EXPLAIN GPU VERBOSE SELECT random() AS r".to_string(), None).await.unwrap();
     let advertised_schema = rows_info.clone().try_decode_schema().unwrap();

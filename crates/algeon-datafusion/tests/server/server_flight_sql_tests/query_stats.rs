@@ -149,6 +149,31 @@ async fn strict_flight_names_the_blocking_aggregate_function_in_status_metadata_
     assert_eq!(metadata(BLOCKING_KIND_METADATA_KEY), Some("aggregate_function"));
     assert_eq!(metadata(BLOCKING_SUBJECT_METADATA_KEY), Some("aggregate function approx_percentile_cont"));
     assert_eq!(metadata(REASON_METADATA_KEY), Some("unsupported_operator"));
+
+    // The report lists every blocking candidate, so its rejection text names the
+    // subject and leaves out the status message's pointer to the report.
+    let explain = client
+        .execute(
+            "EXPLAIN GPU SELECT APPROX_PERCENTILE_CONT(x, 0.5) AS p FROM (VALUES (1.0), (2.0)) AS t(x)".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let (explain_schema, explain_batches) = execute_flight_info_with_stream_schema(&mut client, explain).await;
+    let explain = &explain_batches[0];
+    assert_eq!(coverage_string(explain, &explain_schema, "gpu_path", 0), "rejected");
+    assert_eq!(
+        coverage_string(explain, &explain_schema, "reason_code", 0),
+        status.metadata().get(ERROR_CODE_METADATA_KEY).unwrap().to_str().unwrap()
+    );
+    let summary_detail: serde_json::Value =
+        serde_json::from_str(coverage_string(explain, &explain_schema, "detail_json", 0)).unwrap();
+    assert_eq!(summary_detail["detail"], "GPU execution does not support aggregate function approx_percentile_cont");
+    let blocked = coverage_candidate_row(explain, &explain_schema, "not_supported");
+    assert_eq!(
+        coverage_string(explain, &explain_schema, "blocking", blocked),
+        "aggregate function approx_percentile_cont"
+    );
     let payload = get_query_stats_raw(&mut client, &query_id).await;
 
     server.abort();

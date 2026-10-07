@@ -19,7 +19,7 @@ use futures::TryStreamExt;
 use query_runtime::observability::AttemptEvidenceProvenance;
 use support::{
     CONCURRENCY_SQL, ConcurrencyServer, GIB, MANAGED_CAPACITY_BYTES, MAX_ACTIVE_ATTEMPTS, QUERY_CAP_BYTES,
-    SMALL_TABLE_ROWS, sealed_report_for,
+    SMALL_TABLE_ROWS, execution_value, query_stats, sealed_report_for,
 };
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
@@ -200,6 +200,38 @@ async fn one_query_exceeding_its_cap_leaves_the_other_query_and_the_ledger_intac
         Some("query_memory_limit_exceeded"),
         "the failure must be attributed to the query's own cap: {status:?}"
     );
+    // The status and the stats of the failed query carry the same byte counts,
+    // and the peak makes the failure add up: the request did not fit beside it.
+    let message = status.message();
+    assert!(message.contains("the allocation peak was"), "{message}");
+    assert!(message.contains(&format!("the query grant is {SMALL_QUERY_CAP_BYTES} bytes")), "{message}");
+    let metadata_bytes = |key: &str| -> u64 {
+        let value = status.metadata().get(key).and_then(|value| value.to_str().ok());
+        value.unwrap_or_else(|| panic!("{key} missing: {status:?}")).parse().expect("byte count metadata")
+    };
+    let requested = metadata_bytes("x-algeon-requested-allocation-bytes");
+    let query_id = status
+        .metadata()
+        .get("x-algeon-query-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("a failed statement carries its query id")
+        .to_string();
+    let payload = query_stats(&mut server.client().await, &query_id).await;
+    let execution = |column: &str| execution_value(&payload, column);
+    assert_eq!(execution("query_grant_bytes"), SMALL_QUERY_CAP_BYTES.to_string(), "{payload}");
+    let peak: u64 = execution("allocator_high_water_bytes")
+        .parse()
+        .unwrap_or_else(|_| panic!("a failed attempt reports its allocator high-water mark:\n{payload}"));
+    assert!(
+        peak + requested > SMALL_QUERY_CAP_BYTES && peak <= SMALL_QUERY_CAP_BYTES,
+        "peak {peak} and request {requested} must explain a failure against the {SMALL_QUERY_CAP_BYTES} byte grant"
+    );
+    for fact in [
+        format!("fact.requested_allocation_bytes={requested}\n"),
+        format!("fact.budget_bytes={SMALL_QUERY_CAP_BYTES}\n"),
+    ] {
+        assert!(payload.contains(&fact), "{fact} missing from the structured error:\n{payload}");
+    }
 
     // The failed query's capacity returns to the ledger once its cleanup
     // completes; the holder's grant is untouched throughout.

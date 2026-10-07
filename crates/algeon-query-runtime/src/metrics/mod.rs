@@ -86,7 +86,8 @@ pub struct QueryMetrics {
     pub peak_device_memory_bytes: Option<u64>,
     /// Peak bytes retained by resident cudf DataFrames.
     pub resident_dataframe_peak_bytes: Option<u64>,
-    /// cuDF allocator high-water bytes when reported by lower layers.
+    /// Allocation high-water bytes of the attempt's allocation domain when the
+    /// plan execution ended. Absent without an admitted attempt.
     pub allocator_high_water_bytes: Option<u64>,
     /// Largest lower-level budgeted cuDF peak reported by a task-like operation.
     pub max_task_observed_peak_bytes: Option<u64>,

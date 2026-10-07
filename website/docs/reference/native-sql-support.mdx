@@ -237,6 +237,7 @@ SELECT row_kind,
        reason_code,
        remedy_code,
        remedy,
+       detail_json,
        coverage_json
 FROM algeon_explain_coverage('
   SELECT l_returnflag, sum(l_quantity)
@@ -248,10 +249,11 @@ FROM algeon_explain_coverage('
 ```
 
 The `summary` row reports `gpu_path`: `native`, `partial_native`, `cpu`, or
-`rejected`. Candidate rows make the stable reason and remedy first-class
-columns; `coverage_json` on the summary retains projected candidate
-source-capability and cost evidence, plus runtime and configuration evidence.
-Flight SQL users can write `EXPLAIN GPU <query>` for
+`rejected`. A rejected summary carries the code and message that executing the
+statement returns, in `reason_code` and `detail_json`. Candidate rows make the
+stable reason and remedy first-class columns; `coverage_json` on the summary
+retains projected candidate source-capability and cost evidence, plus runtime
+and configuration evidence. Flight SQL users can write `EXPLAIN GPU <query>` for
 the identical schema without escaping the query into a SQL literal. Read
 `runtime_caveats` too: admission, data-dependent memory, and device-side graph
 validation are execution-time contracts.

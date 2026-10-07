@@ -8,26 +8,23 @@
 //! `native_*` facts while this layer maps them into adapter-level
 //! [`ErrorCode`] values suitable for DataFusion.
 
-#[cfg(feature = "server")]
-use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
     fmt,
+    sync::Arc,
 };
 
-use datafusion::common::DataFusionError;
-#[cfg(feature = "server")]
 use datafusion::{
-    common::SchemaError,
+    common::{DataFusionError, SchemaError},
     logical_expr::{DdlStatement, LogicalPlan},
     object_store::Error as ObjectStoreError,
 };
-#[cfg(feature = "server")]
 use query_engine::object_store_error::query_error_code_for_object_store_error;
 use query_planning::error::QueryError;
 use query_runtime::native_error::{cudf_message_fact, query_error_code_for_cudf_error};
 
+pub(crate) mod client;
 mod code;
 
 use code::code_for_native_error;
@@ -36,6 +33,10 @@ pub use code::{ErrorCode, ErrorKind, ErrorStatus};
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
+/// Byte counts of a native memory failure. A numeric value carries no caller
+/// text, so it joins the retained query diagnostics.
+const NATIVE_MEMORY_FACT_KEYS: [&str; 4] =
+    ["requested_allocation_bytes", "budget_bytes", "budget_peak_bytes", "budget_current_bytes"];
 const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
 const EMPTY_FACT_KEY: &str = "<empty>";
 const FALLBACK_OPERATION: &str = "algeon_datafusion.error.unspecified_operation";
@@ -169,7 +170,6 @@ fn find_algeon_error_in<'a>(
 }
 
 /// The statement whose DataFusion error [`classify`] maps.
-#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailedStatement {
     /// `DROP TABLE` or `DROP VIEW`. Neither reads table data, and DataFusion
@@ -180,8 +180,11 @@ pub(crate) enum FailedStatement {
     Other,
 }
 
-#[cfg(feature = "server")]
 impl FailedStatement {
+    #[cfg_attr(
+        not(feature = "server"),
+        expect(dead_code, reason = "only the Flight statement boundary names a DDL statement")
+    )]
     pub(crate) fn of(plan: &LogicalPlan) -> Self {
         match plan {
             LogicalPlan::Ddl(DdlStatement::DropTable(_) | DdlStatement::DropView(_)) => Self::DropTableOrView,
@@ -198,7 +201,6 @@ impl FailedStatement {
 /// statement that failed. The walk visits at most `MAX_SOURCE_CHAIN_DEPTH + 1`
 /// layers and classifies the deepest DataFusion error seen, so an arbitrarily
 /// deep wrapper tree still yields a defined code.
-#[cfg(feature = "server")]
 pub(crate) fn classify(error: &DataFusionError, statement: FailedStatement) -> ErrorCode {
     if let Some(adapter) = error.find_algeon_error() {
         return adapter.code();
@@ -791,7 +793,12 @@ impl Error {
                 collision_keys.push(key);
                 continue;
             }
-            error.facts.insert(key, value.into_owned());
+            let value = value.into_owned();
+            if NATIVE_MEMORY_FACT_KEYS.contains(&key) && value.parse::<u64>().is_ok() {
+                error.facts.insert_log_safe(key, value);
+            } else {
+                error.facts.insert(key, value);
+            }
         }
         if !collision_keys.is_empty() {
             error.facts.insert_log_safe(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));

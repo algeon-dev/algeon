@@ -225,3 +225,30 @@ pub(crate) async fn sealed_report_for(server: &ConcurrencyServer, sql: &str) -> 
         sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// The `GetQueryStats` payload of `query_id` once its attempt report is sealed.
+pub(crate) async fn query_stats(client: &mut FlightSqlServiceClient<Channel>, query_id: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let action =
+            arrow_flight::Action { r#type: "GetQueryStats".to_string(), body: query_id.as_bytes().to_vec().into() };
+        let mut results = client.do_action(action).await.expect("GetQueryStats action");
+        let result = results.message().await.expect("GetQueryStats result").expect("one GetQueryStats result");
+        let payload = String::from_utf8(result.body.to_vec()).expect("stats are UTF-8 text");
+        if payload.contains("# sealed=true\n") && payload.contains("# attempt_id=") {
+            return payload;
+        }
+        assert!(Instant::now() < deadline, "stats never sealed:\n{payload}");
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The value of `column` in the single row of the `[execution]` section of a stats payload.
+pub(crate) fn execution_value(payload: &str, column: &str) -> String {
+    let section = payload.split("[execution]\n").nth(1).expect("stats carry an [execution] section");
+    let mut lines = section.lines();
+    let header = lines.next().expect("execution header").split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("execution row").split('\t').collect::<Vec<_>>();
+    let index = header.iter().position(|name| *name == column).unwrap_or_else(|| panic!("no {column} column"));
+    row[index].to_string()
+}

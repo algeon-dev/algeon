@@ -180,7 +180,7 @@ selection; `[execution]` contains the attempt's observed work. Available
 | Which native operator ran in which task? | `plan_task_mapping_rows`, `task_operator_rows`, `task_runtime_rows` | Correlate native plan nodes with compiled tasks and their observations. |
 | How much input survived? | `row_groups_selected`, `source_chunks_committed`, `partial_aggregate_input_rows`, `output_rows` | Row groups, chunks, aggregate input rows and result rows have different scopes. |
 | Did aggregation require merging? | `partial_aggregate_count`, `final_merge_attempts`, `final_merge_levels` | Explain the native chunk-and-merge path without inferring it from CPU partitions. |
-| What constrained device memory? | `query_grant_bytes`, `allocator_high_water_bytes`, `resident_dataframe_peak_bytes` | The grant is the allocation cap. Allocator and resident-dataframe peaks measure different memory scopes. |
+| What constrained device memory? | `query_grant_bytes`, `allocator_high_water_bytes`, `resident_dataframe_peak_bytes` | The grant is the allocation cap. Allocator and resident-dataframe peaks measure different memory scopes. The allocator peak covers the attempt's whole allocation domain and is present for failed attempts. |
 | Did execution and cleanup finish? | `attempt_outcome`, `attempt_cleanup_disposition`, `attempt_capacity_disposition` | Distinguish the query result from cleanup and the capacity's reuse state. |
 
 For task edges, barriers and a timeline, `GetQueryRuntimeArtifact` returns a

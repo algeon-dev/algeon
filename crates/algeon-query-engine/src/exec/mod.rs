@@ -128,7 +128,9 @@ use crate::{
         plan_source_chunk_batches_with_row_cap,
     },
     datatypes::timestamp_unit_to_cudf_resolution,
-    native_error::{cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure},
+    native_error::{
+        cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure, with_attempt_domain_memory,
+    },
     prepared::*,
     rapids_backend::rapids_analysis_context,
 };
@@ -254,7 +256,13 @@ fn execute_query_plan_with_observation(
                 Some(&execution_scope),
             )
         })
+        .map_err(|error| with_attempt_domain_memory(context, error))
         .map_err(|error| with_optional_trace_id(error.with_query_id(query_id.clone()), trace_id.as_ref()));
+    // The mark is attempt-wide and monotone, so the last plan to end carries
+    // the attempt's peak, failed plans included.
+    if let Ok(Some(usage)) = context.attempt_allocation_domain_usage() {
+        execution_metrics.record_allocator_high_water_bytes(usage.peak_bytes);
+    }
     let terminal = match &result {
         Ok(_) => RuntimeTerminalOutcome::Succeeded,
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
