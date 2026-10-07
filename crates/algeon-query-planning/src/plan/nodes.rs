@@ -95,7 +95,8 @@ pub struct WindowNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
     /// Partition expressions. Current executable forms require column
-    /// expressions and treat null partition keys as equal.
+    /// expressions and treat null partition keys as equal. An empty list makes
+    /// the whole input one partition.
     pub partition_by: Vec<Expr>,
     /// Window ordering. Ranking functions require at least one ordering key.
     pub order_by: Vec<SortExpr>,

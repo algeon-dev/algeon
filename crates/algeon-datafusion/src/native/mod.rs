@@ -156,7 +156,7 @@ use normalize::{
     NormalizedNativeAggregate, NormalizedNativeInput, NormalizedNativeLiteralSource,
     make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan,
 };
-pub(crate) use operator_support::{first_join_operator, first_operator_without_native_counterpart};
+pub(crate) use operator_support::first_join_operator;
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_planning::{
     datatypes::diagnostic_arrow_type,
@@ -330,7 +330,12 @@ fn lower_physical_plan_to_native_with_mode(
             report.push_not_supported_with_detail(
                 rejection.candidate,
                 rejection.reason,
-                NotSupportedDetail { column, blocker: Some(rejection.blocker), ..NotSupportedDetail::default() },
+                NotSupportedDetail {
+                    column,
+                    blocker: Some(rejection.blocker),
+                    single_partition: rejection.single_partition,
+                    ..NotSupportedDetail::default()
+                },
             );
             Ok(NativeLoweringResult { plan: None, report, source_diagnostics: Vec::new() })
         },

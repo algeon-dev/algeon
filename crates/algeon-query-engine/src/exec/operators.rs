@@ -290,13 +290,6 @@ fn execute_partition_window_aggregate(
     output_schema: &ArrowSchemaRef,
     metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
-    if node.spec.partition_by.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedOperator,
-            "query_engine.window.aggregate",
-            "native partition aggregate windows currently require at least one partition key",
-        ));
-    }
     if !node.spec.order_by.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
@@ -341,12 +334,22 @@ fn execute_partition_window_aggregate(
     )?
     .into_frame();
 
-    let keys = node
-        .spec
-        .partition_by
-        .iter()
-        .map(|expr| lower_column_expr(expr, "query_engine.window.aggregate.merge_key"))
-        .collect::<Result<Vec<_>>>()?;
+    // Without partition keys the aggregate is global and returns one row. A
+    // constant key on both sides of the merge broadcasts it to every input row.
+    let mut global_key = Vec::new();
+    let (keyed, keys) = rank_partition_keys(context, frame.clone(), &node.spec.partition_by, &mut global_key)?;
+    let aggregate_frame = match global_key.first() {
+        Some(key) => {
+            aggregate_frame.on(Exec::RETAINED).with_columns([lit(0i32).alias(key.as_str())]).map_err(|error| {
+                cudf_query_error(
+                    "query_engine.window.aggregate.global_key",
+                    "failed to append the global partition key to the window aggregate output",
+                    error,
+                )
+            })?
+        },
+        None => aggregate_frame,
+    };
     let aggregate_aliases = node
         .spec
         .functions
@@ -365,17 +368,17 @@ fn execute_partition_window_aggregate(
     // emits them in hash-table order, so a row index restores input order.
     // Only the keys and the row index join, so payload columns are neither
     // gathered by the join nor reordered by the restoring sort.
-    let row_index_name = unique_temp_column_name(&frame, "__algeon_native_window_aggregate_row_index");
-    let row_index_series = frame.on(Exec::RETAINED).row_positions().map_err(|error| {
+    let row_index_name = unique_temp_column_name(&keyed, "__algeon_native_window_aggregate_row_index");
+    let row_index_series = keyed.on(Exec::RETAINED).row_positions().map_err(|error| {
         cudf_query_error(
             "query_engine.window.aggregate.row_index",
             "failed to create partition aggregate window row index",
             error,
         )
     })?;
-    let indexed = frame
+    let indexed = keyed
         .select(distinct_names(keys.iter().cloned()))
-        .and_then(|keyed| keyed.with_column(row_index_name.as_str(), row_index_series))
+        .and_then(|key_columns| key_columns.with_column(row_index_name.as_str(), row_index_series))
         .map_err(|error| {
             cudf_query_error(
                 "query_engine.window.aggregate.row_index",

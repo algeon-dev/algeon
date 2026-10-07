@@ -31,7 +31,10 @@ use crate::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::FinalPlanDisposition,
     planner::{AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig},
-    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
+    report::{
+        CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport,
+        SinglePartitionOutcome,
+    },
     session::AlgeonSessionStateBuilderExt,
 };
 
@@ -341,6 +344,55 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
     assert_eq!(outcomes[0].selection, CandidateOutcomeKind::NotSupported);
     assert_eq!(outcomes[0].candidate_family, "unsupported_native_physical_plan");
     assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Expression));
+}
+
+#[test]
+fn candidate_outcomes_name_the_engine_gap_when_one_partition_keeps_the_rejection() {
+    let rejected = |single_partition| CandidateOutcome::NotSupported {
+        candidate: GpuCandidate::new("FinalAggregateExec", 1),
+        capability_reason: CapabilityReason::NativeDistributedAggregateUnsupported,
+        detail: NotSupportedDetail { single_partition, ..NotSupportedDetail::default() },
+    };
+    let report = PlanningReport::from_outcomes([
+        rejected(SinglePartitionOutcome::Lowers),
+        rejected(SinglePartitionOutcome::StillRejected),
+    ]);
+
+    let remedies = candidate_outcomes_from_report(&report)
+        .into_iter()
+        .map(|outcome| outcome.remedy.map(|remedy| (remedy.code, remedy.kind)))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        remedies,
+        [
+            Some(("set_target_partitions_one", QueryGpuRemedyKind::ConfigAction)),
+            Some(("unsupported_operator_gap", QueryGpuRemedyKind::EngineGap)),
+        ]
+    );
+}
+
+/// The branches of a `UNION ALL` stay separate partitions at one partition, so
+/// DataFusion still merges them to order the rows, and the validation report
+/// carries the engine gap instead of the setting that cannot help.
+#[tokio::test]
+async fn validate_query_names_the_engine_gap_for_a_merge_of_union_branches_at_one_partition() {
+    let ctx = validation_context(bounded_optimizer_config());
+    ctx.sql("SET datafusion.execution.target_partitions = 1").await.unwrap().collect().await.unwrap();
+
+    let coverage =
+        validate_query(&ctx, "SELECT a, b FROM (SELECT 1 AS a, 2 AS b UNION ALL SELECT 3, 4) ORDER BY b + 1")
+            .await
+            .unwrap();
+
+    let rejected = coverage
+        .candidate_outcomes
+        .iter()
+        .find(|outcome| outcome.selection == CandidateOutcomeKind::NotSupported)
+        .expect("the merge of union branches is rejected");
+    assert_eq!(rejected.reason_code.as_deref(), Some("native_sort_preserving_merge_unsupported"));
+    let remedy = rejected.remedy.as_ref().expect("a rejected candidate carries a remedy");
+    assert_eq!((remedy.code, remedy.kind), ("unsupported_operator_gap", QueryGpuRemedyKind::EngineGap));
 }
 
 #[tokio::test]

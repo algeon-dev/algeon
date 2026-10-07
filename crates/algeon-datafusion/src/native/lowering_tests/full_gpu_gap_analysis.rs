@@ -110,6 +110,25 @@ const WINDOW_CASES: &[GpuGapCase] = &[
         },
     },
     GpuGapCase {
+        id: "window_whole_input_aggregate",
+        feature: GpuGapFeature::Window,
+        sql: "SELECT id, COUNT(*) OVER () AS total FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "window_cumulative_count",
+        feature: GpuGapFeature::Window,
+        sql: "SELECT id, COUNT(payload) OVER (PARTITION BY key ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS c FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedOperator,
+            unsupported_category: "window_frame_rows_unbounded_preceding_to_current_row",
+            blocking: (
+                "window_function",
+                "window function count over frame ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+            ),
+        },
+    },
+    GpuGapCase {
         id: "window_lag_without_order_by",
         feature: GpuGapFeature::Window,
         sql: "SELECT id, LAG(payload) OVER (PARTITION BY key) AS prev_payload FROM bench",

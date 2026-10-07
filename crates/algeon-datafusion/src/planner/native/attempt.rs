@@ -33,10 +33,10 @@ use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode, Result},
     native::{
-        FooterScope, NativeLoweringResult, first_join_operator, first_operator_without_native_counterpart,
-        floating_statistical_aggregate_input_is_partitioned, lower_count_only_physical_plan_to_native,
-        lower_physical_plan_to_native, native_plan_reproduces_declared_output_ordering,
-        reestablish_declared_output_ordering_if_needed, wrap_candidate_with_declared_output_ordering_sort,
+        FooterScope, NativeLoweringResult, first_join_operator, floating_statistical_aggregate_input_is_partitioned,
+        lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
+        native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
+        wrap_candidate_with_declared_output_ordering_sort,
     },
     native_exec::{
         AlgeonNativeExec, AlgeonNativeExecutionConfig, NativeOutput, gpu_resident_producer,
@@ -435,14 +435,12 @@ fn rejected_attempt(
     native_execution_config: &AlgeonNativeExecutionConfig,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let reason = rejection_capability_reason(rejected_plan, rejection);
-    // The admission rejection names a contract rule on the native plan. The
-    // DataFusion operator that has no counterpart names where in the query it
-    // arose.
+    // Lowering accepted every DataFusion operator of the candidate, so naming
+    // one for a validation refusal would blame an operator that lowered. The
+    // refusal's own rule is the subject; only the join contract points back at
+    // a DataFusion join.
     let blocker = match reason {
         CapabilityReason::NativeBoundedJoinUnsupported => first_join_operator(plan.as_ref()),
-        CapabilityReason::UnsupportedOperator => {
-            first_operator_without_native_counterpart(plan.as_ref(), &candidate.shape)
-        },
         _ => None,
     };
     let report = native_execution_rejection_report_for_candidate(
@@ -746,18 +744,77 @@ mod tests {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
+    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     use query_planning::{
         capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions, Reason},
         chunk::SourceChunkPlanningOptions,
         dynamic_filter::DynamicFilterExecutionOptions,
-        expr::{Expr, SortExpr},
+        expr::{AggregateFunction, Expr, SortExpr},
         optimizer::SemijoinReductionOptions,
         plan::{NativePlanCostFacts, WindowFunction, WindowSpec},
         source::LiteralBatchSource,
     };
 
     use super::*;
-    use crate::native_exec::SourceChunking;
+    use crate::{native::NativeLoweringResult, native_exec::SourceChunking};
+
+    /// Plan validation refuses a cumulative COUNT window, which the engine has
+    /// no scan kernel for. Every operator of the DataFusion candidate lowered,
+    /// so the report must not blame the union at its root.
+    #[test]
+    fn validation_refusal_is_not_blamed_on_a_datafusion_operator() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let window = builder
+            .add_window(
+                source,
+                WindowSpec::new(
+                    Vec::new(),
+                    vec![SortExpr::new(Expr::column("value"), false, false)],
+                    vec![WindowFunction::cumulative_aggregate(
+                        AggregateFunction::Count,
+                        Expr::column("value"),
+                        Field::new("running_count", DataType::Int64, false),
+                    )],
+                ),
+            )
+            .unwrap();
+        let native_plan =
+            builder.finish_with_host_sink(window).unwrap().clone_with_deferred_host_materialization_sink();
+        let execution_config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
+        let AdmissionDecision::Rejected(rejection) =
+            native_admission_decision(&native_plan, &execution_config).expect("the candidate is decidable")
+        else {
+            panic!("a cumulative COUNT window is refused by plan validation");
+        };
+        assert!(rejection.validation_error().is_some());
+        let union = UnionExec::try_new(vec![
+            Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>,
+            Arc::new(EmptyExec::new(schema)),
+        ])
+        .unwrap();
+        let lowering =
+            NativeLoweringResult { plan: None, report: PlanningReport::new(), source_diagnostics: Vec::new() };
+
+        let attempt = rejected_attempt(
+            union,
+            GpuCandidate::new("UnionExec", 1),
+            (&native_plan, &rejection),
+            NativeOptimizerDiagnostics::default(),
+            lowering,
+            &execution_config,
+        )
+        .unwrap();
+
+        let [CandidateOutcome::NotSupported { capability_reason, detail, .. }] = attempt.report.outcomes() else {
+            panic!("the candidate is not supported: {:?}", attempt.report.outcomes());
+        };
+        assert_eq!(*capability_reason, CapabilityReason::UnsupportedOperator);
+        let blocking = detail.blocking().expect("the refusal names a subject");
+        assert_eq!(blocking.kind(), "compiled_contract", "{}", blocking.text());
+    }
 
     #[test]
     fn non_join_candidate_is_rejected_at_planning_with_its_missing_contract() {

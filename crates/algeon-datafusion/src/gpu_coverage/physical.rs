@@ -75,7 +75,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 reason_kind: Some(capability_reason.facts().kind),
                 detail: candidate.shape.to_string(),
                 category: Some(capability_reason.facts().triage.as_str().to_string()),
-                remedy: Some(capability_reason.facts().remedy),
+                remedy: Some(capability_reason.remedy(detail)),
                 blocking: detail.blocking(),
                 cost_evidence: None,
             },

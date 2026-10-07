@@ -4,10 +4,15 @@
 //! reads: the report code, triage code, coverage reason kind and remedy, the
 //! default TSV category, the data-layout property, and the Flight log class.
 //! A changed value changes every report that carries it, in place.
+//! `CapabilityReason::remedy` refines the table's remedy with what a
+//! candidate's detail says about one partition.
 
 pub use query_planning::triage::TriageCode;
 
-use crate::gpu_coverage::{QueryGpuCandidateReasonKind, QueryGpuRemedy, QueryGpuRemedyKind};
+use crate::{
+    gpu_coverage::{QueryGpuCandidateReasonKind, QueryGpuRemedy, QueryGpuRemedyKind},
+    report::{NotSupportedDetail, SinglePartitionOutcome},
+};
 
 /// Stable reason codes explaining why a candidate cannot execute on the native
 /// GPU path.
@@ -115,6 +120,21 @@ impl CapabilityReason {
         self.facts().code
     }
 
+    /// The remedy of a candidate rejected with this reason.
+    ///
+    /// A reason whose table remedy is to plan for one partition keeps it only
+    /// when that lowers the candidate. When the rejected shape remains at one
+    /// partition, the candidate carries the engine gap of an unsupported
+    /// operator instead, so the remedy never names an action that cannot help.
+    pub(crate) fn remedy(self, detail: &NotSupportedDetail) -> QueryGpuRemedy {
+        let remedy = self.facts().remedy;
+        if detail.single_partition == SinglePartitionOutcome::StillRejected && remedy == SINGLE_PARTITION_REMEDY {
+            OPERATOR_GAP_REMEDY
+        } else {
+            remedy
+        }
+    }
+
     /// Every projection of this reason.
     pub const fn facts(self) -> ReasonFacts {
         match self {
@@ -122,11 +142,7 @@ impl CapabilityReason {
                 code: "unsupported_operator",
                 triage: TriageCode::UnsupportedOperator,
                 kind: QueryGpuCandidateReasonKind::Operator,
-                remedy: QueryGpuRemedy::new(
-                    "unsupported_operator_gap",
-                    QueryGpuRemedyKind::EngineGap,
-                    "The physical operator is not yet supported by native lowering; rewrite the query or accept the DataFusion path.",
-                ),
+                remedy: OPERATOR_GAP_REMEDY,
                 tsv_category: "operator_shape",
                 layout_property: None,
                 flight_class: FlightSqlNativeNotSupportedClass::Other,
@@ -298,8 +314,16 @@ impl FlightSqlNativeNotSupportedClass {
 
 const DECLARED_OUTPUT_ORDERING: &str = "declared_output_ordering";
 
+const OPERATOR_GAP_REMEDY: QueryGpuRemedy = QueryGpuRemedy::new(
+    "unsupported_operator_gap",
+    QueryGpuRemedyKind::EngineGap,
+    "The physical operator is not yet supported by native lowering; rewrite the query or accept the DataFusion path.",
+);
+
 /// The remedy for a plan DataFusion shaped for several partitions. The
-/// blocking subject of the candidate names the operator.
+/// blocking subject of the candidate names the operator. A candidate whose
+/// rejected shape remains at one partition carries [`OPERATOR_GAP_REMEDY`]
+/// instead.
 const SINGLE_PARTITION_REMEDY: QueryGpuRemedy = QueryGpuRemedy::new(
     "set_target_partitions_one",
     QueryGpuRemedyKind::ConfigAction,

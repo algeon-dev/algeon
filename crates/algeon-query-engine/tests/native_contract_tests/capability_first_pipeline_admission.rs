@@ -22,8 +22,8 @@ use query_planning::{
     expr::GroupingSetsSpec,
     mode::StatisticalAggregateExecutionMode,
     pipeline::{
-        AcceptedInputForm, AggregateInputHints, PipelineTaskKind, ResidentDataForm, SinkBoundaryKind, SourceOutput,
-        SourceReadPlan, TaskPhysical,
+        AcceptedInputForm, AggregateInputHints, PipelineTaskKind, ResidentDataForm, ResourceSharing, SinkBoundaryKind,
+        SourceOutput, SourceReadPlan, TaskPhysical,
     },
     plan::QueryPlan,
     policy::PlanningPolicy,
@@ -150,6 +150,56 @@ fn capability_admission_accepts_independent_source_unary_branches_behind_union()
         );
     }
     assert!(decision.admission().is_some(), "admitted union-scope pipelines reach the compiled executor");
+}
+
+/// The plan builder interns identical UNION ALL branches into one node, so
+/// the union reads one producer through two inputs. The producer's resource
+/// lists the union once per input, which makes it shared: the first read must
+/// not move the payload out from under the second.
+#[test]
+fn capability_admission_shares_a_producer_that_feeds_one_union_through_two_inputs() {
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+        .expect("literal batch");
+    for computed in [false, true] {
+        let mut builder = QueryPlanBuilder::new();
+        let mut branch = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        if computed {
+            branch = builder
+                .add_projection(
+                    branch,
+                    vec![ProjectionOutput::new(
+                        Expr::column("order_key"),
+                        Field::new("order_key", DataType::Int32, false),
+                    )],
+                )
+                .unwrap();
+        }
+        let union = builder.add_union(vec![branch, branch], Arc::clone(&schema)).unwrap();
+        let plan = builder.finish_with_host_sink(union).unwrap();
+
+        let decision = admit(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+        )
+        .expect("admission should not error");
+        let pipeline = decision
+            .admission()
+            .unwrap_or_else(|| panic!("computed={computed}: {:?}", decision.rejection()))
+            .pipeline();
+        let union_task =
+            pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::Union).expect("one union task");
+        let [first, second] = union_task.input_resources() else {
+            panic!("the union reads one resource per input: {:?}", union_task.input_resources());
+        };
+        assert_eq!(first, second, "computed={computed}");
+        let resource = pipeline.resources().iter().find(|resource| resource.id() == *first).unwrap();
+        assert_eq!(resource.consumers(), [union_task.id(), union_task.id()], "computed={computed}");
+        assert_eq!(resource.sharing(), ResourceSharing::SharedImmutableFrame, "computed={computed}");
+    }
 }
 
 #[test]

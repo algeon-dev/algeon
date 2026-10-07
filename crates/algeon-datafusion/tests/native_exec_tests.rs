@@ -49,7 +49,10 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::executor::block_on;
-use parquet::arrow::ArrowWriter;
+use parquet::{
+    arrow::ArrowWriter,
+    file::{metadata::SortingColumn, properties::WriterProperties},
+};
 use proptest::prelude::*;
 use query_planning::{
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
@@ -1442,6 +1445,24 @@ fn windows_sharing_a_sort_keep_the_order_the_query_relies_on() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// An empty OVER clause aggregates the whole input: alone, beside a ranking
+/// window with its own ordering, and as the total a rank is compared with.
+#[test]
+fn whole_input_aggregate_windows_match_datafusion() {
+    let (dir, required, cpu) = partition_window_contexts("algeon-datafusion-native-exec-window-whole-input");
+    for query in [
+        "SELECT p, o, x, COUNT(*) OVER () AS n, SUM(x) OVER () AS s FROM input ORDER BY p, o, x",
+        "SELECT p, rk, n FROM (SELECT p, ROW_NUMBER() OVER (ORDER BY p, o, x) AS rk, COUNT(*) OVER () AS n \
+         FROM input) ORDER BY rk",
+        "SELECT p, o, x FROM (SELECT p, o, x, ROW_NUMBER() OVER (ORDER BY x DESC, p, o) AS rk, \
+         COUNT(*) OVER () AS n FROM input) WHERE rk <= n / 100 ORDER BY rk",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// DataFusion inserts a multi-partition partition-preserving SortExec under
 /// window aggregates when target_partitions > 1. The native planner must
 /// normalize this input into a native sort and lower the entire window plan
@@ -1719,6 +1740,119 @@ fn windows_over_a_hash_join_match_datafusion() {
         // No final ORDER BY: the window's own output order is the result order.
         "SELECT t.a, t.b, t.id, LEAD(t.v) OVER (PARTITION BY t.a ORDER BY t.b, t.id) AS next \
          FROM t JOIN u ON t.k = u.k",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Branches of a UNION ALL that read one table, or one aggregate CTE, lower to
+/// one native node that the union reads through two inputs. Both inputs see
+/// every row, so the result holds each row twice, as in DataFusion.
+#[test]
+fn unions_reading_one_producer_twice_match_datafusion() {
+    // DataFusion runs the partitions of a union on spawned tasks.
+    let runtime = Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let _runtime = runtime.enter();
+    let (dir, required, cpu) = window_join_contexts("algeon-datafusion-native-exec-self-union");
+    for query in [
+        "SELECT id FROM t UNION ALL SELECT id FROM t ORDER BY id",
+        // DataFusion prunes the unused window, which leaves the same scan twice.
+        "SELECT id FROM t UNION ALL SELECT id FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY a, id) AS rk FROM t) x \
+         ORDER BY id",
+        "WITH c AS (SELECT a, SUM(v) AS s FROM t GROUP BY a) SELECT a, s FROM c UNION ALL SELECT a, s FROM c \
+         ORDER BY a, s",
+        "SELECT COUNT(*), SUM(id) FROM (SELECT id FROM t UNION ALL SELECT id FROM t UNION ALL SELECT id FROM t)",
+    ] {
+        let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
+        assert_eq!(actual, expected, "{query}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Writes a node table and an edge table whose Parquet footers declare their
+/// sort order, as the DBLP citation fixture does, and registers a view of the
+/// edges between filtered nodes. Returns a NativeRequired context and a
+/// DataFusion CPU context over them.
+fn sorted_graph_contexts(prefix: &str) -> (std::path::PathBuf, SessionContext, SessionContext) {
+    const NODES: i64 = 3_000;
+    const EDGES: i64 = 3_000;
+    let dir = unique_temp_dir(prefix);
+    let write = |name: &str, columns: Vec<(&str, Vec<i64>)>| {
+        let schema = Arc::new(Schema::new(
+            columns.iter().map(|(column, _)| Field::new(*column, DataType::Int64, false)).collect::<Vec<_>>(),
+        ));
+        let sorting_columns = (0..columns.len().min(2))
+            .map(|column_idx| SortingColumn { column_idx: column_idx as i32, descending: false, nulls_first: false })
+            .collect::<Vec<_>>();
+        let arrays = columns.into_iter().map(|(_, values)| Arc::new(Int64Array::from(values)) as ArrayRef).collect();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
+        let properties = WriterProperties::builder().set_sorting_columns(Some(sorting_columns)).build();
+        let mut writer = ArrowWriter::try_new(File::create(dir.join(name)).unwrap(), schema, Some(properties)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    };
+    write(
+        "nodes.parquet",
+        vec![("node_id", (0..NODES).collect()), ("year", (0..NODES).map(|node| 1900 + (node * 7) % 130).collect())],
+    );
+    let mut edges = (0..EDGES).map(|edge| ((edge * 37) % NODES, (edge * 101 + 7) % NODES)).collect::<Vec<_>>();
+    edges.sort_unstable();
+    write(
+        "edges.parquet",
+        vec![
+            ("src", edges.iter().map(|(src, _)| *src).collect()),
+            ("dst", edges.iter().map(|(_, dst)| *dst).collect()),
+        ],
+    );
+    let config = || SessionConfig::new().with_target_partitions(1);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&required, &cpu] {
+        for table in ["nodes", "edges"] {
+            let path = dir.join(format!("{table}.parquet"));
+            block_on(ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+        }
+        for view in [
+            "CREATE VIEW era_nodes AS SELECT node_id, year FROM nodes WHERE year BETWEEN 1900 AND 2020",
+            "CREATE VIEW era_edges AS SELECT e.src, e.dst, CAST(ABS(a.year - b.year) AS DOUBLE) AS year_gap \
+             FROM edges e JOIN era_nodes a ON a.node_id = e.src JOIN era_nodes b ON b.node_id = e.dst",
+        ] {
+            block_on(ctx.sql(view)).unwrap();
+        }
+    }
+    (dir, required, cpu)
+}
+
+/// A source with a declared sort order makes DataFusion stream the final
+/// aggregate of a distinct `UNION` over sorted groups. It merges the sorted
+/// runs of the partial aggregate below the union with a
+/// `SortPreservingMergeExec`. The aggregate lowers natively, and the rows come
+/// back in the order DataFusion declares for them.
+#[test]
+fn distinct_union_over_joins_of_sorted_sources_matches_datafusion() {
+    // DataFusion runs the partitions of a union on spawned tasks.
+    let runtime = Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let _runtime = runtime.enter();
+    let (dir, required, cpu) = sorted_graph_contexts("algeon-datafusion-native-exec-sorted-distinct-union");
+    let union = "SELECT src AS v FROM era_edges UNION SELECT dst AS v FROM era_edges";
+    let datafusion_plan = block_on(block_on(cpu.sql(union)).unwrap().create_physical_plan()).unwrap();
+    let rendered = displayable(datafusion_plan.as_ref()).indent(false).to_string();
+    assert!(
+        rendered.contains("AggregateExec: mode=Final") && rendered.contains("SortPreservingMergeExec"),
+        "DataFusion should merge sorted partial aggregates below the final aggregate:\n{rendered}"
+    );
+    for query in [
+        union,
+        "SELECT COUNT(*), SUM(v) FROM (SELECT src AS v FROM era_edges UNION SELECT dst AS v FROM era_edges)",
+        "SELECT src AS v FROM era_edges UNION SELECT dst AS v FROM era_edges ORDER BY v DESC",
     ] {
         let (actual, expected) = native_and_datafusion_rows(&required, &cpu, query);
         assert_eq!(actual, expected, "{query}");

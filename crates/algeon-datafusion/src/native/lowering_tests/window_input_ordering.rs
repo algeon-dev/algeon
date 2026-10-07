@@ -5,7 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{parquet::arrow::ArrowWriter, physical_plan::displayable};
-use query_planning::plan::{WindowFunction, WindowNode};
+use query_planning::plan::{WindowFrame, WindowFunction, WindowNode};
 
 use super::*;
 use crate::native::{ParquetReadStrategyConfig, reestablish_declared_output_ordering_if_needed};
@@ -225,6 +225,86 @@ async fn window_functions_over_computed_arguments_plan_natively() {
             })
             .expect("the window carries an aggregate or LAG argument");
         assert!(matches!(argument, Expr::Column(_)), "{sql}\nargument={argument}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// An empty OVER clause makes the whole input one partition, so a window
+/// aggregate lowers without partition keys, beside a ranking window and under
+/// a comparison against the row count.
+#[tokio::test]
+async fn whole_input_aggregate_windows_plan_natively() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-window-whole-input");
+    write_window_join_tables(&dir);
+
+    for sql in [
+        "SELECT id, COUNT(*) OVER () AS n FROM t",
+        "SELECT id, SUM(v) OVER () AS s FROM t",
+        "SELECT id, ROW_NUMBER() OVER (ORDER BY a, id) AS rk, COUNT(*) OVER () AS n FROM t",
+        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY a, id) AS rk, COUNT(*) OVER () AS n FROM t) \
+         WHERE rk <= n / 100",
+    ] {
+        let plan = window_join_sql_plan(&dir, sql).await;
+
+        let (report, native_plan) = optimize_with_native_rule(plan);
+
+        assert!(
+            matches!(report.outcomes(), [CandidateOutcome::Selected { .. }]),
+            "{sql}\noutcomes={:?}",
+            report.outcomes()
+        );
+        let native_plan = native_plan.expect("the rule keeps the native plan");
+        let whole_input = native_plan.nodes().iter().any(|node| match &node.kind {
+            PlanNode::Window(window) => {
+                window.spec.partition_by.is_empty()
+                    && window.spec.functions.iter().any(|function| {
+                        matches!(function, WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. })
+                    })
+            },
+            _ => false,
+        });
+        assert!(whole_input, "{sql}\n{native_plan}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A cumulative aggregate other than SUM, MIN and MAX has no scan kernel. The
+/// refusal names the window function and its frame, with or without a UNION
+/// ALL around it, and never the union.
+#[tokio::test]
+async fn unsupported_cumulative_window_names_its_function_inside_a_union_branch() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-window-union-branch");
+    write_window_join_tables(&dir);
+    let cumulative = "COUNT(v) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)";
+
+    for sql in [
+        format!("SELECT id, {cumulative} AS n FROM t"),
+        format!(
+            "SELECT 'a' AS k, COUNT(*) AS c FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY a DESC, id) AS rk FROM t) x \
+             WHERE rk <= 10 \
+             UNION ALL SELECT 'b', COUNT(*) FROM (SELECT id, {cumulative} AS n FROM t) y WHERE n > 5"
+        ),
+    ] {
+        let plan = window_join_sql_plan(&dir, &sql).await;
+
+        let (report, native_plan) = optimize_with_native_rule(plan);
+
+        assert!(native_plan.is_none(), "{sql}");
+        let blocking = report
+            .outcomes()
+            .iter()
+            .find_map(|outcome| match outcome {
+                CandidateOutcome::NotSupported { detail, .. } => detail.blocking(),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{sql}\noutcomes={:?}", report.outcomes()));
+        assert_eq!(
+            (blocking.kind(), blocking.text()),
+            ("window_function", "window function count over frame ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"),
+            "{sql}"
+        );
     }
 
     fs::remove_dir_all(dir).unwrap();

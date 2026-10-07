@@ -416,6 +416,94 @@ async fn distributed_aggregate_without_partial_source_shape_is_rejected() {
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
     assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
+    assert_eq!(
+        rejection_blocking_text(&result),
+        "distributed aggregate where the final stage reads DataSourceExec instead of a partial stage"
+    );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// A source that declares its ordering makes DataFusion stream the final
+/// aggregate over sorted groups, and the partial aggregate below a `UnionExec`
+/// produces one sorted run per branch. DataFusion merges the runs with a
+/// `SortPreservingMergeExec` between the two stages. The merge only
+/// interleaves rows, so the pair lowers as it does behind a repartition,
+/// whether the aggregate computes state or only deduplicates group keys.
+#[tokio::test]
+async fn distributed_aggregate_over_merge_of_sorted_partitions_lowers_to_native_aggregate() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-sorted-merge");
+    write_sorted_numeric_parquet_file_with_sorting_columns(&dir.join("input.parquet"));
+
+    for (sql, aggregate_function_count) in [
+        ("SELECT key FROM bench UNION SELECT key FROM bench", 0),
+        (
+            "SELECT a.key AS v FROM bench a JOIN bench b ON a.key = b.key \
+             UNION SELECT b.key AS v FROM bench a JOIN bench b ON a.key = b.key",
+            0,
+        ),
+        (
+            "SELECT key, SUM(m00) AS total FROM \
+             (SELECT key, m00 FROM bench UNION ALL SELECT key, m00 FROM bench) GROUP BY key",
+            1,
+        ),
+    ] {
+        let plan = sql_plan(&dir, direct_friendly_sql_session_config(), sql).await;
+
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+        assert_eq!(result.selected_count(), 1, "{sql}\noutcomes={:?}", result.report.outcomes());
+        let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
+            panic!("{sql}\nthe sorted-merge aggregate should lower to native");
+        };
+        assert!(
+            candidate.shape.to_string().contains("FinalAggregateExec(SortPreservingMergeExec(PartialAggregateExec("),
+            "{sql}\nshape={}",
+            candidate.shape
+        );
+        let aggregates = native_aggregate_nodes(result.selected_plan());
+        assert_eq!(aggregates.len(), 1, "{sql}");
+        assert_eq!(aggregates[0].spec.aggr_exprs.len(), aggregate_function_count, "{sql}");
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A merge with a fetch drops rows, so the final aggregate would read fewer
+/// rows than its partial stage produced. The pair stays rejected and the
+/// blocker names the merge. The plan is already one partition, and the union
+/// below the partial stage keeps its branches as separate partitions, so the
+/// remedy is an engine gap and not planning for one partition.
+#[tokio::test]
+async fn distributed_aggregate_over_merge_with_fetch_is_rejected() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-distributed-sorted-merge-fetch");
+    write_sorted_numeric_parquet_file_with_sorting_columns(&dir.join("input.parquet"));
+    let plan =
+        sql_plan(&dir, direct_friendly_sql_session_config(), "SELECT key FROM bench UNION SELECT key FROM bench").await;
+    let merge = Arc::clone(plan.children()[0]);
+    assert!(merge.is::<SortPreservingMergeExec>(), "the final aggregate should read a merge: {merge:?}");
+    let limited_merge = merge.with_fetch(Some(1)).unwrap();
+    let plan = plan
+        .replace_children(vec![limited_merge], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .unwrap();
+
+    let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+    assert_distributed_aggregate_rejection(&result, CapabilityReason::NativeDistributedAggregateUnsupported);
+    assert_eq!(
+        rejection_blocking_text(&result),
+        "distributed aggregate where the final stage reads SortPreservingMergeExec instead of a partial stage"
+    );
+    assert_eq!(rejected_candidate_remedy(&result).code, "unsupported_operator_gap");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn rejection_blocking_text(result: &NativeLoweringResult) -> String {
+    let CandidateOutcome::NotSupported { detail, .. } = &result.report.outcomes()[0] else {
+        panic!("expected rejected native candidate");
+    };
+    let blocking = detail.blocking().expect("the rejection names its blocker");
+    assert_eq!(blocking.kind(), "distributed_aggregate");
+    blocking.text().to_string()
 }

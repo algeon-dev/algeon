@@ -168,14 +168,37 @@ describe the completed executable plan.
 
 ## Remedies for plan shapes
 
-Three plan-shape reasons exist only because DataFusion planned the query for
-several partitions: `native_sort_preserving_merge_unsupported`,
+Three plan-shape reasons arise when DataFusion planned the query for several
+partitions: `native_sort_preserving_merge_unsupported`,
 `native_distributed_aggregate_unsupported`, and
 `native_local_limit_partition_unsupported`. Their remedy is the `config_action`
-`set_target_partitions_one`. After `SET datafusion.execution.target_partitions = 1`
-DataFusion plans one sort, a single-stage aggregate, and a limit over one
-partition, all of which lower natively. The Flight SQL server already sets one
-partition under the `native_required` execution mode.
+`set_target_partitions_one`. When the extra partitions come from the setting,
+`SET datafusion.execution.target_partitions = 1` makes DataFusion plan one
+sort, a single-stage aggregate, and a limit over one partition, all of which
+lower natively. The Flight SQL server already sets one partition under the
+`native_required` execution mode.
+
+The setting does not reach every source of partitions. Each branch of a
+`UNION ALL` is a partition at any setting, so an aggregate that reads a union
+directly, or through the probe side of a join, keeps its partial and final
+stages at `target_partitions = 1`, and a sort over such a union keeps the merge
+of its sorted partitions. DataFusion does not merge the stages of a grouping
+set aggregate (`ROLLUP`, `CUBE`, `GROUPING SETS`). A
+`native_distributed_aggregate_unsupported` candidate whose stages remain at one
+partition carries the `engine_gap` remedy `unsupported_operator_gap` instead.
+So does a candidate whose single-stage aggregate, the one DataFusion plans at
+one partition, fails native validation as well, such as an aggregate function
+without a native kernel or a `MEDIAN` next to a standard deviation.
+
+A `native_sort_preserving_merge_unsupported` candidate carries the same
+`engine_gap` remedy when its merge remains at one partition because the merged
+partitions are union branches. It also carries it when native validation
+rejects a sort key of the single sort that DataFusion plans at one partition,
+such as `ORDER BY random()`. After the setting, that query reports
+`unsupported_expression` for the key. A union on the collected side of a join
+is merged into one partition, so the setting still removes the stages or the
+merge there.
+
 `native_exact_statistical_input_partitioned` carries the `config_action`
 `use_tolerant_statistical_mode`, which names the
 [`statistical_aggregate_execution_mode`](./configuration.mdx#native-settings)

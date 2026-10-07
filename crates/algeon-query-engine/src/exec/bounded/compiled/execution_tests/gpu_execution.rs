@@ -336,6 +336,46 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
     assert_eq!(values, vec![Some(1), Some(2), Some(3)], "every branch input is computed exactly once");
 }
 
+/// Identical UNION ALL branches intern to one producer that the union reads
+/// through two inputs. Both reads take the whole frame, so each row appears
+/// twice.
+#[test]
+fn execute_query_plan_runs_a_union_that_reads_one_producer_twice() {
+    let runtime = suite_backend::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef])
+        .expect("literal batch");
+    let runtime = shared_runtime(runtime);
+    for computed in [false, true] {
+        let mut builder = QueryPlanBuilder::new();
+        let mut branch = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        if computed {
+            branch = builder
+                .add_projection(
+                    branch,
+                    vec![ProjectionOutput::new(
+                        Expr::column("order_key"),
+                        Field::new("order_key", DataType::Int32, false),
+                    )],
+                )
+                .unwrap();
+        }
+        let union = builder.add_union(vec![branch, branch], Arc::clone(&schema)).unwrap();
+        let plan = builder.finish_with_host_sink(union).unwrap();
+
+        let context = runtime.acquire_context_for_plan(&plan).expect("union plan acquires a context");
+        let result = execute_query_plan(&context, &plan)
+            .unwrap_or_else(|error| panic!("computed={computed}: a union of one producer should execute: {error}"));
+        let QueryOutput::HostArrow(output) = result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        let mut values = int32_values(output, 0);
+        values.sort();
+        assert_eq!(values, vec![Some(1), Some(1), Some(2), Some(2), Some(3), Some(3)], "computed={computed}");
+    }
+}
+
 #[test]
 fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     // ORDER BY right_value DESC LIMIT 1 OFFSET 1 over the join keeps (2, 200):

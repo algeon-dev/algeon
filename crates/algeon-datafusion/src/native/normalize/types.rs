@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     native::DECLARED_OUTPUT_ORDERING_SORT_OPERATOR,
-    report::{CandidateShape, PlanBlocker},
+    report::{CandidateShape, PlanBlocker, SinglePartitionOutcome},
 };
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
@@ -404,12 +404,15 @@ impl NormalizedNativeUnion<'_> {
 
 /// Rejection paired with the candidate shape that was being tested and the
 /// plan element that blocked it. Reports rely on all three pieces to explain
-/// native fallback pressure.
+/// native fallback pressure. `single_partition` says whether planning for one
+/// partition lowers the shape; only a site that checked it sets
+/// [`SinglePartitionOutcome::StillRejected`].
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NativePlanRejection {
     pub(in crate::native) candidate: GpuCandidate,
     pub(in crate::native) reason: CapabilityReason,
     pub(in crate::native) blocker: Box<PlanBlocker>,
+    pub(in crate::native) single_partition: SinglePartitionOutcome,
 }
 
 fn unary_shape(operator: &str, input: CandidateShape) -> CandidateShape {

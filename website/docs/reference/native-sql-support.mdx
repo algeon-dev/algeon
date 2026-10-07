@@ -20,9 +20,9 @@ production query with
 | Area | Native forms |
 | --- | --- |
 | Sources | Local and S3 object-store Parquet; projected columns, row-group selection, partition columns, reader predicates, and scan limits when their contracts are supported. |
-| Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. |
+| Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. A distinct `UNION` and `SELECT DISTINCT` are grouped aggregates, listed under Aggregation. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
-| Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |
+| Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. An aggregate window with an empty `OVER ()` aggregates the whole input as one partition, beside other windows and under filters. |
 | Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, and residual expressions can narrow an otherwise supported join kind. |
 | Graph | cuGraph UDTFs are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the UDTF-level contract. |
 
@@ -143,6 +143,16 @@ toward zero at its output scale. AVG over a `Decimal128` argument with
 precision above 25 is not native, because DataFusion sums it as `Decimal256`.
 Median is single-stage, and plans that mix median with floating statistical
 aggregates are rejected.
+
+`SELECT DISTINCT` and a distinct `UNION` are grouped aggregates over every
+output column with no aggregate function, so they follow the same partial/final
+rules. DataFusion's final stage reads the partial stage through a repartition,
+a coalesce, or a merge of sorted partitions without a fetch. The merge appears
+when a Parquet source declares its sort order and the partial stage has several
+partitions, for example below a `UNION`, because DataFusion then streams the
+final stage over sorted groups. All three lower to one native aggregate. A
+final stage that reads any other operator is rejected, and the rejection names
+that operator.
 
 An aggregate containing `COUNT(DISTINCT expression)` reads its whole input
 before grouping, and that input must fit the query's device-memory grant. The

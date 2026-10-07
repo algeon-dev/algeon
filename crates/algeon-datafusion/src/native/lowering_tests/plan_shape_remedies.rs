@@ -26,7 +26,9 @@ fn rejection_reason(result: &NativeLoweringResult) -> Option<CapabilityReason> {
 }
 
 /// Each shape below follows from DataFusion planning for several partitions,
-/// and the config remedy of its reason names the session setting that avoids it.
+/// and the config remedy of its candidate names the session setting that
+/// avoids it. The last aggregate unions on the collected side of a join, which
+/// DataFusion merges into one partition, so one partition removes its stages.
 #[tokio::test]
 async fn target_partitions_one_avoids_the_plan_shapes_whose_remedy_names_it() {
     let dir = three_file_table("algeon-datafusion-plan-shape-remedies");
@@ -34,6 +36,11 @@ async fn target_partitions_one_avoids_the_plan_shapes_whose_remedy_names_it() {
         ("SELECT key, payload FROM bench ORDER BY payload + 1", CapabilityReason::NativeSortPreservingMergeUnsupported),
         (
             "SELECT key, MEDIAN(m00) AS median_m00 FROM bench GROUP BY key",
+            CapabilityReason::NativeDistributedAggregateUnsupported,
+        ),
+        (
+            "SELECT a.key, MEDIAN(a.m00) AS median_m00 FROM bench a \
+             JOIN (SELECT key FROM bench UNION ALL SELECT key FROM bench) b ON a.key = b.key GROUP BY a.key",
             CapabilityReason::NativeDistributedAggregateUnsupported,
         ),
         (
@@ -45,14 +52,138 @@ async fn target_partitions_one_avoids_the_plan_shapes_whose_remedy_names_it() {
         let partitioned = sql_plan(&dir, SessionConfig::new().with_target_partitions(4), sql).await;
         let result = lower_physical_plan_to_native(partitioned, &ParquetReadStrategyConfig::default()).unwrap();
         assert_eq!(rejection_reason(&result), Some(reason), "{sql}");
+        let remedy = rejected_candidate_remedy(&result);
+        assert_eq!(remedy.code, "set_target_partitions_one", "{sql}");
+        assert_eq!(remedy.kind, QueryGpuRemedyKind::ConfigAction, "{sql}");
+        assert!(remedy.guidance.contains("SET datafusion.execution.target_partitions = 1"), "{sql}");
 
         let single = sql_plan(&dir, SessionConfig::new().with_target_partitions(1), sql).await;
         let result = lower_physical_plan_to_native(single, &ParquetReadStrategyConfig::default()).unwrap();
         assert_eq!(result.selected_count(), 1, "{sql}: {:?}", result.report.outcomes());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
 
-        let remedy = reason.facts().remedy;
-        assert_eq!(remedy.kind, QueryGpuRemedyKind::ConfigAction, "{reason:?}");
-        assert!(remedy.guidance.contains("SET datafusion.execution.target_partitions = 1"), "{reason:?}");
+/// DataFusion keeps the partial and final stages of an aggregate at one
+/// partition when the aggregate reads a `UNION ALL`, whose branches stay
+/// separate partitions, on its probe side or directly, and when it groups by
+/// grouping sets. A single-stage aggregate also rejects a function without a
+/// native kernel and a median beside a standard deviation. In every case one
+/// partition cannot lower the shape, so the candidate carries an engine gap
+/// instead of the config remedy, at either partition count.
+#[tokio::test]
+async fn distributed_aggregate_remedy_is_an_engine_gap_when_one_partition_cannot_lower_it() {
+    let dir = three_file_table("algeon-datafusion-distributed-aggregate-gap-remedy");
+    let union_branches = "SELECT key, m00 FROM bench UNION ALL SELECT key, m00 FROM bench";
+    let cases = [
+        (
+            format!("SELECT key, MEDIAN(m00) AS v FROM ({union_branches}) GROUP BY key"),
+            CapabilityReason::NativeDistributedAggregateUnsupported,
+        ),
+        (
+            format!(
+                "SELECT a.key, MEDIAN(b.m00) AS v FROM bench a JOIN ({union_branches}) b ON a.key = b.key \
+                 GROUP BY a.key"
+            ),
+            CapabilityReason::NativeDistributedAggregateUnsupported,
+        ),
+        (
+            "SELECT key, STDDEV(m00) AS v FROM bench GROUP BY ROLLUP(key)".to_string(),
+            CapabilityReason::NativeDistributedAggregateUnsupported,
+        ),
+        (
+            "SELECT key, MEDIAN(m00) AS v, STDDEV(m01) AS s FROM bench GROUP BY key".to_string(),
+            CapabilityReason::UnsupportedOperator,
+        ),
+        (
+            "SELECT key, APPROX_DISTINCT(m00) AS v FROM bench GROUP BY key".to_string(),
+            CapabilityReason::UnsupportedOperator,
+        ),
+    ];
+    for (sql, reason_at_one_partition) in cases {
+        for (target_partitions, expected_reason) in
+            [(4, CapabilityReason::NativeDistributedAggregateUnsupported), (1, reason_at_one_partition)]
+        {
+            let config = SessionConfig::new().with_target_partitions(target_partitions);
+            let plan = sql_plan(&dir, config, &sql).await;
+            let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+
+            let context = format!("target_partitions = {target_partitions}: {sql}");
+            assert_eq!(rejection_reason(&result), Some(expected_reason), "{context}");
+            let remedy = rejected_candidate_remedy(&result);
+            assert_eq!(remedy.code, "unsupported_operator_gap", "{context}");
+            assert_eq!(remedy.kind, QueryGpuRemedyKind::EngineGap, "{context}");
+        }
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A merge of `UNION ALL` branches stays at one partition, and a sort key
+/// without a native form is rejected by the single sort DataFusion plans there.
+/// Both carry an engine gap at either partition count, and the single sort
+/// reports the expression it cannot lower. The last query unions on the
+/// collected side of a join, which DataFusion merges into one partition, so the
+/// setting still removes the merge.
+#[tokio::test]
+async fn sort_preserving_merge_remedy_is_an_engine_gap_when_one_partition_cannot_lower_it() {
+    let dir = three_file_table("algeon-datafusion-merge-gap-remedy");
+    let union_branches = "SELECT key, payload FROM bench UNION ALL SELECT key, payload FROM bench";
+    let gap = ("unsupported_operator_gap", QueryGpuRemedyKind::EngineGap);
+    let setting = ("set_target_partitions_one", QueryGpuRemedyKind::ConfigAction);
+    let cases = [
+        (
+            format!("SELECT key, payload FROM ({union_branches}) ORDER BY payload + 1"),
+            gap,
+            Some((CapabilityReason::NativeSortPreservingMergeUnsupported, gap)),
+        ),
+        (
+            format!("SELECT key, payload FROM ({union_branches}) ORDER BY payload + 1 LIMIT 5"),
+            gap,
+            Some((CapabilityReason::NativeSortPreservingMergeUnsupported, gap)),
+        ),
+        (
+            "SELECT a.key, a.payload FROM bench a JOIN (SELECT key FROM bench UNION ALL SELECT key FROM bench) b \
+             ON a.key = b.key ORDER BY a.payload + 1"
+                .to_string(),
+            gap,
+            Some((CapabilityReason::NativeSortPreservingMergeUnsupported, gap)),
+        ),
+        (
+            "SELECT key, payload FROM bench ORDER BY random()".to_string(),
+            gap,
+            Some((CapabilityReason::UnsupportedExpression, ("rewrite_expression", QueryGpuRemedyKind::UserAction))),
+        ),
+        (
+            "SELECT b.key, a.payload FROM (SELECT key FROM bench UNION ALL SELECT key FROM bench) b \
+             JOIN bench a ON a.key = b.key ORDER BY a.payload + 1"
+                .to_string(),
+            setting,
+            None,
+        ),
+    ];
+    for (sql, remedy_at_four, at_one) in cases {
+        let plan = sql_plan(&dir, SessionConfig::new().with_target_partitions(4), &sql).await;
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+        let context = format!("target_partitions = 4: {sql}");
+        assert_eq!(
+            rejection_reason(&result),
+            Some(CapabilityReason::NativeSortPreservingMergeUnsupported),
+            "{context}"
+        );
+        let remedy = rejected_candidate_remedy(&result);
+        assert_eq!((remedy.code, remedy.kind), remedy_at_four, "{context}");
+
+        let plan = sql_plan(&dir, SessionConfig::new().with_target_partitions(1), &sql).await;
+        let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
+        let context = format!("target_partitions = 1: {sql}");
+        match at_one {
+            Some((reason, expected)) => {
+                assert_eq!(rejection_reason(&result), Some(reason), "{context}");
+                let remedy = rejected_candidate_remedy(&result);
+                assert_eq!((remedy.code, remedy.kind), expected, "{context}");
+            },
+            None => assert_eq!(result.selected_count(), 1, "{context}: {:?}", result.report.outcomes()),
+        }
     }
     fs::remove_dir_all(dir).unwrap();
 }
