@@ -113,6 +113,33 @@ fn native_query_rejects_join_residual_casts_and_integer_division_the_ast_cannot_
     assert_eq!(error.fact_value("source_type"), Some("Float64"));
     assert_eq!(error.fact_value("target_type"), Some("Int64"));
 
+    // The AST has no cast over temporal values, although the cast itself cannot fail.
+    for (column, data_type) in [
+        ("event_time", DataType::Timestamp(TimeUnit::Millisecond, None)),
+        ("elapsed", DataType::Duration(TimeUnit::Millisecond)),
+    ] {
+        let temporal_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(column, data_type.clone(), false),
+        ]));
+        let temporal_to_integer = Expr::binary(
+            Expr::cast(Expr::input_column(0, column, "left_value"), DataType::Int64),
+            BinaryOp::Eq,
+            widened_id(1, "id", "right_id"),
+        );
+        let error = residual_validation_error_with_schema(
+            JoinType::Inner,
+            vec![id_join_key()],
+            temporal_to_integer,
+            temporal_schema,
+            vec!["id", column],
+        );
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression, "{data_type:?}");
+        assert_eq!(error.operation(), "query_engine.join.validate_residual", "{data_type:?}");
+        assert_eq!(error.fact_value("source_type"), Some(format!("{data_type:?}").as_str()));
+        assert_eq!(error.fact_value("target_type"), Some("Int64"));
+    }
+
     for op in [BinaryOp::Divide, BinaryOp::Modulo] {
         let integer_arithmetic = Expr::binary(
             Expr::binary(widened_id(0, "id", "left_id"), op, widened_id(1, "id", "right_id")),

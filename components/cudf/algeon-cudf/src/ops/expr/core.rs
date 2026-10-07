@@ -879,7 +879,7 @@ fn apply_datetime_offset(
             BinaryOperator::Add,
             ctx.operation,
         )?;
-        binary::binary_operation_vv_impl(
+        binary::binary_operation_vv_without_row_checks_impl(
             &cv,
             &duration_view,
             BinaryOperator::Add,
@@ -905,13 +905,7 @@ fn duration_raw_for_resolution(
         .ok_or_else(|| {
             Error::new_with(ErrorCode::ValueOutOfRange, operation, "datetime offset duration overflows i128")
         })?;
-    let divisor = match resolution {
-        TimestampResolution::Days => NANOS_PER_DAY,
-        TimestampResolution::Seconds => 1_000_000_000,
-        TimestampResolution::Milliseconds => 1_000_000,
-        TimestampResolution::Microseconds => 1_000,
-        TimestampResolution::Nanoseconds => 1,
-    };
+    let divisor = i128::from(resolution.nanoseconds_per_tick());
     if total_nanos % divisor != 0 {
         return Err(Error::new_with(
             ErrorCode::ValueOutOfRange,

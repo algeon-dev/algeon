@@ -44,9 +44,9 @@ operands are valid. A zero divisor in such a row fails the query, as does
 null operand stay null and never fail. Floating-point `%` follows IEEE `fmod`:
 the result takes the sign of the dividend, and a zero divisor or an infinite
 dividend gives `NaN`. `%` on decimals is not native. Integer `/` and any `%` are
-not evaluated inside reader predicates or join residual conditions: a reader
-predicate with them stays a filter, and a join residual with them keeps the
-join on DataFusion.
+not evaluated inside reader predicates or join residual conditions, nor is
+timestamp `+` or `-`: a reader predicate with them stays a filter, and a join
+residual with them keeps the join on DataFusion.
 
 Decimal `/` evaluates the same valid rows and fails on a zero divisor. DataFusion
 computes `dividend * 10^k / divisor` on the raw values in checked `i128`
@@ -69,6 +69,51 @@ decimal text with a leading `-` for negative values, so
 `CAST(row_number() OVER (ORDER BY id) AS BIGINT)` and `CAST(user_id AS VARCHAR)`
 are native. Casting a float or boolean to a string is not.
 
+A timestamp without a time zone, or a duration, casts to `BIGINT`. As in Arrow,
+the result is the stored count in the type's own unit, with no rescaling:
+`CAST(event_time AS BIGINT)` over a `TIMESTAMP(3)` column gives milliseconds
+since the Unix epoch, and a `Duration(Millisecond)` gives its millisecond count.
+Nulls stay null, and the cast cannot fail. A cast to any other numeric type, and
+any cast from a timezone-aware timestamp, stays on DataFusion.
+
+A cast between two units of a timestamp without a time zone, or of a duration,
+follows Arrow. A cast to a finer unit multiplies the stored count and fails the
+query when the product of a valid row leaves `Int64`. For
+`CAST(t AS TIMESTAMP(9))` over a `TIMESTAMP(0)` column that is a count above
+9223372036 or below -9223372036, about 292 years from the epoch. A `DATE` cast to a timestamp fails
+the same way at microsecond and nanosecond resolution, and at nanosecond
+resolution from 106,752 days away from the epoch. A cast to a coarser unit
+divides and truncates toward zero: `-1500` milliseconds becomes `-1` second, and
+`-1` nanosecond becomes `0` seconds. A cast from a timestamp to `DATE` takes the
+calendar date, which floors, so `-1` nanosecond is the day before the epoch. An
+integer casts to a timestamp as the count of the target unit since the epoch,
+without rescaling. Nulls stay null.
+
+Subtracting two timezone-free timestamps of one unit gives a `Duration` of that
+unit. Combined with the cast, `CAST(next_view - event_time AS BIGINT)` is the
+number of milliseconds between two millisecond-resolution events, with
+`next_view` taken from `LEAD` or `LAG`. DataFusion casts the coarser operand of
+two different units to the finer unit first, which is the checked cast described
+above, and arithmetic between two durations is not native.
+
+A timezone-free timestamp plus or minus a duration of the same unit, and a
+duration plus such a timestamp, give a timestamp of that unit. DataFusion casts
+a duration of another unit to the timestamp's unit before it adds, with the
+checked cast described above, so the addition itself always sees one unit. A
+date plus or minus a duration is not native. It is not valid in DataFusion
+either, because Arrow defines no such operation: `date_col + duration_col`
+fails planning with `Cannot coerce arithmetic expression Date32 + Duration(ms)
+to valid types`, and `Date64` fails the same way. The difference of two dates is
+an integer day count in DataFusion and is not native.
+
+Unlike integer `+` and `-`, timestamp arithmetic does not wrap. Arrow checks
+a timestamp plus or minus a duration, and the difference of two timestamps,
+even for the wrapping SQL operators, so a result outside `Int64` fails the
+query. Native evaluation fails on the same rows: a valid row of both operands
+whose result does not fit, which takes operands more than 292 years apart at
+nanosecond resolution. A null operand never fails. A timestamp plus or minus an
+`INTERVAL` is a separate calendar computation and is not checked this way.
+
 A cast into `Decimal128(p, s)` from an integer, a float, or another
 `Decimal128` rounds half away from zero where it drops digits. It fails the
 query when a valid value does not fit precision `p` after rescaling, and when a
@@ -80,17 +125,20 @@ true, `ELSE` only on the rows where no condition is true, and every `WHEN`
 after the first only on the rows no earlier `WHEN` selected. In
 `CASE base WHEN value`, it evaluates `value` only where `base` is not null. A
 null condition counts as not true. The native evaluator visits every row, so
-lowering sets the divisor of an integer `/` or `%`, and the input of a cast that
-range-checks, to null on the rows DataFusion does not evaluate. A null operand
-never fails. `CASE WHEN n <> 0 THEN total / n END` never divides by zero, while
+lowering sets the divisor of an integer `/` or `%`, the right operand of a
+timestamp `+` or `-`, and the input of a cast that range-checks, to null on the
+rows DataFusion does not evaluate. A null operand never fails.
+`CASE WHEN n <> 0 THEN total / n END` never divides by zero, while
 `CASE WHEN n >= 0 THEN total / n END` fails the query on a row with `n = 0`, as
 on DataFusion. A nested `CASE` applies the restrictions of every enclosing
 branch. A literal integer divisor other than `0` and `-1` and a cast whose
 target holds every value of the source type cannot fail and are evaluated as
 they are. A decimal `/` is always restricted, because scaling its dividend can
-overflow whatever the divisor is. Each `WHEN` condition that divides or casts
-doubles the restrictions of the branches after it, so a `CASE` with a long chain
-of such conditions (about eight) stays on DataFusion.
+overflow whatever the divisor is. Timestamp `+` and `-` are always restricted,
+because any pair of operands can overflow. Each `WHEN` condition that divides,
+casts, or does timestamp arithmetic doubles the restrictions of the branches
+after it, so a `CASE` with a long chain of such conditions (about eight) stays
+on DataFusion.
 
 DataFusion skips the right operand of `AND` on the rows where the left operand
 is false, and the right operand of `OR` on the rows where it is true, only in
@@ -107,9 +155,9 @@ row takes its value from the left operand alone, so results do not change.
 Native evaluation is more permissive than DataFusion in one case: where
 DataFusion evaluates the right operand on a decided row that fails, it fails the
 query and native evaluation returns the result. Native evaluation never fails
-where DataFusion succeeds. An `AND` or `OR` term that divides or casts doubles
-the restrictions of the terms after it, so a chain of about eight such terms
-stays on DataFusion.
+where DataFusion succeeds. An `AND` or `OR` term that divides, casts, or does
+timestamp arithmetic doubles the restrictions of the terms after it, so a chain
+of about eight such terms stays on DataFusion.
 
 The supported DataFusion scalar-function names are:
 
@@ -118,7 +166,7 @@ The supported DataFusion scalar-function names are:
 | Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `regexp_replace`, and `concat`. A substring start and optional length must be literal integers with start >= 1 and length >= 0. Pattern, trim, and replacement arguments that define the other operations must be literals. |
 | Numeric | `abs`, `sqrt`, `ln`, `exp`, `floor`, `ceil`, and `round`; `round` accepts an optional literal integer scale. `floor` and `ceil` take `Float32` or `Float64` (DataFusion widens an integer argument to `Float64`) and pass `NaN` and infinities through; decimal arguments are not native. `ln` and `exp` follow IEEE results (`ln(0)` is `-inf`, a negative `ln` input is `NaN`) and can differ from DataFusion CPU in the last bits of finite results. |
 | Nulls | `nullif` for compatible native types. |
-| Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
+| Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. `date_part('epoch', ...)` is not native. DataFusion builds the epoch of a duration from 32-bit second and nanosecond fields, so it drops the fractional seconds of a duration longer than about 2.1 seconds, and native evaluation does not reproduce that. Cast to `BIGINT` and divide instead, for example `CAST(d AS BIGINT) / 1000.0` for milliseconds. |
 
 Exact dtype rules still apply and are owned by
 [Data Type Support](./data-type-support.md). In short: timezone-aware

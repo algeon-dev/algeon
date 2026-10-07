@@ -523,6 +523,17 @@ impl TimestampResolution {
             Self::Nanoseconds => TypeId::DurationNanoseconds,
         }
     }
+
+    /// Nanoseconds in one tick of this resolution.
+    pub(crate) fn nanoseconds_per_tick(self) -> i64 {
+        match self {
+            Self::Days => 86_400_000_000_000,
+            Self::Seconds => 1_000_000_000,
+            Self::Milliseconds => 1_000_000,
+            Self::Microseconds => 1_000,
+            Self::Nanoseconds => 1,
+        }
+    }
 }
 
 /// Helper to create a bitmask from an iterator of validity flags.

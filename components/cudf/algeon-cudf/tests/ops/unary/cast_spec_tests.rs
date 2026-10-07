@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Array, ArrayRef, Decimal128Array, Float32Array, Float64Array, Int64Array},
-    compute::{CastOptions, cast_with_options},
-    datatypes::{DataType as ArrowDataType, Field, Schema},
+    array::{Array, ArrayRef, AsArray, Decimal128Array, Float32Array, Float64Array, Int64Array},
+    compute::{CastOptions, cast, cast_with_options},
+    datatypes::{DataType as ArrowDataType, Field, Int64Type, Schema, TimeUnit},
     error::ArrowError,
     record_batch::RecordBatch,
 };
@@ -286,6 +286,234 @@ fn test_cast_timestamp_to_i64() {
     let back_dur = ts.on(Exec::RETAINED).astype(TypeId::DurationMicroseconds).unwrap();
     let back = back_dur.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
     assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![0, 1000, 2000]);
+}
+
+// ===========================================================================
+// Timestamp and duration to integer: the stored count in the type's own unit
+// ===========================================================================
+
+const EVERY_RESOLUTION: [TimestampResolution; 4] = [
+    TimestampResolution::Seconds,
+    TimestampResolution::Milliseconds,
+    TimestampResolution::Microseconds,
+    TimestampResolution::Nanoseconds,
+];
+
+/// The same counts as a timestamp series and as a duration series of one resolution.
+fn temporal_series(counts: &cudf::Series, resolution: TimestampResolution) -> (cudf::Series, cudf::Series) {
+    let durations = counts.on(Exec::RETAINED).astype(resolution.duration_type_id()).unwrap();
+    let timestamps = durations.on(Exec::RETAINED).astype(resolution.type_id()).unwrap();
+    (timestamps, durations)
+}
+
+fn test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit() {
+    let values = [0, 1, -1, 1_700_000_123_456, i64::MIN, i64::MAX, 7];
+    let validity = [true, true, true, true, true, true, false];
+    let expected = values.iter().zip(validity).map(|(value, valid)| valid.then_some(*value)).collect::<Vec<_>>();
+    let counts = nullable_series::<i64>("x", &values, &validity).unwrap();
+
+    for resolution in EVERY_RESOLUTION {
+        let (timestamps, durations) = temporal_series(&counts, resolution);
+        for (kind, temporal) in [("timestamp", timestamps), ("duration", durations)] {
+            assert!(is_supported_cast(&temporal.dtype().unwrap(), &DataType::new(TypeId::Int64)).unwrap());
+            let result = temporal.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+            assert_eq!(result.dtype().unwrap().id(), TypeId::Int64, "{kind} {resolution:?}");
+            assert_eq!(result.to_optional_vec::<i64>().unwrap(), expected, "{kind} {resolution:?}");
+        }
+    }
+}
+
+fn test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count() {
+    for resolution in [TimestampResolution::Milliseconds, TimestampResolution::Nanoseconds] {
+        let fits = series::<i64>("x", &[i64::from(i32::MIN), 0, i64::from(i32::MAX)]).unwrap();
+        let (timestamps, durations) = temporal_series(&fits, resolution);
+        for temporal in [timestamps, durations] {
+            let kept = temporal.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
+            assert_eq!(kept.to_vec_strict::<i32>().unwrap(), vec![i32::MIN, 0, i32::MAX], "{resolution:?}");
+        }
+
+        for (count, target, reason) in
+            [(i64::from(i32::MAX) + 1, TypeId::Int32, "above_target_range"), (-1, TypeId::UInt64, "below_target_range")]
+        {
+            let (timestamps, durations) = temporal_series(&series::<i64>("x", &[0, count]).unwrap(), resolution);
+            for temporal in [timestamps, durations] {
+                let error = temporal.on(Exec::RETAINED).astype(target).expect_err("the count must not fit");
+                assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{resolution:?} {target:?}");
+                assert_eq!(error.detail_value("reason"), Some(reason), "{resolution:?} {target:?}");
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Timestamp and duration between resolutions: Arrow's multiply and truncate
+// ===========================================================================
+
+fn test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count() {
+    let counts = [Some(0), Some(-1), Some(1_700_000_000_123), Some(i64::MAX), Some(i64::MIN), None];
+    for resolution in EVERY_RESOLUTION {
+        let source = series_opt::<i64>("x", &counts).unwrap();
+        assert!(is_supported_cast(&source.dtype().unwrap(), &DataType::new(resolution.type_id())).unwrap());
+        let timestamps = source.on(Exec::RETAINED).astype(resolution.type_id()).unwrap();
+        assert_eq!(timestamps.dtype().unwrap().id(), resolution.type_id());
+        let back = timestamps.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+        assert_eq!(back.to_optional_vec::<i64>().unwrap(), counts, "{resolution:?}");
+    }
+
+    let days = series::<i32>("x", &[19_000, -1]).unwrap().on(Exec::RETAINED).astype(TypeId::TimestampDays).unwrap();
+    assert_eq!(days.dtype().unwrap().id(), TypeId::TimestampDays);
+    let back = days.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+    assert_eq!(back.to_vec_strict::<i64>().unwrap(), vec![19_000, -1]);
+}
+
+fn arrow_time_unit(resolution: TimestampResolution) -> TimeUnit {
+    match resolution {
+        TimestampResolution::Seconds => TimeUnit::Second,
+        TimestampResolution::Milliseconds => TimeUnit::Millisecond,
+        TimestampResolution::Microseconds => TimeUnit::Microsecond,
+        TimestampResolution::Nanoseconds => TimeUnit::Nanosecond,
+        TimestampResolution::Days => unreachable!("Arrow durations and these timestamps have no day unit"),
+    }
+}
+
+fn nanoseconds_per_tick(resolution: TimestampResolution) -> i64 {
+    match resolution {
+        TimestampResolution::Days => 86_400_000_000_000,
+        TimestampResolution::Seconds => 1_000_000_000,
+        TimestampResolution::Milliseconds => 1_000_000,
+        TimestampResolution::Microseconds => 1_000,
+        TimestampResolution::Nanoseconds => 1,
+    }
+}
+
+fn arrow_temporal_type(resolution: TimestampResolution, timestamp: bool) -> ArrowDataType {
+    let unit = arrow_time_unit(resolution);
+    if timestamp { ArrowDataType::Timestamp(unit, None) } else { ArrowDataType::Duration(unit) }
+}
+
+/// The stored counts after Arrow's non-safe cast, which DataFusion uses for `CAST` and for coerced casts.
+fn arrow_rescaled_counts(
+    counts: &[Option<i64>],
+    source: ArrowDataType,
+    target: ArrowDataType,
+) -> Result<Vec<Option<i64>>, ArrowError> {
+    let source = cast(&Int64Array::from(counts.to_vec()), &source).unwrap();
+    let rescaled = cast_with_options(&source, &target, &CastOptions { safe: false, ..Default::default() })?;
+    Ok(cast(&rescaled, &ArrowDataType::Int64).unwrap().as_primitive::<Int64Type>().iter().collect())
+}
+
+fn rescaled_counts(
+    counts: &[Option<i64>],
+    from: TimestampResolution,
+    to: TimestampResolution,
+    timestamp: bool,
+) -> cudf::Result<Vec<Option<i64>>> {
+    let (timestamps, durations) = temporal_series(&series_opt::<i64>("x", counts)?, from);
+    let source = if timestamp { timestamps } else { durations };
+    let target = if timestamp { to.type_id() } else { to.duration_type_id() };
+    let rescaled = source.on(Exec::RETAINED).astype(target)?;
+    rescaled.on(Exec::RETAINED).astype(TypeId::Int64)?.to_optional_vec::<i64>()
+}
+
+fn finer_to_coarser_pairs() -> Vec<(TimestampResolution, TimestampResolution)> {
+    let mut pairs = Vec::new();
+    for (index, coarser) in EVERY_RESOLUTION.iter().enumerate() {
+        pairs.extend(EVERY_RESOLUTION[index + 1..].iter().map(|finer| (*finer, *coarser)));
+    }
+    pairs
+}
+
+fn test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow() {
+    // Negative counts that are not a multiple of the divisor separate truncation from libcudf's floor.
+    let counts = [
+        Some(0),
+        Some(1),
+        Some(-1),
+        Some(999),
+        Some(-999),
+        Some(1_000_000_001),
+        Some(-1_000_000_001),
+        Some(-1_500_000_000),
+        Some(i64::MAX),
+        Some(i64::MIN),
+        None,
+    ];
+    for (from, to) in finer_to_coarser_pairs() {
+        for timestamp in [true, false] {
+            let expected = arrow_rescaled_counts(
+                &counts,
+                arrow_temporal_type(from, timestamp),
+                arrow_temporal_type(to, timestamp),
+            )
+            .unwrap();
+            let actual = rescaled_counts(&counts, from, to, timestamp).unwrap();
+            assert_eq!(actual, expected, "{from:?} to {to:?}, timestamp={timestamp}");
+        }
+    }
+}
+
+fn test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits() {
+    for (to, from) in finer_to_coarser_pairs() {
+        let factor = nanoseconds_per_tick(from) / nanoseconds_per_tick(to);
+        let fits = [Some(i64::MAX / factor), Some(i64::MIN / factor), Some(0), Some(1), Some(-1), None];
+        for timestamp in [true, false] {
+            let (source, target) = (arrow_temporal_type(from, timestamp), arrow_temporal_type(to, timestamp));
+            assert_eq!(
+                rescaled_counts(&fits, from, to, timestamp).unwrap(),
+                arrow_rescaled_counts(&fits, source.clone(), target.clone()).unwrap(),
+                "{from:?} to {to:?}, timestamp={timestamp}"
+            );
+
+            for (count, reason) in
+                [(i64::MAX / factor + 1, "above_target_range"), (i64::MIN / factor - 1, "below_target_range")]
+            {
+                arrow_rescaled_counts(&[Some(count)], source.clone(), target.clone())
+                    .expect_err("Arrow fails where the product leaves Int64");
+                let error = rescaled_counts(&[Some(0), Some(count)], from, to, timestamp)
+                    .expect_err("the product must not fit Int64");
+                assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{from:?} to {to:?}, timestamp={timestamp}");
+                assert_eq!(error.detail_value("reason"), Some(reason), "{from:?} to {to:?}, timestamp={timestamp}");
+            }
+
+            // A null row never fails, whatever count the null slot holds.
+            let (timestamps, durations) = temporal_series(
+                &nullable_series::<i64>("x", &[i64::MAX / factor + 1, 1], &[false, true]).unwrap(),
+                from,
+            );
+            let source = if timestamp { timestamps } else { durations };
+            let target = if timestamp { to.type_id() } else { to.duration_type_id() };
+            let rescaled = source.on(Exec::RETAINED).astype(target).unwrap();
+            let counts = rescaled.on(Exec::RETAINED).astype(TypeId::Int64).unwrap().to_optional_vec::<i64>().unwrap();
+            assert_eq!(counts, vec![None, Some(factor)], "{from:?} to {to:?}, timestamp={timestamp}");
+        }
+    }
+}
+
+fn test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor() {
+    let days = TimestampResolution::Days;
+    let nanos_per_day = nanoseconds_per_tick(days);
+    let fits = series_opt::<i64>("x", &[Some(106_751), Some(-106_751), Some(0), None]).unwrap();
+    let (dates, _) = temporal_series(&fits, days);
+    let nanos = dates.on(Exec::RETAINED).astype(TypeId::TimestampNanoseconds).unwrap();
+    let counts = nanos.on(Exec::RETAINED).astype(TypeId::Int64).unwrap().to_optional_vec::<i64>().unwrap();
+    assert_eq!(counts, vec![Some(106_751 * nanos_per_day), Some(-106_751 * nanos_per_day), Some(0), None]);
+
+    for (count, reason) in [(106_752, "above_target_range"), (-106_752, "below_target_range")] {
+        let (dates, _) = temporal_series(&series::<i64>("x", &[0, count]).unwrap(), days);
+        let error = dates.on(Exec::RETAINED).astype(TypeId::TimestampNanoseconds).expect_err("overflows Int64");
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(error.detail_value("reason"), Some(reason));
+    }
+
+    // Arrow takes the calendar date of a timestamp, which floors.
+    let counts = [Some(0), Some(-1), Some(86_399_999_999_999), Some(-86_400_000_000_000), Some(i64::MIN), None];
+    let expected =
+        arrow_rescaled_counts(&counts, ArrowDataType::Timestamp(TimeUnit::Nanosecond, None), ArrowDataType::Date32)
+            .unwrap();
+    let (timestamps, _) = temporal_series(&series_opt::<i64>("x", &counts).unwrap(), TimestampResolution::Nanoseconds);
+    let dates = timestamps.on(Exec::RETAINED).astype(days.type_id()).unwrap();
+    let actual = dates.on(Exec::RETAINED).astype(TypeId::Int64).unwrap().to_optional_vec::<i64>().unwrap();
+    assert_eq!(actual, expected);
 }
 
 // ===========================================================================
@@ -847,6 +1075,30 @@ fn cast_spec_tests_cases() {
         ("test_is_supported_cast_bool_to_int", test_is_supported_cast_bool_to_int),
         ("test_cast_i64_to_timestamp_microseconds", test_cast_i64_to_timestamp_microseconds),
         ("test_cast_timestamp_to_i64", test_cast_timestamp_to_i64),
+        (
+            "test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit",
+            test_cast_timestamp_and_duration_to_i64_returns_the_stored_count_in_the_types_own_unit,
+        ),
+        (
+            "test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count",
+            test_cast_timestamp_and_duration_to_narrower_integers_check_the_stored_count,
+        ),
+        (
+            "test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count",
+            test_cast_integer_to_timestamp_reads_the_integer_as_the_tick_count,
+        ),
+        (
+            "test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow",
+            test_cast_temporal_to_a_coarser_resolution_truncates_toward_zero_like_arrow,
+        ),
+        (
+            "test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits",
+            test_cast_temporal_to_a_finer_resolution_matches_arrow_up_to_the_int64_limits,
+        ),
+        (
+            "test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor",
+            test_cast_dates_to_timestamps_fail_where_the_product_leaves_int64_and_timestamps_to_dates_floor,
+        ),
         ("test_to_datetime_default_microseconds", test_to_datetime_default_microseconds),
         ("test_to_datetime_explicit_milliseconds", test_to_datetime_explicit_milliseconds),
         ("test_to_datetime_nanoseconds", test_to_datetime_nanoseconds),

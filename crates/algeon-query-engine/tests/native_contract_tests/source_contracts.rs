@@ -277,6 +277,69 @@ fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals()
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_rejects_casts_the_ast_cannot_evaluate() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("event_time", DataType::Timestamp(TimeUnit::Millisecond, None), false),
+        Field::new("elapsed", DataType::Duration(TimeUnit::Millisecond), false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-temporal-cast.parquet")
+                .with_stable_id("reader-predicate-temporal-cast")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["id".to_string(), "event_time".to_string(), "elapsed".to_string()],
+    );
+    let compare = |column: &str| {
+        Expr::binary(
+            Expr::cast(Expr::column(column), DataType::Int64),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Int64(10)),
+        )
+    };
+    let context = || rapids_analysis_context(PlanningPolicy::default());
+
+    assert!(source.reader_predicate_is_supported(&compare("id"), context()));
+    assert!(!source.reader_predicate_is_supported(&compare("event_time"), context()));
+    assert!(!source.reader_predicate_is_supported(&compare("elapsed"), context()));
+}
+
+#[test]
+fn local_parquet_source_reader_predicate_rejects_timestamp_arithmetic_the_ast_cannot_check() {
+    let timestamp = DataType::Timestamp(TimeUnit::Millisecond, None);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("event_time", timestamp.clone(), false),
+        Field::new("next_view", timestamp, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-timestamp-arithmetic.parquet")
+                .with_stable_id("reader-predicate-timestamp-arithmetic")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["id".to_string(), "event_time".to_string(), "next_view".to_string()],
+    );
+    let context = || rapids_analysis_context(PlanningPolicy::default());
+    let long_gap = Expr::binary(
+        Expr::binary(Expr::column("next_view"), BinaryOp::Subtract, Expr::column("event_time")),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Duration { raw: 5_000, unit: TimeUnit::Millisecond }),
+    );
+    let larger_id = Expr::binary(
+        Expr::binary(Expr::column("id"), BinaryOp::Subtract, Expr::column("id")),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Int64(5_000)),
+    );
+
+    assert!(source.reader_predicate_is_supported(&larger_id, context()));
+    assert!(!source.reader_predicate_is_supported(&long_gap, context()));
+}
+
+#[test]
 fn local_parquet_source_reader_predicate_rewrites_fixed_ascii_substring_prefix_in_list() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("phone", DataType::Utf8, false),

@@ -1,6 +1,6 @@
 use std::{fs::File, sync::Arc};
 
-use arrow::compute::{CastOptions, cast_with_options};
+use arrow::compute::{CastOptions, cast_with_options, kernels::numeric::sub};
 use query_planning::{
     error::QueryError,
     expr::{CaseWhen, DatePart, UnaryMathOp},
@@ -1230,6 +1230,126 @@ fn native_query_decimal_casts_fail_the_query_outside_the_target_precision() {
             input,
             vec![Expr::cast(Expr::column(column), target)],
             output_schema,
+        )
+        .expect_err(name);
+        assert_cudf_input_failure(&error, "ValueOutOfRange");
+    }
+}
+
+#[test]
+fn native_query_casts_timestamp_and_duration_counts_to_int64_like_arrow() {
+    let input_ms = [Some(1_700_000_000_123), Some(-86_400_001), Some(0), None, Some(5), Some(-3)];
+    let later_ms = [Some(1_700_000_001_623), Some(3_600_000), None, Some(9), Some(4), Some(-3)];
+    // The sub-unit offsets keep each unit's count distinct from a rescaled one.
+    let scaled = |values: &[Option<i64>], factor: i64, offset: i64| -> Vec<Option<i64>> {
+        values.iter().map(|value| value.map(|value| value * factor + offset)).collect()
+    };
+    let timestamps = |unit: TimeUnit, values: Vec<Option<i64>>| -> ArrayRef {
+        cast_with_options(&Int64Array::from(values), &DataType::Timestamp(unit, None), &CastOptions::default()).unwrap()
+    };
+    let columns = [
+        ("ts_ms", timestamps(TimeUnit::Millisecond, input_ms.to_vec())),
+        ("later_ms", timestamps(TimeUnit::Millisecond, later_ms.to_vec())),
+        ("ts_us", timestamps(TimeUnit::Microsecond, scaled(&input_ms, 1_000, 7))),
+        ("later_us", timestamps(TimeUnit::Microsecond, scaled(&later_ms, 1_000, 3))),
+        ("ts_ns", timestamps(TimeUnit::Nanosecond, scaled(&input_ms, 1_000_000, 7))),
+        ("later_ns", timestamps(TimeUnit::Nanosecond, scaled(&later_ms, 1_000_000, 3))),
+    ];
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(
+            columns.iter().map(|(name, array)| Field::new(*name, array.data_type().clone(), true)).collect::<Vec<_>>(),
+        )),
+        columns.iter().map(|(_, array)| Arc::clone(array)).collect(),
+    )
+    .unwrap();
+
+    let elapsed = |unit: &str| {
+        Expr::binary(Expr::column(format!("later_{unit}")), BinaryOp::Subtract, Expr::column(format!("ts_{unit}")))
+    };
+    let mut exprs = Vec::new();
+    for unit in ["ms", "us", "ns"] {
+        exprs.push(Expr::cast(Expr::column(format!("ts_{unit}")), DataType::Int64));
+        exprs.push(Expr::cast(elapsed(unit), DataType::Int64));
+    }
+    exprs.push(elapsed("ms"));
+    let mut output_fields =
+        (0..6).map(|index| Field::new(format!("count_{index}"), DataType::Int64, true)).collect::<Vec<_>>();
+    output_fields.push(Field::new("elapsed", DataType::Duration(TimeUnit::Millisecond), true));
+
+    let batch = project_over_parquet(
+        "query-engine-native-temporal-count-casts",
+        input.clone(),
+        exprs,
+        Arc::new(Schema::new(output_fields)),
+    )
+    .unwrap();
+
+    let arrow_options = CastOptions { safe: false, ..CastOptions::default() };
+    let column = |name: &str| input.column_by_name(name).unwrap();
+    for (index, unit) in ["ms", "us", "ns"].into_iter().enumerate() {
+        let ts = column(&format!("ts_{unit}"));
+        let difference = sub(column(&format!("later_{unit}")), ts).unwrap();
+        for (output, source) in [(2 * index, Arc::clone(ts)), (2 * index + 1, difference)] {
+            let expected = cast_with_options(&source, &DataType::Int64, &arrow_options).unwrap();
+            assert_eq!(batch.column(output).as_ref(), expected.as_ref(), "{unit} output {output}");
+        }
+    }
+    let expected_elapsed = sub(column("later_ms"), column("ts_ms")).unwrap();
+    assert_eq!(batch.column(6).as_ref(), expected_elapsed.as_ref());
+}
+
+fn nanosecond_timestamp_input(columns: [(&str, Vec<Option<i64>>); 3]) -> RecordBatch {
+    let timestamp = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    RecordBatch::try_new(
+        Arc::new(Schema::new(
+            columns.iter().map(|(name, _)| Field::new(*name, timestamp.clone(), true)).collect::<Vec<_>>(),
+        )),
+        columns
+            .into_iter()
+            .map(|(_, values)| {
+                cast_with_options(&Int64Array::from(values), &timestamp, &CastOptions::default()).unwrap()
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_query_timestamp_arithmetic_fails_the_query_where_arrow_checks_the_result() {
+    // base + (x - y): the elapsed duration, then the shifted timestamp.
+    let elapsed = || Expr::binary(Expr::column("x"), BinaryOp::Subtract, Expr::column("y"));
+    let exprs = || vec![elapsed(), Expr::binary(Expr::column("base"), BinaryOp::Add, elapsed())];
+    let output_schema = || {
+        Arc::new(Schema::new(vec![
+            Field::new("elapsed", DataType::Duration(TimeUnit::Nanosecond), true),
+            Field::new("shifted", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        ]))
+    };
+    let counts = |batch: &RecordBatch, index: usize| {
+        let counts = cast_with_options(batch.column(index), &DataType::Int64, &CastOptions::default()).unwrap();
+        counts.as_any().downcast_ref::<Int64Array>().unwrap().iter().collect::<Vec<_>>()
+    };
+
+    // Row 1 would overflow under a NULL `y`, row 2 under a NULL `base`, and row 3 lands exactly on the limit.
+    let accepted = nanosecond_timestamp_input([
+        ("base", vec![Some(10), Some(i64::MAX - 1), None, Some(i64::MAX - 1)]),
+        ("x", vec![Some(5), Some(5), Some(i64::MAX), Some(1)]),
+        ("y", vec![Some(2), None, Some(0), Some(0)]),
+    ]);
+    let batch =
+        project_over_parquet("query-engine-native-timestamp-arithmetic", accepted, exprs(), output_schema()).unwrap();
+    assert_eq!(counts(&batch, 0), [Some(3), None, Some(i64::MAX), Some(1)]);
+    assert_eq!(counts(&batch, 1), [Some(13), None, None, Some(i64::MAX)]);
+
+    for (name, columns) in [
+        ("addition", [("base", vec![Some(i64::MAX - 1)]), ("x", vec![Some(5)]), ("y", vec![Some(0)])]),
+        ("subtraction", [("base", vec![Some(0)]), ("x", vec![Some(i64::MAX)]), ("y", vec![Some(i64::MIN)])]),
+    ] {
+        let error = project_over_parquet(
+            &format!("query-engine-native-timestamp-arithmetic-failure-{name}"),
+            nanosecond_timestamp_input(columns),
+            exprs(),
+            output_schema(),
         )
         .expect_err(name);
         assert_cudf_input_failure(&error, "ValueOutOfRange");

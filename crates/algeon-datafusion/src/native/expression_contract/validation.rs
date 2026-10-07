@@ -15,8 +15,8 @@ use datafusion::{
     },
 };
 use query_planning::{
-    datatypes::{cast_can_fail_at_runtime, is_timestamp_with_timezone},
-    expr::{DatePart as NativeDatePart, UnaryMathOp},
+    datatypes::{cast_can_fail_at_runtime, is_timestamp_with_timezone, temporal_arithmetic_can_fail_at_runtime},
+    expr::{BinaryOp as NativeBinaryOp, DatePart as NativeDatePart, UnaryMathOp},
     validation::{is_integral_type, is_string_type, substring_stop_position},
 };
 
@@ -303,8 +303,9 @@ fn validate_case_expr(case: &CaseExpr, input_schema: &SchemaRef) -> Result<(), E
 /// `None` when `expr` cannot fail on valid input.
 ///
 /// That is the divisor of an integer `/` or `%` whose divisor is not a literal
-/// other than 0 and -1, the divisor of a decimal `/`, and the input of a cast
-/// for which `cast_can_fail_at_runtime` holds. A decimal `/` can fail on any
+/// other than 0 and -1, the divisor of a decimal `/`, the right operand of a
+/// timestamp `+` or `-`, and the input of a cast for which
+/// `cast_can_fail_at_runtime` holds. A decimal `/` can fail on any
 /// divisor, because scaling the dividend to the result scale can overflow. The
 /// checks skip rows where the operand is NULL, so a lowering that must keep a
 /// row from failing nulls the operand on that row.
@@ -316,12 +317,30 @@ pub(in crate::native) fn fallible_operand<'a>(
         let integral_division = matches!(binary.op(), Operator::Divide | Operator::Modulo)
             && physical_expr_data_type(binary.left(), input_schema).is_ok_and(|data_type| is_integral_type(&data_type))
             && !is_infallible_integral_divisor(binary.right());
-        return (integral_division || is_decimal_division(binary, input_schema)).then(|| binary.right());
+        return (integral_division
+            || is_decimal_division(binary, input_schema)
+            || is_checked_temporal_arithmetic(binary, input_schema))
+        .then(|| binary.right());
     }
     let cast = expr.downcast_ref::<CastExpr>()?;
     physical_expr_data_type(cast.expr(), input_schema)
         .is_ok_and(|source_type| cast_can_fail_at_runtime(&source_type, cast.cast_type()))
         .then(|| cast.expr())
+}
+
+/// Whether `binary` is a timestamp `+` or `-` whose result native evaluation
+/// checks for `Int64` overflow, as Arrow does.
+pub(in crate::native) fn is_checked_temporal_arithmetic(binary: &BinaryExpr, input_schema: &SchemaRef) -> bool {
+    let op = match binary.op() {
+        Operator::Plus => NativeBinaryOp::Add,
+        Operator::Minus => NativeBinaryOp::Subtract,
+        _ => return false,
+    };
+    match (physical_expr_data_type(binary.left(), input_schema), physical_expr_data_type(binary.right(), input_schema))
+    {
+        (Ok(left), Ok(right)) => temporal_arithmetic_can_fail_at_runtime(op, &left, &right),
+        _ => false,
+    }
 }
 
 /// Whether `binary` is a `/` that native evaluation runs as a decimal division

@@ -204,6 +204,18 @@ fn carry_operand_rejection_reason(
     }
 }
 
+/// Output type of a temporal `+` or `-` that native evaluation supports, `None`
+/// when the operands are not temporal, and an error for a temporal combination
+/// native evaluation does not run.
+///
+/// Every accepted combination has a libcudf operation on exactly its operand
+/// types: a timezone-free timestamp plus or minus a duration of the same unit,
+/// a duration plus such a timestamp, and the difference of two timestamps of
+/// one unit. libcudf has no `Date32` plus a second-or-finer duration, and
+/// Arrow rejects `Date32` plus or minus a duration outright. DataFusion casts a
+/// duration to the timestamp's unit before it adds, so mixed units reach
+/// execution only as an explicit cast. Accepting either here would fail the
+/// query after planning chose the native path.
 pub(crate) fn temporal_duration_binary_output_type(
     op: BinaryOp,
     left: &ArrowDataType,
@@ -217,20 +229,50 @@ pub(crate) fn temporal_duration_binary_output_type(
     let left_duration = is_duration_type(left);
     let right_duration = is_duration_type(right);
 
+    if let (BinaryOp::Subtract, ArrowDataType::Timestamp(left_unit, None), ArrowDataType::Timestamp(right_unit, None)) =
+        (op, left, right)
+        && left_unit == right_unit
+    {
+        return Ok(Some(ArrowDataType::Duration(*left_unit)));
+    }
     match (op, left_temporal, right_temporal, left_duration, right_duration) {
-        (BinaryOp::Add, true, false, false, true) | (BinaryOp::Subtract, true, false, false, true) => {
-            Ok(Some(left.clone()))
+        (_, true, false, false, true) if timestamp_has_duration_unit(left, right) => Ok(Some(left.clone())),
+        (BinaryOp::Add, false, true, true, false) if timestamp_has_duration_unit(right, left) => {
+            Ok(Some(right.clone()))
         },
-        (BinaryOp::Add, false, true, true, false) => Ok(Some(right.clone())),
-        (_, true | false, true | false, true, true) | (_, true, true, false, false) => Err(QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            "query_engine.plan.validate_expr",
-            "native temporal arithmetic supports only datetime plus/minus duration",
-        )
-        .with_fact("left_type", format!("{left:?}"))
-        .with_fact("right_type", format!("{right:?}"))),
+        (_, true, false, false, true) | (BinaryOp::Add, false, true, true, false) => {
+            let reason = if left == &ArrowDataType::Date32 || right == &ArrowDataType::Date32 {
+                "date_duration_arithmetic_unsupported"
+            } else {
+                "timestamp_duration_unit_mismatch"
+            };
+            Err(unsupported_temporal_arithmetic(left, right, reason))
+        },
+        (_, true | false, true | false, true, true) | (_, true, true, false, false) => {
+            Err(unsupported_temporal_arithmetic(left, right, "temporal_operand_combination_unsupported"))
+        },
         _ => Ok(None),
     }
+}
+
+fn timestamp_has_duration_unit(timestamp: &ArrowDataType, duration: &ArrowDataType) -> bool {
+    matches!(
+        (timestamp, duration),
+        (ArrowDataType::Timestamp(timestamp_unit, None), ArrowDataType::Duration(duration_unit))
+            if timestamp_unit == duration_unit
+    )
+}
+
+fn unsupported_temporal_arithmetic(left: &ArrowDataType, right: &ArrowDataType, reason: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedType,
+        "query_engine.plan.validate_expr",
+        "native temporal arithmetic supports only a timezone-free timestamp plus or minus a duration of the same \
+         unit, and the difference of two timestamps of one unit",
+    )
+    .with_fact("left_type", format!("{left:?}"))
+    .with_fact("right_type", format!("{right:?}"))
+    .with_fact("reason", reason)
 }
 
 fn unsupported_type(context: &'static str, data_type: &ArrowDataType, expected: &'static str) -> Result<()> {
