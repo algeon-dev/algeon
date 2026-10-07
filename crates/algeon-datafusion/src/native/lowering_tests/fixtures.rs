@@ -509,6 +509,29 @@ pub(super) fn write_float_measure_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+pub(super) fn write_decimal_measure_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Decimal128(10, 2), false),
+        Field::new("m01", DataType::Decimal128(10, 2), false),
+    ]));
+    let decimals = |values: [i128; 3]| {
+        Arc::new(Decimal128Array::from_iter_values(values).with_precision_and_scale(10, 2).unwrap())
+    };
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 10, 20])),
+            decimals([10_000, 20_000, 30_000]),
+            decimals([100, 200, 300]),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 pub(super) fn write_date64_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("event_date64", DataType::Date64, false),

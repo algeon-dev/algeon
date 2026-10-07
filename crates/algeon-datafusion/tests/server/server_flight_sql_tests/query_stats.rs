@@ -233,10 +233,10 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
         ),
     )
     .await;
-    // DataFusion computes `src % dst` in the scan's projection, which has no
-    // native expression, so no subtree of the plan runs natively.
+    // DataFusion computes `sin(src)` in the scan's projection, and `sin` has no
+    // native kernel, so no subtree of the plan runs natively.
     let flight_info = client
-        .execute("SELECT src % dst AS remainder FROM stats_fallback_edges ORDER BY remainder".to_string(), None)
+        .execute("SELECT sin(CAST(src AS DOUBLE)) AS wave FROM stats_fallback_edges ORDER BY wave".to_string(), None)
         .await
         .unwrap();
     let query_id = query_id_from_statement_flight_info(&flight_info);

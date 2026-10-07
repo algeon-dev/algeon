@@ -234,8 +234,63 @@ pub fn is_supported_arrow_cast(
             || is_supported_decimal_to_float64_cast(source_type, target_type)
             || is_supported_numeric_to_decimal_cast(source_type, target_type)
             || is_supported_decimal_to_integral_cast(source_type, target_type)
-            || is_supported_float64_to_int64_cast(source_type, target_type)
+            || is_supported_range_checked_integral_cast(source_type, target_type)
+            || is_supported_integral_to_string_cast(source_type, target_type)
             || is_supported_float64_to_float32_cast(source_type, target_type))
+}
+
+/// Returns whether native evaluation of a supported explicit cast can fail on
+/// the values it reads.
+///
+/// An integer, floating-point, or `Decimal128` source cast to an integer fails
+/// the query when a valid value, truncated toward zero, is outside the target
+/// range, as DataFusion `CAST` does. An integer source whose whole range fits
+/// the target cannot fail.
+///
+/// An integer, floating-point, or `Decimal128` source cast to `Decimal128`
+/// fails when a valid value does not fit the target precision after rescaling.
+/// Floating-point sources always can, because NaN and infinity never fit. An
+/// integer or decimal source cannot fail when every value its type allows
+/// fits, the same condition under which Arrow skips the check.
+pub fn cast_can_fail_at_runtime(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    if source_type == target_type {
+        return false;
+    }
+    if let ArrowDataType::Decimal128(target_precision, target_scale) = target_type {
+        return (is_supported_numeric_to_decimal_cast(source_type, target_type)
+            || is_supported_decimal_to_decimal_cast(source_type, target_type))
+            && !decimal_cast_always_fits(source_type, *target_precision, *target_scale);
+    }
+    target_type.is_integer()
+        && (is_supported_decimal_to_integral_cast(source_type, target_type)
+            || is_supported_range_checked_integral_cast(source_type, target_type))
+        && !is_supported_numeric_widening_cast(source_type, target_type)
+}
+
+/// Whether every value of an integer or `Decimal128` source type fits the
+/// target precision after rescaling to the target scale.
+fn decimal_cast_always_fits(source_type: &ArrowDataType, target_precision: u8, target_scale: i8) -> bool {
+    let source_digits_and_scale = match source_type {
+        ArrowDataType::Int8 | ArrowDataType::UInt8 => Some((3, 0)),
+        ArrowDataType::Int16 | ArrowDataType::UInt16 => Some((5, 0)),
+        ArrowDataType::Int32 | ArrowDataType::UInt32 => Some((10, 0)),
+        ArrowDataType::Int64 => Some((19, 0)),
+        ArrowDataType::UInt64 => Some((20, 0)),
+        ArrowDataType::Decimal128(source_precision, source_scale) => {
+            Some((i32::from(*source_precision), *source_scale))
+        },
+        _ => None,
+    };
+    let Some((source_digits, source_scale)) = source_digits_and_scale else {
+        return false;
+    };
+    let scale_change = i32::from(target_scale) - i32::from(source_scale);
+    if scale_change >= 0 {
+        source_digits + scale_change <= i32::from(target_precision)
+    } else {
+        // Dropping digits can round up into one more integer digit.
+        source_digits + scale_change < i32::from(target_precision)
+    }
 }
 
 /// Returns whether the native engine may insert or preserve an implicit cast.
@@ -338,8 +393,18 @@ fn is_supported_decimal_to_integral_cast(source_type: &ArrowDataType, target_typ
     }
 }
 
-fn is_supported_float64_to_int64_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
-    matches!((source_type, target_type), (ArrowDataType::Float64, ArrowDataType::Int64))
+/// Integer or floating-point source to an integer target. Native evaluation
+/// checks the valid values against the target range and fails the query on
+/// NaN, infinity, or an out-of-range value, as DataFusion `CAST` does.
+fn is_supported_range_checked_integral_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    target_type.is_integer()
+        && (source_type.is_integer() || matches!(source_type, ArrowDataType::Float32 | ArrowDataType::Float64))
+}
+
+/// Formats integers as plain decimal text, like Arrow.
+fn is_supported_integral_to_string_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    source_type.is_integer()
+        && matches!(target_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
 /// IEEE round-to-nearest narrowing; values beyond the Float32 range become

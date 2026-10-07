@@ -6,8 +6,8 @@ use super::{
     BinaryOp, Expr, LiteralValue, QueryError, QueryErrorCode, Result,
     types::{
         is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
-        require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
-        require_string, require_timestamp_preserving_output, require_timestamp_second,
+        require_compatible_types, require_date_or_timestamp, require_integral_type, require_remainder_type,
+        require_scalar_operator_value, require_string, require_timestamp_preserving_output, require_timestamp_second,
         temporal_duration_binary_output_type,
     },
 };
@@ -92,7 +92,7 @@ pub(crate) fn validate_expr(
         },
         Expr::UnaryMath { op, expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
-            validate_negation_types(*op, &data_type, output_type)?;
+            validate_unary_math_types(*op, &data_type, output_type)?;
             let (input_context, output_context) = unary_math_type_contexts(*op);
             require_arithmetic_type(&data_type, input_context)?;
             require_arithmetic_type(output_type, output_context)?;
@@ -198,9 +198,7 @@ fn validate_cast_expr(
     ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns, ctx)?;
-    if !is_supported_arrow_cast(&source_type, target_type, ctx.backend())
-        && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
-    {
+    if !is_supported_arrow_cast(&source_type, target_type, ctx.backend()) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.plan.validate_expr",
@@ -401,8 +399,8 @@ fn validate_binary_expr_with_expected_type(
             }
         },
         BinaryOp::Modulo => {
-            require_integral_type(&left_type, "modulo left operand")?;
-            require_integral_type(&right_type, "modulo right operand")?;
+            require_remainder_type(&left_type, "modulo left operand")?;
+            require_remainder_type(&right_type, "modulo right operand")?;
             require_compatible_types(&left_type, &right_type, "modulo operands", ctx)?;
             Ok(left_type)
         },
@@ -615,80 +613,6 @@ fn validate_concat_expr(
     Ok(output_type)
 }
 
-fn bounded_nonnegative_integral_cast_is_supported(
-    expr: &Expr,
-    source_type: &ArrowDataType,
-    target_type: &ArrowDataType,
-) -> bool {
-    if !is_integral_type(source_type) || !is_integral_type(target_type) {
-        return false;
-    }
-    let Some(max_value) = nonnegative_integral_expr_max(expr) else {
-        return false;
-    };
-    target_integral_max(target_type).is_some_and(|target_max| max_value <= target_max)
-}
-
-fn nonnegative_integral_expr_max(expr: &Expr) -> Option<u128> {
-    match expr {
-        Expr::Literal(value) => nonnegative_integral_literal_value(value),
-        Expr::Alias { expr, .. } | Expr::Cast { expr, .. } => nonnegative_integral_expr_max(expr),
-        Expr::Binary { left, op: BinaryOp::BitwiseAnd, right, .. } => {
-            nonnegative_integral_expr_max(left).or_else(|| nonnegative_integral_expr_max(right))
-        },
-        Expr::Binary { left, op: BinaryOp::ShiftRight, right, .. } => {
-            let left_max = nonnegative_integral_expr_max(left)?;
-            let shift = nonnegative_integral_expr_literal_value(right)?;
-            if shift >= 128 { Some(0) } else { Some(left_max >> shift) }
-        },
-        Expr::Binary { left, op: BinaryOp::ShiftLeft, right, .. } => {
-            let left_max = nonnegative_integral_expr_max(left)?;
-            let shift = u32::try_from(nonnegative_integral_expr_literal_value(right)?).ok()?;
-            left_max.checked_shl(shift)
-        },
-        Expr::Binary { left, op: BinaryOp::BitwiseOr | BinaryOp::BitwiseXor, right, .. } => {
-            Some(nonnegative_integral_expr_max(left)? | nonnegative_integral_expr_max(right)?)
-        },
-        _ => None,
-    }
-}
-
-fn nonnegative_integral_expr_literal_value(expr: &Expr) -> Option<u128> {
-    match expr {
-        Expr::Literal(value) => nonnegative_integral_literal_value(value),
-        Expr::Alias { expr, .. } | Expr::Cast { expr, .. } => nonnegative_integral_expr_literal_value(expr),
-        _ => None,
-    }
-}
-
-fn nonnegative_integral_literal_value(value: &LiteralValue) -> Option<u128> {
-    match value {
-        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
-        LiteralValue::UInt8(value) => Some(u128::from(*value)),
-        LiteralValue::UInt16(value) => Some(u128::from(*value)),
-        LiteralValue::UInt32(value) => Some(u128::from(*value)),
-        LiteralValue::UInt64(value) => Some(u128::from(*value)),
-        _ => None,
-    }
-}
-
-pub fn target_integral_max(data_type: &ArrowDataType) -> Option<u128> {
-    match data_type {
-        ArrowDataType::Int8 => Some(i8::MAX as u128),
-        ArrowDataType::Int16 => Some(i16::MAX as u128),
-        ArrowDataType::Int32 => Some(i32::MAX as u128),
-        ArrowDataType::Int64 => Some(i64::MAX as u128),
-        ArrowDataType::UInt8 => Some(u128::from(u8::MAX)),
-        ArrowDataType::UInt16 => Some(u128::from(u16::MAX)),
-        ArrowDataType::UInt32 => Some(u128::from(u32::MAX)),
-        ArrowDataType::UInt64 => Some(u128::from(u64::MAX)),
-        _ => None,
-    }
-}
-
 fn validate_case_expr(
     branches: &[CaseWhen],
     else_expr: &Expr,
@@ -773,17 +697,19 @@ fn unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
         UnaryMathOp::Sqrt => ("SQRT input", "SQRT output"),
         UnaryMathOp::Ln => ("LN input", "LN output"),
         UnaryMathOp::Exp => ("EXP input", "EXP output"),
+        UnaryMathOp::Floor => ("FLOOR input", "FLOOR output"),
+        UnaryMathOp::Ceil => ("CEIL input", "CEIL output"),
     }
 }
 
-pub(super) fn validate_negation_types(
+pub(super) fn validate_unary_math_types(
     op: UnaryMathOp,
     input_type: &ArrowDataType,
     output_type: &ArrowDataType,
 ) -> Result<()> {
-    if op == UnaryMathOp::Negate
-        && (input_type != output_type
-            || !matches!(
+    let (admitted, requirement) = match op {
+        UnaryMathOp::Negate => (
+            matches!(
                 input_type,
                 ArrowDataType::Int8
                     | ArrowDataType::Int16
@@ -791,15 +717,19 @@ pub(super) fn validate_negation_types(
                     | ArrowDataType::Int64
                     | ArrowDataType::Float32
                     | ArrowDataType::Float64
-            ))
-    {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            "query_engine.plan.validate_expr",
+            ),
             "native negation requires matching signed integer or floating-point input and output types",
-        )
-        .with_fact("input_type", format!("{input_type:?}"))
-        .with_fact("output_type", format!("{output_type:?}")));
+        ),
+        UnaryMathOp::Floor | UnaryMathOp::Ceil => (
+            matches!(input_type, ArrowDataType::Float32 | ArrowDataType::Float64),
+            "native FLOOR and CEIL require matching Float32 or Float64 input and output types",
+        ),
+        UnaryMathOp::Sqrt | UnaryMathOp::Ln | UnaryMathOp::Exp => return Ok(()),
+    };
+    if admitted && input_type == output_type {
+        return Ok(());
     }
-    Ok(())
+    Err(QueryError::new(QueryErrorCode::UnsupportedType, "query_engine.plan.validate_expr", requirement)
+        .with_fact("input_type", format!("{input_type:?}"))
+        .with_fact("output_type", format!("{output_type:?}")))
 }

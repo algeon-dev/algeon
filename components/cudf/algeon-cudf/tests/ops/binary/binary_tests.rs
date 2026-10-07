@@ -1,6 +1,6 @@
 //! Tests for binary operations (numeric and string).
 use cudf::{
-    DataFrame, DataType, Exec, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ErrorStatus, Exec, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::{
         binary::{self, BinaryOperator},
@@ -605,6 +605,208 @@ fn test_infer_mixed_string_numeric_comparison_rejected() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Integer division and remainder: arrow-arith row semantics
+// ---------------------------------------------------------------------------
+
+fn assert_division_by_zero(result: cudf::Result<cudf::Series>, operator: &str) {
+    let error = result.expect_err("a zero divisor in a valid row must fail");
+    assert_eq!(error.code(), ErrorCode::DivisionByZero);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.status(), ErrorStatus::Permanent);
+    assert_eq!(error.detail_value("operator"), Some(operator));
+}
+
+fn assert_division_overflow(result: cudf::Result<cudf::Series>) {
+    let error = result.expect_err("the minimum value divided by -1 must fail");
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.detail_value("reason"), Some("overflow"));
+    assert_eq!(error.detail_value("operator"), Some("div"));
+}
+
+fn test_integer_division_values_and_failures_follow_arrow_row_semantics() {
+    let lhs = series::<i32>("a", &[7, -7, 7, -7, 0]).unwrap();
+    let rhs = series::<i32>("b", &[2, 2, -2, -2, 5]).unwrap();
+    assert_eq!(lhs.on(Exec::RETAINED).div(&rhs).unwrap().to_vec_strict::<i32>().unwrap(), vec![3, -3, -3, 3, 0]);
+    assert_eq!(lhs.on(Exec::RETAINED).rem(&rhs).unwrap().to_vec_strict::<i32>().unwrap(), vec![1, -1, 1, -1, 0]);
+    assert_eq!(lhs.on(Exec::RETAINED).div_scalar(2i32).unwrap().to_vec_strict::<i32>().unwrap(), vec![3, -3, 3, -3, 0]);
+    assert_eq!(lhs.on(Exec::RETAINED).rem_scalar(3i32).unwrap().to_vec_strict::<i32>().unwrap(), vec![1, -1, 1, -1, 0]);
+
+    let df = DataFrame::from_series([("a", lhs), ("b", rhs)]).unwrap();
+    let quotient = (col("a") / col("b")).eval(&df).unwrap();
+    assert_eq!(quotient.to_vec_strict::<i32>().unwrap(), vec![3, -3, -3, 3, 0]);
+    let scalar_dividend = (100i32 / col("b")).eval(&df).unwrap();
+    assert_eq!(scalar_dividend.to_vec_strict::<i32>().unwrap(), vec![50, 50, -50, -50, 20]);
+
+    let wide = series::<u64>("a", &[u64::MAX, 7]).unwrap();
+    let divisor = series::<u64>("b", &[1, 2]).unwrap();
+    assert_eq!(wide.on(Exec::RETAINED).div(&divisor).unwrap().to_vec_strict::<u64>().unwrap(), vec![u64::MAX, 3]);
+    assert_eq!(wide.on(Exec::RETAINED).rem(&divisor).unwrap().to_vec_strict::<u64>().unwrap(), vec![0, 1]);
+
+    let lhs = series::<i32>("a", &[1, 2]).unwrap();
+    let rhs = series::<i32>("b", &[1, 0]).unwrap();
+    assert_division_by_zero(lhs.on(Exec::RETAINED).div(&rhs), "div");
+    assert_division_by_zero(lhs.on(Exec::RETAINED).rem(&rhs), "mod");
+    assert_division_by_zero(lhs.on(Exec::RETAINED).div_scalar(0i32), "div");
+    assert_division_by_zero(lhs.on(Exec::RETAINED).rem_scalar(0i32), "mod");
+
+    let unsigned = series::<u32>("a", &[9, 9]).unwrap();
+    let zero = series::<u32>("b", &[3, 0]).unwrap();
+    assert_division_by_zero(unsigned.on(Exec::RETAINED).div(&zero), "div");
+    assert_division_by_zero(unsigned.on(Exec::RETAINED).rem_scalar(0u32), "mod");
+
+    let df = DataFrame::from_series([("x", series::<i64>("x", &[1, 0, 3]).unwrap())]).unwrap();
+    let scalar_dividend = (5i64 / col("x")).eval(&df).unwrap_err();
+    assert_eq!(scalar_dividend.code(), ErrorCode::DivisionByZero);
+    let scalar_remainder = (5i64 % col("x")).eval(&df).unwrap_err();
+    assert_eq!(scalar_remainder.code(), ErrorCode::DivisionByZero);
+    let literal_divisor = (col("x") / 0i64).eval(&df).unwrap_err();
+    assert_eq!(literal_divisor.code(), ErrorCode::DivisionByZero);
+}
+
+fn test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics() {
+    let lhs = nullable_series::<i32>("a", &[1, 2, 3], &[true, false, true]).unwrap();
+    let rhs = series::<i32>("b", &[1, 0, 1]).unwrap();
+    assert_eq!(
+        lhs.on(Exec::RETAINED).div(&rhs).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(1), None, Some(3)]
+    );
+    assert_eq!(
+        lhs.on(Exec::RETAINED).rem(&rhs).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(0), None, Some(0)]
+    );
+
+    let dividend = series::<i32>("a", &[10, 20, 30]).unwrap();
+    let nullable_divisor = nullable_series::<i32>("b", &[2, 0, 2], &[true, false, true]).unwrap();
+    assert_eq!(
+        dividend.on(Exec::RETAINED).div(&nullable_divisor).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(5), None, Some(15)]
+    );
+
+    let lhs = nullable_series::<i32>("a", &[1, 10, 3], &[false, true, true]).unwrap();
+    let rhs = nullable_series::<i32>("b", &[0, 5, 0], &[true, true, false]).unwrap();
+    assert_eq!(lhs.on(Exec::RETAINED).div(&rhs).unwrap().to_optional_vec::<i32>().unwrap(), vec![None, Some(2), None]);
+    assert_eq!(lhs.on(Exec::RETAINED).rem(&rhs).unwrap().to_optional_vec::<i32>().unwrap(), vec![None, Some(0), None]);
+
+    let minimum_under_null = nullable_series::<i32>("a", &[i32::MIN, 6], &[false, true]).unwrap();
+    let minus_one = series::<i32>("b", &[-1, -1]).unwrap();
+    assert_eq!(
+        minimum_under_null.on(Exec::RETAINED).div(&minus_one).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![None, Some(-6)]
+    );
+
+    let all_null = nullable_series::<i32>("a", &[4, 5], &[false, false]).unwrap();
+    assert_eq!(all_null.on(Exec::RETAINED).div_scalar(0i32).unwrap().null_count(), 2);
+    assert_eq!(all_null.on(Exec::RETAINED).rem_scalar(0i32).unwrap().null_count(), 2);
+    let empty = series::<i32>("a", &[]).unwrap();
+    assert_eq!(empty.on(Exec::RETAINED).div_scalar(0i32).unwrap().len(), 0);
+    let some_null = nullable_series::<i32>("a", &[4, 5, 6], &[true, false, true]).unwrap();
+    assert_eq!(
+        some_null.on(Exec::RETAINED).div_scalar(2i32).unwrap().to_optional_vec::<i32>().unwrap(),
+        vec![Some(2), None, Some(3)]
+    );
+
+    let lhs = series::<i32>("a", &[i32::MIN, 5, -5]).unwrap();
+    let minus_one = series::<i32>("b", &[-1, -1, -1]).unwrap();
+    assert_division_overflow(lhs.on(Exec::RETAINED).div(&minus_one));
+    assert_eq!(lhs.on(Exec::RETAINED).rem(&minus_one).unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 0, 0]);
+    assert_division_overflow(lhs.on(Exec::RETAINED).div_scalar(-1i32));
+    assert_eq!(lhs.on(Exec::RETAINED).rem_scalar(-1i32).unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 0, 0]);
+
+    let safe = series::<i32>("a", &[5, -5]).unwrap();
+    assert_eq!(safe.on(Exec::RETAINED).div_scalar(-1i32).unwrap().to_vec_strict::<i32>().unwrap(), vec![-5, 5]);
+    let two_minus_ones = series::<i32>("b", &[-1, -1]).unwrap();
+    assert_eq!(safe.on(Exec::RETAINED).div(&two_minus_ones).unwrap().to_vec_strict::<i32>().unwrap(), vec![-5, 5]);
+
+    let wide = series::<i64>("a", &[i64::MIN]).unwrap();
+    let wide_minus_one = series::<i64>("b", &[-1]).unwrap();
+    assert_division_overflow(wide.on(Exec::RETAINED).div(&wide_minus_one));
+    assert_eq!(wide.on(Exec::RETAINED).rem(&wide_minus_one).unwrap().to_vec_strict::<i64>().unwrap(), vec![0]);
+
+    let narrow_dividend = series::<i32>("a", &[i32::MIN]).unwrap();
+    let wide_divisor = series::<i64>("b", &[-1]).unwrap();
+    assert_eq!(
+        narrow_dividend.on(Exec::RETAINED).div(&wide_divisor).unwrap().to_vec_strict::<i64>().unwrap(),
+        vec![2_147_483_648]
+    );
+    let wide_dividend = series::<i64>("a", &[i64::MIN]).unwrap();
+    let narrow_divisor = series::<i32>("b", &[-1]).unwrap();
+    assert_division_overflow(wide_dividend.on(Exec::RETAINED).div(&narrow_divisor));
+    assert_eq!(wide_dividend.on(Exec::RETAINED).rem(&narrow_divisor).unwrap().to_vec_strict::<i64>().unwrap(), vec![0]);
+
+    let df = DataFrame::from_series([("x", series::<i32>("x", &[i32::MIN, 3]).unwrap())]).unwrap();
+    let minus_one = -1i32;
+    assert_eq!((col("x") % minus_one).eval(&df).unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 0]);
+    let divisors = DataFrame::from_series([("x", series::<i32>("x", &[3, -1]).unwrap())]).unwrap();
+    assert_eq!((i32::MIN / col("x")).eval(&divisors).unwrap_err().code(), ErrorCode::ValueOutOfRange);
+
+    let unsigned = series::<u32>("a", &[u32::MAX]).unwrap();
+    let same = series::<u32>("b", &[u32::MAX]).unwrap();
+    assert_eq!(unsigned.on(Exec::RETAINED).div(&same).unwrap().to_vec_strict::<u32>().unwrap(), vec![1]);
+}
+
+fn assert_same_float_bits(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let same = (actual.is_nan() && expected.is_nan()) || actual.to_bits() == expected.to_bits();
+        assert!(same, "row {index}: libcudf {actual:?} differs from Rust {expected:?}");
+    }
+}
+
+fn test_float_remainder_matches_the_rust_remainder_for_edge_values() {
+    let lhs = [
+        5.5,
+        -5.5,
+        5.5,
+        -5.5,
+        0.0,
+        -0.0,
+        1e300,
+        5.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        5.0,
+        7.25,
+        1e-310,
+        123_456_789.123,
+        f64::MAX,
+        -3.0,
+    ];
+    let rhs = [
+        2.0,
+        2.0,
+        -2.0,
+        -2.0,
+        3.0,
+        3.0,
+        7.0,
+        0.0,
+        3.0,
+        3.0,
+        3.0,
+        f64::INFINITY,
+        0.5,
+        3e-311,
+        1e-5,
+        3.0,
+        f64::NEG_INFINITY,
+    ];
+    let expected: Vec<f64> = lhs.iter().zip(&rhs).map(|(lhs, rhs)| lhs % rhs).collect();
+    let (a, b) = (series::<f64>("a", &lhs).unwrap(), series::<f64>("b", &rhs).unwrap());
+    let actual = a.on(Exec::RETAINED).rem(&b).unwrap().to_vec_strict::<f64>().unwrap();
+    assert_same_float_bits(&actual, &expected);
+
+    let lhs32: Vec<f32> = lhs.iter().map(|value| *value as f32).collect();
+    let rhs32: Vec<f32> = rhs.iter().map(|value| *value as f32).collect();
+    let expected32: Vec<f64> = lhs32.iter().zip(&rhs32).map(|(lhs, rhs)| f64::from(lhs % rhs)).collect();
+    let (a, b) = (series::<f32>("a", &lhs32).unwrap(), series::<f32>("b", &rhs32).unwrap());
+    let actual32: Vec<f64> =
+        a.on(Exec::RETAINED).rem(&b).unwrap().to_vec_strict::<f32>().unwrap().into_iter().map(f64::from).collect();
+    assert_same_float_bits(&actual32, &expected32);
+}
+
 #[test]
 fn binary_tests_cases() {
     run_named_cases(&[
@@ -622,6 +824,18 @@ fn binary_tests_cases() {
         (
             "test_series_scalar_binary_operation_uses_series_provenance",
             test_series_scalar_binary_operation_uses_series_provenance,
+        ),
+        (
+            "test_integer_division_values_and_failures_follow_arrow_row_semantics",
+            test_integer_division_values_and_failures_follow_arrow_row_semantics,
+        ),
+        (
+            "test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics",
+            test_integer_division_null_rows_and_minimum_value_follow_arrow_row_semantics,
+        ),
+        (
+            "test_float_remainder_matches_the_rust_remainder_for_edge_values",
+            test_float_remainder_matches_the_rust_remainder_for_edge_values,
         ),
         ("test_string_equal_vv", test_string_equal_vv),
         ("test_string_not_equal_vv", test_string_not_equal_vv),

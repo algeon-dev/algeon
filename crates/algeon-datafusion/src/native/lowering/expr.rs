@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{cell::Cell, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
 use cudf::interop::arrow_host::is_supported_arrow_type;
@@ -26,8 +26,9 @@ use crate::{
     native::{
         LoweringRejection,
         expression_contract::{
-            ResolvedColumn, ScalarFunctionKind, SupportedBinaryOperator, ValidatedPhysicalExpr,
-            declared_decimal_divide_output_type, is_decimal128_to_float32_cast_via_float64, is_list_carry_type,
+            MAX_ACTIVATION_NODES, ResolvedColumn, ScalarFunctionKind, SupportedBinaryOperator, ValidatedPhysicalExpr,
+            contains_fallible_operation, declared_decimal_divide_output_type, fallible_operand,
+            is_decimal128_to_float32_cast_via_float64, is_list_carry_type, oversized_activation_rejection,
             physical_expr_data_type, resolve_column, validate_physical_expr_contract,
         },
         literal::{NativeLiteralContext, literal_i32, literal_string, native_literal_value, parse_yyyy_mm_dd_date32},
@@ -77,17 +78,77 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, LoweringRejection> {
+    let activation_nodes = Cell::new(0);
+    lower_validated_physical_expr(
+        validated,
+        LoweringScope { bindings, activation: None, activation_nodes: &activation_nodes },
+    )
+}
+
+/// What the lowering of an expression needs to know about where it sits.
+#[derive(Clone, Copy)]
+struct LoweringScope<'a> {
+    bindings: Option<&'a [FieldBinding]>,
+    /// Set inside a `CASE` branch or the right operand of an `AND` or `OR`,
+    /// which DataFusion may evaluate on a subset of rows: the rows where this
+    /// boolean is TRUE. Native evaluation visits every row, so an operand that
+    /// native evaluation checks for failing values is NULL on every other row.
+    activation: Option<&'a NativeExpr>,
+    /// Nodes that [`Self::restrict`] has embedded so far in this expression.
+    activation_nodes: &'a Cell<usize>,
+}
+
+impl<'a> LoweringScope<'a> {
+    fn within(self, activation: Option<&'a NativeExpr>) -> Self {
+        Self { activation, ..self }
+    }
+
+    /// `operand` with a NULL value on every row outside the activation. A
+    /// NULL operand exempts its row from the failing-value check. `None` when
+    /// the activations of this expression would exceed [`MAX_ACTIVATION_NODES`].
+    fn restrict(self, operand: NativeExpr, data_type: ArrowDataType) -> Option<NativeExpr> {
+        let Some(activation) = self.activation else {
+            return Some(operand);
+        };
+        let mut size = 0;
+        activation.any(|_| {
+            size += 1;
+            false
+        });
+        let embedded = self.activation_nodes.get() + size;
+        if embedded > MAX_ACTIVATION_NODES {
+            return None;
+        }
+        self.activation_nodes.set(embedded);
+        Some(NativeExpr::case(
+            vec![NativeCaseWhen::new(activation.clone(), operand)],
+            NativeExpr::literal(NativeLiteralValue::Null(data_type)),
+        ))
+    }
+}
+
+fn lower_validated_physical_expr(
+    validated: &ValidatedPhysicalExpr,
+    scope: LoweringScope<'_>,
+) -> Result<NativeExpr, LoweringRejection> {
     let expr = validated.expr();
     let input_schema = validated.input_schema();
     if let Some(column) = expr.downcast_ref::<Column>() {
-        return Ok(NativeExpr::column(resolved_column_name(column, input_schema, bindings)?));
+        return Ok(NativeExpr::column(resolved_column_name(column, input_schema, scope.bindings)?));
     }
     if let Some(literal) = expr.downcast_ref::<Literal>() {
         return Ok(lower_literal(literal.value()).expect("validated literal must lower"));
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        let left = lower_validated_child_expr_with_bindings(binary.left(), validated, bindings)?;
-        let right = lower_validated_child_expr_with_bindings(binary.right(), validated, bindings)?;
+        let left = lower_validated_child_expr(binary.left(), validated, scope)?;
+        let mut right = lower_binary_right_operand(binary, &left, validated, scope)?;
+        if let Some(divisor) = fallible_operand(expr, input_schema) {
+            let divisor_type =
+                physical_expr_data_type(divisor, input_schema).expect("validated divisor must have a resolved type");
+            right = scope
+                .restrict(right, divisor_type)
+                .ok_or_else(|| oversized_activation_rejection(expr, input_schema))?;
+        }
         if matches!(binary.op(), Operator::StringConcat) {
             let output_type =
                 physical_expr_data_type(expr, input_schema).expect("validated concatenation must have an output type");
@@ -117,26 +178,22 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.downcast_ref::<NotExpr>() {
-        return Ok(!lower_validated_child_expr_with_bindings(not.arg(), validated, bindings)?);
+        return Ok(!lower_validated_child_expr(not.arg(), validated, scope)?);
     }
     if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
         let output_type = physical_expr_data_type(negative.arg(), input_schema)
             .expect("validated negation must have a resolved type");
         return Ok(NativeExpr::unary_math(
             UnaryMathOp::Negate,
-            lower_validated_child_expr_with_bindings(negative.arg(), validated, bindings)?,
+            lower_validated_child_expr(negative.arg(), validated, scope)?,
             output_type,
         ));
     }
     if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
-        return Ok(NativeExpr::is_null(lower_validated_child_expr_with_bindings(is_null.arg(), validated, bindings)?));
+        return Ok(NativeExpr::is_null(lower_validated_child_expr(is_null.arg(), validated, scope)?));
     }
     if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
-        return Ok(NativeExpr::is_not_null(lower_validated_child_expr_with_bindings(
-            is_not_null.arg(),
-            validated,
-            bindings,
-        )?));
+        return Ok(NativeExpr::is_not_null(lower_validated_child_expr(is_not_null.arg(), validated, scope)?));
     }
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type = physical_expr_data_type(cast.expr(), input_schema)
@@ -145,60 +202,94 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
             return Ok(NativeExpr::literal(value));
         }
         if source_type == *cast.cast_type() && is_list_carry_type(&source_type) {
-            return lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings);
+            return lower_validated_child_expr(cast.expr(), validated, scope);
         }
         if is_decimal128_to_float32_cast_via_float64(&source_type, cast.cast_type()) {
-            let as_float64 = NativeExpr::cast(
-                lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings)?,
-                ArrowDataType::Float64,
-            );
+            let as_float64 =
+                NativeExpr::cast(lower_validated_child_expr(cast.expr(), validated, scope)?, ArrowDataType::Float64);
             return Ok(NativeExpr::cast(as_float64, ArrowDataType::Float32));
         }
-        return Ok(NativeExpr::cast(
-            lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings)?,
-            cast.cast_type().clone(),
-        ));
+        let mut input = lower_validated_child_expr(cast.expr(), validated, scope)?;
+        if fallible_operand(expr, input_schema).is_some() {
+            input =
+                scope.restrict(input, source_type).ok_or_else(|| oversized_activation_rejection(expr, input_schema))?;
+        }
+        return Ok(NativeExpr::cast(input, cast.cast_type().clone()));
     }
     if let Some(like) = expr.downcast_ref::<LikeExpr>() {
-        return lower_like_expr(like, validated, bindings);
+        return lower_like_expr(like, validated, scope);
     }
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-        return lower_in_list_expr(in_list, validated, bindings);
+        return lower_in_list_expr(in_list, validated, scope);
     }
     if let Some(case) = expr.downcast_ref::<CaseExpr>() {
-        return lower_case_expr(case, validated, bindings);
+        return lower_case_expr(case, validated, scope);
     }
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable. Validate the current snapshot before
         // deriving a new lowering proof rather than trusting the older root.
         let current = validate_physical_expr_contract(&current, input_schema)?;
-        return lower_validated_physical_expr_with_bindings(&current, bindings);
+        return lower_validated_physical_expr(&current, scope);
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
-        return lower_scalar_function_expr(function, validated, bindings);
+        return lower_scalar_function_expr(function, validated, scope);
     }
     if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
-        return lower_try_cast_expr(try_cast, validated, bindings);
+        return lower_try_cast_expr(try_cast, validated, scope);
     }
     unreachable!("validated physical expression must have a lowering branch")
 }
 
-fn lower_validated_child_expr_with_bindings(
+fn lower_validated_child_expr(
     expr: &Arc<dyn PhysicalExpr>,
     parent: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let child = parent.trusted_descendant(expr);
-    lower_validated_physical_expr_with_bindings(&child, bindings)
+    lower_validated_physical_expr(&child, scope)
+}
+
+/// Lowers the right operand of `binary`.
+///
+/// DataFusion skips the right operand of `AND` and `OR` on the rows the left
+/// operand decides, which are the FALSE rows for `AND` and the TRUE rows for
+/// `OR`, only in some batches. It skips all rows when every left value is
+/// decisive, and the decided rows when the left values have no NULL and at most
+/// a fifth of them are undecided. Any other batch evaluates the right operand
+/// on every row, including the decided ones.
+///
+/// Native evaluation never fails on a row the left operand decides, because
+/// the right operand lowers under an activation that is TRUE only on the other
+/// rows. A NULL left value is undecided. Values do not change: a decided row
+/// takes its value from the left operand alone. Native therefore fails only
+/// where DataFusion fails, and not on a decided row that DataFusion happens to
+/// evaluate. An operand with no fallible operation needs no activation and
+/// does not build one.
+fn lower_binary_right_operand(
+    binary: &BinaryExpr,
+    left: &NativeExpr,
+    validated: &ValidatedPhysicalExpr,
+    scope: LoweringScope<'_>,
+) -> Result<NativeExpr, LoweringRejection> {
+    let deciding_left = match binary.op() {
+        Operator::And => !left.clone(),
+        Operator::Or => left.clone(),
+        _ => return lower_validated_child_expr(binary.right(), validated, scope),
+    };
+    if !contains_fallible_operation(binary.right(), validated.input_schema()) {
+        return lower_validated_child_expr(binary.right(), validated, scope);
+    }
+    let activation = nested_activation(scope.activation, selected_rows(None, &[deciding_left], None));
+    lower_validated_child_expr(binary.right(), validated, scope.within(activation.as_ref()))
 }
 
 fn lower_try_cast_expr(
     try_cast: &TryCastExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
-    let inner = lower_validated_child_expr_with_bindings(try_cast.expr(), validated, bindings)?;
+    let inner = lower_validated_child_expr(try_cast.expr(), validated, scope)?;
     Ok(NativeExpr::try_cast(inner, try_cast.cast_type().clone()))
 }
 
@@ -220,11 +311,11 @@ fn lower_literal_string_date32_cast(
 fn lower_like_expr(
     like: &LikeExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let pattern = literal_string(like.pattern()).expect("validated LIKE pattern must be a string literal");
     debug_assert!(!like.case_insensitive(), "case-insensitive LIKE cannot carry a validation proof");
-    let expr = lower_validated_child_expr_with_bindings(like.expr(), validated, bindings)?;
+    let expr = lower_validated_child_expr(like.expr(), validated, scope)?;
     Ok(if like.negated() {
         NativeExpr::not_like_escape(expr, pattern, "\\")
     } else {
@@ -235,47 +326,67 @@ fn lower_like_expr(
 fn lower_in_list_expr(
     in_list: &InListExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     debug_assert!(!in_list.is_empty(), "an empty IN list cannot carry a validation proof");
-    let expr = lower_validated_child_expr_with_bindings(in_list.expr(), validated, bindings)?;
+    let expr = lower_validated_child_expr(in_list.expr(), validated, scope)?;
     let list = in_list
         .list()
         .iter()
         .map(|expr| {
             let literal = expr.downcast_ref::<Literal>().expect("validated IN-list entries must be literals");
             debug_assert!(!literal.value().is_null(), "null IN-list entries cannot carry a validation proof");
-            lower_validated_child_expr_with_bindings(expr, validated, bindings)
+            lower_validated_child_expr(expr, validated, scope)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(if in_list.negated() { NativeExpr::not_in_list(expr, list) } else { NativeExpr::in_list(expr, list) })
 }
 
+/// Lowers a `CASE` so that native evaluation, which visits every row of every
+/// branch, fails on exactly the rows where DataFusion does.
+///
+/// DataFusion evaluates a `WHEN` condition only on the rows no earlier branch
+/// selected (for `CASE base WHEN value`, also only where `base` is not NULL),
+/// a `THEN` result only where its condition is TRUE, and `ELSE` only where no
+/// condition is TRUE, a NULL condition counting as not TRUE. Each of those
+/// expressions lowers under the activation that selects its rows. The
+/// activations use the guarded lowering of the earlier conditions, so they
+/// cannot fail on a row they exclude. An expression with no fallible
+/// operation needs no activation and does not build one.
 fn lower_case_expr(
     case: &CaseExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let input_schema = validated.input_schema();
-    let base_expr =
-        case.expr().map(|expr| lower_validated_child_expr_with_bindings(expr, validated, bindings)).transpose()?;
-    let branches = case
-        .when_then_expr()
-        .iter()
-        .map(|(when, then)| {
-            let when = match &base_expr {
-                Some(base_expr) => NativeExpr::binary(
-                    base_expr.clone(),
-                    NativeBinaryOp::Eq,
-                    lower_validated_child_expr_with_bindings(when, validated, bindings)?,
-                ),
-                None => lower_validated_child_expr_with_bindings(when, validated, bindings)?,
-            };
-            Ok(NativeCaseWhen::new(when, lower_validated_child_expr_with_bindings(then, validated, bindings)?))
-        })
-        .collect::<Result<Vec<_>, LoweringRejection>>()?;
+    let activation_of = |child: &Arc<dyn PhysicalExpr>, build: &dyn Fn() -> Option<NativeExpr>| {
+        if contains_fallible_operation(child, input_schema) {
+            nested_activation(scope.activation, build())
+        } else {
+            None
+        }
+    };
+    let base = case.expr().map(|expr| lower_validated_child_expr(expr, validated, scope)).transpose()?;
+    let base_is_null = base.as_ref().map(|base| NativeExpr::is_null(base.clone()));
+    let mut conditions: Vec<NativeExpr> = Vec::new();
+    let mut branches = Vec::with_capacity(case.when_then_expr().len());
+    for (when, then) in case.when_then_expr() {
+        let when_activation = activation_of(when, &|| selected_rows(base_is_null.as_ref(), &conditions, None));
+        let when = lower_validated_child_expr(when, validated, scope.within(when_activation.as_ref()))?;
+        let condition = match &base {
+            Some(base) => NativeExpr::binary(base.clone(), NativeBinaryOp::Eq, when),
+            None => when,
+        };
+        let then_activation = activation_of(then, &|| selected_rows(None, &conditions, Some(&condition)));
+        let then = lower_validated_child_expr(then, validated, scope.within(then_activation.as_ref()))?;
+        branches.push(NativeCaseWhen::new(condition.clone(), then));
+        conditions.push(condition);
+    }
     let else_expr = match case.else_expr() {
-        Some(else_expr) => lower_validated_child_expr_with_bindings(else_expr, validated, bindings)?,
+        Some(else_expr) => {
+            let else_activation = activation_of(else_expr, &|| selected_rows(None, &conditions, None));
+            lower_validated_child_expr(else_expr, validated, scope.within(else_activation.as_ref()))?
+        },
         None => {
             let data_type = physical_expr_data_type(validated.expr(), input_schema)
                 .expect("validated CASE expression must have an output type");
@@ -285,45 +396,80 @@ fn lower_case_expr(
     Ok(NativeExpr::case(branches, else_expr))
 }
 
+/// A boolean that is TRUE on the rows where no `leading` or `exits` condition
+/// is TRUE and, when given, `selected` is TRUE, and false elsewhere. `None`
+/// selects every row. With no `exits` or `leading`, `selected` is returned as
+/// it is, so it may be NULL on a row it does not select.
+fn selected_rows(
+    leading: Option<&NativeExpr>,
+    exits: &[NativeExpr],
+    selected: Option<&NativeExpr>,
+) -> Option<NativeExpr> {
+    if leading.is_none() && exits.is_empty() {
+        return selected.cloned();
+    }
+    let literal = |value| NativeExpr::literal(NativeLiteralValue::Boolean(value));
+    let branches = leading
+        .into_iter()
+        .chain(exits)
+        .map(|exit| NativeCaseWhen::new(exit.clone(), literal(false)))
+        .chain(selected.map(|selected| NativeCaseWhen::new(selected.clone(), literal(true))))
+        .collect();
+    Some(NativeExpr::case(branches, literal(selected.is_none())))
+}
+
+/// `local` restricted to the rows of `outer`, which is the activation of the
+/// enclosing `CASE` branch. A boolean that is NULL or false selects no row.
+fn nested_activation(outer: Option<&NativeExpr>, local: Option<NativeExpr>) -> Option<NativeExpr> {
+    match (outer, local) {
+        (Some(outer), Some(local)) => Some(NativeExpr::case(
+            vec![NativeCaseWhen::new(outer.clone(), local)],
+            NativeExpr::literal(NativeLiteralValue::Null(ArrowDataType::Boolean)),
+        )),
+        (Some(outer), None) => Some(outer.clone()),
+        (None, local) => local,
+    }
+}
+
 fn lower_scalar_function_expr(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let kind = ScalarFunctionKind::from_scalar_function(function).expect("validated scalar function kind");
     match kind {
-        ScalarFunctionKind::Substring => lower_substring_function(function, validated, bindings),
-        ScalarFunctionKind::Extract => lower_extract_function(function, validated, bindings),
-        ScalarFunctionKind::DateTrunc => lower_date_trunc_function(function, validated, bindings),
-        ScalarFunctionKind::ToTimestampSeconds => lower_to_timestamp_seconds_function(function, validated, bindings),
-        ScalarFunctionKind::Lower => lower_string_case_function(function, validated, bindings, NativeExpr::lower),
-        ScalarFunctionKind::Upper => lower_string_case_function(function, validated, bindings, NativeExpr::upper),
-        ScalarFunctionKind::Trim => lower_trim_function(function, validated, bindings, NativeExpr::trim),
-        ScalarFunctionKind::LeftTrim => lower_trim_function(function, validated, bindings, NativeExpr::ltrim),
-        ScalarFunctionKind::RightTrim => lower_trim_function(function, validated, bindings, NativeExpr::rtrim),
+        ScalarFunctionKind::Substring => lower_substring_function(function, validated, scope),
+        ScalarFunctionKind::Extract => lower_extract_function(function, validated, scope),
+        ScalarFunctionKind::DateTrunc => lower_date_trunc_function(function, validated, scope),
+        ScalarFunctionKind::ToTimestampSeconds => lower_to_timestamp_seconds_function(function, validated, scope),
+        ScalarFunctionKind::Lower => lower_string_case_function(function, validated, scope, NativeExpr::lower),
+        ScalarFunctionKind::Upper => lower_string_case_function(function, validated, scope, NativeExpr::upper),
+        ScalarFunctionKind::Trim => lower_trim_function(function, validated, scope, NativeExpr::trim),
+        ScalarFunctionKind::LeftTrim => lower_trim_function(function, validated, scope, NativeExpr::ltrim),
+        ScalarFunctionKind::RightTrim => lower_trim_function(function, validated, scope, NativeExpr::rtrim),
         ScalarFunctionKind::Contains => {
-            lower_string_predicate_function(function, validated, bindings, NativeExpr::string_contains)
+            lower_string_predicate_function(function, validated, scope, NativeExpr::string_contains)
         },
         ScalarFunctionKind::StartsWith => {
-            lower_string_predicate_function(function, validated, bindings, NativeExpr::starts_with)
+            lower_string_predicate_function(function, validated, scope, NativeExpr::starts_with)
         },
         ScalarFunctionKind::EndsWith => {
-            lower_string_predicate_function(function, validated, bindings, NativeExpr::ends_with)
+            lower_string_predicate_function(function, validated, scope, NativeExpr::ends_with)
         },
-        ScalarFunctionKind::StringLength => lower_string_length_function(function, validated, bindings),
-        ScalarFunctionKind::RegexpReplace => lower_regexp_replace_function(function, validated, bindings),
-        ScalarFunctionKind::Concat => lower_concat_function(function, validated, bindings),
-        ScalarFunctionKind::Abs => lower_abs_function(function, validated, bindings),
-        ScalarFunctionKind::UnaryMath(op) => lower_unary_math_function(op, function, validated, bindings),
-        ScalarFunctionKind::Round => lower_round_function(function, validated, bindings),
-        ScalarFunctionKind::NullIf => lower_nullif_function(function, validated, bindings),
+        ScalarFunctionKind::StringLength => lower_string_length_function(function, validated, scope),
+        ScalarFunctionKind::RegexpReplace => lower_regexp_replace_function(function, validated, scope),
+        ScalarFunctionKind::Concat => lower_concat_function(function, validated, scope),
+        ScalarFunctionKind::Abs => lower_abs_function(function, validated, scope),
+        ScalarFunctionKind::UnaryMath(op) => lower_unary_math_function(op, function, validated, scope),
+        ScalarFunctionKind::Round => lower_round_function(function, validated, scope),
+        ScalarFunctionKind::NullIf => lower_nullif_function(function, validated, scope),
     }
 }
 
 fn lower_substring_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let args = function.args();
     debug_assert!((2..=3).contains(&args.len()), "invalid SUBSTRING arity cannot carry a validation proof");
@@ -338,26 +484,26 @@ fn lower_substring_function(
         length.is_none_or(|length| length >= 0 && substring_stop_position(start, length).is_some()),
         "invalid SUBSTRING length cannot carry a validation proof"
     );
-    Ok(NativeExpr::substring(lower_validated_child_expr_with_bindings(&args[0], validated, bindings)?, start, length))
+    Ok(NativeExpr::substring(lower_validated_child_expr(&args[0], validated, scope)?, start, length))
 }
 
 fn lower_extract_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [field, expr] = function.args() else { unreachable!("validated EXTRACT must have two arguments") };
     let field = NativeDatePart::from_sql_name(
         &literal_string(field).expect("validated EXTRACT field must be a string literal"),
     )
     .expect("validated EXTRACT field must name a date part");
-    Ok(NativeExpr::extract(field, lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
+    Ok(NativeExpr::extract(field, lower_validated_child_expr(expr, validated, scope)?))
 }
 
 fn lower_date_trunc_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [field, expr] = function.args() else { unreachable!("validated DATE_TRUNC must have two arguments") };
     let field = NativeDatePart::from_sql_name(
@@ -365,33 +511,33 @@ fn lower_date_trunc_function(
     )
     .expect("validated DATE_TRUNC field must name a date part");
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::date_trunc(field, lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
+    Ok(NativeExpr::date_trunc(field, lower_validated_child_expr(expr, validated, scope)?, output_type))
 }
 
 fn lower_to_timestamp_seconds_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated TO_TIMESTAMP_SECONDS must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::cast(lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
+    Ok(NativeExpr::cast(lower_validated_child_expr(expr, validated, scope)?, output_type))
 }
 
 fn lower_string_case_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
     constructor: fn(NativeExpr) -> NativeExpr,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated string case function must have one argument") };
-    Ok(constructor(lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
+    Ok(constructor(lower_validated_child_expr(expr, validated, scope)?))
 }
 
 fn lower_trim_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
     constructor: fn(NativeExpr, String) -> NativeExpr,
 ) -> Result<NativeExpr, LoweringRejection> {
     let args = function.args();
@@ -401,19 +547,19 @@ fn lower_trim_function(
     } else {
         " ".to_string()
     };
-    let expr = lower_validated_child_expr_with_bindings(&args[0], validated, bindings)?;
+    let expr = lower_validated_child_expr(&args[0], validated, scope)?;
     if trim_chars.is_empty() { Ok(expr) } else { Ok(constructor(expr, trim_chars)) }
 }
 
 fn lower_string_predicate_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
     constructor: fn(NativeExpr, String) -> NativeExpr,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr, pattern] = function.args() else { unreachable!("validated string predicate must have two arguments") };
     Ok(constructor(
-        lower_validated_child_expr_with_bindings(expr, validated, bindings)?,
+        lower_validated_child_expr(expr, validated, scope)?,
         literal_string(pattern).expect("validated string predicate pattern must be a string literal"),
     ))
 }
@@ -421,24 +567,24 @@ fn lower_string_predicate_function(
 fn lower_string_length_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated string length function must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::string_length(lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
+    Ok(NativeExpr::string_length(lower_validated_child_expr(expr, validated, scope)?, output_type))
 }
 
 fn lower_regexp_replace_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr, pattern, replacement] = function.args() else {
         unreachable!("validated REGEXP_REPLACE must have three arguments")
     };
     let output_type = validated_scalar_output_type(function, validated);
     Ok(NativeExpr::regexp_replace(
-        lower_validated_child_expr_with_bindings(expr, validated, bindings)?,
+        lower_validated_child_expr(expr, validated, scope)?,
         literal_string(pattern).expect("validated REGEXP_REPLACE pattern must be a string literal"),
         literal_string(replacement).expect("validated REGEXP_REPLACE replacement must be a string literal"),
         output_type,
@@ -448,13 +594,13 @@ fn lower_regexp_replace_function(
 fn lower_concat_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     debug_assert!(!function.args().is_empty(), "empty CONCAT cannot carry a validation proof");
     function
         .args()
         .iter()
-        .map(|expr| lower_validated_child_expr_with_bindings(expr, validated, bindings))
+        .map(|expr| lower_validated_child_expr(expr, validated, scope))
         .collect::<Result<Vec<_>, _>>()
         .map(NativeExpr::concat)
 }
@@ -462,27 +608,27 @@ fn lower_concat_function(
 fn lower_abs_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated ABS must have one argument") };
-    Ok(NativeExpr::abs(lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
+    Ok(NativeExpr::abs(lower_validated_child_expr(expr, validated, scope)?))
 }
 
 fn lower_unary_math_function(
     op: UnaryMathOp,
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated {op} must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::unary_math(op, lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
+    Ok(NativeExpr::unary_math(op, lower_validated_child_expr(expr, validated, scope)?, output_type))
 }
 
 fn lower_round_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let args = function.args();
     debug_assert!((1..=2).contains(&args.len()), "invalid ROUND arity cannot carry a validation proof");
@@ -492,22 +638,18 @@ fn lower_round_function(
         0
     };
     let output_type = validated_scalar_output_type(function, validated);
-    Ok(NativeExpr::round(
-        lower_validated_child_expr_with_bindings(&args[0], validated, bindings)?,
-        decimal_places,
-        output_type,
-    ))
+    Ok(NativeExpr::round(lower_validated_child_expr(&args[0], validated, scope)?, decimal_places, output_type))
 }
 
 fn lower_nullif_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
-    bindings: Option<&[FieldBinding]>,
+    scope: LoweringScope<'_>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [left, right] = function.args() else { unreachable!("validated NULLIF must have two arguments") };
     let output_type = validated_scalar_output_type(function, validated);
-    let left = lower_validated_child_expr_with_bindings(left, validated, bindings)?;
-    let right = lower_validated_child_expr_with_bindings(right, validated, bindings)?;
+    let left = lower_validated_child_expr(left, validated, scope)?;
+    let right = lower_validated_child_expr(right, validated, scope)?;
     Ok(NativeExpr::case(
         vec![NativeCaseWhen::new(
             NativeExpr::is_not_distinct_from(left.clone(), right),

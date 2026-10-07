@@ -443,45 +443,6 @@ fn assert_join_input_materializes_substring(plan: &QueryPlan, input: NodeId, ali
     );
 }
 
-fn assert_join_input_materializes_case_decimal_divide(
-    plan: &QueryPlan,
-    input: NodeId,
-    alias: &str,
-    source_column: &str,
-) {
-    let input_node = plan.node(input).expect("join input should exist");
-    let PlanNode::Projection(projection) = &input_node.kind else {
-        panic!("join input should be a residual materialization projection");
-    };
-    assert!(input_node.output_schema().field_with_name(alias).is_ok());
-    assert!(
-        projection.expressions().any(|expr| {
-            matches!(
-                expr,
-                Expr::Alias { expr, alias: actual_alias }
-                    if actual_alias == alias
-                        && matches!(
-                            expr.as_ref(),
-                            Expr::Case { branches, .. }
-                                if branches.len() == 1
-                                    && matches!(
-                                        &branches[0].then,
-                                        Expr::Binary {
-                                            op: BinaryOp::Divide,
-                                            output_type: Some(DataType::Decimal128(_, _)),
-                                            left,
-                                            right,
-                                        } if matches!(left.as_ref(), Expr::Column(column) if column.name() == source_column)
-                                            && matches!(right.as_ref(), Expr::Column(column) if column.name() == source_column)
-                                    )
-                        )
-            )
-        }),
-        "join input projection should materialize CASE decimal divide over {source_column} as {alias}: {:?}",
-        projection.expressions().collect::<Vec<_>>()
-    );
-}
-
 fn assert_join_input_materializes_upper_utf8view_cast(
     plan: &QueryPlan,
     input: NodeId,

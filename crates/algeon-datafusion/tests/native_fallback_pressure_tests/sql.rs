@@ -66,6 +66,15 @@ ORDER BY avg_m00 DESC, key ASC
 LIMIT 2
 ";
 
+pub(super) const SQL_DECIMAL_MODULO_QUERY: &str = "
+SELECT key, SUM(CAST(payload AS DECIMAL(10, 2)) % CAST(3 AS DECIMAL(10, 2))) AS modulo_payload
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY modulo_payload DESC, key ASC
+LIMIT 2
+";
+
 pub(super) const SQL_MODULO_QUERY: &str = "
 SELECT key, SUM(payload % 2) AS modulo_payload
 FROM bench

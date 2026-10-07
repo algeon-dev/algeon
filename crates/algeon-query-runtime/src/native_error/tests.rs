@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use cudf::io::parquet::RemoteParquetSource;
+use cudf::{io::parquet::RemoteParquetSource, testing::error::new_with_for_test};
 use query_planning::error::{QueryErrorCode, redact_uri_tokens};
 
 use super::{cudf_query_error, cudf_query_error_without_source};
@@ -72,6 +72,19 @@ fn cudf_query_error_without_source_preserves_foreign_message_without_source_chai
 
     assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
     assert!(error.source_error().is_none());
+}
+
+#[test]
+fn cudf_value_errors_from_checked_arithmetic_classify_as_invalid_input() {
+    for code in [cudf::ErrorCode::DivisionByZero, cudf::ErrorCode::ValueOutOfRange] {
+        let source = new_with_for_test(code, "cudf.test.checked_arithmetic", "synthetic failure");
+
+        let error = cudf_query_error("query_engine.test.from_cudf", "wrapped cudf failure", source);
+
+        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput, "{code}");
+        assert_eq!(error.fact_value("cudf_code"), Some(code.to_string().as_str()));
+        assert_eq!(error.fact_value("cudf_status"), Some("permanent"));
+    }
 }
 
 #[test]

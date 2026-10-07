@@ -1,12 +1,14 @@
 //! Reader-predicate capability and source-contract validation.
 
+use std::collections::BTreeSet;
+
 use arrow::datatypes::DataType;
 
 use crate::{
     backend::AnalysisContext,
     datatypes::{
-        arrow_decimal_scale_to_cudf_scale, is_narrow_decimal_carry_type, is_supported_list_carry_type,
-        is_timestamp_with_timezone,
+        arrow_decimal_scale_to_cudf_scale, cast_can_fail_at_runtime, is_narrow_decimal_carry_type,
+        is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{BinaryOp, Expr, LiteralValue},
     source::{
@@ -15,6 +17,7 @@ use crate::{
         reader_predicate_integer_literal_raw, reader_predicate_rescale_decimal_raw,
         reader_predicate_unsigned_literal_raw,
     },
+    validation::{is_integral_type, validate_expr},
 };
 
 pub(in crate::source) fn reader_predicate_root_is_supported(expr: &Expr) -> bool {
@@ -76,12 +79,17 @@ pub(in crate::source) fn reader_predicate_expr_is_supported(
         Expr::Cast { expr, target_type } => {
             matches!(target_type, DataType::Int64 | DataType::UInt64 | DataType::Float64)
                 && reader_predicate_expr_is_supported(source, expr, ctx)
+                && reader_predicate_expr_type_in_schema(source, expr, ctx)
+                    .is_some_and(|source_type| !cast_can_fail_at_runtime(&source_type, target_type))
         },
         Expr::Binary { left, op, right, .. } => {
             reader_predicate_binary_operator_is_supported(*op)
                 && reader_predicate_expr_is_supported(source, left, ctx)
                 && reader_predicate_expr_is_supported(source, right, ctx)
                 && reader_predicate_binary_operand_types_are_supported(source, left, *op, right, ctx)
+                && (*op != BinaryOp::Divide
+                    || reader_predicate_expr_type_in_schema(source, left, ctx)
+                        .is_some_and(|operand_type| !is_integral_type(&operand_type)))
         },
         Expr::InList { expr, list, .. } => {
             !list.is_empty()
@@ -125,7 +133,6 @@ fn reader_predicate_binary_operator_is_supported(op: BinaryOp) -> bool {
             | BinaryOp::Subtract
             | BinaryOp::Multiply
             | BinaryOp::Divide
-            | BinaryOp::Modulo
             | BinaryOp::BitwiseAnd
             | BinaryOp::BitwiseOr
             | BinaryOp::BitwiseXor
@@ -201,6 +208,20 @@ fn reader_predicate_literal_matches_expr_type(
         return true;
     };
     reader_predicate_literal_is_supported_for_type(value, &data_type, ctx)
+}
+
+/// Result type of `expr` over the source schema, when the expression is valid.
+///
+/// The reader evaluates integer `/` and `%`, and casts that can fail, through
+/// the cudf AST, which has none of the zero-divisor, overflow, and range checks
+/// DataFusion applies, so those forms stay in the filter node.
+fn reader_predicate_expr_type_in_schema(
+    source: &LocalParquetSource,
+    expr: &Expr,
+    ctx: AnalysisContext<'_>,
+) -> Option<DataType> {
+    let available = source.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
+    validate_expr(expr, &source.schema, &available, ctx).ok()
 }
 
 fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Option<DataType> {

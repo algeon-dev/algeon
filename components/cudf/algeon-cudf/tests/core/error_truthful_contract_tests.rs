@@ -44,6 +44,12 @@ fn status_projection_is_defined_for_every_public_error_code() {
     }
 }
 
+fn division_by_zero_is_a_permanent_invalid_input_leaf() {
+    assert_eq!(kind_for_code(ErrorCode::DivisionByZero), ErrorKind::InvalidInput);
+    assert_eq!(status_for_code(ErrorCode::DivisionByZero), ErrorStatus::Permanent);
+    assert!(ErrorCode::ALL.contains(&ErrorCode::DivisionByZero));
+}
+
 fn deterministic_host_materialization_size_failures_are_permanent_resource_leaves() {
     for code in [ErrorCode::SizeOverflow, ErrorCode::HostMaterializationLimitExceeded] {
         assert_eq!(kind_for_code(code), ErrorKind::ResourceExhausted);
@@ -245,6 +251,7 @@ fn error_truthful_contract_tests_cases() {
             "deterministic_host_materialization_size_failures_are_permanent_resource_leaves",
             deterministic_host_materialization_size_failures_are_permanent_resource_leaves,
         ),
+        ("division_by_zero_is_a_permanent_invalid_input_leaf", division_by_zero_is_a_permanent_invalid_input_leaf),
         (
             "ffi_io_status_stays_permanent_whatever_its_message_says",
             ffi_io_status_stays_permanent_whatever_its_message_says,

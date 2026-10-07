@@ -650,16 +650,101 @@ fn decimal128_cast_support_uses_type_support_policy() {
 }
 
 #[test]
-fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
-    let float64_source = DataType::Float64;
-    let int64_target = DataType::Int64;
-    let int32_target = DataType::Int32;
-    let float32_source = DataType::Float32;
+fn range_checked_integral_cast_support_is_explicit_and_not_implicit() {
+    let integers = [
+        DataType::Int8,
+        DataType::Int16,
+        DataType::Int32,
+        DataType::Int64,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::UInt64,
+    ];
+    for source in &integers {
+        for target in &integers {
+            assert!(is_supported_arrow_cast(source, target, rapids_backend()), "{source:?} -> {target:?}");
+        }
+        for source_float in [DataType::Float32, DataType::Float64] {
+            assert!(is_supported_arrow_cast(&source_float, source, rapids_backend()), "{source_float:?} -> {source:?}");
+            assert!(!is_supported_arrow_implicit_cast(&source_float, source, rapids_backend()));
+        }
+        for text in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
+            assert!(is_supported_arrow_cast(source, &text, rapids_backend()), "{source:?} -> {text:?}");
+        }
+    }
+    assert!(!is_supported_arrow_implicit_cast(&DataType::Int64, &DataType::Int32, rapids_backend()));
+    assert!(!is_supported_arrow_implicit_cast(&DataType::UInt64, &DataType::Int64, rapids_backend()));
+    assert!(!is_supported_arrow_cast(&DataType::Float64, &DataType::Utf8, rapids_backend()));
+    assert!(!is_supported_arrow_cast(&DataType::Boolean, &DataType::Utf8, rapids_backend()));
+}
 
-    assert!(is_supported_arrow_cast(&float64_source, &int64_target, rapids_backend()));
-    assert!(!is_supported_arrow_implicit_cast(&float64_source, &int64_target, rapids_backend()));
-    assert!(!is_supported_arrow_cast(&float64_source, &int32_target, rapids_backend()));
-    assert!(!is_supported_arrow_cast(&float32_source, &int64_target, rapids_backend()));
+#[test]
+fn casts_that_can_fail_at_runtime_exclude_widening_and_identity() {
+    use query_planning::datatypes::cast_can_fail_at_runtime;
+
+    for (source, target) in [
+        (DataType::Int64, DataType::Int32),
+        (DataType::UInt64, DataType::Int64),
+        (DataType::Int8, DataType::UInt64),
+        (DataType::Float64, DataType::Int64),
+        (DataType::Float32, DataType::UInt8),
+        (DataType::Decimal128(21, 0), DataType::Int32),
+        (DataType::Int64, DataType::Decimal128(20, 2)),
+        (DataType::UInt64, DataType::Decimal128(19, 0)),
+        (DataType::Float64, DataType::Decimal128(38, 2)),
+        (DataType::Float32, DataType::Decimal128(38, 0)),
+        (DataType::Decimal128(38, 4), DataType::Decimal128(10, 2)),
+        (DataType::Decimal128(10, 2), DataType::Decimal128(10, 4)),
+        (DataType::Decimal128(10, 4), DataType::Decimal128(8, 2)),
+    ] {
+        assert!(cast_can_fail_at_runtime(&source, &target), "{source:?} -> {target:?}");
+    }
+    for (source, target) in [
+        (DataType::Int32, DataType::Int64),
+        (DataType::UInt8, DataType::Int16),
+        (DataType::Int64, DataType::Int64),
+        (DataType::Int64, DataType::Float64),
+        (DataType::Int64, DataType::Utf8),
+        (DataType::Float64, DataType::Float32),
+        (DataType::Int32, DataType::Decimal128(12, 2)),
+        (DataType::UInt64, DataType::Decimal128(20, 0)),
+        (DataType::Decimal128(10, 2), DataType::Decimal128(12, 4)),
+        // Dropping two digits leaves 8, and rounding up adds at most one more.
+        (DataType::Decimal128(10, 4), DataType::Decimal128(10, 2)),
+        (DataType::Decimal128(10, 2), DataType::Decimal128(10, 2)),
+    ] {
+        assert!(!cast_can_fail_at_runtime(&source, &target), "{source:?} -> {target:?}");
+    }
+}
+
+#[test]
+fn floor_and_ceil_validate_only_over_matching_floating_point_types() {
+    use query_planning::expr::UnaryMathOp;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("whole", DataType::Int64, true),
+        Field::new("score", DataType::Float64, true),
+    ]));
+    let project = |op: UnaryMathOp, column: &str, input_output: DataType| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("out", input_output.clone(), true)]));
+        let projection = builder
+            .add_projection(
+                source,
+                projection_outputs(vec![Expr::unary_math(op, Expr::column(column), input_output)], output_schema),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
+        preflight_query_plan(&plan)
+    };
+
+    for op in [UnaryMathOp::Floor, UnaryMathOp::Ceil] {
+        project(op, "score", DataType::Float64).unwrap_or_else(|error| panic!("{op} over Float64: {error:?}"));
+        assert_eq!(project(op, "whole", DataType::Int64).unwrap_err().code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(project(op, "score", DataType::Float32).unwrap_err().code(), QueryErrorCode::UnsupportedType);
+    }
 }
 
 #[test]

@@ -33,6 +33,9 @@ pub enum ErrorCode {
     /// A numeric, temporal, or fixed-point value could not fit in the
     /// required target range or exact representation.
     ValueOutOfRange,
+    /// An integer or decimal division, or an integer remainder, had a zero
+    /// divisor in a row where both operands were valid.
+    DivisionByZero,
     /// A row, column, or buffer index was out of bounds.
     IndexOutOfBounds,
     /// A null was present where a non-null value was required.
@@ -127,13 +130,14 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every error code variant, in declaration order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::MissingColumn,
         Self::DuplicateColumnName,
         Self::DuplicateKey,
         Self::ColumnLengthMismatch,
         Self::TypeMismatch,
         Self::ValueOutOfRange,
+        Self::DivisionByZero,
         Self::IndexOutOfBounds,
         Self::NullUnexpected,
         Self::EmptyInput,
@@ -172,6 +176,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::ColumnLengthMismatch => "ColumnLengthMismatch",
             ErrorCode::TypeMismatch => "TypeMismatch",
             ErrorCode::ValueOutOfRange => "ValueOutOfRange",
+            ErrorCode::DivisionByZero => "DivisionByZero",
             ErrorCode::IndexOutOfBounds => "IndexOutOfBounds",
             ErrorCode::NullUnexpected => "NullUnexpected",
             ErrorCode::EmptyConstructionRequiresRuntime => "EmptyConstructionRequiresRuntime",
@@ -277,6 +282,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::ColumnLengthMismatch
         | ErrorCode::TypeMismatch
         | ErrorCode::ValueOutOfRange
+        | ErrorCode::DivisionByZero
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
         | ErrorCode::PathIsDirectory
@@ -331,6 +337,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::ColumnLengthMismatch
         | ErrorCode::TypeMismatch
         | ErrorCode::ValueOutOfRange
+        | ErrorCode::DivisionByZero
         | ErrorCode::IndexOutOfBounds
         | ErrorCode::NullUnexpected
         | ErrorCode::EmptyConstructionRequiresRuntime

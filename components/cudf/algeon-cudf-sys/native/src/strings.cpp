@@ -801,4 +801,32 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
+
+cudf_status_t cudf_strings_from_integers_ex(cudf_column_view_handle input,
+                                            cudf_column_handle* out,
+                                            cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
+    if (!cudf::is_integral_not_bool(view->type())) {
+      set_error("cudf_strings_from_integers: input must be a non-boolean integral column");
+      return CUDF_ERROR_TYPE;
+    }
+
+    {
+      auto result = cudf::strings::from_integers(*view, exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
 }  // extern "C"

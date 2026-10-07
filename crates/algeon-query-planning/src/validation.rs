@@ -44,10 +44,10 @@ pub use aggregate::{
     global_count_star_expr, global_valid_count_state_alias, validate_aggregate_output_names,
     validate_avg_output_fields, validate_global_aggregate_capability,
 };
+#[doc(hidden)]
+pub use expressions::substring_stop_position;
 pub(crate) use expressions::validate_expr;
 use expressions::{comma_separated, validate_projection_output_expr};
-#[doc(hidden)]
-pub use expressions::{substring_stop_position, target_integral_max};
 use join::validate_join_capability;
 pub(crate) use join::walk_join_residual_column_sides;
 pub(crate) use types::require_boolean;

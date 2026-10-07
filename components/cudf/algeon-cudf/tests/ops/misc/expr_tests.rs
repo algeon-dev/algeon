@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::Decimal128Array,
+    array::{Decimal64Array, Decimal128Array},
+    buffer::{NullBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -83,6 +84,34 @@ fn decimal128_pair_df_from_arrow(
     let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap();
     let runtime = Runtime::builder().build().unwrap();
     DataFrame::from_record_batch(&runtime, &batch).unwrap()
+}
+
+/// A pair of `Decimal128` columns `a` and `b` built from `(raw, valid)` rows, so a null row keeps the raw value
+/// given for it under the mask.
+fn decimal128_pair_df_with_masked_raw_values(
+    a: &[(i128, bool)],
+    b: &[(i128, bool)],
+    precision: u8,
+    scale: i8,
+) -> DataFrame {
+    let column = |rows: &[(i128, bool)]| {
+        let values = ScalarBuffer::from(rows.iter().map(|(raw, _)| *raw).collect::<Vec<_>>());
+        let validity = NullBuffer::from(rows.iter().map(|(_, valid)| *valid).collect::<Vec<_>>());
+        Arc::new(Decimal128Array::new(values, Some(validity)).with_precision_and_scale(precision, scale).unwrap())
+    };
+    let schema = Schema::new(vec![
+        Field::new("a", ArrowDataType::Decimal128(precision, scale), true),
+        Field::new("b", ArrowDataType::Decimal128(precision, scale), true),
+    ]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![column(a), column(b)]).unwrap();
+    DataFrame::from_record_batch(&Runtime::builder().build().unwrap(), &batch).unwrap()
+}
+
+/// The raw values of a `Decimal128` result, `None` in a null row.
+fn decimal128_raw_options(result: Series) -> Vec<Option<i128>> {
+    let name = "result";
+    let batch = DataFrame::from_series([(name, result)]).unwrap().to_record_batch().unwrap();
+    batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap().iter().collect()
 }
 
 fn bool_df(name: &str, data: &[bool]) -> DataFrame {
@@ -444,6 +473,139 @@ fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fract
     assert_eq!(outcome.report().request().boundary(), "decimal_div_expr");
     assert_eq!(result.series("ratio").unwrap().dtype().unwrap(), output_type);
     assert_arrow_decimal128_column(result, "ratio", &[25_000_000, 50_000_000], 8);
+}
+
+// Decimal division follows arrow-arith, which DataFusion uses: `lhs * 10^k / rhs` in checked i128 arithmetic over
+// the rows that are valid in both operands. Decimal128(38, 8) / Decimal128(38, 8) has the arrow result type
+// Decimal128(38, 12), so `k` is 12.
+const DECIMAL_DIV_FACTOR: i128 = 1_000_000_000_000;
+
+fn decimal128_div_expr() -> Expr {
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -12).unwrap();
+    col("a").binary_op_with_type(col("b"), BinaryOperator::Div, output_type)
+}
+
+fn decimal_div_error_with_code(result: cudf::Result<Series>, code: ErrorCode) -> cudf::Error {
+    let error = result.expect_err("the division must fail");
+    assert_eq!(error.code(), code);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.detail_value("operator"), Some("div"));
+    error
+}
+
+fn binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand() {
+    // Rows 5 to 7 carry a zero divisor under or next to a null operand, which arrow never evaluates.
+    let df = decimal128_pair_df_with_masked_raw_values(
+        &[
+            (100_000_000, true),
+            (700_000_000, true),
+            (-100_000_000, true),
+            (5, true),
+            (9, false),
+            (11, true),
+            (13, false),
+        ],
+        &[(400_000_000, true), (-200_000_000, true), (300_000_000, true), (7, true), (0, true), (0, false), (0, false)],
+        38,
+        8,
+    );
+
+    let quotient = decimal128_div_expr().eval(&df).unwrap();
+
+    let expected = |lhs: i128, rhs: i128| Some(lhs * DECIMAL_DIV_FACTOR / rhs);
+    assert_eq!(
+        decimal128_raw_options(quotient),
+        vec![
+            expected(100_000_000, 400_000_000),
+            expected(700_000_000, -200_000_000),
+            expected(-100_000_000, 300_000_000),
+            expected(5, 7),
+            None,
+            None,
+            None
+        ]
+    );
+}
+
+fn binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row() {
+    let df = decimal128_pair_df_with_masked_raw_values(&[(1, true), (2, true)], &[(1, true), (0, true)], 38, 8);
+
+    let error = decimal_div_error_with_code(decimal128_div_expr().eval(&df), ErrorCode::DivisionByZero);
+
+    assert!(error.detail_value("divisor_type_id").is_some());
+}
+
+fn binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128() {
+    let highest = i128::MAX / DECIMAL_DIV_FACTOR;
+    let lowest = i128::MIN / DECIMAL_DIV_FACTOR;
+    let one = 100_000_000;
+
+    let at_the_bounds = decimal128_pair_df_with_masked_raw_values(
+        &[(highest, true), (lowest, true), (i128::MAX, false)],
+        &[(one, true), (one, true), (one, true)],
+        38,
+        8,
+    );
+    assert_eq!(
+        decimal128_raw_options(decimal128_div_expr().eval(&at_the_bounds).unwrap()),
+        vec![Some(highest * DECIMAL_DIV_FACTOR / one), Some(lowest * DECIMAL_DIV_FACTOR / one), None]
+    );
+
+    for (label, dividend) in [("above", highest + 1), ("below", lowest - 1)] {
+        let df = decimal128_pair_df_with_masked_raw_values(
+            &[(1, true), (dividend, true)],
+            &[(one, true), (one, true)],
+            38,
+            8,
+        );
+        let error = decimal_div_error_with_code(decimal128_div_expr().eval(&df), ErrorCode::ValueOutOfRange);
+        assert_eq!(error.detail_value("reason"), Some("overflow"), "{label}");
+    }
+
+    let null_divisor = decimal128_pair_df_with_masked_raw_values(&[(highest + 1, true)], &[(0, false)], 38, 8);
+    assert_eq!(decimal128_raw_options(decimal128_div_expr().eval(&null_divisor).unwrap()), vec![None]);
+}
+
+fn binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one() {
+    // Equal scales make the result scale equal the dividend scale, so the dividend is not scaled.
+    let df = |rows: &[(i128, bool)], divisors: &[(i128, bool)]| {
+        decimal128_pair_df_with_masked_raw_values(rows, divisors, 38, 0)
+    };
+    let quotient = || col("a") / col("b");
+
+    let overflow = df(&[(i128::MIN, true), (6, true)], &[(-1, true), (-1, true)]);
+    let error = decimal_div_error_with_code(quotient().eval(&overflow), ErrorCode::ValueOutOfRange);
+    assert_eq!(error.detail_value("reason"), Some("overflow"));
+
+    let safe = df(&[(i128::MIN, true), (i128::MIN, false), (6, true)], &[(-2, true), (-1, true), (-1, true)]);
+    assert_eq!(decimal128_raw_options(quotient().eval(&safe).unwrap()), vec![Some(i128::MIN / -2), None, Some(-6)]);
+}
+
+fn binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width() {
+    let decimal64_df = |a: Vec<i64>, b: Vec<i64>| {
+        let column = |values: Vec<i64>| Arc::new(Decimal64Array::from(values).with_precision_and_scale(18, 2).unwrap());
+        let schema = Schema::new(vec![
+            Field::new("a", ArrowDataType::Decimal64(18, 2), true),
+            Field::new("b", ArrowDataType::Decimal64(18, 2), true),
+        ]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![column(a), column(b)]).unwrap();
+        DataFrame::from_record_batch(&Runtime::builder().build().unwrap(), &batch).unwrap()
+    };
+
+    let zero_divisor = decimal64_df(vec![5, 6], vec![1, 0]);
+    decimal_div_error_with_code((col("a") / col("b")).eval(&zero_divisor), ErrorCode::DivisionByZero);
+
+    // Dividing at two more digits multiplies the dividend by 10^4, whose limit in an i64 is i64::MAX / 10^4.
+    let output_type = DataType::fixed_point(TypeId::Decimal64, -4).unwrap();
+    let divide = || col("a").binary_op_with_type(col("b"), BinaryOperator::Div, output_type);
+    let highest = i64::MAX / 10_000;
+    let at_the_bound = divide().eval(&decimal64_df(vec![highest], vec![100])).unwrap();
+    assert_eq!(host_export_i64_values(&at_the_bound), vec![highest * 10_000 / 100]);
+    let error = decimal_div_error_with_code(
+        divide().eval(&decimal64_df(vec![highest + 1], vec![100])),
+        ErrorCode::ValueOutOfRange,
+    );
+    assert_eq!(error.detail_value("reason"), Some("overflow"));
 }
 
 fn rem_col_lit() {
@@ -1380,6 +1542,26 @@ fn expr_tests_cases() {
         (
             "with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output",
             with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output,
+        ),
+        (
+            "binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand",
+            binary_expr_decimal128_div_truncates_toward_zero_and_skips_rows_with_a_null_operand,
+        ),
+        (
+            "binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row",
+            binary_expr_decimal128_div_fails_on_a_zero_divisor_in_a_valid_row,
+        ),
+        (
+            "binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128",
+            binary_expr_decimal128_div_fails_when_scaling_a_valid_dividend_overflows_i128,
+        ),
+        (
+            "binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one",
+            binary_expr_decimal128_div_fails_on_the_minimum_value_divided_by_minus_one,
+        ),
+        (
+            "binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width",
+            binary_expr_decimal64_div_checks_zero_divisors_and_dividend_scaling_in_its_storage_width,
         ),
         ("rem_col_lit", rem_col_lit),
         (

@@ -8,17 +8,22 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Array, Decimal128Array},
+    array::{Array, ArrayRef, Decimal128Array, Float32Array, Float64Array, Int64Array},
+    compute::{CastOptions, cast_with_options},
     datatypes::{DataType as ArrowDataType, Field, Schema},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, Exec, Runtime, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
-    ops::unary::{decimal_rescale_temporary_workspace_reservation_bytes, is_supported_cast},
+    ops::{
+        expr::col,
+        unary::{decimal_rescale_temporary_workspace_reservation_bytes, is_supported_cast},
+    },
 };
 
-use crate::common::{nullable_series, run_named_cases, series};
+use crate::common::{nullable_series, run_named_cases, series, series_opt};
 
 fn decimal128_series_from_arrow(values: Vec<Option<i128>>, precision: u8, scale: i8) -> cudf::Series {
     let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
@@ -366,6 +371,443 @@ fn test_to_numeric_rejects_timestamp_target() {
     assert_eq!(err.operation(), "series::to_numeric");
 }
 
+// ===========================================================================
+// Range-checked integer targets and integer-to-string casts
+// ===========================================================================
+
+fn assert_cast_out_of_range(input: cudf::Series, target: TypeId, reason: &str) {
+    let source = format!("{:?}", input.dtype().unwrap().id()).to_lowercase();
+    let error = input.on(Exec::RETAINED).astype(target).expect_err("the cast must reject the input");
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{source} -> {target:?}");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.detail_value("reason"), Some(reason), "{source} -> {target:?}");
+    assert_eq!(error.detail_value("source_type_id"), Some(source.as_str()));
+    assert_eq!(error.detail_value("target_type_id"), Some(format!("{target:?}").to_lowercase().as_str()));
+}
+
+fn test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past() {
+    let kept = series::<i64>("x", &[i64::from(i32::MIN), 0, i64::from(i32::MAX)]).unwrap();
+    let kept = kept.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
+    assert_eq!(kept.to_vec_strict::<i32>().unwrap(), vec![i32::MIN, 0, i32::MAX]);
+    assert_cast_out_of_range(
+        series::<i64>("x", &[0, i64::from(i32::MAX) + 1]).unwrap(),
+        TypeId::Int32,
+        "above_target_range",
+    );
+    assert_cast_out_of_range(
+        series::<i64>("x", &[0, i64::from(i32::MIN) - 1]).unwrap(),
+        TypeId::Int32,
+        "below_target_range",
+    );
+
+    let kept = series::<u64>("x", &[0, i64::MAX as u64]).unwrap().on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+    assert_eq!(kept.to_vec_strict::<i64>().unwrap(), vec![0, i64::MAX]);
+    assert_cast_out_of_range(series::<u64>("x", &[i64::MAX as u64 + 1]).unwrap(), TypeId::Int64, "above_target_range");
+
+    let kept = series::<i64>("x", &[0, i64::MAX]).unwrap().on(Exec::RETAINED).astype(TypeId::UInt64).unwrap();
+    assert_eq!(kept.to_vec_strict::<u64>().unwrap(), vec![0, i64::MAX as u64]);
+    assert_cast_out_of_range(series::<i64>("x", &[-1]).unwrap(), TypeId::UInt64, "below_target_range");
+
+    let kept = series::<i32>("x", &[0, 255]).unwrap().on(Exec::RETAINED).astype(TypeId::UInt8).unwrap();
+    assert_eq!(kept.to_vec_strict::<u8>().unwrap(), vec![0, 255]);
+    assert_cast_out_of_range(series::<i32>("x", &[256]).unwrap(), TypeId::UInt8, "above_target_range");
+    assert_cast_out_of_range(series::<i32>("x", &[-1]).unwrap(), TypeId::UInt8, "below_target_range");
+
+    let kept = series::<u64>("x", &[u64::from(u32::MAX)]).unwrap().on(Exec::RETAINED).astype(TypeId::UInt32).unwrap();
+    assert_eq!(kept.to_vec_strict::<u32>().unwrap(), vec![u32::MAX]);
+    assert_cast_out_of_range(
+        series::<u64>("x", &[u64::from(u32::MAX) + 1]).unwrap(),
+        TypeId::UInt32,
+        "above_target_range",
+    );
+    assert_cast_out_of_range(series::<i16>("x", &[128]).unwrap(), TypeId::Int8, "above_target_range");
+
+    let nullable = nullable_series::<i64>("x", &[1, i64::MAX, 3], &[true, false, true]).unwrap();
+    let kept = nullable.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
+    assert_eq!(kept.to_optional_vec::<i32>().unwrap(), vec![Some(1), None, Some(3)]);
+
+    let nan_under_null = nullable_series::<f64>("x", &[1.5, f64::NAN, -2.5], &[true, false, true]).unwrap();
+    let kept = nan_under_null.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
+    assert_eq!(kept.to_optional_vec::<i32>().unwrap(), vec![Some(1), None, Some(-2)]);
+
+    let all_null = nullable_series::<i64>("x", &[i64::MAX, i64::MIN], &[false, false]).unwrap();
+    assert_eq!(all_null.on(Exec::RETAINED).astype(TypeId::Int8).unwrap().null_count(), 2);
+    let empty = series::<i64>("x", &[]).unwrap();
+    assert_eq!(empty.on(Exec::RETAINED).astype(TypeId::Int8).unwrap().len(), 0);
+}
+
+fn test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range() {
+    let truncated = series::<f64>("x", &[127.9, -128.9, 0.5, -0.5]).unwrap();
+    let truncated = truncated.on(Exec::RETAINED).astype(TypeId::Int8).unwrap();
+    assert_eq!(truncated.to_vec_strict::<i8>().unwrap(), vec![127, -128, 0, 0]);
+    assert_cast_out_of_range(series::<f64>("x", &[128.0]).unwrap(), TypeId::Int8, "above_target_range");
+    assert_cast_out_of_range(series::<f64>("x", &[-129.0]).unwrap(), TypeId::Int8, "below_target_range");
+    assert_cast_out_of_range(series::<f64>("x", &[1.0, f64::NAN]).unwrap(), TypeId::Int8, "nan");
+    assert_cast_out_of_range(series::<f64>("x", &[f64::INFINITY]).unwrap(), TypeId::Int64, "above_target_range");
+    assert_cast_out_of_range(series::<f64>("x", &[f64::NEG_INFINITY]).unwrap(), TypeId::Int64, "below_target_range");
+
+    let unsigned = series::<f64>("x", &[-0.9, 255.9]).unwrap().on(Exec::RETAINED).astype(TypeId::UInt8).unwrap();
+    assert_eq!(unsigned.to_vec_strict::<u8>().unwrap(), vec![0, 255]);
+    assert_cast_out_of_range(series::<f64>("x", &[-1.0]).unwrap(), TypeId::UInt8, "below_target_range");
+    assert_cast_out_of_range(series::<f64>("x", &[256.0]).unwrap(), TypeId::UInt8, "above_target_range");
+
+    let single = series::<f32>("x", &[2_147_483_520.0, -2_147_483_648.0]).unwrap();
+    let single = single.on(Exec::RETAINED).astype(TypeId::Int32).unwrap();
+    assert_eq!(single.to_vec_strict::<i32>().unwrap(), vec![2_147_483_520, i32::MIN]);
+    assert_cast_out_of_range(series::<f32>("x", &[2_147_483_648.0]).unwrap(), TypeId::Int32, "above_target_range");
+    assert_cast_out_of_range(series::<f32>("x", &[f32::NAN]).unwrap(), TypeId::Int32, "nan");
+
+    let wide = series::<f64>("x", &[-9_223_372_036_854_775_808.0, 9_223_372_036_854_774_784.0]).unwrap();
+    let wide = wide.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+    assert_eq!(wide.to_vec_strict::<i64>().unwrap(), vec![i64::MIN, 9_223_372_036_854_774_784]);
+    assert_cast_out_of_range(
+        series::<f64>("x", &[9_223_372_036_854_775_808.0]).unwrap(),
+        TypeId::Int64,
+        "above_target_range",
+    );
+    let wide_unsigned = series::<f64>("x", &[18_446_744_073_709_549_568.0]).unwrap();
+    let wide_unsigned = wide_unsigned.on(Exec::RETAINED).astype(TypeId::UInt64).unwrap();
+    assert_eq!(wide_unsigned.to_vec_strict::<u64>().unwrap(), vec![18_446_744_073_709_549_568]);
+    assert_cast_out_of_range(
+        series::<f64>("x", &[18_446_744_073_709_551_616.0]).unwrap(),
+        TypeId::UInt64,
+        "above_target_range",
+    );
+}
+
+fn test_cast_decimal_to_integer_checks_the_scaled_integer_part() {
+    let whole = decimal128_series_from_arrow(vec![Some(i128::from(i64::MAX)), Some(i128::from(i64::MIN)), None], 38, 0);
+    let kept = whole.on(Exec::RETAINED).astype(TypeId::Int64).unwrap();
+    assert_eq!(kept.to_optional_vec::<i64>().unwrap(), vec![Some(i64::MAX), Some(i64::MIN), None]);
+    assert_cast_out_of_range(
+        decimal128_series_from_arrow(vec![Some(i128::from(i64::MAX) + 1)], 38, 0),
+        TypeId::Int64,
+        "above_target_range",
+    );
+    assert_cast_out_of_range(
+        decimal128_series_from_arrow(vec![Some(i128::from(i64::MIN) - 1)], 38, 0),
+        TypeId::Int64,
+        "below_target_range",
+    );
+    assert_cast_out_of_range(decimal128_series_from_arrow(vec![Some(-1)], 38, 0), TypeId::UInt32, "below_target_range");
+
+    let fractional = decimal128_series_from_arrow(vec![Some(12_799), Some(-12_899)], 38, 2);
+    let kept = fractional.on(Exec::RETAINED).astype(TypeId::Int8).unwrap();
+    assert_eq!(kept.to_vec_strict::<i8>().unwrap(), vec![127, -128]);
+    assert_cast_out_of_range(
+        decimal128_series_from_arrow(vec![Some(12_800)], 38, 2),
+        TypeId::Int8,
+        "above_target_range",
+    );
+    assert_cast_out_of_range(
+        decimal128_series_from_arrow(vec![Some(-12_900)], 38, 2),
+        TypeId::Int8,
+        "below_target_range",
+    );
+}
+
+fn test_cast_integer_to_string_formats_plain_decimal_text() {
+    let signed = series::<i64>("x", &[i64::MIN, -1, 0, 7, i64::MAX]).unwrap();
+    let text = signed.on(Exec::RETAINED).astype(TypeId::String).unwrap();
+    assert_eq!(text.to_strings_strict().unwrap(), vec!["-9223372036854775808", "-1", "0", "7", "9223372036854775807"]);
+
+    let unsigned = series::<u64>("x", &[0, u64::MAX]).unwrap().on(Exec::RETAINED).astype(TypeId::String).unwrap();
+    assert_eq!(unsigned.to_strings_strict().unwrap(), vec!["0", "18446744073709551615"]);
+
+    let narrow = series::<i8>("x", &[i8::MIN, i8::MAX]).unwrap().on(Exec::RETAINED).astype(TypeId::String).unwrap();
+    assert_eq!(narrow.to_strings_strict().unwrap(), vec!["-128", "127"]);
+
+    let nullable = nullable_series::<i32>("x", &[5, 6, -7], &[true, false, true]).unwrap();
+    let text = nullable.on(Exec::RETAINED).astype(TypeId::String).unwrap();
+    assert_eq!(text.to_optional_strings().unwrap(), vec![Some("5".to_string()), None, Some("-7".to_string())]);
+
+    let empty = series::<i32>("x", &[]).unwrap().on(Exec::RETAINED).astype(TypeId::String).unwrap();
+    assert_eq!(empty.len(), 0);
+
+    assert!(is_supported_cast(&DataType::new(TypeId::Int64), &DataType::new(TypeId::String)).unwrap());
+    assert!(!is_supported_cast(&DataType::new(TypeId::Float64), &DataType::new(TypeId::String)).unwrap());
+}
+
+// ===========================================================================
+// Casts into decimal types with a declared precision
+// ===========================================================================
+
+fn decimal_target(id: TypeId, scale: i8) -> DataType {
+    DataType::fixed_point(id, -i32::from(scale)).unwrap()
+}
+
+/// Casts `input` into `id` with `Expr::cast_decimal` and returns the raw values.
+fn cast_into_decimal(input: &cudf::Series, id: TypeId, precision: u8, scale: i8) -> cudf::Result<Vec<Option<i128>>> {
+    let target = decimal_target(id, scale);
+    let frame = DataFrame::from_series([("x", input.clone())])?;
+    let result = col("x").cast_decimal(target, precision).eval(&frame)?;
+    assert_eq!(result.dtype()?, target);
+    // Decimal32 and Decimal64 export as Decimal128 as well, with the same raw values.
+    let batch = DataFrame::from_series([("x", result)])?.to_record_batch()?;
+    let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
+    Ok(values.iter().collect())
+}
+
+fn arrow_cast_into_decimal(array: ArrayRef, precision: u8, scale: i8) -> Result<Vec<Option<i128>>, ArrowError> {
+    let options = CastOptions { safe: false, ..CastOptions::default() };
+    let result = cast_with_options(&array, &ArrowDataType::Decimal128(precision, scale), &options)?;
+    Ok(result.as_any().downcast_ref::<Decimal128Array>().unwrap().iter().collect())
+}
+
+fn assert_decimal_cast_error(error: &cudf::Error, reason: &str) {
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.detail_value("reason"), Some(reason));
+}
+
+/// The cast must give the values of an Arrow `CAST` in non-safe mode, and fail
+/// exactly where Arrow fails.
+fn assert_decimal_cast_matches_arrow(name: &str, input: &cudf::Series, array: ArrayRef, precision: u8, scale: i8) {
+    let expected = arrow_cast_into_decimal(array, precision, scale);
+    let actual = cast_into_decimal(input, TypeId::Decimal128, precision, scale);
+    match (expected, actual) {
+        (Ok(expected), Ok(actual)) => assert_eq!(actual, expected, "{name} into ({precision}, {scale})"),
+        (Err(_), Err(error)) => {
+            assert_eq!(error.code(), ErrorCode::ValueOutOfRange, "{name} into ({precision}, {scale}): {error}")
+        },
+        (expected, actual) => panic!("{name} into ({precision}, {scale}): arrow {expected:?}, cudf {actual:?}"),
+    }
+}
+
+fn test_cast_integer_to_decimal_checks_the_declared_precision() {
+    // Precision 5 at scale 2 holds up to 999.99, so integers up to 999 fit.
+    let fits = series_opt::<i64>("x", &[Some(999), Some(-999), Some(0), None]).unwrap();
+    assert_eq!(
+        cast_into_decimal(&fits, TypeId::Decimal128, 5, 2).unwrap(),
+        vec![Some(99_900), Some(-99_900), Some(0), None]
+    );
+    for overflow in [1000, -1000] {
+        let input = series::<i64>("x", &[1, overflow]).unwrap();
+        let error = cast_into_decimal(&input, TypeId::Decimal128, 5, 2).unwrap_err();
+        assert_decimal_cast_error(&error, "decimal_precision_overflow");
+        assert_eq!(error.detail_value("target_precision"), Some("5"));
+    }
+    // A value under a null mask is not read.
+    let masked = nullable_series::<i64>("x", &[7, 1_000_000], &[true, false]).unwrap();
+    assert_eq!(cast_into_decimal(&masked, TypeId::Decimal128, 5, 2).unwrap(), vec![Some(700), None]);
+    let all_null = nullable_series::<i64>("x", &[1_000_000], &[false]).unwrap();
+    assert_eq!(cast_into_decimal(&all_null, TypeId::Decimal128, 5, 2).unwrap(), vec![None]);
+
+    // Narrow storage types keep their own limits: 9 digits for Decimal32, 18 for Decimal64.
+    for (id, digits) in [(TypeId::Decimal32, 9u32), (TypeId::Decimal64, 18)] {
+        let limit = 10i64.pow(digits) - 1;
+        let at_limit = series::<i64>("x", &[limit, -limit]).unwrap();
+        assert_eq!(
+            cast_into_decimal(&at_limit, id, digits as u8, 0).unwrap(),
+            vec![Some(limit.into()), Some((-limit).into())]
+        );
+        let past_limit = series::<i64>("x", &[limit + 1]).unwrap();
+        let error = cast_into_decimal(&past_limit, id, digits as u8, 0).unwrap_err();
+        assert_decimal_cast_error(&error, "decimal_precision_overflow");
+    }
+
+    let values = [0, 1, -1, 99, 100, 999, 1000, -999, -1000, 12_345, 99_999, 100_000, i64::MAX, i64::MIN];
+    for (precision, scale) in [(5, 2), (5, 0), (10, 2), (19, 0), (19, 4), (38, 20), (38, 38), (3, 3)] {
+        for value in values {
+            let input = series::<i64>("x", &[value]).unwrap();
+            let array: ArrayRef = Arc::new(Int64Array::from(vec![value]));
+            assert_decimal_cast_matches_arrow(&format!("int64 {value}"), &input, array, precision, scale);
+        }
+    }
+}
+
+fn test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values() {
+    // Ties round away from zero in both directions; 0.125 and 2.5 are exact in binary.
+    let ties = series::<f64>("x", &[0.125, -0.125, 2.5, -2.5, 0.5, -0.5, 1.999]).unwrap();
+    assert_eq!(
+        cast_into_decimal(&ties, TypeId::Decimal128, 10, 2).unwrap(),
+        vec![Some(13), Some(-13), Some(250), Some(-250), Some(50), Some(-50), Some(200)]
+    );
+    assert_eq!(
+        cast_into_decimal(&ties, TypeId::Decimal128, 10, 0).unwrap(),
+        vec![Some(0), Some(0), Some(3), Some(-3), Some(1), Some(-1), Some(2)]
+    );
+
+    let infinite = series::<f64>("x", &[1.0, f64::INFINITY]).unwrap();
+    assert_decimal_cast_error(
+        &cast_into_decimal(&infinite, TypeId::Decimal128, 10, 2).unwrap_err(),
+        "decimal_precision_overflow",
+    );
+    let not_a_number = series::<f64>("x", &[1.0, f64::NAN]).unwrap();
+    assert_decimal_cast_error(&cast_into_decimal(&not_a_number, TypeId::Decimal128, 10, 2).unwrap_err(), "nan");
+    let hidden = nullable_series::<f64>("x", &[1.5, f64::NAN], &[true, false]).unwrap();
+    assert_eq!(cast_into_decimal(&hidden, TypeId::Decimal128, 10, 2).unwrap(), vec![Some(150), None]);
+
+    // Precision 5 at scale 2 holds up to 999.99; 999.995 rounds to 1000.00.
+    let boundary = series::<f64>("x", &[999.99, -999.99, 999.994]).unwrap();
+    assert_eq!(
+        cast_into_decimal(&boundary, TypeId::Decimal128, 5, 2).unwrap(),
+        vec![Some(99_999), Some(-99_999), Some(99_999)]
+    );
+    for overflow in [1000.0, -1000.0, 999.996] {
+        let input = series::<f64>("x", &[overflow]).unwrap();
+        assert_decimal_cast_error(
+            &cast_into_decimal(&input, TypeId::Decimal128, 5, 2).unwrap_err(),
+            "decimal_precision_overflow",
+        );
+    }
+
+    let wide = [
+        0.0,
+        -0.0,
+        0.285,
+        1.005,
+        -1.005,
+        123.456,
+        -123.456,
+        0.1,
+        0.7,
+        1e-10,
+        5e-3,
+        99_999.995,
+        1e10,
+        1e15 + 0.5,
+        1e22,
+        1e30,
+        -1e30,
+        9.999e37,
+        1e38,
+        1e39,
+        1.7e300,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+    ];
+    for (precision, scale) in [(10, 2), (10, 0), (15, 6), (20, 10), (38, 0), (38, 4), (38, 38), (6, 3)] {
+        for value in wide {
+            let input = series::<f64>("x", &[value]).unwrap();
+            let array: ArrayRef = Arc::new(Float64Array::from(vec![value]));
+            assert_decimal_cast_matches_arrow(&format!("float64 {value:e}"), &input, array, precision, scale);
+            let single = value as f32;
+            let input = series::<f32>("x", &[single]).unwrap();
+            let array: ArrayRef = Arc::new(Float32Array::from(vec![single]));
+            assert_decimal_cast_matches_arrow(&format!("float32 {single:e}"), &input, array, precision, scale);
+        }
+    }
+}
+
+fn test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision() {
+    // Scale 4 into scale 2 drops two digits: the tie at .50 rounds away from zero.
+    let source = decimal128_series_from_arrow(
+        vec![Some(1_249), Some(1_250), Some(-1_249), Some(-1_250), Some(-1_251), Some(49), Some(50), None],
+        38,
+        4,
+    );
+    assert_eq!(
+        cast_into_decimal(&source, TypeId::Decimal128, 10, 2).unwrap(),
+        vec![Some(12), Some(13), Some(-12), Some(-13), Some(-13), Some(0), Some(1), None]
+    );
+
+    // 999.9949 rounds to 999.99 and fits precision 5 at scale 2; 999.9950 rounds to 1000.00.
+    let fits = decimal128_series_from_arrow(vec![Some(9_999_949), Some(-9_999_949)], 38, 4);
+    assert_eq!(cast_into_decimal(&fits, TypeId::Decimal128, 5, 2).unwrap(), vec![Some(99_999), Some(-99_999)]);
+    for overflow in [9_999_950, -9_999_950] {
+        let input = decimal128_series_from_arrow(vec![Some(overflow)], 38, 4);
+        assert_decimal_cast_error(
+            &cast_into_decimal(&input, TypeId::Decimal128, 5, 2).unwrap_err(),
+            "decimal_precision_overflow",
+        );
+    }
+    // The same scale into a narrower precision checks the values only.
+    let same_scale = decimal128_series_from_arrow(vec![Some(99_999), Some(-99_999)], 38, 2);
+    assert_eq!(cast_into_decimal(&same_scale, TypeId::Decimal128, 5, 2).unwrap(), vec![Some(99_999), Some(-99_999)]);
+    let too_wide = decimal128_series_from_arrow(vec![Some(100_000)], 38, 2);
+    assert_decimal_cast_error(
+        &cast_into_decimal(&too_wide, TypeId::Decimal128, 5, 2).unwrap_err(),
+        "decimal_precision_overflow",
+    );
+    let masked = decimal128_series_from_arrow(vec![Some(7), None], 38, 2);
+    assert_eq!(cast_into_decimal(&masked, TypeId::Decimal128, 5, 2).unwrap(), vec![Some(7), None]);
+
+    let raw_values: Vec<i128> = vec![
+        0,
+        5,
+        49,
+        50,
+        51,
+        95,
+        99,
+        100,
+        149,
+        150,
+        151,
+        999,
+        1_000,
+        9_949,
+        9_950,
+        99_999,
+        100_000,
+        999_999_999,
+        i128::from(i64::MAX),
+        10i128.pow(37),
+        10i128.pow(38) - 1,
+    ];
+    let signed: Vec<i128> = raw_values.iter().flat_map(|&raw| [raw, -raw]).collect();
+    for (source_precision, source_scale) in [(38u8, 4i8), (38, 0), (30, 10), (20, -3)] {
+        // Arrow skips its checks where the source precision proves a cast safe, so the
+        // values must stay within the precision they declare.
+        for &raw in signed.iter().filter(|raw| raw.unsigned_abs() < 10u128.pow(u32::from(source_precision))) {
+            let input = decimal128_series_from_arrow(vec![Some(raw)], source_precision, source_scale);
+            let array: ArrayRef = Arc::new(
+                Decimal128Array::from(vec![raw]).with_precision_and_scale(source_precision, source_scale).unwrap(),
+            );
+            for (precision, scale) in [(38, 2), (38, 0), (38, 10), (10, 2), (6, 3), (5, 0), (38, 38), (12, 6)] {
+                assert_decimal_cast_matches_arrow(
+                    &format!("decimal128({source_precision}, {source_scale}) raw {raw}"),
+                    &input,
+                    Arc::clone(&array),
+                    precision,
+                    scale,
+                );
+            }
+        }
+    }
+}
+
+fn test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision() {
+    let source = decimal128_series_from_arrow(vec![Some(123_456), Some(-123_450), None], 38, 4);
+    assert_eq!(cast_into_decimal(&source, TypeId::Decimal64, 15, 2).unwrap(), vec![Some(1_235), Some(-1_235), None]);
+    assert_eq!(cast_into_decimal(&source, TypeId::Decimal32, 9, 1).unwrap(), vec![Some(123), Some(-123), None]);
+    let past_decimal32 = decimal128_series_from_arrow(vec![Some(1_000_000_000)], 38, 0);
+    assert_decimal_cast_error(
+        &cast_into_decimal(&past_decimal32, TypeId::Decimal32, 9, 0).unwrap_err(),
+        "decimal_precision_overflow",
+    );
+    let decimal64 = decimal128_series_from_arrow(vec![Some(150)], 38, 2)
+        .on(Exec::RETAINED)
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
+    assert_eq!(cast_into_decimal(&decimal64, TypeId::Decimal128, 20, 0).unwrap(), vec![Some(2)]);
+}
+
+fn test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values() {
+    // Arrow multiplies by 10^(38 + 5) in an i128, which overflows even for zero rows.
+    let source = decimal128_series_from_arrow(vec![Some(0)], 20, -5);
+    let expected = Decimal128Array::from(vec![0i128]).with_precision_and_scale(20, -5).unwrap();
+    assert!(arrow_cast_into_decimal(Arc::new(expected), 38, 38).is_err());
+    let error = cast_into_decimal(&source, TypeId::Decimal128, 38, 38).unwrap_err();
+    assert_decimal_cast_error(&error, "decimal_scale_overflow");
+}
+
+fn test_cast_decimal_rejects_invalid_declarations() {
+    let input = series::<i64>("x", &[1]).unwrap();
+    let frame = DataFrame::from_series([("x", input)]).unwrap();
+    for (id, precision) in
+        [(TypeId::Decimal128, 0), (TypeId::Decimal128, 39), (TypeId::Decimal64, 19), (TypeId::Decimal32, 10)]
+    {
+        let error = col("x").cast_decimal(decimal_target(id, 0), precision).eval(&frame).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::UnsupportedDtype, "{id:?} {precision}");
+        assert_eq!(error.detail_value("reason"), Some("invalid_decimal_precision"));
+    }
+    let error = col("x").cast_decimal(DataType::new(TypeId::Int32), 5).eval(&frame).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error.detail_value("reason"), Some("decimal_precision_requires_decimal_target"));
+}
+
 #[test]
 fn cast_spec_tests_cases() {
     run_named_cases(&[
@@ -416,5 +858,42 @@ fn cast_spec_tests_cases() {
         ("test_to_numeric_bool_to_i32", test_to_numeric_bool_to_i32),
         ("test_to_numeric_rejects_non_numeric_target", test_to_numeric_rejects_non_numeric_target),
         ("test_to_numeric_rejects_timestamp_target", test_to_numeric_rejects_timestamp_target),
+        (
+            "test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past",
+            test_cast_integer_to_integer_accepts_target_extremes_and_rejects_one_past,
+        ),
+        (
+            "test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range",
+            test_cast_float_to_integer_truncates_in_range_and_rejects_nan_infinity_and_out_of_range,
+        ),
+        (
+            "test_cast_decimal_to_integer_checks_the_scaled_integer_part",
+            test_cast_decimal_to_integer_checks_the_scaled_integer_part,
+        ),
+        (
+            "test_cast_integer_to_string_formats_plain_decimal_text",
+            test_cast_integer_to_string_formats_plain_decimal_text,
+        ),
+        (
+            "test_cast_integer_to_decimal_checks_the_declared_precision",
+            test_cast_integer_to_decimal_checks_the_declared_precision,
+        ),
+        (
+            "test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values",
+            test_cast_float_to_decimal_rounds_like_arrow_and_rejects_non_finite_values,
+        ),
+        (
+            "test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision",
+            test_cast_decimal_to_decimal_rounds_half_away_from_zero_and_checks_precision,
+        ),
+        (
+            "test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision",
+            test_cast_decimal_to_narrow_decimal_storage_checks_the_declared_precision,
+        ),
+        (
+            "test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values",
+            test_cast_decimal_scale_beyond_the_target_storage_fails_for_any_values,
+        ),
+        ("test_cast_decimal_rejects_invalid_declarations", test_cast_decimal_rejects_invalid_declarations),
     ]);
 }

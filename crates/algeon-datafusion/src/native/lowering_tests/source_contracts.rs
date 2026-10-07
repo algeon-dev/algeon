@@ -505,9 +505,9 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
 }
 
 #[test]
-fn pushed_down_integer_divide_predicate_is_rejected_during_native_planning() {
-    // Integer divide in scan-only predicates falls back to CPU; decimal divide
-    // still lowers above.
+fn pushed_down_integer_divide_predicate_stays_a_native_post_scan_filter() {
+    // The reader evaluates predicates through the cudf AST, which has no
+    // zero-divisor or overflow checks, so integer divide runs in the filter node.
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-pushed-integer-divide");
     let path = dir.join("input.parquet");
     write_household_demographics_like_parquet_file(&path);
@@ -516,12 +516,13 @@ fn pushed_down_integer_divide_predicate_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan, &ParquetReadStrategyConfig::default()).unwrap();
 
-    assert!(result.plan.is_none(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+    let source = native_local_parquet_source(result.selected_plan());
+    assert!(source.reader_predicate.is_none());
+    assert_eq!(native_filter_exprs(result.selected_plan()).len(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }

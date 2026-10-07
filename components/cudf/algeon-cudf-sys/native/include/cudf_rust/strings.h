@@ -275,6 +275,17 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
                                               cudf_column_handle* out,
                                               cudf_exec_options_t const* options);
 
+/// Formats an integer column as decimal strings with explicit execution context.
+///
+/// `input` must be a non-boolean integral column. Each valid row becomes its
+/// plain base-10 text with a leading `-` for negative values and no padding;
+/// null rows stay null. Wraps `cudf::strings::from_integers`.
+/// `options` must name an explicit valid device and non-NULL stream/MR.
+/// `options->mr` must outlive the returned column.
+cudf_status_t cudf_strings_from_integers_ex(cudf_column_view_handle input,
+                                            cudf_column_handle* out,
+                                            cudf_exec_options_t const* options);
+
 #ifdef __cplusplus
 }
 #endif

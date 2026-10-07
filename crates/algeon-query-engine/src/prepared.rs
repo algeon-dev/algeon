@@ -58,7 +58,7 @@ pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
-            Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
+            Ok(cast_to_arrow_type(lower_expr_with_expected_type(expr, Some(target_type))?, target_type, target_dtype))
         },
         Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => lower_binary_expr(left, *op, right, output_type.as_ref()),
@@ -106,6 +106,18 @@ pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
     }
 }
 
+/// Casts into the cuDF type of `target_type`. cuDF decimal types carry no
+/// precision, so a decimal target passes its declared precision for the range
+/// check and rounding of a SQL `CAST`.
+fn cast_to_arrow_type(expr: CudfExpr, target_type: &ArrowDataType, target_dtype: cudf::DataType) -> CudfExpr {
+    match target_type {
+        ArrowDataType::Decimal32(precision, _)
+        | ArrowDataType::Decimal64(precision, _)
+        | ArrowDataType::Decimal128(precision, _) => expr.cast_decimal(target_dtype, *precision),
+        _ => expr.cast(target_dtype),
+    }
+}
+
 pub(crate) fn lower_filter_predicate_expr(expr: &Expr) -> Result<CudfExpr> {
     match expr {
         Expr::Not(expr) => Ok(!lower_filter_predicate_expr(expr)?),
@@ -141,7 +153,7 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
-            Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
+            Ok(cast_to_arrow_type(lower_expr_with_expected_type(expr, Some(target_type))?, target_type, target_dtype))
         },
         Expr::TryCast { expr, target_type } => lower_try_cast_expr(expr, target_type),
         Expr::Binary { left, op, right, output_type } => {
@@ -582,6 +594,8 @@ fn lower_unary_math(op: UnaryMathOp, expr: &Expr, output_type: &ArrowDataType) -
         UnaryMathOp::Sqrt => input.sqrt(),
         UnaryMathOp::Ln => input.log(),
         UnaryMathOp::Exp => input.exp(),
+        UnaryMathOp::Floor => input.floor(),
+        UnaryMathOp::Ceil => input.ceil(),
     };
     Ok(evaluated.cast(dtype))
 }

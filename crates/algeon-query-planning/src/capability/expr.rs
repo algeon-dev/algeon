@@ -557,6 +557,8 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::UnaryMath { op: UnaryMathOp::Sqrt, .. } => "sqrt",
         Expr::UnaryMath { op: UnaryMathOp::Ln, .. } => "ln",
         Expr::UnaryMath { op: UnaryMathOp::Exp, .. } => "exp",
+        Expr::UnaryMath { op: UnaryMathOp::Floor, .. } => "floor",
+        Expr::UnaryMath { op: UnaryMathOp::Ceil, .. } => "ceil",
         Expr::Round { .. } => "round",
         Expr::InList { .. } => "in_list",
         Expr::IsDistinctFrom { .. } => "is_distinct_from",

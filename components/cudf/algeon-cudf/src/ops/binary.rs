@@ -13,7 +13,11 @@
 
 use std::{ptr, sync::Arc};
 
-use super::unary;
+use super::{
+    copying,
+    reduction::{self, ReduceAgg},
+    unary,
+};
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -21,6 +25,7 @@ use crate::{
         scalar::{Scalar, ScalarValue},
         types::{DataType, TypeId},
     },
+    frame::series::reduction::scalar_to_optional_value,
     runtime::{execution_context::Exec, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
@@ -526,6 +531,19 @@ pub(crate) fn binary_operation_vv_impl(
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
+    let guarded_divisor;
+    let guarded_divisor_view;
+    let rhs = match CheckedDivision::new(lhs, rhs, op, output_type, output_domain, exec_options, operation)? {
+        Some(division) => match division.checked_divisor()? {
+            Some(column) => {
+                guarded_divisor = column;
+                guarded_divisor_view = guarded_divisor.view()?;
+                &guarded_divisor_view
+            },
+            None => rhs,
+        },
+        None => rhs,
+    };
     let lhs_decimal_division_cast;
     let rhs_decimal_division_cast;
     let lhs_decimal_division_view;
@@ -804,6 +822,11 @@ pub(crate) fn binary_operation_vs_impl(
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
+    if CheckedDivision::scalar_divisor_needs_row_checks(lhs, rhs, op)? {
+        let divisor = Column::from_scalar(rhs, lhs.len()?)?;
+        let divisor_view = divisor.view()?;
+        return binary_operation_vv_impl(lhs, &divisor_view, op, output_type, output_domain, exec_options, operation);
+    }
     let lhs_decimal_division_cast;
     let lhs_decimal_division_view;
     let rhs_decimal_division_scalar;
@@ -852,4 +875,365 @@ pub(crate) fn binary_operation_vs_impl(
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+/// Integer `/` and `%`, and decimal `/`, with the row semantics of
+/// arrow-arith, which DataFusion uses.
+///
+/// Arrow evaluates only rows that are valid in both operands. A zero divisor in
+/// such a row fails, a signed `MIN / -1` overflows, and `x % -1` is 0. Decimal
+/// `/` computes `lhs * 10^k / rhs` in checked `i128` arithmetic, so it also
+/// fails where scaling the dividend by `10^k` overflows the storage type. It
+/// does not validate that the quotient fits the declared result precision.
+/// libcudf divides every row, including null rows whose values under the mask
+/// are arbitrary, defines no result for a zero divisor or `MIN / -1`, and
+/// wraps a decimal rescaling cast on overflow. The checks run before the
+/// division, and the divisor handed to libcudf is replaced by 1 in rows whose
+/// result is null and in `%` rows with divisor -1.
+struct CheckedDivision<'a> {
+    lhs: &'a ColumnView<'a>,
+    rhs: &'a ColumnView<'a>,
+    op: BinaryOperator,
+    lhs_type: DataType,
+    rhs_type: DataType,
+    lhs_has_nulls: bool,
+    rhs_has_nulls: bool,
+    /// The type libcudf divides in for a decimal division: the dividend after
+    /// the cast to the scale that gives the requested result scale.
+    decimal_dividend: Option<DataType>,
+    domain: &'a Arc<ExecutionDomain>,
+    exec_options: &'a cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+}
+
+impl<'a> CheckedDivision<'a> {
+    /// Returns `None` unless the operation is integer `/` or `%`, or decimal
+    /// `/`, over a non-empty column.
+    fn new(
+        lhs: &'a ColumnView<'a>,
+        rhs: &'a ColumnView<'a>,
+        op: BinaryOperator,
+        output_type: &DataType,
+        domain: &'a Arc<ExecutionDomain>,
+        exec_options: &'a cudf_sys::cudf_exec_options_t,
+        operation: &'static str,
+    ) -> Result<Option<Self>> {
+        if !matches!(op, BinaryOperator::Div | BinaryOperator::Mod) || lhs.len()? == 0 {
+            return Ok(None);
+        }
+        let (lhs_type, rhs_type) = (lhs.data_type()?, rhs.data_type()?);
+        let decimal_dividend = if lhs_type.id().is_decimal() && rhs_type.id().is_decimal() && op == BinaryOperator::Div
+        {
+            Some(match decimal_division_explicit_type_operand_targets(lhs, rhs, op, output_type, operation)? {
+                Some((dividend, _)) => dividend,
+                None => lhs_type,
+            })
+        } else if lhs_type.id().is_integral() && rhs_type.id().is_integral() {
+            None
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            lhs,
+            rhs,
+            op,
+            lhs_type,
+            rhs_type,
+            lhs_has_nulls: lhs.null_count()? > 0,
+            rhs_has_nulls: rhs.null_count()? > 0,
+            decimal_dividend,
+            domain,
+            exec_options,
+            operation,
+        }))
+    }
+
+    /// Whether a scalar divisor can reach a row where libcudf has no defined
+    /// result. Other scalars divide through libcudf unchanged.
+    ///
+    /// Decimal scalars are not checked here. The only decimal division by a
+    /// scalar is the scale relabeling in the decimal casts, whose divisor is the
+    /// constant raw value 1.
+    fn scalar_divisor_needs_row_checks(lhs: &ColumnView<'_>, rhs: &Scalar, op: BinaryOperator) -> Result<bool> {
+        if !matches!(op, BinaryOperator::Div | BinaryOperator::Mod) {
+            return Ok(false);
+        }
+        let rhs_type = rhs.data_type()?.id();
+        if !lhs.data_type()?.id().is_integral() || !rhs_type.is_integral() {
+            return Ok(false);
+        }
+        if !rhs.is_valid()? {
+            return Ok(true);
+        }
+        let divisor = match rhs_type {
+            TypeId::Int8 => i128::from(rhs.value::<i8>()?),
+            TypeId::Int16 => i128::from(rhs.value::<i16>()?),
+            TypeId::Int32 => i128::from(rhs.value::<i32>()?),
+            TypeId::Int64 => i128::from(rhs.value::<i64>()?),
+            TypeId::UInt8 => i128::from(rhs.value::<u8>()?),
+            TypeId::UInt16 => i128::from(rhs.value::<u16>()?),
+            TypeId::UInt32 => i128::from(rhs.value::<u32>()?),
+            _ => i128::from(rhs.value::<u64>()?),
+        };
+        Ok(divisor == 0 || (rhs_type.is_signed_int() && divisor == -1))
+    }
+
+    /// Fails on a zero divisor or an overflowing quotient in a valid row, then
+    /// returns the divisor to use in place of `rhs`, or `None` when `rhs` is
+    /// already safe.
+    fn checked_divisor(&self) -> Result<Option<Column>> {
+        let zero = self.equals(self.rhs, 0)?;
+        if self.any_in_valid_rows(&zero.view()?)? {
+            return Err(Error::new_with(
+                ErrorCode::DivisionByZero,
+                self.operation,
+                "division or remainder by zero in a row where both operands are valid",
+            )
+            .with_detail("operator", self.op.name())
+            .with_detail("divisor_type_id", self.rhs_type.id().to_string()));
+        }
+        if let Some(dividend) = &self.decimal_dividend {
+            self.check_decimal_dividend_scaling(dividend)?;
+        }
+
+        let rhs_is_signed = self.rhs_type.id().is_signed_int() || self.rhs_type.id().is_decimal();
+        let minus_one = if rhs_is_signed { Some(self.equals(self.rhs, -1)?) } else { None };
+        if let Some(minimum) = self.overflowing_minimum_dividend()
+            && let Some(minus_one) = &minus_one
+            && self.any(&minus_one.view()?)?
+        {
+            let min = self.equals(self.lhs, minimum)?;
+            let overflow = self.combine(&min.view()?, &minus_one.view()?, BinaryOperator::LogicalAnd)?;
+            if self.any(&overflow.view()?)? {
+                return Err(Error::new_with(
+                    ErrorCode::ValueOutOfRange,
+                    self.operation,
+                    "division overflows: the minimum signed value divided by -1",
+                )
+                .with_detail("reason", "overflow")
+                .with_detail("operator", self.op.name())
+                .with_detail("dividend_type_id", self.lhs_type.id().to_string()));
+            }
+        }
+
+        let minus_one_rows = match minus_one {
+            Some(minus_one) if self.op == BinaryOperator::Mod && self.any(&minus_one.view()?)? => Some(minus_one),
+            _ => None,
+        };
+        let null_rows = match (self.lhs_has_nulls, self.rhs_has_nulls) {
+            (false, false) => None,
+            (true, false) => Some(unary::is_null_impl(self.lhs, self.domain, self.exec_options, self.operation)?),
+            (false, true) => Some(unary::is_null_impl(self.rhs, self.domain, self.exec_options, self.operation)?),
+            (true, true) => {
+                let lhs_null = unary::is_null_impl(self.lhs, self.domain, self.exec_options, self.operation)?;
+                let rhs_null = unary::is_null_impl(self.rhs, self.domain, self.exec_options, self.operation)?;
+                Some(self.combine(&lhs_null.view()?, &rhs_null.view()?, BinaryOperator::LogicalOr)?)
+            },
+        };
+        let replace = match (null_rows, minus_one_rows) {
+            (None, None) => return Ok(None),
+            (Some(rows), None) | (None, Some(rows)) => rows,
+            (Some(null_rows), Some(minus_one_rows)) => {
+                self.combine(&null_rows.view()?, &minus_one_rows.view()?, BinaryOperator::NullLogicalOr)?
+            },
+        };
+        // `rhs - rhs + 1` is 1 in every row and keeps the null mask of `rhs`,
+        // so the replacement does not change which result rows are null.
+        let zeros = binary_operation_vv_impl(
+            self.rhs,
+            self.rhs,
+            BinaryOperator::Sub,
+            &self.rhs_type,
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )?;
+        let ones = self.with_scalar(&zeros.view()?, BinaryOperator::Add, 1)?;
+        copying::copy_if_else_impl(
+            &ones.view()?,
+            self.rhs,
+            &replace.view()?,
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )
+        .map(Some)
+    }
+
+    /// The dividend of a `MIN / -1` overflow in the width libcudf divides in,
+    /// when this division can overflow that way.
+    fn overflowing_minimum_dividend(&self) -> Option<i128> {
+        if self.op != BinaryOperator::Div {
+            return None;
+        }
+        match &self.decimal_dividend {
+            // The minimum of a storage type is not a multiple of 10, so a dividend
+            // that libcudf scales up never equals it.
+            Some(dividend) => (dividend.id() == self.lhs_type.id() && self.lhs_scale_shift(dividend) == 0)
+                .then(|| decimal_storage_range(self.lhs_type.id()).0),
+            None => (self.lhs_type.id().is_signed_int()
+                && integral_width(self.lhs_type.id()) >= integral_width(self.rhs_type.id()))
+            .then(|| -(1i128 << (integral_width(self.lhs_type.id()) - 1))),
+        }
+    }
+
+    /// The power of ten, as an exponent, that libcudf multiplies the dividend
+    /// by when it casts the dividend to `dividend`.
+    fn lhs_scale_shift(&self, dividend: &DataType) -> i32 {
+        self.lhs_type.scale() - dividend.scale()
+    }
+
+    /// Fails where a valid dividend times `10^k` leaves the range of the
+    /// dividend type, which arrow reports as an arithmetic overflow and the
+    /// libcudf rescaling cast wraps.
+    fn check_decimal_dividend_scaling(&self, dividend: &DataType) -> Result<()> {
+        let shift = self.lhs_scale_shift(dividend);
+        let Ok(exponent) = u32::try_from(shift) else {
+            return Ok(());
+        };
+        if exponent == 0 {
+            return Ok(());
+        }
+        let (storage_min, storage_max) = decimal_storage_range(dividend.id());
+        // Dividends outside `[lowest, highest]` overflow. Truncating division
+        // rounds both bounds toward zero, which is the exact range. A factor
+        // beyond i128 leaves only 0.
+        let (lowest, highest) = match 10i128.checked_pow(exponent) {
+            Some(factor) => (storage_min / factor, storage_max / factor),
+            None => (0, 0),
+        };
+        let (lhs_min, lhs_max) = decimal_storage_range(self.lhs_type.id());
+        for (bound, comparison, can_exceed) in
+            [(highest, BinaryOperator::Greater, highest < lhs_max), (lowest, BinaryOperator::Less, lowest > lhs_min)]
+        {
+            if !can_exceed {
+                continue;
+            }
+            let bound = self.scalar(&self.lhs_type, bound)?;
+            let exceeds = binary_operation_vs_impl(
+                self.lhs,
+                &bound,
+                comparison,
+                &DataType::new(TypeId::Bool8),
+                self.domain,
+                self.exec_options,
+                self.operation,
+            )?;
+            if self.any_in_valid_rows(&exceeds.view()?)? {
+                return Err(Error::new_with(
+                    ErrorCode::ValueOutOfRange,
+                    self.operation,
+                    "decimal division overflows: the dividend scaled to the result scale exceeds the storage range",
+                )
+                .with_detail("reason", "overflow")
+                .with_detail("operator", self.op.name())
+                .with_detail("dividend_type_id", self.lhs_type.id().to_string())
+                .with_detail("dividend_scale_shift", shift.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    fn equals(&self, column: &ColumnView<'_>, value: i128) -> Result<Column> {
+        let scalar = self.scalar(&column.data_type()?, value)?;
+        binary_operation_vs_impl(
+            column,
+            &scalar,
+            BinaryOperator::Equal,
+            &DataType::new(TypeId::Bool8),
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )
+    }
+
+    fn with_scalar(&self, column: &ColumnView<'_>, op: BinaryOperator, value: i128) -> Result<Column> {
+        let dtype = column.data_type()?;
+        let scalar = self.scalar(&dtype, value)?;
+        binary_operation_vs_impl(column, &scalar, op, &dtype, self.domain, self.exec_options, self.operation)
+    }
+
+    fn combine(&self, lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, op: BinaryOperator) -> Result<Column> {
+        binary_operation_vv_impl(
+            lhs,
+            rhs,
+            op,
+            &DataType::new(TypeId::Bool8),
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )
+    }
+
+    /// Whether any valid row of a boolean mask is true.
+    fn any(&self, mask: &ColumnView<'_>) -> Result<bool> {
+        let any = reduction::reduce_impl(
+            mask,
+            &ReduceAgg::Any,
+            &DataType::new(TypeId::Bool8),
+            self.domain,
+            self.exec_options,
+            self.operation,
+        )?;
+        Ok(scalar_to_optional_value::<bool>(any)?.unwrap_or(false))
+    }
+
+    /// Whether `mask` is true in a row where both operands are valid. A mask
+    /// computed from one operand is already null where that operand is null.
+    fn any_in_valid_rows(&self, mask: &ColumnView<'_>) -> Result<bool> {
+        if !self.any(mask)? {
+            return Ok(false);
+        }
+        let valid_rows = match (self.lhs_has_nulls, self.rhs_has_nulls) {
+            (false, false) => return Ok(true),
+            (true, false) => unary::is_valid_impl(self.lhs, self.domain, self.exec_options, self.operation)?,
+            (false, true) => unary::is_valid_impl(self.rhs, self.domain, self.exec_options, self.operation)?,
+            (true, true) => {
+                let lhs_valid = unary::is_valid_impl(self.lhs, self.domain, self.exec_options, self.operation)?;
+                let rhs_valid = unary::is_valid_impl(self.rhs, self.domain, self.exec_options, self.operation)?;
+                self.combine(&lhs_valid.view()?, &rhs_valid.view()?, BinaryOperator::LogicalAnd)?
+            },
+        };
+        self.any(&self.combine(mask, &valid_rows.view()?, BinaryOperator::LogicalAnd)?.view()?)
+    }
+
+    fn scalar(&self, dtype: &DataType, value: i128) -> Result<Scalar> {
+        macro_rules! scalar {
+            ($variant:ident, $ty:ty) => {
+                ScalarValue::$variant(<$ty>::try_from(value).map_err(|_| {
+                    Error::new_with(ErrorCode::ValueOutOfRange, self.operation, "integer constant exceeds its type")
+                })?)
+            };
+        }
+        let value = match dtype.id() {
+            TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => ScalarValue::decimal(value, *dtype)?,
+            TypeId::Int8 => scalar!(Int8, i8),
+            TypeId::Int16 => scalar!(Int16, i16),
+            TypeId::Int32 => scalar!(Int32, i32),
+            TypeId::Int64 => scalar!(Int64, i64),
+            TypeId::UInt8 => scalar!(UInt8, u8),
+            TypeId::UInt16 => scalar!(UInt16, u16),
+            TypeId::UInt32 => scalar!(UInt32, u32),
+            _ => scalar!(UInt64, u64),
+        };
+        Scalar::from_scalar_value_in_domain(&value, self.domain)
+    }
+}
+
+/// Smallest and largest raw value of a decimal storage type.
+fn decimal_storage_range(id: TypeId) -> (i128, i128) {
+    match id {
+        TypeId::Decimal32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
+        TypeId::Decimal64 => (i128::from(i64::MIN), i128::from(i64::MAX)),
+        _ => (i128::MIN, i128::MAX),
+    }
+}
+
+fn integral_width(id: TypeId) -> u32 {
+    match id {
+        TypeId::Int8 | TypeId::UInt8 => 8,
+        TypeId::Int16 | TypeId::UInt16 => 16,
+        TypeId::Int32 | TypeId::UInt32 => 32,
+        _ => 64,
+    }
 }

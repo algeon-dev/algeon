@@ -720,6 +720,12 @@ pub enum UnaryMathOp {
     Ln,
     /// Natural exponential `e ^ x`.
     Exp,
+    /// Largest integral floating-point value not above the input. NaN and
+    /// infinities pass through; the output type equals the floating-point input type.
+    Floor,
+    /// Smallest integral floating-point value not below the input. NaN and
+    /// infinities pass through; the output type equals the floating-point input type.
+    Ceil,
 }
 
 impl fmt::Display for UnaryMathOp {
@@ -729,6 +735,8 @@ impl fmt::Display for UnaryMathOp {
             Self::Sqrt => "SQRT",
             Self::Ln => "LN",
             Self::Exp => "EXP",
+            Self::Floor => "FLOOR",
+            Self::Ceil => "CEIL",
         })
     }
 }
