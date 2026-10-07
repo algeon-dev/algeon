@@ -629,15 +629,20 @@ impl ResourceOrdering {
     /// Whether rows carrying this ordering appear in `window`'s order: the
     /// ordering is global, its leading keys are the window's partition keys
     /// in any order, so each partition's rows are adjacent, and the window's
-    /// order keys follow them.
+    /// order keys follow them. An order key that repeats a partition key is
+    /// constant inside a partition and needs no position in the ordering.
     pub(crate) fn covers_window(&self, window: &WindowSpec) -> bool {
         if self.scope != OrderingScope::Global {
             return false;
         }
         let partition_prefix = self.keys.iter().take_while(|key| window.partition_by.contains(&key.expr)).count();
         let prefix = &self.keys[..partition_prefix];
+        let order_keys: Vec<&SortExpr> =
+            window.order_by.iter().filter(|key| !window.partition_by.contains(&key.expr)).collect();
+        let rest = &self.keys[partition_prefix..];
         window.partition_by.iter().all(|expr| prefix.iter().any(|key| key.expr == *expr))
-            && self.keys[partition_prefix..].starts_with(&window.order_by)
+            && rest.len() >= order_keys.len()
+            && rest.iter().zip(order_keys).all(|(carried, required)| carried == required)
     }
 }
 
