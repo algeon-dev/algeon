@@ -22,13 +22,6 @@
 //! random-forest execution. Their planning contracts remain
 //! available when either feature is disabled.
 
-#[cfg(test)]
-extern crate self as query_engine;
-
-#[cfg(test)]
-#[path = "execution_integration_tests/runtime_observability.rs"]
-mod runtime_observability_integration_tests;
-
 pub mod chunk;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
 pub(crate) mod datatypes;

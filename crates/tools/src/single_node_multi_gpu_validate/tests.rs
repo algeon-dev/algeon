@@ -2573,7 +2573,7 @@ fn flight_sql_stress_reads_the_measured_run_artifact_this_runner_writes() {
         serde_json::from_slice(include_bytes!("../../fixtures/stress/stress-s8-flight-pooled-sf1.flight-profile"))
             .unwrap();
     flight_profile["server"]["config_file"] = Value::from(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress/server-s8-s2-scan-sf1.toml").to_str().unwrap(),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture/stress/server-s8-s2-scan-sf1.toml").to_str().unwrap(),
     );
     flight_profile["load"]["clients"] = Value::from(scheduling.concurrency);
     flight_profile["load"]["warmup_seconds"] = Value::from(scheduling.warmup_seconds);

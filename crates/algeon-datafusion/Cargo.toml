@@ -1,6 +1,5 @@
 [package]
 name = "algeon-datafusion"
-autotests = false
 description = "DataFusion physical-plan adapter for native GPU execution."
 version = { workspace = true }
 edition = "2024"
@@ -101,26 +100,11 @@ tracing-subscriber = { workspace = true }
 
 [[test]]
 name = "cugraph_tests_gpu"
-required-features = ["cugraph"]
-
-[[test]]
-name = "root_gpu_tests"
+required-features = ["cugraph", "bench-support"]
 
 [[test]]
 name = "p6_device_identity_tests_gpu_exclusive"
 required-features = ["nvml"]
-
-[[test]]
-name = "cpu_contract_tests"
-
-[[test]]
-name = "native_exec_tests"
-
-[[test]]
-name = "native_planning_tests"
-
-[[test]]
-name = "native_runtime_pruning_tests_gpu"
 
 [[test]]
 name = "native_tpcds_parity_tests_gpu"
@@ -156,7 +140,6 @@ required-features = ["server", "cuvs"]
 
 [[test]]
 name = "server_cuml_tests_gpu"
-path = "tests/server_cuml_tests_gpu.rs"
 required-features = ["server", "cuml"]
 
 [lints]

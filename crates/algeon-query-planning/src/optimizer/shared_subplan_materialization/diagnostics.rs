@@ -1,3 +1,5 @@
+use crate::plan::NodeId;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SharedSubplanMaterializationDiagnostics {
     /// Number of grouped aggregate nodes considered as possible materialization roots.

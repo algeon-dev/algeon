@@ -16,6 +16,7 @@ mod resource;
 mod scheduler;
 mod state;
 
+// These unit tests use private admission hooks owned by compiled execution.
 #[cfg(test)]
 mod execution_tests;
 

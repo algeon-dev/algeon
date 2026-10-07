@@ -32,7 +32,7 @@ impl CompiledGpuTaskExecutor<'_> {
         #[cfg(not(feature = "cuml"))]
         {
             let _ = state;
-            return Err(ml_algorithm_execution_unavailable(node_id, ml));
+            Err(ml_algorithm_execution_unavailable(node_id, ml))
         }
         #[cfg(feature = "cuml")]
         {

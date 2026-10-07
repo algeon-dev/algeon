@@ -1,11 +1,10 @@
-use query_planning::plan::QueryPlan;
+use super::*;
 
 #[test]
 fn attempt_requirement_admits_with_the_ledgers_configured_default_grant() {
-    let service = AdmissionTestController::new_with_ledger(QueueBounds::default(),
-        test_ledger(4096, 1, Default::default()),
-    )
-    .unwrap();
+    let service =
+        AdmissionTestController::new_with_ledger(QueueBounds::default(), test_ledger(4096, 1, Default::default()))
+            .unwrap();
 
     let handle = service
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
@@ -16,10 +15,9 @@ fn attempt_requirement_admits_with_the_ledgers_configured_default_grant() {
 
 #[test]
 fn admission_without_observation_mints_one_identity_per_committed_grant() {
-    let service = AdmissionTestController::new_with_ledger(QueueBounds::default(),
-        test_ledger(4096, 2, Default::default()),
-    )
-    .unwrap();
+    let service =
+        AdmissionTestController::new_with_ledger(QueueBounds::default(), test_ledger(4096, 2, Default::default()))
+            .unwrap();
 
     let first = service
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_attempt_requirement(requirement()))
@@ -36,10 +34,9 @@ fn admission_without_observation_mints_one_identity_per_committed_grant() {
 
 #[test]
 fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
-    let service = AdmissionTestController::new_with_ledger(QueueBounds::default(),
-        test_ledger(4096, 1, Default::default()),
-    )
-    .unwrap();
+    let service =
+        AdmissionTestController::new_with_ledger(QueueBounds::default(), test_ledger(4096, 1, Default::default()))
+            .unwrap();
     let lifecycle = BackendLifecycle::new();
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest::default(),
@@ -69,8 +66,7 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 
 #[test]
 fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution() {
-    let service = AdmissionTestController::new(QueueBounds::default())
-        .expect("synthetic admission service");
+    let service = AdmissionTestController::new(QueueBounds::default()).expect("synthetic admission service");
     let evidence = explicit_sink_capability_evidence();
     let admitted = service
         .try_admit_query_with_request(
@@ -79,20 +75,16 @@ fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution
         .expect("submission succeeds")
         .expect("the exact entry fits the synthetic ledger");
 
-    assert_eq!(
-        admitted.admitted_device_requirement(admitted.device_ordinal()),
-        Some(&evidence),
-    );
+    assert_eq!(admitted.admitted_device_requirement(admitted.device_ordinal()), Some(&evidence),);
     assert_eq!(admitted.admitted_capability_evidence().as_deref(), Some(&evidence));
     drop(admitted);
 }
 
 #[test]
 fn explicit_cap_above_device_capacity_is_rejected_before_enqueue() {
-    let service = AdmissionTestController::new_with_ledger(QueueBounds::default(),
-        test_ledger(1024, 1, Default::default()),
-    )
-    .unwrap();
+    let service =
+        AdmissionTestController::new_with_ledger(QueueBounds::default(), test_ledger(1024, 1, Default::default()))
+            .unwrap();
 
     let error = service
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(2048))
@@ -108,7 +100,8 @@ fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before
 
     use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
-    let service = AdmissionTestController::new_with_device_capabilities(QueueBounds::default(),
+    let service = AdmissionTestController::new_with_device_capabilities(
+        QueueBounds::default(),
         DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
     )
     .unwrap();
@@ -122,10 +115,7 @@ fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
-    assert_eq!(
-        error.fact_value("required_capabilities"),
-        Some("unavailable")
-    );
+    assert_eq!(error.fact_value("required_capabilities"), Some("unavailable"));
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));
     assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
     assert_eq!(service.queued_len(), 0, "capability rejection must never enter the admission queue");
@@ -137,7 +127,8 @@ fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_gran
 
     use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
-    let service = AdmissionTestController::new_with_device_capabilities(QueueBounds::default(),
+    let service = AdmissionTestController::new_with_device_capabilities(
+        QueueBounds::default(),
         DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
     )
     .unwrap();
@@ -170,11 +161,7 @@ fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_gran
     admitted.join_fragment(&plain_fragment).expect("a fragment without capability requirements joins");
     assert_eq!(service.admission_snapshot().unwrap(), before, "joining does not touch the queue");
     assert_eq!(service.device_ledger_reports().unwrap(), ledgers, "joining does not touch the ledger");
-    assert!(
-        admitted.admitted_capability_evidence()
-            .expect("the claim's evidence is admitted")
-            .covers(&plain_fragment)
-    );
+    assert!(admitted.admitted_capability_evidence().expect("the claim's evidence is admitted").covers(&plain_fragment));
 }
 
 #[test]
@@ -203,7 +190,7 @@ fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     AttemptCapabilityEvidence::for_query_plan(&plan)
 }
 
-fn explicit_sink_plan(input_name: &str) -> QueryPlan {
+pub(super) fn explicit_sink_plan(input_name: &str) -> QueryPlan {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
@@ -224,7 +211,8 @@ fn restricted_capability_service_and_requirement() -> (AdmissionTestController, 
     use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
     let capability = DeviceCapability::new("test_operator");
-    let service = AdmissionTestController::new_with_device_capabilities(QueueBounds::default(),
+    let service = AdmissionTestController::new_with_device_capabilities(
+        QueueBounds::default(),
         DeviceCapabilities::only([capability]),
     )
     .unwrap();
@@ -271,10 +259,9 @@ async fn restricted_capability_profile_rejects_missing_async_requirement() {
 
 #[test]
 fn explicit_query_cap_is_preserved_across_admissions() {
-    let service = AdmissionTestController::new_with_ledger(QueueBounds::default(),
-        test_ledger(100, 4, Default::default()),
-    )
-    .unwrap();
+    let service =
+        AdmissionTestController::new_with_ledger(QueueBounds::default(), test_ledger(100, 4, Default::default()))
+            .unwrap();
 
     let raised = service
         .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(70))

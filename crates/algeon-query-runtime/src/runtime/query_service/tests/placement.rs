@@ -1,4 +1,4 @@
-use cudf::testing::device_safety::injected_device_id;
+use super::*;
 
 #[test]
 #[ignore = "requires at least 2 GPUs"]
@@ -10,25 +10,13 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     )
     .expect("two-device runtime-backed service");
     let device_zero_ledger = std::sync::Arc::clone(
-        service.inner.resources
-            .devices
-            .context_by_ordinal(0)
-            .expect("device zero context")
-            .ledger(),
+        service.inner.resources.devices.context_by_ordinal(0).expect("device zero context").ledger(),
     );
     let scope = DeviceSafetyTestScope::install([]);
     let unhealthy = injected_device_id(0).expect("isolated device zero health");
-    report_device_fault(
-        unhealthy,
-        DeviceFaultKind::FatalDeviceOperation,
-        "injected_queued_placement_fault",
-        None,
-    );
+    report_device_fault(unhealthy, DeviceFaultKind::FatalDeviceOperation, "injected_queued_placement_fault", None);
     assert!(
-        matches!(
-            device_zero_ledger.health().expect("engine ledger health"),
-            DeviceAdmissionHealth::Open
-        ),
+        matches!(device_zero_ledger.health().expect("engine ledger health"), DeviceAdmissionHealth::Open),
         "the regression starts with a native fault that the placement boundary must fold into the ledger"
     );
 
@@ -118,7 +106,8 @@ fn a_native_fault_ends_a_waiter_without_other_admission_activity() {
 
     report_device_fault(device, DeviceFaultKind::FatalDeviceOperation, "injected_queued_waiter_fault", None);
 
-    let error = waiter.join().expect("waiter thread does not panic").expect_err("the faulted device rejects the waiter");
+    let error =
+        waiter.join().expect("waiter thread does not panic").expect_err("the faulted device rejects the waiter");
     assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
     assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
     assert_eq!(scope.health_snapshot(device).fault_count(), 1);
@@ -159,7 +148,8 @@ fn device_entries_keep_distinct_ordinal_capability_requirements() {
     let service = test_service(1, 8).controller;
     let first = requirement();
     let second = distinct_capability_requirement();
-    let (entries, compatible) = service.resolve_device_admission_entries_with(&[0, 1], |ordinal| {
+    let (entries, compatible) = service
+        .resolve_device_admission_entries_with(&[0, 1], |ordinal| {
             Ok(if ordinal == 0 { first.clone() } else { second.clone() })
         })
         .expect("both concrete candidates resolve");
@@ -171,7 +161,8 @@ fn device_entries_keep_distinct_ordinal_capability_requirements() {
 #[test]
 fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
     let service = test_service(1, 8).controller;
-    let (entries, compatible) = service.resolve_device_admission_entries_with(&[0, 1], |ordinal| {
+    let (entries, compatible) = service
+        .resolve_device_admission_entries_with(&[0, 1], |ordinal| {
             if ordinal == 0 {
                 Err(QueryError::new(
                     QueryErrorCode::UnsupportedOperator,
@@ -193,7 +184,8 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
 #[test]
 fn all_device_entry_resolution_failures_return_capability_reason_before_queueing() {
     let service = test_service(1, 8).controller;
-    let error = service.resolve_device_admission_entries_with(&[0, 1], |_ordinal| {
+    let error = service
+        .resolve_device_admission_entries_with(&[0, 1], |_ordinal| {
             Err(QueryError::new(
                 QueryErrorCode::UnsupportedOperator,
                 "query_engine.test.sort_capability",

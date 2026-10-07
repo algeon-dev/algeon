@@ -113,7 +113,10 @@ struct GpuMetadataProvider {
 }
 
 /// Whether `source` is backed by a built-in GPU metadata UDTF.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "server"),
+    expect(dead_code, reason = "the metadata source check is used by the Flight SQL server")
+)]
 pub fn is_builtin_gpu_metadata_table_source(source: &Arc<dyn TableSource>) -> bool {
     source_as_provider(source).is_ok_and(|provider| provider.as_ref().type_id() == TypeId::of::<GpuMetadataProvider>())
 }

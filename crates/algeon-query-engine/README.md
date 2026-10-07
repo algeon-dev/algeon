@@ -22,7 +22,7 @@ in the DataFusion adapter crate.
   footer fetch, parsing, sidecars, the footer metadata cache, and chunk plans.
 - `native_error.rs` projects cuVS and cuML errors; the shared cuDF projection
   belongs to the runtime's native boundary.
-- `execution_integration_tests/` covers planning/runtime/execution composition.
+- `tests/runtime_execution_integration_tests_gpu/` covers planning/runtime/execution composition.
 
 See [`query-planning`](../query-planning/README.md) for IR,
 capability, proof, admission contracts, and pipelines. See
@@ -39,8 +39,8 @@ process. Do not use broad `cargo test -p query-engine --all-features`,
 package-level validation.
 
 ```bash
-cargo nt -E 'binary_id(algeon-query-engine::native_contract_tests)'
-cargo nt -E 'binary_id(algeon-query-engine::public_api_boundary)'
+cargo nt -E 'binary_id(algeon-query-engine::native_contract_tests_cpu)'
+cargo nt -E 'binary_id(algeon-query-engine::public_api_boundary_cpu)'
 cargo nt -E 'package(algeon-query-engine) & kind(lib)'
 cargo nt -E 'binary_id(algeon-query-engine::gpu_allocator_event_correlation_gpu_exclusive)'
 bash scripts/check_all.sh

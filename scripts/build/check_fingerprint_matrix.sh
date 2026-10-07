@@ -88,14 +88,14 @@ run_no_run() {
     set +e
     env CARGO_LOG="${CARGO_FINGERPRINT_LOG}" "$@" \
       timeout --signal=INT --kill-after=15s "${DIRTY_TIMEOUT_SECS}" \
-      cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract --no-run \
+      cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract_cpu --no-run \
       >"${log}.raw" 2>&1
     status=$?
     set -e
   else
     set +e
     env CARGO_LOG="${CARGO_FINGERPRINT_LOG}" "$@" \
-      cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract --no-run \
+      cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract_cpu --no-run \
       >"${log}.raw" 2>&1
     status=$?
     set -e
@@ -237,4 +237,4 @@ run_no_run "12-final-restore" --allow-timeout env \
 
 echo
 echo "Fingerprint matrix passed. Redacted logs: ${LOG_DIR}"
-echo "Static contracts: cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract --test build_link_contract"
+echo "Static contracts: cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract_cpu --test build_link_contract_cpu"

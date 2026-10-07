@@ -14,8 +14,7 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 use crate::runtime::deadline::{DeadlineMutexLockError, deadline_expired, deadline_remaining, mutex_lock_until};
 
 #[cfg(test)]
-#[path = "query_service_epoch_tests.rs"]
-mod query_service_epoch_tests;
+mod tests;
 
 type QueryServiceEpochIdleCallback = Arc<dyn Fn() + Send + Sync>;
 type QueryResourceEpochIdleCallback = Arc<dyn Fn() + Send + Sync>;

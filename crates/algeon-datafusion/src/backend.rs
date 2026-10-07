@@ -610,5 +610,4 @@ fn backend_queue_bounds(queue_policy: &AlgeonGpuQueuePolicy) -> QueueBounds {
 }
 
 #[cfg(test)]
-#[path = "backend_tests.rs"]
 mod tests;

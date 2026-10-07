@@ -105,6 +105,7 @@ impl CandidateShape {
     /// `shape` labelled as the input relation `label` of a GPU relation
     /// function, such as `cugraph_pagerank.edges`. The label is not an
     /// operator, so [`Self::without_relation_input_label`] sees through it.
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn relation_input(label: &str, shape: CandidateShape) -> Self {
         Self { operator: label.to_string(), inputs: vec![shape], relation_input: true }
     }
@@ -198,6 +199,7 @@ impl GpuCandidate {
     /// This candidate labelled as an input relation of a GPU relation
     /// function. The candidate keeps its native plan node.
     #[must_use]
+    #[cfg(feature = "cugraph")]
     pub(crate) fn with_relation_input_label(mut self, label: &str) -> Self {
         self.shape = CandidateShape::relation_input(label, self.shape);
         self
@@ -444,6 +446,7 @@ impl PlanningReport {
     }
 
     /// Labels every candidate as an input relation of a GPU relation function.
+    #[cfg(feature = "cugraph")]
     pub(crate) fn label_relation_input(&mut self, label: &str) {
         for outcome in &mut self.outcomes {
             let (CandidateOutcome::Selected { candidate }

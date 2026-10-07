@@ -3,7 +3,7 @@
   "name": "stress-s8-flight-pooled-knee-sf10",
   "server": {
     "url": "http://127.0.0.1:50051",
-    "config_file": "server-s8-s2-knee-sf10.toml"
+    "config_file": "../../../../fixture/stress/server-s8-s2-knee-sf10.toml"
   },
   "statement": {
     "label": "q06",

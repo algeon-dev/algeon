@@ -6,7 +6,7 @@
 //! admission; the fixture closes on drop so the process-exclusive backend
 //! lease is never held across tests.
 
-#[path = "../../tests/native_exec_tests/support_core.rs"]
+#[path = "../../tests/support/support_core.rs"]
 mod support_core;
 
 mod bounded_join;
@@ -19,17 +19,6 @@ use std::{
     time::Duration,
 };
 
-use algeon_datafusion::{
-    attempt::AttemptOptions,
-    backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
-    error::ErrorCode,
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking},
-    native_report::NativeDataFusionExecutionMetrics,
-    planner::{
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
-    },
-    report::CandidateOutcome,
-};
 use arrow::{
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
@@ -61,6 +50,17 @@ use query_runtime::runtime::LakehouseCacheFillConfig;
 use support_core::*;
 
 use super::AlgeonNativeMetrics;
+use crate::{
+    attempt::AttemptOptions,
+    backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
+    error::ErrorCode,
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking},
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::{
+        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
+    },
+    report::CandidateOutcome,
+};
 
 fn backend_fixture() -> InstalledTestGpuBackend {
     InstalledTestGpuBackend::with_config(

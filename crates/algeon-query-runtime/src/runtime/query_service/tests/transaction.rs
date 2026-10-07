@@ -1,15 +1,12 @@
+use super::*;
 // Transactional admission: fault-injection rollback and envelope
 // identity evidence.
-
-use crate::runtime::query_service::service::transaction::{AdmissionStep, AdmissionTransactionProbe};
 
 /// Wait for the controller's complete cleanup boundary: returning streams are
 /// not sufficient because the release commit still owns the ledger grant and
 /// lane until it publishes the terminal report.
 fn wait_for_transaction_cleanup(service: &QueryService, what: &str) {
-    service
-        .wait_for_stream_pools_idle(Duration::from_secs(10))
-        .unwrap_or_else(|error| panic!("{what}: {error}"));
+    service.wait_for_stream_pools_idle(Duration::from_secs(10)).unwrap_or_else(|error| panic!("{what}: {error}"));
 }
 
 /// Every injected transaction failure must restore the admission counters,
@@ -125,13 +122,9 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
 fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for provisional rollback quiescence");
-    let device = service.inner.resources
-        .devices
-        .context_by_ordinal(0)
-        .expect("device context");
+    let device = service.inner.resources.devices.context_by_ordinal(0).expect("device context");
     let cleanup_blocker = block_stream_cleanup_thread_for_test(device.stream_pool());
-    let (probe, rollback_pause) =
-        AdmissionTransactionProbe::pausing_after_rollback_accounting();
+    let (probe, rollback_pause) = AdmissionTransactionProbe::pausing_after_rollback_accounting();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
         admission_service.admit_query_with_probe(QueryAdmissionRequest::test_attempt(), Arc::new(probe))
@@ -240,10 +233,8 @@ fn queue_deadline_ends_at_placement() {
     pause.wait_until_entered(Duration::from_secs(10));
     std::thread::sleep(queue_deadline.saturating_duration_since(Instant::now()));
     pause.release();
-    let handle = admission
-        .join()
-        .expect("admission thread joins")
-        .expect("a placed request publishes after its queue deadline");
+    let handle =
+        admission.join().expect("admission thread joins").expect("a placed request publishes after its queue deadline");
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     drop(handle);
 }

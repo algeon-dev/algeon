@@ -365,7 +365,7 @@ impl fmt::Display for Facts {
 mod tests {
     //! Crate-internal tests that lock the `Facts` writer contract.
     //!
-    //! These were previously in `tests/core/error_truthful_contract_tests.rs`.
+    //! These were previously in `tests/semantic_contracts_gpu/core/error_truthful_contract_tests.rs`.
     //! They moved here when the writer surface became `pub(crate)`.
     //! Leaf-wins insertion and wrong-variant behavior are crate-internal
     //! invariants, so the tests must live inside the crate too.

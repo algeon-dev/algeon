@@ -39,7 +39,7 @@ workspace's integration and failure-path tests:
 
 ```bash
 CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
-  cargo test -p cudf-sys --all-features --test build_link_contract
+  cargo test -p cudf-sys --all-features --test build_link_contract_cpu
 ```
 
 With that feature, generated test declarations are available under

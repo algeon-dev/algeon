@@ -1,4 +1,4 @@
-use crate::observability::{AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation};
+use super::*;
 
 #[test]
 fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
@@ -6,12 +6,7 @@ fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
     let scope = DeviceSafetyTestScope::install([]);
     let device_ordinal = service.device_ledger_reports().unwrap()[0].device_ordinal;
     let device = injected_device_id(device_ordinal as i32).expect("isolated device health owner");
-    report_device_fault(
-        device,
-        DeviceFaultKind::FatalDeviceOperation,
-        "injected_query_admission_fault",
-        None,
-    );
+    report_device_fault(device, DeviceFaultKind::FatalDeviceOperation, "injected_query_admission_fault", None);
 
     let error = service.try_admit_query().expect_err("unhealthy device must reject query admission");
 
@@ -111,12 +106,14 @@ async fn fallible_activity_acquisition_rejects_without_entering_admission() {
     let attempt = AttemptOwner::native_for_test();
     let error = service
         .admit_async_with_request(
-            QueryAdmissionRequest::new(attempt.admission_binding()).with_runtime_observation_activity_result(Err(QueryError::new(
-                QueryErrorCode::Cancelled,
-                "test.query_service.observation_activity",
-                "coordinated activity acquisition failed",
-            )
-            .with_fact("reason", "coordinator_closed"))),
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_runtime_observation_activity_result(Err(
+                QueryError::new(
+                    QueryErrorCode::Cancelled,
+                    "test.query_service.observation_activity",
+                    "coordinated activity acquisition failed",
+                )
+                .with_fact("reason", "coordinator_closed"),
+            )),
         )
         .await
         .expect_err("fallible activity failure must reject admission");
@@ -131,7 +128,8 @@ async fn fallible_activity_acquisition_rejects_without_entering_admission() {
 #[test]
 fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
     let service = runtime_test_service(1, 8);
-    let attempt = observed_attempt("external-query", Some("external-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt =
+        observed_attempt("external-query", Some("external-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let mut waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -201,8 +199,7 @@ async fn async_permanent_rejection_remains_terminal_rejected() {
     // capacity rejects permanently before enqueue.
     let error = service
         .admit_async_with_request(
-            QueryAdmissionRequest::new(attempt.admission_binding())
-                .with_query_cap_bytes(128 * 1024 * 1024),
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_query_cap_bytes(128 * 1024 * 1024),
         )
         .await
         .unwrap_err();
@@ -290,7 +287,8 @@ fn query_service_observes_queued_waiter_drop_as_cancellation() {
 #[test]
 fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_completion() {
     let service = test_service(1, 8);
-    let attempt = observed_attempt("poisoned-waiter-drop-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt =
+        observed_attempt("poisoned-waiter-drop-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -332,14 +330,18 @@ fn close_drains_queued_completion_from_a_poisoned_admission_guard() {
     assert_eq!(error.code(), QueryErrorCode::Internal);
     assert_eq!(error.fact_value("reason"), Some("admission_mutex_poisoned"));
     assert_eq!(service.queued_len_recovering_poison(), 0, "close drains queued completion despite poison");
-    assert!(matches!(&wait_for_sealed_observation(&observation).footer().terminal, Some(RuntimeTerminalOutcome::Cancelled)));
+    assert!(matches!(
+        &wait_for_sealed_observation(&observation).footer().terminal,
+        Some(RuntimeTerminalOutcome::Cancelled)
+    ));
     drop(waiter);
 }
 
 #[test]
 fn close_and_wait_quiesces_after_admission_poison() {
     let service = test_service(1, 8);
-    let attempt = observed_attempt("poisoned-close-and-wait-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt =
+        observed_attempt("poisoned-close-and-wait-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -351,7 +353,10 @@ fn close_and_wait_quiesces_after_admission_poison() {
         .expect("the queue, preflight set, and lifecycle tickets stay valid after poison, so the drain quiesces");
 
     assert_eq!(service.queued_len_recovering_poison(), 0, "close-and-wait drains queued completion despite poison");
-    assert!(matches!(&wait_for_sealed_observation(&observation).footer().terminal, Some(RuntimeTerminalOutcome::Cancelled)));
+    assert!(matches!(
+        &wait_for_sealed_observation(&observation).footer().terminal,
+        Some(RuntimeTerminalOutcome::Cancelled)
+    ));
     drop(waiter);
 }
 
@@ -363,8 +368,7 @@ fn query_service_observes_pre_enqueue_rejection_without_reclassifying_error() {
 
     let error = service
         .enqueue_admission_with_request(
-            QueryAdmissionRequest::new(attempt.admission_binding())
-                .with_query_cap_bytes(128 * 1024 * 1024),
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_query_cap_bytes(128 * 1024 * 1024),
         )
         .expect_err("an impossible requirement rejects before enqueue");
 
@@ -492,9 +496,7 @@ fn sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout
     );
     attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
     let mut waiter = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new(attempt.owner.admission_binding()),
-        )
+        .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.owner.admission_binding()))
         .expect("attempt-bound second query queues");
     service.expire_waiter(&mut waiter);
 
@@ -511,7 +513,11 @@ fn sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout
     let admission = service.admission_snapshot().expect("snapshot succeeds");
     assert_eq!(admission.queued_queries, 0);
 
-    let report = attempt.completion.completion().wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
+    let report = attempt
+        .completion
+        .completion()
+        .wait_timeout(Duration::from_secs(1))
+        .expect("queue sweep seals the attempt report");
     assert!(matches!(
         &report.outcome,
         RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
@@ -539,7 +545,8 @@ fn sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout
 fn sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let attempt = observed_attempt("swept-health-rejection-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt =
+        observed_attempt("swept-health-rejection-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let observation = attempt.observation_for_test();
     let mut waiter = service
         .enqueue_admission_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -584,7 +591,11 @@ fn sweep_finishes_health_rejection_after_waiter_consumes_terminal_error() {
 #[test]
 fn query_service_context_uses_pre_admission_observation_identity() {
     let service = runtime_test_service(1, 8);
-    let attempt = observed_attempt("external-context-query", Some("external-context-trace"), RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt = observed_attempt(
+        "external-context-query",
+        Some("external-context-trace"),
+        RuntimeObservationConfig::bounded(32, 32 * 1024),
+    );
     let observation = attempt.observation_for_test();
     let handle = service
         .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -660,7 +671,8 @@ fn query_service_context_uses_pre_admission_observation_identity() {
 #[test]
 fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
     let service = runtime_test_service(1, 8);
-    let attempt = observed_attempt("stream-release-before-seal", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+    let attempt =
+        observed_attempt("stream-release-before-seal", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let observation = attempt.observation_for_test();
     let handle = service
         .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
@@ -727,7 +739,11 @@ fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
 
 /// A native attempt observed with `config`, as an adapter begins one before
 /// admission.
-fn observed_attempt(query_id: &str, trace_id: Option<&str>, config: RuntimeObservationConfig) -> AttemptOwner {
+pub(super) fn observed_attempt(
+    query_id: &str,
+    trace_id: Option<&str>,
+    config: RuntimeObservationConfig,
+) -> AttemptOwner {
     let attempt = AttemptOwner::begin(
         BeginAttemptRequest {
             query_id: Some(AttemptQueryId::new(query_id).expect("valid attempt query id")),

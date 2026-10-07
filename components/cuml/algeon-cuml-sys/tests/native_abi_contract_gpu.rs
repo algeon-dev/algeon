@@ -1,5 +1,3 @@
-#![cfg(feature = "test-hooks")]
-
 use std::ffi::{CStr, CString};
 
 use cuml_sys::{

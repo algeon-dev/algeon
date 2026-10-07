@@ -4,7 +4,9 @@
 The source of truth for cuGraph dataset bytes is the root-managed cuGraph
 gitlink. This script copies the small upstream datasets and reference outputs
 needed by the parity harness into the versioned graph fixture root, then writes
-a manifest with source and byte identities.
+a manifest with source and byte identities. Tools owns the BFS predicate
+acceptance runners, which generate their inputs under fixture/data/cugraph/;
+those inputs are separate from the upstream parity datasets prepared here.
 """
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
     let device_safety = DeviceSafetyTestScope::install([]);
@@ -31,8 +33,9 @@ fn query_service_handle_exposes_configured_execution_policies() {
         source_chunk_planning_options,
         ..QueryExecutionConfig::default()
     };
-    let service = runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(1)])
-        .unwrap();
+    let service =
+        runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(1)])
+            .unwrap();
 
     let handle = service.admit_query().unwrap();
 
@@ -153,7 +156,8 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
 }
 #[test]
 fn controller_honors_per_device_active_attempt_limit() {
-    let service = AdmissionTestController::new(QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30) }).unwrap();
+    let service =
+        AdmissionTestController::new(QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30) }).unwrap();
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
 

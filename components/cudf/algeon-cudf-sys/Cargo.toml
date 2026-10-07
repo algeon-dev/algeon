@@ -12,7 +12,6 @@ documentation = "https://docs.rs/algeon-cudf-sys"
 keywords = ["cuda", "cudf", "ffi", "gpu", "rapids"]
 build = "build.rs"
 links = "cudf_rust"
-autotests = false
 
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
@@ -39,23 +38,11 @@ rapids-build-support.workspace = true
 static_assertions.workspace = true
 
 [[test]]
-name = "native_abi_contract_cpu"
-
-[[test]]
 name = "stream_provider_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "bindings_contract_cpu"
-
-[[test]]
-name = "memory_manager_static_partition_contract_gpu"
-
-[[test]]
-name = "memory_manager_old_options_abi_contract_gpu"
-
-[[test]]
-name = "build_link_contract"
+name = "build_link_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
@@ -79,7 +66,7 @@ name = "ffi_regressions_gpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "fingerprint_matrix_contract"
+name = "fingerprint_matrix_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
@@ -104,10 +91,6 @@ required-features = ["test-hooks"]
 
 [[test]]
 name = "profiler_api_contract_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "source_contract_support_cpu"
 required-features = ["test-hooks"]
 
 [[test]]

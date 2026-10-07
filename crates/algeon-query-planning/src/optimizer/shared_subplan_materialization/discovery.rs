@@ -1,9 +1,26 @@
-struct SharedSubplanMaterializationDiscovery {
-    diagnostics: SharedSubplanMaterializationDiagnostics,
-    families: Vec<SharedAggregateFamilyRewrite>,
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{
+    api::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+    diagnostics::{SharedSubplanMaterializationCandidateDiagnostics, SharedSubplanMaterializationDiagnostics},
+    estimate::estimate_shared_scalar_filtered_materialization,
+    expr_helpers::{materialization_family_aggregate_exprs, scalar_filtered_aggregate_supported},
+    rewrite::{SharedAggregateFamilyRewrite, shared_aggregate_family_rewrite_plan},
+    signature::{AggregateMaterializationSignature, aggregate_materialization_signature},
+};
+use crate::{
+    plan::{PlanNode, QueryPlan},
+    util::sum_optional_u64,
+};
+
+pub(super) struct SharedSubplanMaterializationDiscovery {
+    pub(super) diagnostics: SharedSubplanMaterializationDiagnostics,
+    pub(super) families: Vec<SharedAggregateFamilyRewrite>,
 }
 
-fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> SharedSubplanMaterializationDiscovery {
+pub(super) fn discover_shared_subplan_materialization_candidates(
+    plan: &QueryPlan,
+) -> SharedSubplanMaterializationDiscovery {
     let mut diagnostics = SharedSubplanMaterializationDiagnostics::default();
     let mut families = BTreeMap::<String, Vec<AggregateMaterializationSignature>>::new();
 

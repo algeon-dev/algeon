@@ -1,4 +1,6 @@
-pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) -> CompiledPipeline {
+use super::*;
+
+fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) -> CompiledPipeline {
     let mut tasks = pipeline.tasks().to_vec();
     let mut edges = pipeline.edges().to_vec();
     let sink_edge = pipeline
@@ -10,9 +12,7 @@ pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) ->
         panic!("sink input edge should carry one resource");
     };
     let extra_sink = PipelineTaskId::new(tasks.len());
-    tasks.push(
-        PipelineTask::new(extra_sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![*sink_resource]),
-    );
+    tasks.push(PipelineTask::new(extra_sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![*sink_resource]));
     edges.push(
         PipelineEdge::new(PipelineEdgeId::new(edges.len()), sink_edge.from(), extra_sink, PipelineEdgeKind::SinkInput)
             .with_resources(vec![*sink_resource]),
@@ -35,7 +35,7 @@ pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) ->
     CompiledPipeline::from_parts_unvalidated(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
-pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> CompiledPipeline {
+fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> CompiledPipeline {
     let mut tasks = pipeline.tasks().to_vec();
     let mut edges = pipeline.edges().to_vec();
     let fanout_edge = pipeline
@@ -93,14 +93,15 @@ pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> Com
     CompiledPipeline::from_parts_unvalidated(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
-pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
+fn simple_unary_pipeline() -> CompiledPipeline {
     let source = PipelineTaskId::new(0);
     let unary = PipelineTaskId::new(1);
     let frame = ResidentResourceId::new(0);
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![frame]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                .with_output_resources(vec![frame]),
             PipelineTask::new(unary, TaskPhysical::Unary).with_input_resources(vec![frame]),
         ],
         vec![
@@ -119,7 +120,7 @@ pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
     )
 }
 
-pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
+fn independent_two_source_pipeline() -> CompiledPipeline {
     let first_source = PipelineTaskId::new(0);
     let second_source = PipelineTaskId::new(1);
     let first_consumer = PipelineTaskId::new(2);
@@ -129,8 +130,10 @@ pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(first_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![first_frame]),
-            PipelineTask::new(second_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![second_frame]),
+            PipelineTask::new(first_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                .with_output_resources(vec![first_frame]),
+            PipelineTask::new(second_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                .with_output_resources(vec![second_frame]),
             PipelineTask::new(first_consumer, TaskPhysical::Unary).with_input_resources(vec![first_frame]),
             PipelineTask::new(second_consumer, TaskPhysical::Unary).with_input_resources(vec![second_frame]),
         ],
@@ -168,7 +171,7 @@ pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
     )
 }
 
-pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
+fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
     let source = PipelineTaskId::new(0);
     let probe = PipelineTaskId::new(1);
     let build = PipelineTaskId::new(2);
@@ -179,9 +182,12 @@ pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![source_frame]),
-            PipelineTask::new(probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![source_frame]),
-            PipelineTask::new(build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![source_frame]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                .with_output_resources(vec![source_frame]),
+            PipelineTask::new(probe, TaskPhysical::JoinProbe(fixture_join_plan()))
+                .with_input_resources(vec![source_frame]),
+            PipelineTask::new(build, TaskPhysical::JoinBuild(fixture_join_plan()))
+                .with_input_resources(vec![source_frame]),
             PipelineTask::new(materialize, TaskPhysical::JoinMaterialize).with_output_resources(vec![join_output]),
             PipelineTask::new(sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![join_output]),
         ],
@@ -226,7 +232,7 @@ pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
     )
 }
 
-pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() -> CompiledPipeline {
+fn downstream_build_branch_after_completed_upstream_build_pipeline() -> CompiledPipeline {
     let first_build_source = PipelineTaskId::new(0);
     let first_build = PipelineTaskId::new(1);
     let first_probe_source = PipelineTaskId::new(2);
@@ -247,16 +253,20 @@ pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() 
         vec![
             PipelineTask::new(first_build_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![first_build_frame]),
-            PipelineTask::new(first_build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![first_build_frame]),
+            PipelineTask::new(first_build, TaskPhysical::JoinBuild(fixture_join_plan()))
+                .with_input_resources(vec![first_build_frame]),
             PipelineTask::new(first_probe_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![first_probe_frame]),
             PipelineTask::new(second_build_source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                 .with_output_resources(vec![second_build_frame]),
-            PipelineTask::new(first_probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![first_probe_frame]),
-            PipelineTask::new(second_build, TaskPhysical::JoinBuild(fixture_join_plan())).with_input_resources(vec![second_build_frame]),
+            PipelineTask::new(first_probe, TaskPhysical::JoinProbe(fixture_join_plan()))
+                .with_input_resources(vec![first_probe_frame]),
+            PipelineTask::new(second_build, TaskPhysical::JoinBuild(fixture_join_plan()))
+                .with_input_resources(vec![second_build_frame]),
             PipelineTask::new(first_materialize, TaskPhysical::JoinMaterialize)
                 .with_output_resources(vec![first_join_output]),
-            PipelineTask::new(second_probe, TaskPhysical::JoinProbe(fixture_join_plan())).with_input_resources(vec![first_join_output]),
+            PipelineTask::new(second_probe, TaskPhysical::JoinProbe(fixture_join_plan()))
+                .with_input_resources(vec![first_join_output]),
             PipelineTask::new(second_materialize, TaskPhysical::JoinMaterialize)
                 .with_output_resources(vec![second_join_output]),
             PipelineTask::new(sink, TaskPhysical::SinkMaterialize).with_input_resources(vec![second_join_output]),
@@ -358,7 +368,7 @@ pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() 
     )
 }
 
-pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
+fn shared_resident_fanout_pipeline() -> CompiledPipeline {
     let source = PipelineTaskId::new(0);
     let first_consumer = PipelineTaskId::new(1);
     let second_consumer = PipelineTaskId::new(2);
@@ -366,7 +376,8 @@ pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
 
     CompiledPipeline::from_parts_unvalidated(
         vec![
-            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(vec![frame]),
+            PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                .with_output_resources(vec![frame]),
             PipelineTask::new(first_consumer, TaskPhysical::Unary).with_input_resources(vec![frame]),
             PipelineTask::new(second_consumer, TaskPhysical::Unary).with_input_resources(vec![frame]),
         ],

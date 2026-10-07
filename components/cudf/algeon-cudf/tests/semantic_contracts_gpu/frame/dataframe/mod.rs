@@ -1,0 +1,13 @@
+mod arc_sharing_tests;
+mod arrow_tests;
+mod basics_tests;
+mod column_ops_tests;
+mod concat_tests;
+mod construction_contract_tests;
+mod gather_tests;
+mod high_level_d3_tests;
+mod high_level_entrypoint_contract_tests;
+mod info_tests;
+mod metadata_ops_tests;
+mod series_bridge_tests;
+mod slice_tests;

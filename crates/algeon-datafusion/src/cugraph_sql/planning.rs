@@ -23,6 +23,8 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
+#[cfg(not(feature = "cugraph"))]
+use futures::stream;
 
 #[cfg(not(feature = "cugraph"))]
 use super::CugraphAlgorithm;
@@ -148,7 +150,7 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
         // no source scan, staging, or GPU work.
         let schema = self.schema();
         let error = super::feature_disabled(self.algorithm);
-        let stream = futures::stream::once(async move { Err(error.into()) });
+        let stream = stream::once(async move { Err(error.into()) });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }

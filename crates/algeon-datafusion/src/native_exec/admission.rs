@@ -764,5 +764,4 @@ impl ExecutionPlan for NativeAdmissionExec {
 }
 
 #[cfg(test)]
-#[path = "admission_tests.rs"]
 mod tests;

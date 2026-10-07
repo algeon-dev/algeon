@@ -57,3 +57,7 @@ cudf-sys = { workspace = true, features = ["test-hooks"] }
 query-planning = { workspace = true, features = ["test-hooks"] }
 # Paused-clock tests prove a wait wakes without a timer.
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "stream_provider_parquet_gpu"
+required-features = ["test-hooks"]

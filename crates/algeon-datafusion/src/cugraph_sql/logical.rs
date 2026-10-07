@@ -402,7 +402,7 @@ impl UserDefinedLogicalNodeCore for CugraphLogicalNode {
             if !inputs.is_empty() {
                 return Err(plan("feature-disabled cuGraph logical nodes must not receive input children").into());
             }
-            return Ok(self.clone());
+            Ok(self.clone())
         }
         #[cfg(feature = "cugraph")]
         {

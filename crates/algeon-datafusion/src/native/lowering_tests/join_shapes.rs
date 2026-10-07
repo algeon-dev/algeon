@@ -4,9 +4,7 @@ use query_planning::policy::PlanningPolicy;
 use super::*;
 use crate::native::ParquetReadStrategyConfig;
 
-#[path = "join_shapes/duplicate_aggregates.rs"]
 mod duplicate_aggregates;
-#[path = "join_shapes/residual_variants.rs"]
 mod residual_variants;
 
 #[tokio::test]

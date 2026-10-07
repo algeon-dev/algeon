@@ -1,8 +1,10 @@
+use query_planning::plan::VectorAlgorithmNode;
+
 use crate::exec::*;
 
 pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     node_id: NodeId,
-    node: &query_planning::plan::VectorAlgorithmNode,
+    node: &VectorAlgorithmNode,
 ) -> QueryError {
     QueryError::new(
         QueryErrorCode::UnsupportedOperator,
@@ -36,7 +38,7 @@ mod tests {
             VectorAlgorithmParams::Pca(VectorPcaParams::new(binding, 1)),
             vector_pca_output_schema(DataType::Int64, 1),
         );
-        let node = query_planning::plan::VectorAlgorithmNode { inputs: vec![input], spec };
+        let node = VectorAlgorithmNode { inputs: vec![input], spec };
 
         let error = vector_algorithm_execution_unavailable(NodeId::from_index_for_test(1), &node);
 

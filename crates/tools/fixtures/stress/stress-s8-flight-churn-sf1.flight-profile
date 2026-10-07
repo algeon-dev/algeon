@@ -3,7 +3,7 @@
   "name": "stress-s8-flight-churn-sf1",
   "server": {
     "url": "http://127.0.0.1:50051",
-    "config_file": "server-s8-s2-scan-sf1.toml"
+    "config_file": "../../../../fixture/stress/server-s8-s2-scan-sf1.toml"
   },
   "statement": {
     "label": "q06",

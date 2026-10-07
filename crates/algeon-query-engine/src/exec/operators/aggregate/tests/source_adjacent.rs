@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn multi_key_single_sum_without_prior_uses_libcudf_when_large() {
     let decision = partial_strategy_for_multi_key_sum(5_000_000);
@@ -349,9 +351,8 @@ fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fa
     ));
 
     let mut high_fan_in = evidence;
-    high_fan_in.source_adjacent_max_partition_fan_in = Some(
-        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN + 1,
-    );
+    high_fan_in.source_adjacent_max_partition_fan_in =
+        Some(AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN + 1);
     let high_fan_in_decision = select_partial_aggregate_strategy_decision(
         capability.clone(),
         None,

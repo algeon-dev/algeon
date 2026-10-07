@@ -48,14 +48,10 @@ shadow-estimate-report = [
 ]
 cugraph-oracle = [
   "dep:cudf",
-  # The path-included cuGraph SQL fixtures read cudf's host Arrow call counters
-  # (`cudf::testing::arrow`).
+  # The PageRank acceptance command checks host Arrow transfer counts.
   "cudf/test-hooks",
   "dep:datafusion",
   "dep:algeon-datafusion",
-  "dep:query-engine",
-  "dep:query-planning",
-  "dep:query-runtime",
   "algeon-datafusion/cugraph",
   "algeon-datafusion/bench-support",
 ]
@@ -139,7 +135,7 @@ url = "2.5"
 
 [[bin]]
 name = "algeon_tools"
-path = "src/bin/algeon_tools.rs"
+path = "src/main.rs"
 test = true
 
 [[bin]]
