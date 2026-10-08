@@ -57,19 +57,21 @@ maintenance (including configuration outside `scripts/`), also read
 
 ## Contract sources
 
-Read the linked sections before changing the corresponding area. These local
-website sources own the design and behavior contracts; update the owner
+Read the linked sections before changing the corresponding area. These linked
+sources own the design and behavior contracts; update the owner
 document, implementation and affected tests together when a contract changes.
 Keep other guidance as links to those definitions, without duplicate contracts.
 
 | Task | Required source |
 | --- | --- |
-| Query crate or GPU component ownership and dependencies | [Module boundaries](website/docs/design/index.mdx#crates-and-ownership) |
+| Query crate or GPU component ownership, dependencies, runtimes or threads | [Module boundaries](website/docs/design/index.mdx#crates-and-ownership) and [Runtimes and threads](website/docs/design/index.mdx#runtimes-and-threads) |
 | Native operators, lowering, planning reports or schedules | [Native lowering](website/docs/design/native-lowering.mdx) and [GPU execution](website/docs/design/gpu-execution.mdx) |
-| Admission, allocation, attempt lifecycle, resident facts or metrics | [Memory and query lifetime](website/docs/design/admission.mdx) |
+| Admission, allocation, attempt lifecycle, worker pools, cancellation, resident facts or metrics | [Memory and query lifetime](website/docs/design/admission.mdx) |
 | Error types, mappings or DataFusion error boundaries | [Error ownership](website/docs/design/errors.mdx) and [Handling errors](website/docs/integration/handling-errors.mdx) |
 | Workspace manifests, publication or native builds | [Build overview](website/docs/build/overview.md) and [Prerequisites](website/docs/build/prerequisites.md) |
-| Running checks, adding tests or maintaining CI | [Tests](website/docs/build/tests.md) and the [test harness](website/docs/build/test-harness.md) contracts |
+| Running checks | [Tests](website/docs/build/tests.md) |
+| Adding or moving tests | [Test layout](scripts/test-harness.md#test-layout) |
+| Maintaining validation scripts | [Test harness](scripts/test-harness.md) |
 
 Machine-readable configuration and owner-crate constants/rustdoc define exact
 values and API signatures. Reconcile discrepancies with the linked contracts
@@ -87,6 +89,13 @@ before changing behavior; drafts, blog posts and examples are not normative.
 - Inline paths are otherwise limited to visibility qualifiers, attributes,
   doc links, calls through imported modules, sibling private modules, and enum
   translation matches. Gate imports with the same `cfg` as their uses.
+
+## Agent skills
+
+Repository skills live under `.agents/skills/`. Use
+[algeon-validation](.agents/skills/algeon-validation/SKILL.md) when selecting
+checks or diagnosing validation failures. Read harness internals only when
+the task needs them.
 
 ## Validation policy
 
@@ -106,7 +115,7 @@ artifacts; cleanup is never implicit.
 
 ## Writing tests
 
-Follow the [test layout contract](website/docs/build/test-harness.md#test-layout).
+Follow the [test layout contract](scripts/test-harness.md#test-layout).
 
 - Prefer extending existing coverage at the behavior boundary before creating
   new tests.
