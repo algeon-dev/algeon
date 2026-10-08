@@ -7,15 +7,25 @@ import Table from '@site/src/theme/MDXComponents/Table';
 export const tieIns = ['NYX', 'Amc', 'Primark', 'ALDO'];
 export const liftOf = (records, name) => { const row = records.find(record => record.brand_name === name); return row ? `${row.lift_change.toFixed(2)}×` : 'absent from the top 25'; };
 
-A trend analyst wants a shortlist of brands whose audience relationship to
+A trend analyst agent wants a shortlist of brands whose audience relationship to
 Barbie changed between May to June and July to August 2023. A later check of product
 names tests whether the change coincides with Barbie-related listings.
 
-Each period has a graph of distinct user-brand likes. Personalized PageRank
-starts from Barbie; ordinary PageRank supplies each brand's global graph
-score. Their ratio, `lift`, describes relative graph affinity: 1 means the two
-scores are equal. The query ranks the change in that ratio and requires at
-least 1,000 fans per brand in both periods.
+Each period has a graph of distinct user-brand likes. The `after_release`
+flag is true for July to August likes; the split at 1 July falls 20 days
+before the Barbie film opened on 21 July. User vertices are `-(user_id + 1)`
+and brand vertices are `brand_id` values; both columns are non-negative and
+non-null in this data (users 10 to 58,760,845, brands 0 to 25,814, with
+brand 0 excluded). Users therefore occupy negative IDs, and `la.vertex > 0`
+keeps only brands.
+
+Personalized PageRank starts from Barbie; ordinary PageRank supplies each
+brand's global graph score. Their ratio, `lift`, describes relative graph
+affinity: 1 means the two scores are equal. All four calls use the default
+options (`alpha` 0.85, `epsilon` 1e-5, `max_iterations` 100), and each
+converged before the iteration limit. Lifts from the two periods were
+therefore computed to one tolerance. The query ranks the change in that ratio
+and requires at least 1,000 fans (distinct users) per brand in both periods.
 
 <CodeBlock language="sql" className="no-collapse">{capture.sql}</CodeBlock>
 
@@ -27,15 +37,20 @@ comparison for the product-name check below.
 <tbody>{capture.records.filter((row, index) => index < 4 || row.brand_name === 'Taylor Swift').map(row => <tr key={row.brand_name}><td>{row.brand_name}</td><td>{row.lift_before.toFixed(2)}</td><td>{row.lift_after.toFixed(2)}</td><td>{row.lift_change.toFixed(2)}×</td></tr>)}</tbody>
 </Table>
 
-The statement combines the time filters, four graph calls and the brand
-joins in one plan and ran in a median of 4.87 s over three runs. The result
-identifies which records to investigate next; it does not attribute the
-change to a product or claim sales impact.
+The time filters, four graph calls and brand joins ran natively in one
+plan. The complete statement took
+**{capture.median_elapsed_s_after_first.toFixed(2)} s** over Flight SQL,
+including planning, execution and result receipt.
+
+The result identifies which records to investigate next; it does not
+attribute the change to a product or claim sales impact.
 
 **Follow-up: check product names.** The graph query did not search names.
 This separate SQL counts like events on listings whose names contain
 "Barbie", using the same periods. Its percentages describe listing-name
-matches, while the earlier ratio describes graph scores.
+matches, while the earlier ratio describes graph scores. Each of the five
+brand names checked here maps to one `brand_id`, matching the brands in
+the graph result.
 
 <CodeBlock language="sql">{listingCheck.queries[0].sql}</CodeBlock>
 
@@ -56,8 +71,10 @@ verify a partnership.
 **Follow-up: change the seed.** A rise in graph affinity could reflect a
 broad summer trend rather than Barbie. Running the same statement with
 another seed brand tests that. Hot Wheels is a Mattel brand whose collector
-audience overlaps Barbie's; Nike is a large brand with no July event. Only
-the seed literal changes.
+audience overlaps Barbie's; Nike is a large brand with no July event. Each
+control replaces Barbie's `brand_id` (2595) with the seed's (9877 for Hot
+Wheels, 15987 for Nike) in the personalization vertex and the `la.vertex <>`
+exclusion; the rest of the statement is unchanged.
 
 <Table>
 <thead><tr><th>Brand</th><th>Barbie seed</th><th>Hot Wheels seed</th><th>Nike seed</th></tr></thead>
@@ -66,7 +83,7 @@ the seed literal changes.
 
 With Nike as the seed, none of the four brands appears among the 25 largest
 changes. With Hot Wheels, NYX, ALDO and Primark appear with smaller changes
-and AMC is absent, consistent with the Mattel collector audience sharing
+and Amc is absent, consistent with the Mattel collector audience sharing
 part of the Barbie movement. The two controls separate the Barbie-specific
 movement from a general summer rise; a seasonal baseline over several years
 would need data this snapshot lacks. Item attributes are the latest retained
@@ -74,11 +91,10 @@ values, and the calendar comparison is not an event-date experiment.
 
 <div className="fineprint">
 
-The [graph capture](/data/merrec-scale-barbie-tie-ins.json) includes all 25
-brands with query IDs and timings; all three runs executed natively. The
-[listing capture](/data/merrec-barbie-listing-check.json) holds the
-name-count query, the query that retrieves individual listings, and their
-results. The [control captures](/data/merrec-barbie-control-seeds.json) hold
-both full result lists.
+The [graph capture](/data/merrec-scale-barbie-tie-ins.json) contains all 25
+brands, query IDs and timings. The
+[listing capture](/data/merrec-barbie-listing-check.json) and
+[control captures](/data/merrec-barbie-control-seeds.json) contain the
+follow-up SQL and full results.
 
 </div>

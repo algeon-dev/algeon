@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import React, {useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import styles from './styles.module.css';
 import {
   HAND, SANS, handTextWidth, sansTextWidth,
@@ -17,15 +17,17 @@ import {
  * overlaps. Shapes are drawn by rough.js through sketch.ts with seeds derived
  * from node ids, so hydration reproduces the same strokes. Figures scale down
  * proportionally on narrow viewports (viewBox), with a legibility floor after
- * which the container scrolls horizontally.
+ * which the container scrolls horizontally and fades the cut edge. A
+ * FlowDiagram instead switches to a top-to-bottom drawing below that floor.
  *
  * Shapes:
  * - SystemDiagram: a lane-based DAG (host / GPU swim lanes, fork & merge
  *   edges, optional region underlays for shared invariants).
  * - StackDiagram: a top-down layering with optional boundary dividers.
  * - ArchitectureDiagram: the overview page's fixed component map.
- * - FlowDiagram: a left-to-right pipeline with optional bands and return
- *   rails, for the "one statement" story on the overview and in the blog.
+ * - FlowDiagram: a pipeline with optional bands and return rails, for the
+ *   "one statement" story on the overview and in the blog; left to right, or
+ *   top to bottom in a narrow figure.
  *
  * Nodes carrying a `detail` are clickable (and keyboard-focusable); the
  * selected node's detail renders in an HTML panel under the SVG, so the
@@ -246,7 +248,61 @@ export function BackedLabel({x, y, text, fill = COLOR.muted}: {x: number; y: num
   );
 }
 
-export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel, center, children, panel}: {
+export interface FigureCanvas {
+  svgW: number;
+  svgH: number;
+  /** Displayed width floor in CSS px; below it the figure scrolls horizontally. */
+  minW: number;
+  children: React.ReactNode;
+}
+
+function Canvas({svgW, svgH, minW, maxW, interactive, ariaLabel, center, className, children}: {
+  svgW: number;
+  svgH: number;
+  minW: number;
+  maxW?: number;
+  interactive?: boolean;
+  ariaLabel?: string;
+  center?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <svg className={clsx(styles.canvas, className)} viewBox={`0 0 ${svgW} ${svgH}`} width="100%"
+      role={interactive ? 'group' : 'img'} aria-label={ariaLabel}
+      style={{maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW),
+        margin: center ? '0 auto' : undefined, fontFamily: SANS}}>
+      {children}
+    </svg>
+  );
+}
+
+/** Marks a horizontally scrolling container with the edges its content runs
+ * past (`data-overflow`), which the stylesheet fades so a cut-off drawing
+ * reads as scrollable. */
+function useOverflowEdges(ref: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const update = () => {
+      const left = el.scrollLeft > 1;
+      const right = el.scrollWidth - el.clientWidth - el.scrollLeft > 1;
+      const edges = left && right ? 'both' : left ? 'left' : right ? 'right' : null;
+      if (edges) el.setAttribute('data-overflow', edges);
+      else el.removeAttribute('data-overflow');
+    };
+    update();
+    el.addEventListener('scroll', update, {passive: true});
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
+  }, [ref]);
+}
+
+export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel, center, children, panel, narrow}: {
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
@@ -258,17 +314,26 @@ export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel,
   center?: boolean;
   children: React.ReactNode;
   panel?: React.ReactNode;
+  /** Drawing shown in place of `children` while the figure is narrower than
+   * the `@container` threshold in styles.module.css. */
+  narrow?: FigureCanvas;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useOverflowEdges(scrollRef);
   return (
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
-        <div className={clsx(styles.scroll, 'thin-scrollbar')}>
-          <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : 'img'}
-            aria-label={ariaLabel}
-            style={{maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW), display: 'block',
-              margin: center ? '0 auto' : undefined, fontFamily: SANS}}>
+        <div ref={scrollRef} className={clsx(styles.scroll, 'thin-scrollbar')}>
+          <Canvas className={narrow ? styles.wideCanvas : undefined} svgW={svgW} svgH={svgH} minW={minW}
+            maxW={maxW} interactive={interactive} ariaLabel={ariaLabel} center={center}>
             {children}
-          </svg>
+          </Canvas>
+          {narrow ? (
+            <Canvas className={styles.narrowCanvas} svgW={narrow.svgW} svgH={narrow.svgH} minW={narrow.minW}
+              interactive={interactive} ariaLabel={ariaLabel} center={center}>
+              {narrow.children}
+            </Canvas>
+          ) : null}
         </div>
         {caption ? <figcaption className={styles.caption}>{caption}</figcaption> : null}
       </figure>
@@ -765,10 +830,15 @@ const FL_BAND_PAD = 18;
 const FL_BAND_HEAD = 34; // headroom inside a band for its corner label
 const FL_BAND_FOOT = 14;
 const FL_RAIL_DROP = 34;
+/** Figure width in CSS px under which the column layout replaces the row;
+ * the `@container` query in styles.module.css carries the same number. */
+const FLOW_STACK_BELOW = 720;
+const FL_COLUMN_MIN_GAP = 48;
+const FL_COLUMN_MIN_WIDTH = 240;
 
 export interface FlowNode extends DiagramNode {
   id: string;
-  /** Label line(s) drawn above the arrow leading into this node. */
+  /** Label line(s) drawn on the arrow leading into this node. */
   edgeLabel?: string | string[];
 }
 
@@ -783,7 +853,7 @@ export interface FlowGroup {
 export interface FlowReturn {
   from: string;
   to: string;
-  /** Label under the return rail. */
+  /** Label on the return rail. */
   label?: string;
 }
 
@@ -793,35 +863,65 @@ export interface FlowDiagramProps {
   groups?: FlowGroup[];
   returns?: FlowReturn[];
   caption?: React.ReactNode;
-  /** Minimum displayed width before the figure scrolls horizontally. */
-  minWidth?: number;
 }
 
-/**
- * A left-to-right pipeline: boxes sized to their content, arrow labels above
- * the arrows, optional dashed bands over a run of stages, and optional dashed
- * return rails below for output that feeds an earlier stage. Nodes with
- * `detail` are clickable and drive the panel below the SVG; without any, the
- * figure is a static picture.
- */
-export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption, minWidth = 680}: FlowDiagramProps) {
-  const interactive = nodes.some((n) => n.detail);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    nodes.find((n) => n.detail)?.id ?? null,
-  );
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const groupOf = new Map<string, FlowGroup>();
-  groups.forEach((g) => g.nodes.forEach((id) => groupOf.set(id, g)));
-  const edgeLines = (n: FlowNode): string[] =>
-    !n.edgeLabel ? [] : Array.isArray(n.edgeLabel) ? n.edgeLabel : [n.edgeLabel];
+interface FlowPlaced {x: number; y: number; w: number; h: number; cx: number; cy: number}
 
-  const sizes = new Map(nodes.map((n) => [n.id, measureNode(n, FLOW_FONTS)]));
+interface FlowContext {
+  nodes: FlowNode[];
+  groups: FlowGroup[];
+  returns: FlowReturn[];
+  groupOf: Map<string, FlowGroup>;
+  sizes: Map<string, {w: number; h: number}>;
+  selectedId: string | null;
+  select: (id: string) => void;
+}
+
+interface FlowLayout {svgW: number; svgH: number; body: React.ReactNode}
+
+const FLOW_EDGE = {stroke: INK, strokeWidth: EDGE_WIDTH};
+
+const edgeLines = (n: FlowNode): string[] =>
+  !n.edgeLabel ? [] : Array.isArray(n.edgeLabel) ? n.edgeLabel : [n.edgeLabel];
+
+function flowBand(g: FlowGroup, i: number, bx: number, by: number, bw: number, bh: number) {
+  const toneColor = TONE[g.tone ?? 'gpu'];
+  return (
+    <g key={`band-${i}`}>
+      <rect x={bx} y={by} width={bw} height={bh} rx={GROUP_RADIUS} fill={toneColor} opacity={0.06} />
+      <g opacity={0.7}>
+        {sketchRoundRect(`band:${g.label}`, bx, by, bw, bh, GROUP_RADIUS,
+          {stroke: toneColor, strokeWidth: 1.2, dashed: true})}
+      </g>
+      <text x={bx + 16} y={by + 20} fontSize={KIND.size} letterSpacing={`${KIND.track}em`}
+        fill={COLOR.muted}>
+        {g.label.toUpperCase()}
+      </text>
+    </g>
+  );
+}
+
+function flowBoxes(ctx: FlowContext, placed: Map<string, FlowPlaced>) {
+  return ctx.nodes.map((n) => {
+    const p = placed.get(n.id)!;
+    return (
+      <Box key={n.id} node={n} x={p.x} y={p.y} w={p.w} h={p.h} fonts={FLOW_FONTS}
+        selected={ctx.selectedId === n.id}
+        onSelect={n.detail ? () => ctx.select(n.id) : undefined} />
+    );
+  });
+}
+
+/** Left to right: boxes sized to their content, labels above the arrows,
+ * bands spanning the full height, return rails below the row. */
+function layoutFlowRow(ctx: FlowContext): FlowLayout {
+  const {nodes, groups, returns, groupOf, sizes} = ctx;
   const rowH = Math.max(...[...sizes.values()].map((s) => s.h));
   const hasBands = groups.length > 0;
   const top = EDGE + 6 + (hasBands ? FL_BAND_HEAD : 0);
 
-  // Horizontal layout: each gap is sized to the widest label line above its arrow.
-  const placed = new Map<string, {x: number; y: number; w: number; h: number; cx: number; cy: number}>();
+  // Each gap is sized to the widest label line above its arrow.
+  const placed = new Map<string, FlowPlaced>();
   let x = EDGE + 8 + (hasBands ? FL_BAND_PAD : 0);
   nodes.forEach((n, i) => {
     if (i > 0) {
@@ -838,36 +938,15 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
   const svgH = contentBottom + (hasBands ? FL_BAND_FOOT : 0) + EDGE + 6;
   const svgW = x + 8 + (hasBands ? FL_BAND_PAD : 0) + EDGE;
 
-  const selected = selectedId ? byId.get(selectedId) : undefined;
-  const edge = {stroke: INK, strokeWidth: EDGE_WIDTH};
-
-  return (
-    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={minWidth} interactive={interactive} center
-      ariaLabel={ariaLabel ?? 'Flow diagram'}
-      panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
-      {/* dashed bands over a run of stages */}
+  const body = (
+    <>
       {groups.map((g, i) => {
         const members = g.nodes.map((id) => placed.get(id)!);
         const bx = Math.min(...members.map((m) => m.x)) - FL_BAND_PAD;
         const bw = Math.max(...members.map((m) => m.x + m.w)) + FL_BAND_PAD - bx;
         const by = EDGE + 4;
-        const bh = svgH - EDGE - 4 - by;
-        const toneColor = TONE[g.tone ?? 'gpu'];
-        return (
-          <g key={`band-${i}`}>
-            <rect x={bx} y={by} width={bw} height={bh} rx={GROUP_RADIUS} fill={toneColor} opacity={0.06} />
-            <g opacity={0.7}>
-              {sketchRoundRect(`band:${g.label}`, bx, by, bw, bh, GROUP_RADIUS,
-                {stroke: toneColor, strokeWidth: 1.2, dashed: true})}
-            </g>
-            <text x={bx + 16} y={by + 20} fontSize={KIND.size} letterSpacing={`${KIND.track}em`}
-              fill={COLOR.muted}>
-              {g.label.toUpperCase()}
-            </text>
-          </g>
-        );
+        return flowBand(g, i, bx, by, bw, svgH - EDGE - 4 - by);
       })}
-      {/* arrows + labels */}
       {nodes.map((n, i) => {
         if (i === 0) return null;
         const a = placed.get(nodes[i - 1].id)!;
@@ -884,15 +963,14 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
         const lines = edgeLines(n);
         return (
           <g key={`edge-${n.id}`}>
-            {sketchLine(`flow:${n.id}`, sx + 2, cy, dx - 2, cy, edge)}
-            {sketchHead(`flow:${n.id}:head`, dx, cy, 'right', edge)}
+            {sketchLine(`flow:${n.id}`, sx + 2, cy, dx - 2, cy, FLOW_EDGE)}
+            {sketchHead(`flow:${n.id}:head`, dx, cy, 'right', FLOW_EDGE)}
             {lines.map((line, j) => (
               <BackedLabel key={`l-${j}`} x={mid} y={cy - 14 - (lines.length - 1 - j) * LABEL.lh} text={line} />
             ))}
           </g>
         );
       })}
-      {/* return rails */}
       {returns.map((r, i) => {
         const from = placed.get(r.from)!;
         const to = placed.get(r.to)!;
@@ -908,8 +986,8 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
         ].join(' ');
         return (
           <g key={`return-${i}`}>
-            {sketchPath(`rail:${r.from}->${r.to}`, d, {...edge, dashed: true})}
-            {sketchHead(`rail:${r.from}->${r.to}:head`, to.cx, to.y + to.h, 'up', edge)}
+            {sketchPath(`rail:${r.from}->${r.to}`, d, {...FLOW_EDGE, dashed: true})}
+            {sketchHead(`rail:${r.from}->${r.to}:head`, to.cx, to.y + to.h, 'up', FLOW_EDGE)}
             {r.label ? (
               <text x={(from.cx + to.cx) / 2} y={railY + LABEL.lh} fontSize={LABEL.size}
                 letterSpacing={`${LABEL.track}em`} textAnchor="middle" fill={COLOR.muted}>
@@ -919,15 +997,143 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
           </g>
         );
       })}
-      {/* nodes */}
-      {nodes.map((n) => {
-        const p = placed.get(n.id)!;
+      {flowBoxes(ctx, placed)}
+    </>
+  );
+  return {svgW, svgH, body};
+}
+
+/** Top to bottom, for figures narrower than FLOW_STACK_BELOW: boxes share one
+ * width, labels sit on the arrows, each band wraps its run of boxes with its
+ * label strip above the first, and return rails run up the right side. */
+function layoutFlowColumn(ctx: FlowContext): FlowLayout {
+  const {nodes, groups, returns, groupOf, sizes} = ctx;
+  const hasBands = groups.length > 0;
+  const boxW = Math.max(...[...sizes.values()].map((s) => s.w));
+  // A label wider than the boxes widens the column, since labels center on the arrow.
+  const labelHalf = Math.max(0, ...nodes.flatMap(edgeLines).map((line) => textWidth(line, LABEL) / 2 + 6));
+  const half = Math.max(boxW / 2, labelHalf);
+  const cx = EDGE + 8 + (hasBands ? FL_BAND_PAD : 0) + half;
+  const x0 = cx - boxW / 2;
+  const bandTop = (p: FlowPlaced) => p.y - FL_BAND_HEAD - 2;
+  const bandBottom = (p: FlowPlaced) => p.y + p.h + FL_BAND_FOOT + 2;
+
+  const placed = new Map<string, FlowPlaced>();
+  let y = EDGE + 6;
+  nodes.forEach((n, i) => {
+    const g = groupOf.get(n.id);
+    const prevG = i > 0 ? groupOf.get(nodes[i - 1].id) : undefined;
+    if (i > 0) {
+      if (prevG && prevG !== g) y += FL_BAND_FOOT + 2;
+      y += Math.max(FL_COLUMN_MIN_GAP, edgeLines(n).length * LABEL.lh + 28);
+    }
+    if (g && g !== prevG) y += FL_BAND_HEAD + (i > 0 ? 2 : 0);
+    const s = sizes.get(n.id)!;
+    placed.set(n.id, {x: x0, y, w: boxW, h: s.h, cx, cy: y + s.h / 2});
+    y += s.h;
+  });
+  const lastNode = nodes[nodes.length - 1];
+  const last = placed.get(lastNode.id)!;
+  const svgH = (groupOf.has(lastNode.id) ? bandBottom(last) : last.y + last.h) + EDGE + 4;
+
+  const railX = x0 + boxW + FL_RAIL_DROP;
+  let right = cx + half;
+  if (returns.length) {
+    const lw = Math.max(0, ...returns.map((r) => (r.label ? textWidth(r.label, LABEL) / 2 + 6 : 0)));
+    right = Math.max(right, railX + Math.max(lw, 4));
+  }
+  const bandLabelW = Math.max(0, ...groups.map((g) => textWidth(g.label.toUpperCase(), KIND) + 32));
+  const svgW = Math.max(right + 8 + (hasBands ? FL_BAND_PAD : 0) + EDGE, bandLabelW + 2 * (EDGE + 4));
+
+  const body = (
+    <>
+      {groups.map((g, i) => {
+        const members = g.nodes.map((id) => placed.get(id)!);
+        const by = Math.min(...members.map(bandTop));
+        const bh = Math.max(...members.map(bandBottom)) - by;
+        return flowBand(g, i, EDGE + 4, by, svgW - 2 * (EDGE + 4), bh);
+      })}
+      {nodes.map((n, i) => {
+        if (i === 0) return null;
+        const a = placed.get(nodes[i - 1].id)!;
+        const b = placed.get(n.id)!;
+        const sy = a.y + a.h;
+        const dy = b.y;
+        const g = groupOf.get(n.id);
+        const prevG = groupOf.get(nodes[i - 1].id);
+        // Labels center on the clear space between the boxes, or between a
+        // band's edge and the box outside it.
+        const from = prevG && prevG !== g ? bandBottom(a) : sy;
+        const to = g && g !== prevG ? bandTop(b) : dy;
+        const lines = edgeLines(n);
+        const mid = (from + to) / 2 + LABEL.size * 0.36;
         return (
-          <Box key={n.id} node={n} x={p.x} y={p.y} w={p.w} h={p.h} fonts={FLOW_FONTS}
-            selected={selectedId === n.id}
-            onSelect={n.detail ? () => setSelectedId(n.id) : undefined} />
+          <g key={`edge-${n.id}`}>
+            {sketchLine(`flow:${n.id}`, cx, sy + 2, cx, dy - 2, FLOW_EDGE)}
+            {sketchHead(`flow:${n.id}:head`, cx, dy, 'down', FLOW_EDGE)}
+            {lines.map((line, j) => (
+              <BackedLabel key={`l-${j}`} x={cx} y={mid + (j - (lines.length - 1) / 2) * LABEL.lh} text={line} />
+            ))}
+          </g>
         );
       })}
+      {returns.map((r, i) => {
+        const from = placed.get(r.from)!;
+        const to = placed.get(r.to)!;
+        const R = 10;
+        const dir = to.cy < from.cy ? -1 : 1;
+        const edgeX = x0 + boxW;
+        const d = [
+          `M ${edgeX} ${from.cy}`,
+          `L ${railX - R} ${from.cy}`,
+          `Q ${railX} ${from.cy} ${railX} ${from.cy + R * dir}`,
+          `L ${railX} ${to.cy - R * dir}`,
+          `Q ${railX} ${to.cy} ${railX - R} ${to.cy}`,
+          `L ${edgeX + 1} ${to.cy}`,
+        ].join(' ');
+        return (
+          <g key={`return-${i}`}>
+            {sketchPath(`rail:${r.from}->${r.to}`, d, {...FLOW_EDGE, dashed: true})}
+            {sketchHead(`rail:${r.from}->${r.to}:head`, edgeX, to.cy, 'left', FLOW_EDGE)}
+            {r.label ? (
+              <BackedLabel x={railX} y={(from.cy + to.cy) / 2 + LABEL.size * 0.36} text={r.label} />
+            ) : null}
+          </g>
+        );
+      })}
+      {flowBoxes(ctx, placed)}
+    </>
+  );
+  return {svgW, svgH, body};
+}
+
+/**
+ * A pipeline drawn left to right, or top to bottom when the figure is
+ * narrower than FLOW_STACK_BELOW. Both drawings are rendered and the
+ * stylesheet shows one, so the right layout is there from the first paint.
+ * Nodes with `detail` are clickable and drive the panel below the SVG;
+ * without any, the figure is a static picture.
+ */
+export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption}: FlowDiagramProps) {
+  const interactive = nodes.some((n) => n.detail);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    nodes.find((n) => n.detail)?.id ?? null,
+  );
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const groupOf = new Map<string, FlowGroup>();
+  groups.forEach((g) => g.nodes.forEach((id) => groupOf.set(id, g)));
+  const sizes = new Map(nodes.map((n) => [n.id, measureNode(n, FLOW_FONTS)]));
+  const ctx: FlowContext = {nodes, groups, returns, groupOf, sizes, selectedId, select: setSelectedId};
+  const row = layoutFlowRow(ctx);
+  const column = layoutFlowColumn(ctx);
+  const selected = selectedId ? byId.get(selectedId) : undefined;
+
+  return (
+    <Figure caption={caption} svgW={row.svgW} svgH={row.svgH} minW={FLOW_STACK_BELOW} interactive={interactive}
+      center ariaLabel={ariaLabel ?? 'Flow diagram'}
+      narrow={{svgW: column.svgW, svgH: column.svgH, minW: FL_COLUMN_MIN_WIDTH, children: column.body}}
+      panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
+      {row.body}
     </Figure>
   );
 }

@@ -1,90 +1,359 @@
 .figure {
+  /* Keeps the square map and the side column inside one viewport, below the navbar. */
+  --map-max: max(20rem, calc(100vh - 11rem));
+  --cluster: var(--ifm-color-emphasis-600);
+  /* Infima leaves the light background transparent; scroll shadows and dot outlines need an opaque page color. */
+  --surface: var(--ifm-background-surface-color);
+  container: ember-figure / inline-size;
   margin: 1.5rem 0;
-}
-
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.controls label {
-  display: flex;
-  flex: 1 1 200px;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-}
-
-.controls input,
-.controls select,
-.navigation button {
   color: var(--ifm-font-color-base);
-  background: var(--ifm-background-color);
-  border: 1px solid var(--ifm-color-emphasis-400);
-  border-radius: 6px;
-  padding: 0.55rem 0.7rem;
-  font: inherit;
 }
 
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.45rem 0.9rem;
-  margin: 0.75rem 0;
-  font-size: 0.8rem;
+:global([data-theme='dark']) .figure {
+  --surface: var(--ifm-background-color);
 }
 
-.legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, var(--map-max)) minmax(16rem, 1fr);
+  gap: 1rem;
 }
 
-.legend i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.count {
-  margin-left: auto;
-  color: var(--ifm-color-emphasis-700);
+.mapBox {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  background: var(--surface);
 }
 
 .plot {
   display: block;
   width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+
+.plot.pointing {
+  cursor: pointer;
+}
+
+.plot:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: -2px;
+}
+
+/* The map alone sets the row height; the cluster list absorbs any shortfall. */
+.side {
+  position: relative;
+  min-width: 0;
+  container: side / size;
+}
+
+.sideInner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Last resort when even a minimal cluster list does not fit beside a short map. */
+  overflow-y: auto;
+}
+
+.layer {
+  transition: opacity 150ms ease;
+}
+
+.layer.faded {
+  opacity: 0.14;
+}
+
+.dots {
+  fill: var(--cluster);
+  stroke: var(--surface);
+  stroke-width: 0.5;
+  opacity: 0.8;
+}
+
+.active {
+  fill: var(--cluster);
+  stroke: var(--ifm-font-color-base);
+  stroke-width: 1.8;
+  pointer-events: none;
+}
+
+/* Bottom left is empty in all three saved projections; the top left holds a UMAP clump. */
+.readout {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  max-width: calc(100% - 1rem);
+  margin: 0;
+  padding: 0.25rem 0.55rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  font-size: 0.82rem;
+  pointer-events: none;
+}
+
+.readout.hint {
+  color: var(--ifm-color-emphasis-700);
+}
+
+.segmented {
+  display: flex;
+  flex: none;
+  padding: 2px;
   border: 1px solid var(--ifm-color-emphasis-300);
   border-radius: 8px;
-  outline-offset: 3px;
 }
 
-.plot circle {
+.segmented button {
+  flex: 1 1 auto;
+  padding: 0.3rem 0.5rem;
+  color: var(--ifm-color-emphasis-800);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  white-space: nowrap;
   cursor: pointer;
-  transition: opacity 100ms linear;
 }
 
-.navigation {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
+.segmented button:hover {
+  background: var(--ifm-color-emphasis-200);
 }
 
-.navigation button {
-  cursor: pointer;
+.segmented button[aria-pressed='true'] {
+  color: var(--ifm-font-color-base);
+  background: color-mix(in srgb, var(--ifm-color-primary) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--ifm-color-primary);
+  font-weight: 600;
+}
+
+.search {
+  flex: none;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  color: var(--ifm-font-color-base);
+  background: var(--surface);
+  border: 1px solid var(--ifm-color-emphasis-400);
+  border-radius: 6px;
+  font: inherit;
   font-size: 0.85rem;
 }
 
-.navigation button:disabled {
+.segmented button:focus-visible,
+.search:focus-visible,
+.legend button:focus-visible,
+.clear:focus-visible,
+.detailBar button:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 1px;
+}
+
+.swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--cluster);
+}
+
+.legendBar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  margin-top: 0.15rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--ifm-color-emphasis-300);
+  font-size: 0.85rem;
+}
+
+.legendTitle {
+  font-weight: 600;
+}
+
+.legendStatus {
+  flex: 1 1 auto;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.clear {
+  padding: 0.1rem 0.5rem;
+  color: var(--ifm-color-primary);
+  background: none;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.clear:hover:not(:disabled) {
+  background: var(--ifm-color-emphasis-200);
+}
+
+.clear:disabled {
+  color: var(--ifm-color-emphasis-500);
+  cursor: default;
+}
+
+/* Two columns show all eight clusters at once beside the map. */
+.legend {
+  display: grid;
+  flex: 0 1 auto;
+  grid-template-columns: repeat(auto-fill, minmax(7.4rem, 1fr));
+  align-content: start;
+  gap: 0.15rem 0.3rem;
+  min-height: 3.5rem;
+  margin: -0.2rem 0 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  font-size: 0.8rem;
+  /* Scroll shadows: the local layers cover the scroll-attached shadows at either end of the list. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 1.5rem no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 1.5rem no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--scroll-shadow), transparent) top / 100% 0.5rem no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow), transparent) bottom / 100% 0.5rem no-repeat scroll;
+  --scroll-shadow: color-mix(in srgb, var(--ifm-font-color-base) 25%, transparent);
+}
+
+/* Infima spaces markdown list items; the grid gap owns spacing here. */
+.figure .legend li {
+  min-width: 0;
+  margin: 0;
+}
+
+.legend button {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.22rem 0.35rem;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.legend button:hover {
+  background: var(--ifm-color-emphasis-200);
+}
+
+/* Pressed clusters carry a tint, an outline and bold text so selection does not rely on hue alone. */
+.legend button[aria-pressed='true'] {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--cluster) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--cluster);
+}
+
+.legend button[aria-pressed='true']:hover {
+  background: color-mix(in srgb, var(--cluster) 24%, transparent);
+}
+
+.legend button[aria-pressed='true'] .swatch {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--cluster);
+}
+
+.legend.filtering button[aria-pressed='false'] {
+  color: var(--ifm-color-emphasis-600);
+}
+
+.legend.filtering button[aria-pressed='false'] .swatch {
+  opacity: 0.35;
+}
+
+.legend span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend small {
+  color: var(--ifm-color-emphasis-700);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.count {
+  flex: none;
+  margin: auto 0 0;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The count and card sit at the column foot, so the card stays beside the map while the pointer moves over it. */
+.detail {
+  flex: none;
+  padding: 0.5rem 0.65rem 0.6rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.detailBar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.detailBar > :first-child {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.detailBar button {
+  width: 1.9rem;
+  height: 1.7rem;
+  padding: 0;
+  color: var(--ifm-font-color-base);
+  background: var(--surface);
+  border: 1px solid var(--ifm-color-emphasis-400);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.detailBar button:hover:not(:disabled) {
+  background: var(--ifm-color-emphasis-200);
+}
+
+.detailBar button:disabled {
   cursor: default;
   opacity: 0.5;
 }
 
-.navigation span,
+.family {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.family span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .meta,
 .figure figcaption,
 .provenance {
@@ -93,22 +362,48 @@
   line-height: 1.5;
 }
 
-.detail {
-  margin: 0.75rem 0;
-  padding: 0.8rem;
-  border: 1px solid var(--ifm-color-emphasis-300);
-  border-radius: 8px;
-  overflow-wrap: anywhere;
+.meta {
+  margin: 0.15rem 0 0.3rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
-.meta {
-  margin: 0.3rem 0 0.6rem;
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.8rem;
+  margin: 0.2rem 0 0.35rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.facts div {
+  display: flex;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.facts dt {
+  color: var(--ifm-color-emphasis-700);
+  font-weight: 400;
+}
+
+.facts dd {
+  margin: 0;
 }
 
 .figure .detail .sha {
   display: block;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.figure figcaption {
+  margin-top: 0.8rem;
 }
 
 .provenance summary {
@@ -119,9 +414,67 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 600px) {
-  .count {
-    flex-basis: 100%;
-    margin-left: 0;
+/* Narrow figures stack the controls and a one-row cluster strip above the map. */
+@container ember-figure (max-width: 40rem) {
+  .stage {
+    grid-template-columns: minmax(0, var(--map-max));
+    justify-content: center;
+    gap: 0.6rem;
+  }
+
+  .side {
+    order: -1;
+    /* Size containment would collapse the stacked column, whose height now comes from its content. */
+    container-type: normal;
+  }
+
+  .sideInner {
+    position: static;
+    overflow: visible;
+  }
+
+  .legendBar {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .legend {
+    display: flex;
+    gap: 0.35rem;
+    min-height: 0;
+    margin: 0;
+    padding: 0 0 0.35rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: none;
+    scrollbar-width: thin;
+  }
+
+  .legend li {
+    flex: none;
+  }
+
+  .legend button {
+    width: auto;
+    padding: 0.4rem 0.65rem;
+    box-shadow: inset 0 0 0 1px var(--ifm-color-emphasis-300);
+    border-radius: 999px;
+  }
+
+  .legend span {
+    overflow: visible;
+  }
+}
+
+/* A tall column has room for one cluster per row, which scans faster than two columns. */
+@container side (min-height: 32rem) {
+  .legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layer {
+    transition: none;
   }
 }

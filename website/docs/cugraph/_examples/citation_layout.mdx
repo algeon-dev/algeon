@@ -1,4 +1,5 @@
 import CodeBlock from '@theme/CodeBlock';
+import timings from '@site/static/data/demo-query-timings.json';
 import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
 import data from '@site/src/components/graph/attentionEgo';
 
@@ -47,6 +48,8 @@ SELECT l.vertex, l.x, l.y, c.community, p.title, p.year
 FROM layout l
 JOIN community c ON c.vertex = l.vertex
 JOIN papers p ON p.paper_id = l.vertex;`}</CodeBlock>
+
+<p className="fineprint">The query took {timings.queries.citation.layout.elapsed_s.toFixed(2)} s.</p>
 
 The saved illustration contains {data.nodes.length} papers and {data.edges.length}
 citation links. Of those links, {data.edges.filter(edge => !edge.includes('2963403868')).length}

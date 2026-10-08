@@ -25,21 +25,21 @@
    outline moves to the right-edge drawer and the column reads like one
    without an outline. The homepage keeps the pinned column. */
 @media (min-width: 997px) and (max-width: 1359px) {
-  .docRow:not(.pinnedOnDesktop) .docItemCol {
+  .docRow:not(.home) .docItemCol {
     max-width: 100% !important;
     flex: 1 1 100% !important;
   }
 
-  .docRow:not(.pinnedOnDesktop) .docItemCol article,
-  .docRow:not(.pinnedOnDesktop) .docItemCol :global(.pagination-nav) {
+  .docRow:not(.home) .docItemCol article,
+  .docRow:not(.home) .docItemCol :global(.pagination-nav) {
     max-width: 64rem;
   }
 
-  .docRow:not(.pinnedOnDesktop) .tocCol {
+  .docRow:not(.home) .tocCol {
     display: none;
   }
 
-  .docRow:not(.pinnedOnDesktop) .outlineDrawer {
+  .docRow:not(.home) .docDrawer {
     display: block;
   }
 
@@ -47,7 +47,7 @@
      padding also ends, and is 2rem wide; the content keeps 0.5rem clear of
      it. In focus mode the centered 64rem column reaches the button below
      about 1150px, so the same reserve applies there, homepage included. */
-  .docRow:not(.pinnedOnDesktop) .docItemCol .docItemContainer,
+  .docRow:not(.home) .docItemCol .docItemContainer,
   :global(html[data-focus-mode='on']) .docItemCol .docItemContainer {
     padding-right: 2.5rem;
   }
@@ -84,10 +84,23 @@
   margin-bottom: 0;
 }
 
+/* The homepage tools row holds only the focus mode toggle; out of flow, it
+   no longer pushes the hero down. */
+.home article {
+  position: relative;
+}
+
+.home .pageTools {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin: 0;
+}
+
 /* ==========================================================================
    Focus mode: page tools and the pinned outline leave, the outline is only
-   reachable through the drawer, and the content centers at the no-outline
-   reading width.
+   reachable through the drawer (shown by its own styles), and the content
+   centers at the no-outline reading width.
    ========================================================================== */
 
 :global(html[data-focus-mode='on']) .pageTools,
@@ -106,12 +119,6 @@
   margin-inline: auto;
 }
 
-@media (min-width: 997px) {
-  :global(html[data-focus-mode='on']) .outlineDrawer {
-    display: block;
-  }
-}
-
 /* ==========================================================================
    Pinned outline
    ========================================================================== */
@@ -128,92 +135,4 @@
   position: static;
   min-height: 0;
   max-height: none;
-}
-
-/* ==========================================================================
-   Outline drawer: a round button that matches the focus mode exit button;
-   hovering or clicking it grows the outline panel out of the button toward
-   the lower left, over the content.
-   ========================================================================== */
-
-/* Below the navbar in normal mode. In focus mode the button stacks under the
-   exit button (top 1rem, 2rem tall) with a 0.5rem gap. */
-.outlineDrawer {
-  --outline-drawer-top: calc(var(--ifm-navbar-height) + 1rem);
-  position: fixed;
-  top: var(--outline-drawer-top);
-  right: 1rem;
-  z-index: 120;
-  display: none;
-}
-
-:global(html[data-focus-mode='on']) .outlineDrawer {
-  --outline-drawer-top: 3.5rem;
-}
-
-.outlineHandle {
-  width: 2rem;
-}
-
-.iconOutline {
-  flex-shrink: 0;
-}
-
-/* The panel's top-right corner sits on the button, so scaling from there
-   reads as the panel growing out of it. Closed, the panel is also
-   visibility: hidden so its links leave the tab order; visibility flips only
-   after the shrink finishes. */
-.outlinePanel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 295px;
-  max-height: calc(100vh - var(--outline-drawer-top) - 1rem);
-  display: flex;
-  flex-direction: column;
-  background: var(--ifm-background-surface-color);
-  border: 1px solid var(--ifm-toc-border-color);
-  border-radius: 12px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transform: scale(0.12);
-  transform-origin: top right;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.1s ease, visibility 0s linear 0.16s;
-}
-
-.outlineDrawerOpen .outlinePanel {
-  transform: none;
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transition-delay: 0s;
-}
-
-/* The translucent panel would show the button through it. Two classes so
-   this outranks the idle dimming rule on the shared control class. */
-.outlineDrawer.outlineDrawerOpen .outlineHandle {
-  opacity: 0;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .outlinePanel {
-    transition: none;
-  }
-}
-
-.outlinePanelBody {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 0.75rem 0.5rem 1.25rem 0.85rem;
-}
-
-[data-theme='dark'] .outlinePanel {
-  background: rgba(20, 24, 33, 0.96);
-  border-color: var(--ag-ayu-line);
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
 }

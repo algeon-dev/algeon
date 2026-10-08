@@ -1,6 +1,7 @@
 import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/amazon-reviews-capture.json';
 import followup from '@site/static/data/amazon-review-followup.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 A support analyst wants to find changes worth investigating across years.
@@ -29,6 +30,8 @@ The query also returns this original review:
 
 <blockquote>{capture.queries.headphone_emerging.illustrated_rows[0].example_review}</blockquote>
 
+<p className="fineprint">The query took {timings.queries.amazon.headphone_emerging.elapsed_s.toFixed(2)} s.</p>
+
 **Follow-up: check the charging explanation.** The 27.92-point change raises a
 specific question about charging complaints. A raw-table query counts NanoPods
 reviews containing "charg" in the title or body. It uses all 2021 to 2022 reviews
@@ -41,6 +44,8 @@ verified-purchase condition.
 <thead><tr><th>Year</th><th>Matching reviews</th><th>All low-rating reviews</th><th>Matching share</th></tr></thead>
 <tbody>{followup.charging.rows.map(row => <tr key={row.review_year}><td>{row.review_year}</td><td>{row.charging_mentions}</td><td>{row.low_rating_reviews}</td><td>{(row.charging_mentions / row.low_rating_reviews * 100).toFixed(2)}%</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.amazon.charging.elapsed_s.toFixed(2)} s.</p>
 
 Charging language was already common in 2021. The broader source check does
 not support treating the group-share increase as a comparable rise in charging

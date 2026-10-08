@@ -1,6 +1,7 @@
 import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/amazon-reviews-capture.json';
 import followup from '@site/static/data/amazon-review-followup.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 ### Which travel headphones deserve a catalog review?
@@ -24,6 +25,8 @@ filters and satisfying the request:
 <thead><tr><th>Candidate</th><th>Price</th><th>Verified reviews</th><th>Low-rating share</th><th>Similarity</th></tr></thead>
 <tbody>{capture.queries.travel_shortlist.illustrated_rows.slice(0, 2).map((row, index) => <tr key={row.product_id}><td>{index === 0 ? '1. Srhythm NC35, over-ear' : '2. VELKPRO office headset, on-ear'}</td><td>${row.price.toFixed(2)}</td><td>{row.reviews_2022}</td><td>{(row.low_rating_share * 100).toFixed(2)}%</td><td>{row.cosine_similarity.toFixed(3)}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.amazon.travel_shortlist.elapsed_s.toFixed(2)} s.</p>
 
 The VELKPRO title describes office calls and an on-ear design. Its vector is
 close enough to rank second, but a reviewer still needs to check or reject it
@@ -56,6 +59,8 @@ For a midnight-blue Sony WH-1000XM4, three leading matches are:
 <thead><tr><th>Listing difference</th><th>Text similarity</th></tr></thead>
 <tbody>{capture.queries.catalog_batch.illustrated_rows.slice(0, 3).map((row, index) => <tr key={row.neighbor_id}><td>{['Black, renewed', 'Black, with case, charger and gym bag', 'Silver, with battery bank'][index]}</td><td>{row.cosine_similarity.toFixed(3)}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.amazon.catalog_batch.elapsed_s.toFixed(2)} s.</p>
 
 The shared model name explains why these are useful comparison candidates.
 Condition and bundle contents still determine the editing decision. The SQL

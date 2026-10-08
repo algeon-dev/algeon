@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import capture from '@site/static/data/citation-investigation-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 A researcher wants related reading based on shared references. Candidates are
@@ -21,6 +22,8 @@ The first three of the saved result rows are:
 <tbody>{capture.bibliography.rows.slice(0, 3).map(row => <tr key={row.title}><td>{row.title}</td><td>{row.year}</td><td>{row.jaccard.toFixed(3)}</td></tr>)}</tbody>
 </Table>
 
+<p className="fineprint">The query took {timings.queries.citation.bibliography.elapsed_s.toFixed(2)} s.</p>
+
 **Follow-up: inspect the shared references.** The leading pair has 22 and 13
 references. This SQL returns their eight shared records, including *Adam*,
 *Sequence to Sequence Learning with Neural Networks*, and *Neural Machine
@@ -29,6 +32,8 @@ Translation by Jointly Learning to Align and Translate*.
 <CodeBlock language="sql">{capture.shared_references.sql}</CodeBlock>
 
 <ul>{capture.shared_references.rows.map(row => <li key={row.paper_id}>{row.title} ({row.year})</li>)}</ul>
+
+<p className="fineprint">The query took {timings.queries.citation.shared_references.elapsed_s.toFixed(2)} s.</p>
 
 The score is 8 / (22 + 13 − 8) = 0.296 after rounding. The shared works explain
 what produced the ranking and give the researcher a bibliography to inspect.

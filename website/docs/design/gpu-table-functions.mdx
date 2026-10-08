@@ -128,9 +128,12 @@ cleanup and device capacity reuse follow the
 [completion and release contract](./admission.mdx#resident-handoff-and-release).
 
 Active cuGraph, cuVS and cuML resources are bound to their runtime context;
-their Rust wrappers restrict transfer between threads. A graph prepared for
-cache transfer uses `ParkedGraph` with a completion event. Resuming it on an
-attempt's stream establishes the dependency before algorithm execution.
+their Rust wrappers restrict transfer between threads. The engine creates them
+inside the attempt's execution job on an `algeon-gpu-{d}` worker, and a `!Send`
+handle cannot leave that job. `ParkedGraph` (`Send + !Sync`) is the form that
+moves between attempts. A graph prepared for cache transfer uses `ParkedGraph`
+with a completion event. Resuming it on an attempt's stream establishes the
+dependency before algorithm execution.
 
 ## cuVS and cuML layouts and result ownership
 
@@ -194,17 +197,22 @@ allocation can fail at its domain's cap. The
 [memory and query lifetime page](./admission.mdx) describes that enforcement.
 
 DataFusion inlines a CTE at each reference, and projection pruning keeps in
-each copy only the columns its reader uses. When two or more native units of
-one attempt contain an identical subplan whose root reduces rows, an
-aggregate or a limit with a fetch, one producer computes it and the reading
-units list that producer as a GPU-resident input. The first reading unit to
-run computes the result. It stays resident under the attempt's grant until
-the last reading unit has read it. A chain of scans, filters, projections and
-joins streams chunk by chunk and is computed again by each reader. Copies
-that read different columns of a CTE differ after pruning, and each computes
-its own result. In `EXPLAIN` output the producer reports `shared_consumers`,
-and the `shared_resident_extraction` planning diagnostics record the decision
-for each node of each unit.
+each copy only the columns its reader uses. A query root that lowers over GPU
+function results runs in one context with the native units lowered from
+those functions' inputs, including the edge and side inputs of each cuGraph
+call. When two or more of these units, the query root included, contain an
+identical subplan whose root reduces rows, an aggregate or a limit with a
+fetch, one producer computes it and the reading units list that producer as
+a GPU-resident input. The first reading unit to run computes the result. It
+stays resident under the attempt's grant until the last reading unit has
+read it. A chain of scans, filters, projections and joins streams chunk by
+chunk and is computed again by each reader. Copies that read different
+columns of a CTE differ after pruning, as do copies whose filters DataFusion
+pushed below the reducing root, and each computes its own result. Two graph
+calls that read one shared edge relation still build one graph each. In
+`EXPLAIN` output the producer reports `shared_consumers`, and the
+`shared_resident_extraction` planning diagnostics record the decision for
+each node of each unit.
 
 ## Reproducibility
 

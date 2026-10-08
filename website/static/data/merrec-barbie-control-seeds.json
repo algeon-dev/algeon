@@ -3,38 +3,38 @@
   "name": "32_barbie_control_hot_wheels",
   "sql_file": "fixture/demo/merrec/scripts/scale/32_barbie_control_hot_wheels.sql",
   "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 9877 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 9877\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "63ecfba9699bd95c403955557c1c19012feb5f721585700bb72da954b1375063",
+  "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "32_barbie_control_hot_wheels_r1",
-    "query_id": "538d3cdc-8e93-43d5-90ec-161856d8ede2",
-    "elapsed_s": 5.103256918955594,
-    "native_fragments": 7,
+    "query_id": "0c974460-2358-462b-b6fb-bc67b9de1e1d",
+    "elapsed_s": 3.7593707509804517,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14150245817,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "32_barbie_control_hot_wheels_r2",
-    "query_id": "dd419577-3b3f-430a-a097-033b7bb84b0a",
-    "elapsed_s": 4.910919935209677,
-    "native_fragments": 7,
+    "query_id": "5f4da655-6114-4bac-bbe2-1753e84ec072",
+    "elapsed_s": 3.7053593550808728,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14150245817,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "32_barbie_control_hot_wheels_r3",
-    "query_id": "c85c4bdf-4ff0-4992-bb8a-8aaca69b1787",
-    "elapsed_s": 5.128746173111722,
-    "native_fragments": 7,
+    "query_id": "7423d2f6-4061-418c-86db-d0305bf9d0fc",
+    "elapsed_s": 3.9924424700438976,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14150245817,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 5.019833054160699,
+  "median_elapsed_s_after_first": 3.848900912562385,
   "rows": 25,
   "identical_results_across_runs": true,
   "schema": [
@@ -252,38 +252,38 @@
   "name": "33_barbie_control_nike",
   "sql_file": "fixture/demo/merrec/scripts/scale/33_barbie_control_nike.sql",
   "sql": "WITH likes AS (\n  SELECT DISTINCT -(e.user_id + 1) AS src, CAST(i.brand_id AS BIGINT) AS dst,\n         e.event_time >= TIMESTAMP '2023-07-01 00:00:00' AS after_release\n  FROM merrec_events e JOIN merrec_items i ON i.item_id = e.item_id\n  WHERE e.event_type = 'item_like' AND i.brand_id <> 0\n    AND e.event_time >= TIMESTAMP '2023-05-01 00:00:00'\n    AND e.event_time < TIMESTAMP '2023-09-01 00:00:00'\n), lift_before AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE NOT after_release), directed => false) r\n    ON r.vertex = p.vertex\n), lift_after AS (\n  SELECT p.vertex, p.value / r.value AS lift\n  FROM cugraph_personalized_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release),\n    personalization => (SELECT 15987 AS vertex, 1.0 AS value),\n    directed => false) p\n  JOIN cugraph_pagerank(\n    edges => (SELECT src, dst FROM likes WHERE after_release), directed => false) r\n    ON r.vertex = p.vertex\n), fans AS (\n  SELECT dst AS brand_id,\n         SUM(CASE WHEN after_release THEN 0 ELSE 1 END) AS fans_before,\n         SUM(CASE WHEN after_release THEN 1 ELSE 0 END) AS fans_after\n  FROM likes GROUP BY dst\n), brands AS (\n  SELECT CAST(brand_id AS BIGINT) AS brand_id, MIN(brand_name) AS brand_name\n  FROM merrec_items WHERE brand_id <> 0 GROUP BY brand_id\n)\nSELECT b.brand_name, f.fans_before, f.fans_after,\n       lb.lift AS lift_before, la.lift AS lift_after, la.lift / lb.lift AS lift_change\nFROM lift_after la\nJOIN lift_before lb ON lb.vertex = la.vertex\nJOIN fans f ON f.brand_id = la.vertex\nJOIN brands b ON b.brand_id = la.vertex\nWHERE la.vertex > 0 AND la.vertex <> 15987\n  AND f.fans_before >= 1000 AND f.fans_after >= 1000\nORDER BY lift_change DESC, b.brand_name\nLIMIT 25;\n",
-  "binary_sha256": "63ecfba9699bd95c403955557c1c19012feb5f721585700bb72da954b1375063",
+  "binary_sha256": "d056bb09189db05e0b1ced0463aae97b12abdc0787b12cd41b1658ab6d622565",
   "server_config": "fixture/demo/merrec/scripts/scale/server.toml",
   "runs": [
    {
     "name": "33_barbie_control_nike_r1",
-    "query_id": "bcebfb7e-67ec-49b4-a5d1-0de8df678304",
-    "elapsed_s": 5.168448473094031,
-    "native_fragments": 7,
+    "query_id": "9c06b56a-472b-4924-adf3-85420f574f3f",
+    "elapsed_s": 3.864736070856452,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14117295801,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "33_barbie_control_nike_r2",
-    "query_id": "aff37243-1e02-4f24-a218-20db08038acc",
-    "elapsed_s": 5.082927776966244,
-    "native_fragments": 7,
+    "query_id": "a5c86bc2-c8d2-4e1c-b946-b30f13cf31e8",
+    "elapsed_s": 3.871306023094803,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14117295801,
     "query_limit_bytes": 96636764160
    },
    {
     "name": "33_barbie_control_nike_r3",
-    "query_id": "d5694d4a-da14-468f-a588-bd8ef66b622d",
-    "elapsed_s": 4.882665636949241,
-    "native_fragments": 7,
+    "query_id": "b2d33408-fbd5-4ea2-a832-17e747e3a0f5",
+    "elapsed_s": 3.7137612199876457,
+    "native_fragments": 11,
     "host_boundaries": 0,
     "allocator_peak_bytes": 14117295801,
     "query_limit_bytes": 96636764160
    }
   ],
-  "median_elapsed_s_after_first": 4.982796706957743,
+  "median_elapsed_s_after_first": 3.7925336215412244,
   "rows": 25,
   "identical_results_across_runs": true,
   "schema": [

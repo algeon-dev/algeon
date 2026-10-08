@@ -1,6 +1,7 @@
 ---
 sidebar_position: 2
-title: MerRec
+title: "MerRec: A Large-scale Multipurpose Mercari Dataset for Consumer-to-Consumer Recommendation Systems"
+sidebar_label: MerRec
 description: Eight questions over 1.27 billion Mercari US marketplace events, from the brands that moved toward Barbie's audience to a campaign list built from a graph algorithm, a vector search and a trained model in one statement.
 ---
 
@@ -12,8 +13,11 @@ import Pokemon from '../../cuvs/_examples/merrec_scale_lookalikes.mdx';
 import ExistingModel from '../../cuml/_examples/merrec_scale_xgboost.mdx';
 import Twins from '../../cugraph/_examples/merrec_scale_twins.mdx';
 import Sessions from '../../cugraph/_examples/merrec_scale_sessions.mdx';
+import CodeBlock from '@theme/CodeBlock';
+import BrandMap from '@site/src/components/merrec/BrandMap';
+import brandMap from '@site/static/data/merrec-brand-map.json';
 
-# MerRec
+# MerRec: A Large-scale Multipurpose Mercari Dataset for Consumer-to-Consumer Recommendation Systems {/* #merrec */}
 
 [MerRec](https://huggingface.co/datasets/mercari-us/merrec) holds 1.27 billion
 events from 5.57 million Mercari US shoppers between May and October 2023:
@@ -52,8 +56,14 @@ two failed attempts that preceded the result.
 
 <ShoppingWorlds />
 
-The [brand map](../../cugraph/udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples)
-draws the same similarity graph with ForceAtlas2 and colors it by world.
+The map below lays out the same similarity graph with
+[ForceAtlas2](../../cugraph/udtfs/layout/cugraph_force_atlas2.mdx?dataset=merrec#examples),
+using each brand's five strongest links, and colors brands by their Leiden
+group. Select groups to see where they sit and which brands have the most fans.
+
+<CodeBlock language="sql" className="no-collapse">{brandMap.query.sql}</CodeBlock>
+
+<BrandMap data={brandMap} />
 
 ## Which brands connect the shopping worlds? {/* #bridges */}
 

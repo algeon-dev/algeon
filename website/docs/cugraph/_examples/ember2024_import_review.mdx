@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import graphCapture from '@site/static/data/ember2024-graph-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 An analyst has an unlabeled Win32 file and wants candidates with related
@@ -22,6 +23,8 @@ retained imports, giving Jaccard `54 / (58 + 130 - 54) = 0.403`.
 <thead><tr><th>Candidate file</th><th>Shared imports</th><th>Jaccard</th><th>Family field</th></tr></thead>
 <tbody>{graphCapture.result.data.slice(0, 4).map(row => <tr key={row.candidate_id}><td>{row.candidate_id}</td><td>{row.shared_rare_imports}</td><td>{row.similarity.toFixed(3)}</td><td>{row.family || 'Empty'}</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.ember.import_review.elapsed_s.toFixed(2)} s.</p>
 
 One shared symbol is <code style={{whiteSpace: 'normal', overflowWrap: 'anywhere'}}>{graphCapture.result.data[0].example_shared_import}</code>.
 All 15 returned family fields are empty.

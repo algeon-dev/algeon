@@ -1,5 +1,6 @@
 import CodeBlock from '@theme/CodeBlock';
 import fullCapture from '@site/static/data/ember2024-full-temporal-capture.json';
+import timings from '@site/static/data/demo-query-timings.json';
 import Table from '@site/src/theme/MDXComponents/Table';
 
 A security analyst needs to compare both benign files flagged and malicious
@@ -19,6 +20,8 @@ The later test set contains 179,994 benign and 180,000 malicious files.
 <thead><tr><th>Model</th><th>Benign flagged</th><th>False-positive rate</th><th>Malicious missed</th><th>Miss rate</th></tr></thead>
 <tbody>{fullCapture.records.map(row => <tr key={row.model}><td>{row.model === 'logistic' ? 'Logistic regression' : 'Random forest'}</td><td>{row.false_positive.toLocaleString('en-US')}</td><td>{(row.false_positive / fullCapture.cohort.test.win32_benign * 100).toFixed(1)}%</td><td>{row.false_negative.toLocaleString('en-US')}</td><td>{(row.false_negative / fullCapture.cohort.test.win32_malicious * 100).toFixed(1)}%</td></tr>)}</tbody>
 </Table>
+
+<p className="fineprint">The query took {timings.queries.ember.temporal.elapsed_s.toFixed(2)} s.</p>
 
 Random forest flags 15,440 fewer benign files and misses 7,118 fewer malicious
 files in this fit. It still misses 23,468 malicious files. The comparison

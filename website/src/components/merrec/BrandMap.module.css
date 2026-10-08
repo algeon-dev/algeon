@@ -14,11 +14,17 @@
   --brand-12: #10a0fa;
   --brand-13: #cfaa0a;
   --brand-other: var(--ifm-color-emphasis-600);
+  /* Keeps the square map and the world list inside one viewport, below the navbar. */
+  --map-max: max(20rem, calc(100vh - 11rem));
+  /* Infima leaves the light background transparent; scroll shadows, dot outlines and swatch rings need an opaque page color. */
+  --surface: var(--ifm-background-surface-color);
+  container-type: inline-size;
   margin: 1.5rem 0;
   color: var(--ifm-font-color-base);
 }
 
 :global([data-theme='dark']) .figure {
+  --surface: var(--ifm-background-color);
   --brand-0: #4b53c2;
   --brand-1: #a82a66;
   --brand-2: #3ba23b;
@@ -92,40 +98,38 @@
   --world: var(--brand-13);
 }
 
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 0.8rem 1.2rem;
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, var(--map-max)) minmax(15rem, 1fr);
+  gap: 1rem;
 }
 
-.controls label {
-  display: flex;
-  flex: 1 1 280px;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.88rem;
-}
-
-.controls select {
-  width: 100%;
-  padding: 0.55rem 0.65rem;
-  color: var(--ifm-font-color-base);
-  background: var(--ifm-background-color);
-  border: 1px solid var(--ifm-color-emphasis-400);
-  border-radius: 6px;
-  font: inherit;
+.mapBox {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  background: var(--surface);
 }
 
 .plot {
   display: block;
   width: 100%;
   height: auto;
-  margin-top: 0.8rem;
-  border: 1px solid var(--ifm-color-emphasis-300);
-  border-radius: 8px;
-  background: var(--ifm-background-color);
   cursor: crosshair;
+}
+
+/* The map alone sets the row height; the world list scrolls inside it. */
+.side {
+  position: relative;
+  min-width: 0;
+}
+
+.sideInner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .layer {
@@ -143,7 +147,7 @@
 
 .dots.labelled {
   fill: var(--world);
-  stroke: var(--ifm-background-color);
+  stroke: var(--surface);
   stroke-width: 0.4;
   opacity: 0.85;
 }
@@ -159,11 +163,22 @@
   pointer-events: none;
 }
 
-.tooltip {
-  min-height: 1.5rem;
-  margin: 0.55rem 0 0.8rem;
-  font-size: 0.88rem;
+.readout {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  max-width: calc(100% - 1rem);
+  margin: 0;
+  padding: 0.25rem 0.55rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.readout.hint {
+  color: var(--ifm-color-emphasis-700);
 }
 
 .swatch {
@@ -179,16 +194,72 @@
   --world: var(--brand-other);
 }
 
+.legendBar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--ifm-color-emphasis-300);
+  font-size: 0.85rem;
+}
+
+.legendTitle {
+  font-weight: 600;
+}
+
+.legendStatus {
+  flex: 1 1 auto;
+  color: var(--ifm-color-emphasis-700);
+  font-variant-numeric: tabular-nums;
+}
+
+.clear {
+  padding: 0.15rem 0.5rem;
+  color: var(--ifm-color-primary);
+  background: none;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.clear:hover:not(:disabled) {
+  background: var(--ifm-color-emphasis-200);
+}
+
+.clear:disabled {
+  color: var(--ifm-color-emphasis-500);
+  cursor: default;
+}
+
 .legend,
 .topList {
-  display: grid;
-  gap: 0.15rem 1.2rem;
-  grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
   margin: 0;
   padding: 0;
   list-style: none;
   font-size: 0.82rem;
 }
+
+.legend {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 0;
+  padding-top: 0.35rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Scroll shadows: the local layers cover the scroll-attached shadows at either end of the list. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 1.5rem no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 1.5rem no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--scroll-shadow), transparent) top / 100% 0.5rem no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow), transparent) bottom / 100% 0.5rem no-repeat scroll;
+  --scroll-shadow: color-mix(in srgb, var(--ifm-font-color-base) 25%, transparent);
+}
+
 
 .legend li,
 .topList li {
@@ -202,12 +273,13 @@
   align-items: center;
   gap: 0.45rem;
   width: 100%;
-  padding: 0.3rem 0.4rem;
+  padding: 0.2rem 0.4rem;
   color: inherit;
   background: none;
   border: 0;
   border-radius: 6px;
   font: inherit;
+  line-height: 1.3;
   text-align: left;
 }
 
@@ -222,6 +294,37 @@
   background: var(--ifm-color-emphasis-200);
 }
 
+.legend button:focus-visible,
+.clear:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 1px;
+}
+
+/* Pressed worlds carry a tint, an outline and bold text so selection does not rely on hue alone. */
+.legend button[aria-pressed='true'] {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--world) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--world);
+}
+
+.legend button[aria-pressed='true']:hover {
+  background: color-mix(in srgb, var(--world) 22%, transparent);
+}
+
+.legend button[aria-pressed='true'] .swatch {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--world);
+}
+
+.legend.filtering button[aria-pressed='false'],
+.legend.filtering .otherWorlds {
+  color: var(--ifm-color-emphasis-600);
+}
+
+.legend.filtering button[aria-pressed='false'] .swatch,
+.legend.filtering .otherWorlds .swatch {
+  opacity: 0.35;
+}
+
 .legend span,
 .topList span {
   flex: 1 1 auto;
@@ -233,10 +336,12 @@
 
 .legend small {
   color: var(--ifm-color-emphasis-700);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 
 .panel {
+  margin-top: 0.9rem;
   padding: 0.85rem;
   border: 1px solid var(--ifm-color-emphasis-300);
   border-radius: 8px;
@@ -250,6 +355,12 @@
   margin-bottom: 0.6rem;
 }
 
+.swatches {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
 .panelHeading h4 {
   margin: 0;
   font-size: 0.95rem;
@@ -261,6 +372,8 @@
 }
 
 .topList {
+  display: grid;
+  gap: 0.15rem 1.2rem;
   grid-auto-flow: column;
   grid-template-rows: repeat(5, auto);
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -280,6 +393,15 @@
   text-align: right;
 }
 
+.topList small {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--ifm-color-emphasis-700);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .topList strong {
   flex: none;
   font-variant-numeric: tabular-nums;
@@ -292,7 +414,56 @@
   line-height: 1.5;
 }
 
-@media (max-width: 600px) {
+/* Narrow figures stack a one-row world strip above the map, so both stay on screen. */
+@container (max-width: 40rem) {
+  .stage {
+    grid-template-columns: minmax(0, var(--map-max));
+    justify-content: center;
+    gap: 0.6rem;
+  }
+
+  .side {
+    order: -1;
+  }
+
+  .sideInner {
+    position: static;
+  }
+
+  .legendBar {
+    border-bottom: 0;
+    padding-bottom: 0.3rem;
+  }
+
+  .legend {
+    flex-direction: row;
+    gap: 0.35rem;
+    padding: 0 0 0.35rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: none;
+    scrollbar-width: thin;
+  }
+
+  .legend li {
+    flex: none;
+  }
+
+  .legend button,
+  .legend .otherWorlds {
+    width: auto;
+    padding: 0.4rem 0.65rem;
+    box-shadow: inset 0 0 0 1px var(--ifm-color-emphasis-300);
+    border-radius: 999px;
+  }
+
+  .legend span {
+    overflow: visible;
+  }
+}
+
+/* Two ranking columns need room for brand, world and fan count without truncating the world. */
+@container (max-width: 46rem) {
   .topList {
     grid-auto-flow: row;
     grid-template-rows: none;

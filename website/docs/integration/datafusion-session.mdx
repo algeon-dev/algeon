@@ -150,6 +150,25 @@ example, begins the attempt while issuing a statement ticket and carries it
 through `DoGet`. Call `begin_attempt` directly when your application owns the
 query invocation.
 
+## Runtime requirements {/* #runtime-requirements */}
+
+The caller supplies the Tokio runtime that polls `attempt.sql(...)` and the
+result stream. The backend runs GPU work on threads it creates itself
+([Runtimes and threads](../design/index.mdx#runtimes-and-threads)).
+
+- The runtime needs the Tokio time driver for admission waits and execution
+  deadlines.
+- `algeon_server` and the examples use the multi-thread flavor of
+  `#[tokio::main]`; the crate's GPU tests use the `current_thread` flavor of
+  `#[tokio::test]`. Use multi-thread in a serving process.
+- An attempt's GPU work runs on the per-device `algeon-gpu-{d}` runtime and
+  pins no caller worker. The `attempt.sql(...)` future and the stream need no
+  `spawn_blocking` wrapper.
+- Dropping a stream cancels its attempt without blocking the worker that drops
+  it. An unread, undropped stream keeps its grant and device-resident result.
+- `close_and_wait_async` waits on a blocking task. Only one backend can be live
+  per process, and a replacement can be built after the close completes.
+
 ## Admission configuration
 
 Device capacity belongs to profiles; shared queue behavior belongs to

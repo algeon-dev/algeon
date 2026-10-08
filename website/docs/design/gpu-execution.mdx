@@ -9,8 +9,11 @@ import {ColumnLayout, StreamSchedule} from '@site/src/components/design/GuideDia
 # Inside GPU execution
 
 After decoding, the input is a collection of buffers in GPU VRAM. The engine runs
-one compiled schedule for each native fragment. Its tasks call GPU operations,
-retain the intermediate results still in use and release completed resources.
+one compiled schedule for each native fragment, coordinated from one worker of
+the device's GPU execution runtime
+([Runtimes and threads](./index.mdx#runtimes-and-threads)). Its tasks call GPU
+operations, retain the intermediate results still in use and release completed
+resources.
 
 ## Columns and memory access
 
@@ -45,11 +48,25 @@ completion dependencies before sharing results.
 
 <StreamSchedule />
 
-An execution **lane** combines a worker's owned task state with a leased
-stream. Independent source chunks or tasks can use multiple lanes, bounded
-by service resources and the work available. The coordinator merges their
-outputs under the required SQL semantics. **A DataFusion CPU partition does
-not determine lane ownership or width.**
+The coordinator is one `QueryExecution` job on one worker, and its tasks run on
+the attempt's root stream. Expanded chunk work (aggregate chunks, join probes
+and fused top-k candidates) goes to blocking-lane jobs. An execution **lane** is
+one auxiliary permit, one leased stream and a derived context. Its width is the
+smallest of `source_work_per_attempt`, the permits free when the run starts and
+the work available, and a run that gets fewer than two lanes executes inline on
+the coordinator. At the default `source_work_per_attempt` of 1, no run reaches
+two lanes. The coordinator merges lane outputs in dispatch order under the
+required SQL semantics. **A DataFusion CPU partition does not determine lane
+ownership or width.** A lane's stream lease lasts for the whole run, while each
+chunk job can land on any blocking-lane thread.
+
+Related terms use the word lane in other senses.
+
+- An attempt lane (`lane_count`, which equals `max_active_attempts`) is the
+  identity slot an admitted attempt holds for its lifetime; see
+  [Capacity and allocation](./admission.mdx#device-profiles-and-grants).
+- An execution lane is the permit, stream and context described above.
+- Chunk lane work is one blocking-lane job that runs on an execution lane.
 
 Cross-stream dependencies use completion fences, such as CUDA events. The
 consumer waits for the producer's work before reading its buffers, and
@@ -69,7 +86,7 @@ copies. See [GPU table functions](./gpu-table-functions.mdx) for a PageRank
 example, the prepared-export lifetime and the differences between the three
 libraries.
 
-## Result egress and host synchronization
+## Result egress and host synchronization {/* #result-egress */}
 
 When a query fragment completes its relational and algorithmic stages,
 execution reaches its terminal sink (`ResultSink::HostArrow` or a deferred host
@@ -85,7 +102,7 @@ memory, packaging them into Arrow `RecordBatch` instances for DataFusion.
    Stream FIFO tail                                │
           ▼                                        │
  ┌──────────────────┐                     cudaStreamSynchronize
- │ Completion Event │ ── PCIe MSI-X ───►  (wakes host thread,
+ │ Completion Event │ ── PCIe MSI-X ───►  (wakes the pool worker,
  └──────────────────┘   or Doorbell        verifies coherence)
 ```
 
@@ -94,15 +111,16 @@ stream. Upstream compute kernels precede the copy operation in the queue. The
 hardware command processor and copy engine execute earlier kernels to
 completion before starting the transfer over PCIe.
 
-Host CPU threads avoid busy polling while waiting for execution to finish.
-`cudaStreamSynchronize` establishes a host fence: the driver yields the OS
-worker thread, which sleeps in the operating system scheduler until the GPU
-signals completion. When the copy engine writes the final byte to host memory,
-the hardware issues a PCIe MSI-X interrupt or updates a host-coherent memory
-doorbell. The kernel driver receives the signal and wakes the worker thread.
+The host runtime polls the DataFusion stream and awaits each pool job without
+blocking a worker. The first poll runs the fragment's schedule. Each later poll
+submits one pool job that sizes the next chunk to at most 4 MiB of Arrow
+buffers, reserves that estimate from DataFusion's `MemoryPool` (one live
+reservation per stream), copies the chunk from device to host and waits in
+`cudaStreamSynchronize`. A pool worker does the waiting, and the driver parks it
+in the OS scheduler until the copy completes.
 
 Because the return of `cudaStreamSynchronize` guarantees CPU cache coherence
 with the transferred bytes, the worker can safely wrap the host buffers into
-Arrow arrays without redundant copies. Materialization completes the native
-fragment, leading to [admission and resource release](./admission.mdx) across
-the attempt.
+Arrow arrays without redundant copies. The last chunk ends the result stream,
+and the attempt [releases its grant](./admission.mdx#resident-handoff-and-release)
+once no fragment is running.

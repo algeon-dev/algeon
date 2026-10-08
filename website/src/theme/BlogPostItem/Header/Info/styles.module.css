@@ -1,0 +1,15 @@
+.infoRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.pageTools {
+  display: flex;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+:global(html[data-focus-mode='on']) .pageTools {
+  display: none;
+}

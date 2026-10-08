@@ -1,0 +1,97 @@
+/* ==========================================================================
+   Outline drawer: a round button that matches the focus mode exit button;
+   hovering or clicking it grows the outline panel out of the button toward
+   the lower left, over the content. Hidden by default; it shows in focus
+   mode on desktop widths, and an owning layout can add other widths through
+   its own class.
+   ========================================================================== */
+
+/* Below the navbar in normal mode. In focus mode the button stacks under the
+   exit button (top 1rem, 2rem tall) with a 0.5rem gap. */
+.outlineDrawer {
+  --outline-drawer-top: calc(var(--ifm-navbar-height) + 1rem);
+  position: fixed;
+  top: var(--outline-drawer-top);
+  right: 1rem;
+  z-index: 120;
+  display: none;
+}
+
+:global(html[data-focus-mode='on']) .outlineDrawer {
+  --outline-drawer-top: 3.5rem;
+}
+
+/* In focus mode the drawer is the only outline on desktop widths; narrower
+   viewports have no outline in focus mode. */
+@media (min-width: 997px) {
+  :global(html[data-focus-mode='on']) .outlineDrawer {
+    display: block;
+  }
+}
+
+.outlineHandle {
+  width: 2rem;
+}
+
+.iconOutline {
+  flex-shrink: 0;
+}
+
+/* The panel's top-right corner sits on the button, so scaling from there
+   reads as the panel growing out of it. Closed, the panel is also
+   visibility: hidden so its links leave the tab order; visibility flips only
+   after the shrink finishes. */
+.outlinePanel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 295px;
+  max-height: calc(100vh - var(--outline-drawer-top) - 1rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transform: scale(0.12);
+  transform-origin: top right;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.1s ease, visibility 0s linear 0.16s;
+}
+
+.outlineDrawerOpen .outlinePanel {
+  transform: none;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+/* The translucent panel would show the button through it. Two classes so
+   this outranks the idle dimming rule on the shared control class. */
+.outlineDrawer.outlineDrawerOpen .outlineHandle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .outlinePanel {
+    transition: none;
+  }
+}
+
+.outlinePanelBody {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.75rem 0.5rem 1.25rem 0.85rem;
+}
+
+[data-theme='dark'] .outlinePanel {
+  background: rgba(20, 24, 33, 0.96);
+  border-color: var(--ag-ayu-line);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
+}

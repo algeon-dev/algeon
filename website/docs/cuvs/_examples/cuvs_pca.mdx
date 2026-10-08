@@ -12,12 +12,17 @@ for the 3,225-row cohort. This reduction keeps more of the cohort's centered
 variance than the two-dimensional inspection projection below.
 
 The query returns two PCA coordinates for all 3,225 Win32 challenge rows. The
-first two centered components retain 71.187% of the variance. A
-separate centered-Gram comparison against the CPU reference passed with
+first two centered components retain 71.187% of the variance. Labels and
+family names are joined after PCA for inspection; the PCA input consists only
+of row IDs and histograms.
+
+<div className="fineprint">
+
+A separate centered-Gram comparison against the CPU reference passed with
 relative Frobenius error `4.681247737755186e-07` (tolerance `0.0001`).
-The SQL result contains 3,225 rows and recorded `native`
-disposition. Labels and family names are joined after PCA for inspection; the
-PCA input consists only of row IDs and histograms.
+The SQL result contains 3,225 rows and recorded `native` disposition.
+
+</div>
 
 For the 16-component reduction followed by HDBSCAN, see the [full PCA and
 HDBSCAN SQL example](/cuml/udtfs/cuml_hdbscan#examples).
@@ -25,8 +30,6 @@ HDBSCAN SQL example](/cuml/udtfs/cuml_hdbscan#examples).
 The saved map keeps this PCA-2 view alongside the matching TSVD-2 and UMAP-2
 captures. Its cluster filter uses assignments from the separate 16-component
 PCA and HDBSCAN result.
-
-<EmberMap data={emberMap} initialProjection="pca" />
 
 ```sql
 -- Project all Win32 challenge histograms to two principal components, preserving
@@ -52,3 +55,5 @@ JOIN ember_research_vectors_challenge v ON v.id = p.id AND v.split = 'challenge'
 JOIN ember_metadata_challenge m ON m.id = v.id
 ORDER BY p.row_ordinal;
 ```
+
+<EmberMap data={emberMap} initialProjection="pca" />

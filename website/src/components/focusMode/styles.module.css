@@ -1,39 +1,22 @@
-.toggle {
-  display: inline-flex;
+/* Reserve the collapsed width so expansion leaves the breadcrumbs in place. */
+.toggleContainer {
+  position: relative;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 2rem;
+  height: 2rem;
   margin-left: auto;
-  padding: 0;
-  color: var(--ifm-color-emphasis-600);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
 }
 
-.toggle:hover {
-  color: var(--ifm-color-primary);
-  border-color: var(--ifm-toc-border-color);
-  background: var(--ifm-color-emphasis-100);
+.toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 0.8rem;
+  line-height: 1;
 }
 
-[data-theme='dark'] .toggle {
-  color: var(--ag-ayu-muted);
-}
-
-[data-theme='dark'] .toggle:hover {
-  color: var(--ag-ayu-accent);
-  border-color: var(--ag-ayu-line);
-  background: var(--ag-ayu-panel);
-}
-
-/* The round control look shared by the exit button and the outline drawer
-   handle, which stack at the same right edge in focus mode. Both dim while
-   the reader is idle. */
+/* The exit button and outline drawer share the toggle style. In focus mode
+   they stack at the same right edge and dim while the reader is idle. */
 .floatingControl {
   display: inline-flex;
   align-items: center;
@@ -69,6 +52,19 @@
   border-color: var(--ag-ayu-accent);
 }
 
+.toggle:not(:hover):not(:focus-visible) {
+  color: var(--ifm-color-emphasis-600);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme='dark'] .toggle:not(:hover):not(:focus-visible) {
+  color: var(--ag-ayu-muted);
+}
+
 :global(html[data-focus-mode-idle]) .floatingControl {
   opacity: 0.45;
 }
@@ -100,9 +96,9 @@
   display: inline-flex;
 }
 
-/* Collapsed to the close icon; the label and key hint open to the left on
+/* Collapsed to the icon; the label and key hint open to the left on
    hover or keyboard focus, so the icon stays under the pointer. */
-.exitDetail {
+.controlDetail {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -113,14 +109,14 @@
   transition: max-width 0.2s ease, padding 0.2s ease, opacity 0.15s ease;
 }
 
-.exit:hover .exitDetail,
-.exit:focus-visible .exitDetail {
-  max-width: 10rem;
+.floatingControl:hover .controlDetail,
+.floatingControl:focus-visible .controlDetail {
+  max-width: 16rem;
   padding-left: 0.75rem;
   opacity: 1;
 }
 
-.exitIcon {
+.controlIcon {
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
@@ -129,7 +125,7 @@
   height: 1.875rem;
 }
 
-.exitKey {
+.controlKey {
   font-size: 0.7rem;
   line-height: 1;
 }

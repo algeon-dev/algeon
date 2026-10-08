@@ -1,4 +1,5 @@
-import React, {type ReactNode, useEffect, useState} from 'react';
+import React, {type ReactNode, useEffect, useId, useState} from 'react';
+import clsx from 'clsx';
 
 import {useFocusMode} from './FocusModeProvider';
 import styles from './styles.module.css';
@@ -36,6 +37,7 @@ function IconFocus() {
 
 export default function FocusModeToggle(): ReactNode {
   const {active, setActive} = useFocusMode();
+  const detailId = useId();
   // Server output and hydration use the non-Apple label.
   const [shortcut, setShortcut] = useState('Ctrl+Shift+F');
 
@@ -46,16 +48,24 @@ export default function FocusModeToggle(): ReactNode {
   }, []);
 
   return (
-    <button
-      type="button"
-      className={styles.toggle}
-      aria-label="Focus mode"
-      aria-pressed={active}
-      aria-keyshortcuts="Control+Shift+F Meta+Shift+F"
-      title={`Focus mode · ${shortcut}`}
-      onClick={() => setActive(!active)}
-    >
-      <IconFocus />
-    </button>
+    <span className={styles.toggleContainer}>
+      <button
+        type="button"
+        className={clsx(styles.floatingControl, styles.toggle)}
+        aria-label="Focus mode"
+        aria-describedby={detailId}
+        aria-pressed={active}
+        aria-keyshortcuts="Control+Shift+F Meta+Shift+F"
+        onClick={() => setActive(!active)}
+      >
+        <span id={detailId} className={styles.controlDetail}>
+          Focus mode
+          <kbd className={styles.controlKey}>{shortcut}</kbd>
+        </span>
+        <span className={styles.controlIcon}>
+          <IconFocus />
+        </span>
+      </button>
+    </span>
   );
 }

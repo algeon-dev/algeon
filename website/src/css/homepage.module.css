@@ -1,19 +1,15 @@
-:global(article):has(.hero) > :global(.theme-doc-breadcrumbs) {
-  display: none;
-}
-
 .hero {
+  container-type: inline-size;
   padding-top: 0.5rem;
   margin-bottom: 1.75rem;
 }
 
 .hero h1 {
-  max-width: 23ch;
   margin-bottom: 1rem;
-  font-size: clamp(2rem, 3.2vw, 3rem);
+  font-size: min(3rem, 5cqi);
   line-height: 1.1;
   letter-spacing: -0.025em;
-  text-wrap: balance;
+  white-space: nowrap;
 }
 
 .tagline {
@@ -67,5 +63,40 @@
 
   .lead {
     font-size: 1rem;
+  }
+
+  /* Three columns leave the "Current use" column about 90px wide on a phone,
+     so each algorithm family reads as a card: name and SQL prefix on one
+     line, the uses below. */
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) :is(table, tbody, tr, td) {
+    display: block;
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) thead {
+    display: none;
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) tr {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--ifm-table-border-color);
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) tr:last-child {
+    border-bottom: none;
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) td {
+    padding: 0;
+    border: none;
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) td:nth-child(-n + 2) {
+    display: inline-block;
+    margin: 0 0.5rem 0.3rem 0;
+  }
+
+  :global(.theme-doc-markdown):has(.hero) :global(.table-responsive-wrapper) td:first-child {
+    color: var(--ifm-heading-color);
+    font-weight: 600;
   }
 }
