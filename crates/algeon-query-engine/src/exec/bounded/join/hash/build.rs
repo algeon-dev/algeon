@@ -5,6 +5,12 @@ use super::{
     state::validate_root_hash_join,
 };
 
+/// Narrows `input` to the build columns and builds the reusable hash table over its keys.
+///
+/// Consumes `input`. The returned state owns the build frame and the table; on error the
+/// input and any partial build are dropped; a failed call leaves nothing for the caller to
+/// release. The join type and build side are checked by `validate_root_hash_join`,
+/// which accepts only the node shapes the root hash join can execute.
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -49,6 +55,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
     })
 }
 
+/// Whether a one-column build key has no duplicate values, by comparing the distinct count
+/// with the row count. Any other key shape, a missing column or a failed reduction reports
+/// `false`, and the multi-pass probe is used; it is correct for any key distribution.
 fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], overrides: Exec<'_>) -> bool {
     let [key] = build_keys else {
         return false;
@@ -59,6 +68,13 @@ fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], override
     series.on(overrides).nunique().ok().is_some_and(|unique_count| unique_count == frame.num_rows())
 }
 
+/// Builds the cuDF hash table over `build_keys` of `build` and wraps it in a handle checked
+/// against the execution context's device.
+///
+/// Returns the handle and the table's device bytes. `record_hash_join_metrics` is true for
+/// the reusable root hash join; it counts one hash-join build and its table bytes. The
+/// compiled equality preflight builds a table only to size a probe and passes `false`.
+/// Errors carry `join_type`, `key_count` and `build_side` facts.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"

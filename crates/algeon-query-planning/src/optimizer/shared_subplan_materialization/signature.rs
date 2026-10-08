@@ -1,3 +1,15 @@
+//! Family signatures for repeated aggregates.
+//!
+//! Two fingerprints describe each local Parquet source. The rowset fingerprint
+//! covers what rows the source can produce: files, row groups, partition and
+//! missing columns, scan limits. The abstract fingerprint adds what the source
+//! reads and emits. Both wildcard the reader predicate, and each has an exact
+//! twin that includes it. A grouped family keys on abstract fingerprints, so
+//! members must read the same columns; a scalar filtered family keys on rowset
+//! fingerprints, because its rewrite re-reads the source with the union of the
+//! branches' columns. Signature strings are compared for equality only and are
+//! never shown in reports except through `family_key`.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -21,23 +33,41 @@ use crate::{
     util::{fnv1a64, sum_optional_u64},
 };
 
+/// One aggregate node described for family matching and rewrite planning.
 #[derive(Debug, Clone)]
 pub(super) struct AggregateMaterializationSignature {
     pub(super) aggregate_node_id: NodeId,
+    /// Group output columns, by source fingerprint, that the source emits
+    /// unchanged under the same name. A grouped branch predicate may be
+    /// re-applied after the aggregate only over these.
     pub(super) post_aggregate_filter_columns_by_source: BTreeMap<String, BTreeSet<String>>,
+    /// Hash of the family signature: group keys, aggregate expressions and
+    /// predicate-wildcarded sources (grouped), or input shape and rowsets
+    /// (scalar). Equal keys mean the aggregates differ at most in reader
+    /// predicates.
     pub(super) family_key: String,
     pub(super) group_exprs: Vec<String>,
     pub(super) aggregate_exprs: Vec<String>,
     pub(super) aggregate_expr_specs: Vec<AggregateExpr>,
+    /// Per source, the fingerprint the family kind keys on, in fingerprint
+    /// order.
     pub(super) source_fingerprints: Vec<String>,
+    /// Whether every local Parquet source below the aggregate occurs once in
+    /// the subtree; a source read twice could not be widened for one branch
+    /// without changing the other read.
     pub(super) source_occurrences_unique: bool,
     pub(super) source_predicates: Vec<SourcePredicateSignature>,
     pub(super) source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+    /// Sources with their reader predicates; members with equal values are
+    /// exact duplicates and are counted as one variant in reports.
     pub(super) exact_source_signature: String,
     pub(super) source_bytes: Option<u64>,
     pub(super) source_rows: Option<u64>,
 }
 
+/// Describes the aggregate at `aggregate_node_id`, or `None` when its input
+/// reads no local Parquet source or the scalar input shape has an operator
+/// the scalar rewrite cannot clone.
 pub(super) fn aggregate_materialization_signature(
     plan: &QueryPlan,
     aggregate_node_id: NodeId,
@@ -105,6 +135,10 @@ pub(super) fn aggregate_materialization_signature(
         };
         source_columns.entry(fingerprint).or_default().extend(source.columns.clone());
     }
+    // A family of count-star aggregates reads no value column, so a
+    // projection below it may be dropped from the input shape as long as at
+    // least one member counts through a projected column and so still needs
+    // the projection's row set.
     let scalar_count_star_family = scalar_filtered_family
         && spec.aggr_exprs.iter().all(|expr| {
             expr.function == AggregateFunction::Count
@@ -151,6 +185,9 @@ pub(super) fn aggregate_materialization_signature(
     })
 }
 
+/// Group output columns that are a source column under the same name, keyed
+/// by that source's abstract fingerprint. A predicate over such a column
+/// selects the same groups before or after the aggregate.
 fn post_aggregate_filterable_group_columns_by_source(
     plan: &QueryPlan,
     input: NodeId,
@@ -194,6 +231,8 @@ pub(super) struct MaterializedColumnLineage {
     pub(super) source_column: String,
 }
 
+/// One local Parquet source as the family signature sees it. See the module
+/// doc for how the four fingerprints relate.
 #[derive(Debug, Clone)]
 pub(super) struct LocalSourceMaterializationSignature {
     pub(super) rowset_fingerprint: String,
@@ -202,7 +241,11 @@ pub(super) struct LocalSourceMaterializationSignature {
     pub(super) exact_fingerprint: String,
     pub(super) predicate: Option<Expr>,
     pub(super) selected_source_bytes: Option<u64>,
+    /// Selected row-group rows when footer statistics are known, otherwise
+    /// the source's `max_rows` cap.
     pub(super) selected_rows: Option<u64>,
+    /// Read columns with the file index and field a widened source needs to
+    /// add them.
     pub(super) columns: BTreeMap<String, SourceColumnMaterialization>,
 }
 
@@ -220,6 +263,8 @@ pub(super) struct SourceColumnMaterialization {
     pub(super) field: Field,
 }
 
+/// Appends every local Parquet source below `node_id`, each once, in
+/// traversal order; callers sort by fingerprint before comparing.
 pub(super) fn collect_local_parquet_sources(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -408,6 +453,9 @@ fn push_contract_value(output: &mut String, key: &str, value: &str) {
     output.push(';');
 }
 
+/// Signature of one aggregate expression with its argument and filter
+/// inlined through alias-only projections, so two branches that name the same
+/// source expression under different aliases compare equal.
 pub(super) fn aggregate_expr_signature(plan: &QueryPlan, input: NodeId, expr: &AggregateExpr) -> String {
     format!(
         "fn={};distinct={};arg={};filter={};alias={}",
@@ -541,6 +589,11 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
     }
 }
 
+/// Replaces a column by the projection expression that defines it, and so on
+/// down to the source. Inlining stops at a projection whose input does not
+/// preserve the row set: below a filter, limit or join the inlined expression
+/// would describe a different relation from the one the alias names, and the
+/// column is then kept by name.
 fn canonicalize_aggregate_input_column(plan: &QueryPlan, input: NodeId, column: &str) -> Option<Expr> {
     let node = plan.node(input)?;
     match &node.kind {

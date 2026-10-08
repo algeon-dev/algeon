@@ -1,3 +1,38 @@
+//! Bounded aggregates of the compiled pipeline: partial states per input chunk, merged into the
+//! final result.
+//!
+//! A native aggregate task consumes its input as frames or source chunks. It computes one
+//! partial-state frame per chunk, then a final merge regroups the partials by group key into the
+//! aggregate's output (`website/docs/design/gpu-execution.mdx` describes the chunked execution).
+//! `stream.rs` owns the partial stage and the accumulators, `final_merge` the merge,
+//! `partitioned.rs` and `source_adjacent.rs` the group-key partitioned variants, `sizing.rs` the
+//! partial-state size bound, and `post_stages.rs` the projection after the final aggregate.
+//!
+//! A `CommittedPartial` (an alias of `ResidentGpuFrame`) is the partial-state frame of one input
+//! chunk with its observed device bytes. A chunk's outputs stay private to the chunk while its
+//! decode and operator retries run (`AggregateChunkOutput`). The coordinator then inserts the
+//! committed partials into merge state, and a merge failure after that point cannot replay the
+//! chunk. The accumulator owns a partial from insertion until a merge consumes it. The merged
+//! output is itself a `CommittedPartial`, and the inputs are released once it exists.
+//!
+//! Partial state differs from the output shape. AVG keeps a sum and a count, a global SUM, MIN or
+//! MAX keeps a valid count, and COUNT merges by summing. The merge preserves that state, and
+//! `post_stages.rs` or `finalize_compiled_final_aggregate_output` divides and drops it.
+//!
+//! `CompiledStreamPartials::new` picks the accumulator. When the aggregate capability decision
+//! selects the partitioned merge for the final stage and the aggregate has no grouping sets, the
+//! incremental partitioned merge (`final_merge/incremental.rs`) folds partials into per-partition
+//! states while chunks arrive; retained bytes then follow the merged state rather than the input.
+//! Otherwise the partials are retained, or folded in a binary carry, and
+//! `execute_compiled_bounded_final_aggregate_merge` (`final_merge/compiled.rs`) runs at the end. It
+//! partitions by group key when the same capability decision and the partial sizes allow it, and
+//! merges level by level otherwise.
+//!
+//! No step here reserves memory. The attempt's device budget is a batching input that sizes
+//! chunks, partitions and fan-in, and the query allocator enforces the grant when a step
+//! allocates. Admission terms (attempt, grant, budget token) are defined in
+//! `website/docs/design/admission.mdx`.
+
 use std::sync::Arc;
 
 use arrow::{
@@ -43,6 +78,10 @@ pub(in crate::exec::bounded) use stream::{
 
 use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 
+/// Caps the row groups per source chunk for grouped aggregates over a string key when stages sit
+/// between the source and the aggregate. The byte target derived from the grant is left unchanged,
+/// and the cap is recorded as the planning reason
+/// `source_adjacent_grouped_aggregate_downstream_cap`.
 pub(in crate::exec::bounded) fn apply_source_adjacent_aggregate_chunk_caps(
     mut policy: SourceChunkPlanningPolicy,
     hints: AggregateInputHints,
@@ -63,6 +102,11 @@ pub(in crate::exec::bounded) fn is_source_adjacent_grouped_aggregate(bounded: &B
         && bounded.aggregate.0.spec.grouping_sets.is_none()
 }
 
+/// Whether a multi-chunk grouped aggregate with source-adjacent stages runs with group-key
+/// partitioning (`source_adjacent.rs`).
+///
+/// Floating statistical aggregates, medians and grouping sets are excluded. A false result selects
+/// another path and never fails the query.
 pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_grouped_aggregate(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -80,6 +124,10 @@ pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_group
         && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, chunks)
 }
 
+/// Estimates the live working set of the partitioned path and compares it with the attempt's device
+/// budget, which is a batching input and not a reservation. An unknown chunk size decides by key
+/// type: only a string-keyed aggregate proceeds, and other shapes stay on the capability-first
+/// path.
 fn source_adjacent_partitioned_live_working_set_fits_budget(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -144,6 +192,13 @@ fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -
     })
 }
 
+/// Single-stage aggregate over one resident frame.
+///
+/// A floating statistical aggregate in DataFusion-exact mode runs on the host
+/// (`execute_compiled_bounded_exact_host_aggregate_from_frame`). A grouped aggregate whose input
+/// exceeds the aggregate partition byte target is hash-partitioned on its group keys, aggregated
+/// per partition and merged (`partitioned.rs`). Anything else runs once under a budget token for
+/// `compiled_aggregate`.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -209,6 +264,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
     )
 }
 
+/// DataFusion-exact floating statistical aggregate. The prepared device input is copied to a host
+/// Arrow batch, accumulated on the host in DataFusion's order, and the result is uploaded again.
+/// The device input is consumed by the copy.
 fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -293,6 +351,8 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
+/// Aggregates zero rows: a zero-row frame in the input schema goes through the single-stage path,
+/// so a global aggregate returns its identity row and grouping sets their grand-total row.
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_from_empty_input(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

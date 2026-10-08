@@ -1,3 +1,24 @@
+//! Semijoin reduction: pushes a left-semi join below the inner joins its keys
+//! came through.
+//!
+//! The rule matches `LeftSemi(L, R)` with no residual, left-only output and
+//! `NullsDoNotMatch`, where every left key traces through renaming projections
+//! and inner joins to one child subtree `T` on one side of each crossed join. In
+//! the rewrite, the semi join moves onto `T` with its keys restated as `T`'s
+//! columns, the crossed joins and projections are rebuilt above it, and the
+//! original output projection is re-applied when it was not the identity. The row
+//! set is unchanged because a row of an inner join survives the semi join iff its
+//! `T` part has a matching key in `R`, and with `NullsDoNotMatch` on every join a
+//! null key matches nowhere. Crossed joins must be inner joins; an outer or semi
+//! join above `T` can emit rows whose `T` part is absent or null-extended.
+//!
+//! A cost gate keeps the rewrite when `R` is small relative to `T` or has a
+//! filtered-source or aggregate keyset shape ([`SemijoinReductionCostSignal`]).
+//! After the plan is rebuilt its root schema is compared with the original; a
+//! mismatch rejects every applied candidate and returns the input plan. The
+//! node list is rebuilt, so `QueryPlan::rewrite` drops routes and invalidates
+//! advisories through the moved nodes. Rejection reasons are report contracts.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
@@ -247,14 +268,20 @@ pub(crate) fn optimize_semijoin_reduction(
     Ok(SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics })
 }
 
+/// Where the semi join's left keys come from and which joins they crossed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemijoinLineageAnalysis {
+    /// Subtree the semi join is pushed onto.
     pub(crate) target_subtree_id: NodeId,
+    /// The left keys restated as `target_subtree_id`'s columns, in key order.
     pub(crate) target_key_columns: Vec<ColumnRef>,
     pub(crate) key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
+    /// Crossed joins from the semi join downward; `build_pushed_subtree`
+    /// consumes them in this order and treats a mismatch as missing lineage.
     pub(crate) steps: Vec<SemijoinLineageStep>,
 }
 
+/// One inner join the key lineage crossed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemijoinLineageStep {
     pub(crate) crossed_join_node_id: NodeId,
@@ -656,6 +683,8 @@ impl<'a> SemijoinReductionRewriter<'a> {
         let mut spec = original_semijoin.spec.clone();
         spec.keys = keys;
         spec.output_projection = left_output_projection_for_schema(&target_schema);
+        // A build artifact id binds a build to one join occurrence. The pushed
+        // join is a new occurrence and must not claim the original's artifact.
         spec.build_artifact_id = None;
 
         self.push_node(
@@ -702,6 +731,9 @@ impl<'a> SemijoinReductionRewriter<'a> {
     }
 }
 
+/// Keeps the outermost column name as `before_column` on mappings the recursive
+/// analysis built from inner names, so each mapping reads original key to
+/// target column.
 fn prepend_mappings(
     existing: &mut [SemijoinReductionKeyMappingDiagnostics],
     local_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
@@ -729,6 +761,8 @@ fn resolve_output_slot(
     Ok(index)
 }
 
+/// A crossed join's output must name its input by qualifier: without the
+/// qualifier a name both children carry cannot be followed to one child.
 fn validate_join_output_column_qualifier(
     side: JoinSide,
     column: &ColumnRef,
@@ -763,6 +797,10 @@ fn input_column(side: JoinSide, column: &ColumnRef) -> ColumnRef {
     ColumnRef::input(join_side_index(side), column.name(), column.display_name())
 }
 
+/// Decides whether pushing the semi join onto the target is worth it. Signals
+/// are tried in order: a filtered-source keyset is accepted without estimates;
+/// row then byte estimates accept when `semi_right * multiplier <= target`; an
+/// aggregate keyset shape accepts; no signal rejects.
 fn evaluate_semijoin_cost_gate(
     plan: &QueryPlan,
     semi_right: NodeId,
@@ -770,6 +808,8 @@ fn evaluate_semijoin_cost_gate(
     threshold_multiplier: u64,
 ) -> SemijoinReductionCostGateDiagnostics {
     let target_subtree = analysis.target_subtree_id;
+    // Options are not validated on the optimizer path, so a zero multiplier is
+    // read as one instead of accepting every candidate.
     let threshold_multiplier = threshold_multiplier.max(1);
 
     if let Some(signal) = filtered_source_keyset_cost_signal(plan, semi_right, analysis) {
@@ -812,6 +852,10 @@ fn evaluate_semijoin_cost_gate(
     }
 }
 
+/// A keyset built from a filtered scan is smaller than the scan, and pushing it
+/// onto a dimension-sized target lets every join above read the narrowed
+/// dimension. Applies only when at least one join was crossed and some source
+/// under `semi_right` carries a filter or reader predicate.
 fn filtered_source_keyset_cost_signal(
     plan: &QueryPlan,
     semi_right: NodeId,
@@ -874,6 +918,8 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
     let node = plan.node(node_id)?;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
+            // A reader predicate counts as a filter: the keyset is built from
+            // the rows the reader keeps.
             SourceNode::LocalParquet(source) => {
                 let evidence =
                     FilteredSourceKeysetEvidence::source().with_source_bytes(estimated_output_bytes(plan, node_id));
@@ -887,6 +933,7 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
                         .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
                 ),
             ),
+            // Already resident, so no scan bytes are attributed to it.
             SourceNode::GpuResident(_) => Some(FilteredSourceKeysetEvidence::source()),
         },
         PlanNode::Filter(filter) => Some(filtered_source_keyset_evidence(plan, filter.input)?.filtered()),
@@ -1021,6 +1068,10 @@ fn schemas_equal(left: &ArrowSchemaRef, right: &ArrowSchemaRef) -> bool {
     left.as_ref() == right.as_ref()
 }
 
+/// Final check that the rebuilt plan presents the same result: the sink schema
+/// and the root node schema must both equal the original's. A failure rejects
+/// the whole pass rather than one candidate, since the candidates were applied
+/// into one shared node list.
 fn validate_rewritten_root_semantics(
     original: &QueryPlan,
     rewritten: &QueryPlan,

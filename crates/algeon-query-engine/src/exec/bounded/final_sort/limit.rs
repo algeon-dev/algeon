@@ -6,6 +6,8 @@ use super::{
 };
 use crate::exec::operators::attach_budget_token_failure_facts;
 
+/// Applies `node`'s skip and fetch to `input`, returning it untouched when it keeps every
+/// row. Otherwise slices under `token`; `operation` names the error on failure.
 pub(super) fn execute_limit_with_token(
     node: &LimitNode,
     input: GpuDataFrame,
@@ -21,6 +23,7 @@ pub(super) fn execute_limit_with_token(
     execute_limit_spec_on_frame_with_token(node.spec, input.into_frame(), row_count, token, operation, metrics)
 }
 
+/// `execute_limit_with_token` for a plain `DataFrame`.
 pub(super) fn execute_limit_on_frame_with_token(
     node: &LimitNode,
     frame: DataFrame,
@@ -32,6 +35,8 @@ pub(super) fn execute_limit_on_frame_with_token(
     execute_limit_spec_on_frame_with_token(node.spec, frame, row_count, token, operation, metrics)
 }
 
+/// `execute_limit_with_token` for a bare `LimitSpec`, used for the `skip + fetch` truncation
+/// of top-k candidates.
 pub(super) fn execute_limit_spec_with_token(
     spec: LimitSpec,
     input: GpuDataFrame,
@@ -47,6 +52,10 @@ pub(super) fn execute_limit_spec_with_token(
     execute_limit_spec_on_frame_with_token(spec, input.into_frame(), row_count, token, operation, metrics)
 }
 
+/// Slices `frame` to the rows `spec` keeps out of `row_count`. An offset past the end gives
+/// an empty frame, and a slice that keeps every row is returned without a cuDF call. A
+/// skip plus fetch that overflows usize is `InvalidPlan`. Slice failures gain the budget
+/// scope of `token`.
 pub(super) fn execute_limit_spec_on_frame_with_token(
     spec: LimitSpec,
     frame: DataFrame,
@@ -71,6 +80,11 @@ pub(super) fn execute_limit_spec_on_frame_with_token(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Concatenates candidate frames, in order, into one frame under `token`.
+///
+/// `frames` must hold at least one candidate. The inputs are cloned handles and stay alive
+/// in the caller; the output is an additional allocation. A failure carries a
+/// `candidate_count` fact.
 pub(super) fn concat_committed_frames_with_token(
     frames: &[CommittedPartial],
     token: &cudf::ExecutionBudgetToken,

@@ -28,6 +28,9 @@ const OPERATION: &str = "query_engine.plan.builder";
 /// builder instead of constructing [`QueryPlan`] directly.
 #[derive(Debug, Clone, Default)]
 pub struct QueryPlanBuilder {
+    /// Every node already validated against its predecessors; the output
+    /// schema of each is derived at insertion, so later `add_*` calls and
+    /// `node_output_schema` read it without a second pass.
     nodes: Vec<QueryNode>,
     advisory_outputs: Vec<super::AdvisoryOutputBinding>,
 }
@@ -115,6 +118,12 @@ impl QueryPlanBuilder {
     }
 
     /// Adds a limit node that preserves input ordering facts.
+    ///
+    /// A fetch-only limit over an identical limit returns the input id: the
+    /// second limit would pass every row through. An advisory binding on the
+    /// input moves to the new node with its row estimate clipped by the limit;
+    /// its byte estimate is dropped because the frontend's byte model gives no
+    /// per-row figure to scale it by.
     pub fn add_limit(&mut self, input: NodeId, spec: LimitSpec) -> Result<NodeId> {
         let ordering = self.input_ordering(input)?;
         if spec.skip == 0 && matches!(&self.nodes[input.index()].kind, PlanNode::Limit(limit) if limit.spec == spec) {
@@ -242,6 +251,13 @@ impl QueryPlanBuilder {
         self.nodes.get(input.index()).map(|node| node.facts.output_ordering.clone()).ok_or_else(|| missing_input(input))
     }
 
+    /// Validates and appends one node, or returns the id of an equal node
+    /// already held.
+    ///
+    /// The input check precedes `derive_output` because derivation indexes
+    /// `self.nodes` by input id and would panic on a forward reference. The
+    /// interning compares the full kind and facts, so two nodes that differ
+    /// only in a declared schema or ordering fact stay distinct.
     fn push(&mut self, kind: PlanNode, declared: Option<SchemaRef>, ordering: Vec<super::SortExpr>) -> Result<NodeId> {
         let id = NodeId(self.nodes.len());
         if let Some(input) = kind.input_ids().iter().find(|input| input.index() >= self.nodes.len()) {

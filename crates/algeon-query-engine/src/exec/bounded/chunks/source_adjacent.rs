@@ -18,6 +18,10 @@ use crate::{
     rapids_backend::rapids_analysis_context,
 };
 
+/// Whether the aggregate path reads this source in multi-chunk batches.
+/// Partition columns, a scan limit and an unsupported reader predicate each
+/// keep the read at one chunk per batch, and batching is reported as enabled
+/// only when the byte target merges at least two chunks.
 pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -68,8 +72,13 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batches_for_work_w
     plan_source_chunk_batches(chunks, Some(max_batch_source_read_bytes.unwrap_or(u64::MAX).min(lane_target_bytes)))
 }
 
+/// Partial aggregate states for one batch, still private to the caller.
 pub(in crate::exec::bounded) struct SourceAdjacentBatchOutput {
+    /// One partial per read that succeeded; a batch split by retry yields
+    /// several.
     pub(in crate::exec::bounded) partials: Vec<CommittedPartial>,
+    /// Chunks of the batch as planned, restored after a retry split so the
+    /// commit counts the planned batch once.
     pub(in crate::exec::bounded) chunk_count: u64,
     pub(in crate::exec::bounded) row_groups: u64,
 }
@@ -83,6 +92,15 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_batch_uncommitted(
     execute_source_adjacent_batch_retry(execution, bounded, batch, 1)
 }
 
+/// Reads, filters and partially aggregates one batch, splitting on a
+/// retryable failure.
+///
+/// The read and the operator share one retry scope, so a resource failure in
+/// the partial aggregate also shrinks the input and the batch is retried at
+/// the smaller size. A multi-chunk batch splits into batches with `attempt` reset to 1;
+/// a singleton splits its chunk by row group while `attempt` is below the
+/// limit. Partials from the halves are concatenated in file order, and the
+/// planned `chunk_count` is restored so the caller commits the batch once.
 fn execute_source_adjacent_batch_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -257,6 +275,9 @@ fn execute_source_adjacent_batch_operator_uncommitted(
     })
 }
 
+/// Runs the plan's pre-filter projections, filter and post-filter projections
+/// on a decoded chunk, in that order, each under its own budget token. Every
+/// stage error carries the chunk and attempt facts of the stage that failed.
 pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,

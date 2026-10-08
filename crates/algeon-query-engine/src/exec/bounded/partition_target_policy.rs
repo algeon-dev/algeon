@@ -1,3 +1,13 @@
+//! Byte targets that size one hash partition or one streamed output slice.
+//!
+//! Each target is a fixed share of the attempt's cap, clamped to a floor and a
+//! ceiling. The share leaves room for the operator temporaries that one
+//! partition or slice creates beside its input (a libcudf groupby's hash table
+//! and output, a hash join's gather maps and gathered output). Partition counts
+//! derived from these targets are also the starting width of the retry trees in
+//! the partitioned join driver and the final merge; the allocator still decides
+//! whether a given partition fits.
+
 use query_planning::execution_contracts::MemoryControlPolicy;
 
 /// Internal byte-target policy for bounded partitioning and streaming.
@@ -31,16 +41,32 @@ impl BoundedPartitionTargetPolicy {
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_BUDGET_DIVISOR: u64 = 8;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_LIVE_DIVISOR: u64 = 16;
 
+    /// Input bytes one hash partition of a grouped aggregate should hold. Each
+    /// partition is aggregated whole by libcudf groupby, whose hash table and
+    /// output scale with the partition, and the incremental final merge derives
+    /// its batch and flush thresholds from the same target.
     pub(in crate::exec::bounded) fn aggregate_partition_target_bytes(self, device_budget_bytes: u64) -> u64 {
         (device_budget_bytes / self.aggregate_partition_budget_divisor)
             .clamp(self.aggregate_partition_min_target_bytes, self.aggregate_partition_max_target_bytes)
     }
 
+    /// Bytes of the larger join input per hash partition. One partition pair
+    /// is joined with one cuDF hash join whose gather maps scale with matches,
+    /// and the partition count this target yields is the logical width from
+    /// which retry repartitioning bisects.
     pub(in crate::exec::bounded) fn partitioned_join_target_bytes(self, device_budget_bytes: u64) -> u64 {
         (device_budget_bytes / self.partitioned_join_budget_divisor)
             .clamp(self.partitioned_join_min_target_bytes, self.partitioned_join_max_target_bytes)
     }
 
+    /// Output bytes one materialized slice of a reusable hash join may produce.
+    ///
+    /// The clamped policy share is further limited to a fraction of
+    /// `remaining_bytes` when that is nonzero. Both callers pass the attempt's
+    /// immutable cap rather than a live remainder, so in practice this second
+    /// term lowers the slice below the policy floor only for small caps. The
+    /// slice is sized on output bytes because the build table stays resident
+    /// across every slice and the gathered output is the part that varies.
     pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
         self,
         memory_policy: MemoryControlPolicy,

@@ -1,3 +1,16 @@
+//! Host-side evaluation of dimension predicates and key expressions over
+//! decoded Arrow batches.
+//!
+//! Resolvers fold the rows they read through [`I64ExprRangeAccumulator`] and
+//! `DimensionKeyAccumulator`, so the in-crate local pass and the adapter's
+//! object-store pass derive the same range from the same rows. The scalar
+//! evaluator decides which rows contribute keys; a row it accepts that the
+//! executor would reject could prune a row group the join still needs, so it
+//! returns `None` for every expression form, type, or operator it does not
+//! implement, and callers treat `None` as "no facts" and skip the candidate.
+//! A null predicate result rejects the row, and `AND`/`OR` treat a null operand
+//! as false.
+
 use super::{
     AggregateNode, Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyFilter, Expr, Float32Array,
     Float64Array, Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue, LocalParquetPruningResolver,
@@ -6,6 +19,9 @@ use super::{
     reader_projection_indices_for_exprs, remap_unqualified_columns,
 };
 
+/// The dimension key filter for `source`'s reader predicate. `None` means the
+/// source has no predicate, the projection could not be resolved, or the
+/// resolver could not read it; `Some(None)` is a proven-empty key set.
 pub(super) fn derive_dimension_key_filter(
     source: &LocalParquetSource,
     key_column: &str,
@@ -16,6 +32,17 @@ pub(super) fn derive_dimension_key_filter(
     resolver.dimension_key_filter(source, key_column, predicate, &projection_indices)
 }
 
+/// The inclusive `i64` range of `expr` over the rows a subtree produces, when
+/// the subtree is filters, renaming projections, grouping-only aggregates and
+/// sorts over one local Parquet source.
+///
+/// Filter predicates met on the way down are conjoined with the source's
+/// reader predicate and evaluated on the host, and `expr` is rewritten through
+/// each projection and aggregate so it names source columns at the leaf. A
+/// grouping-only aggregate keeps the value set of its group expressions, so
+/// the range below it is the range above it. `None` means the range cannot be
+/// derived; `Some(None)` means no row qualified. Join-filter reassociation
+/// reads this to bound a scalar it moves across a join.
 pub(crate) fn derive_i64_expr_range_from_filtered_subtree(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -213,6 +240,7 @@ enum Scalar {
     Null,
 }
 
+/// Evaluates a predicate for one row; a null result rejects the row.
 pub(super) fn eval_bool(expr: &Expr, batch: &RecordBatch, row: usize) -> Option<bool> {
     match eval_scalar(expr, batch, row)? {
         Scalar::Boolean(value) => Some(value),
@@ -451,6 +479,8 @@ fn scalar_to_i64(value: Scalar) -> Option<i64> {
     }
 }
 
+/// Converts only when the float is an integer that round-trips. A rounded
+/// conversion could place a key one step inside or outside a row-group range.
 fn exact_i64_from_f64(value: f64) -> Option<i64> {
     if !value.is_finite() || value.fract() != 0.0 || value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
         return None;

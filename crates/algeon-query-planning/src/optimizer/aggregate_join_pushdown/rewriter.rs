@@ -1,3 +1,12 @@
+//! The node rewriter for aggregate-join pushdown.
+//!
+//! Inputs are rewritten before their aggregate is examined, so the join the
+//! rule inspects is the already rewritten one and a pushdown below another
+//! aggregate is seen by the aggregate above it. `memo` maps every source node
+//! to its image and becomes the rewrite origin; a replaced aggregate's image
+//! is the top of its rewritten chain, so side state bound to it is
+//! invalidated by `rewrite`.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use super::{
@@ -242,6 +251,12 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         )
     }
 
+    /// Whether an inner-join pre-aggregate over a large input with only
+    /// fixed-width group columns is refused for lack of reduction evidence.
+    /// Native planning has no cardinality estimates; a pre-aggregate whose
+    /// keys are near-unique in a large detail table costs a hash aggregate and
+    /// removes few rows, and fixed-width keys are the shape where that is
+    /// common. Variable-width keys and grouping sets are exempt.
     pub(in crate::optimizer::aggregate_join_pushdown) fn simple_inner_join_preaggregate_has_large_detail_key_risk(
         &self,
         aggregate: &AggregateNode,
@@ -513,6 +528,12 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         JoinNode { inputs, spec }
     }
 
+    /// Distributes a `SUM`/`COUNT` pre-aggregate over an inner join whose one
+    /// input is a union: each branch is joined and aggregated on its own,
+    /// the partials are unioned and merged. Admitted by the policy only when
+    /// the union is large and the other side small enough that joining it
+    /// once per branch costs less than joining the concatenated union.
+    /// Returns `None` to fall back to the plain pre-aggregate.
     pub(in crate::optimizer::aggregate_join_pushdown) fn try_rewrite_preaggregate_through_join_union(
         &mut self,
         preagg_input: NodeId,
@@ -678,6 +699,9 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
+    /// Appends a node, or returns an identical existing one so repeated
+    /// subtrees the rewrite recreates (the other join side under each union
+    /// branch) stay shared.
     pub(in crate::optimizer::aggregate_join_pushdown) fn push_node(
         &mut self,
         kind: PlanNode,

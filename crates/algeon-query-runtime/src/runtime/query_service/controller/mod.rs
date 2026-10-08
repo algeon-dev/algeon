@@ -35,10 +35,17 @@ use crate::runtime::{DeviceLedger, gpu::LedgerTransitionKind};
 
 /// Admission scheduling state shared by the query service, its waiters, and
 /// the lifecycle tickets they hold. It owns no CUDA object.
+///
+/// Waiters hold it through an `Arc`. Lifecycle tickets and preflight
+/// reservations hold it weakly: their drops only wake the queue, and a drop
+/// that outlives the controller has no one left to wake.
 #[derive(Debug)]
 pub(in crate::runtime::query_service) struct AdmissionController {
     pub(in crate::runtime::query_service) queue_bounds: QueueBounds,
     pub(in crate::runtime::query_service) devices: AdmissionDevices,
+    /// The close gate that can be shut without taking `state`. Close sets it
+    /// first so the signal never waits behind a placement transaction;
+    /// `AdmissionState::closed` is the mutex-protected flag set afterwards.
     pub(in crate::runtime::query_service) admission_open: AtomicBool,
     /// Serializes every ledger admission transaction with a fleet-wide
     /// unknown-isolation closure. The queue mutex orders controller state;
@@ -46,6 +53,9 @@ pub(in crate::runtime::query_service) struct AdmissionController {
     /// atomic scheduler boundary.
     pub(in crate::runtime::query_service) fleet_admission: Mutex<()>,
     pub(in crate::runtime::query_service) state: Mutex<AdmissionState>,
+    /// Wakes blocking waiters (shutdown drains) on the same events that
+    /// `admission_notify` delivers to async waiters. Both are always signalled
+    /// together through `notify_admission_available`.
     pub(in crate::runtime::query_service) admission_available: Condvar,
     pub(in crate::runtime::query_service) admission_notify: Notify,
     /// Advanced by each ledger transition that can make a queued request
@@ -53,9 +63,13 @@ pub(in crate::runtime::query_service) struct AdmissionController {
     /// rechecks device health and resident capacity when the generation it
     /// was checked at is older.
     pub(in crate::runtime::query_service) queue_revalidation_generation: AtomicU64,
+    /// Identity of a request from submission on; what observations and
+    /// errors name.
     pub(in crate::runtime::query_service) next_admission_request_id: AtomicU64,
     /// Monotonic FIFO submission identity, independent of eventual admission order.
     pub(in crate::runtime::query_service) next_submission_seq: AtomicU64,
+    /// Order in which handles were published; exposed as
+    /// `QueryHandle::admission_sequence`.
     pub(in crate::runtime::query_service) next_admission_sequence: AtomicU64,
     #[cfg(test)]
     pub(in crate::runtime::query_service) shutdown_waiters: AtomicUsize,
@@ -105,6 +119,9 @@ impl AdmissionController {
         Ok(controller)
     }
 
+    /// Wakes every blocking and async waiter. Safe to call with or without
+    /// the admission mutex; callers that must not lose a wakeup between a
+    /// waiter's check and its wait hold the mutex while calling.
     pub(in crate::runtime::query_service) fn notify_admission_available(&self) {
         self.admission_available.notify_all();
         self.admission_notify.notify_waiters();

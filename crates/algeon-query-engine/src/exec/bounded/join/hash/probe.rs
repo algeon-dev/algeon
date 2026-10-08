@@ -6,6 +6,10 @@ use super::{
     stream::materialize_bounded_root_hash_join_probe_stream, sum_bounds,
 };
 
+/// Probes with `inner_probe`, a single call that returns the gather maps.
+///
+/// Valid only when [`reusable_hash_join_single_pass_inner_probe_supported`] holds. Consumes
+/// `probe`: it is returned on success and dropped before the error returns on failure.
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -35,6 +39,10 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
     Ok((probe, indices, gather_map_bytes))
 }
 
+/// Probes in two passes for inner, left and full joins: the first pass computes the output
+/// size, the second fills gather maps allocated at that size.
+///
+/// Consumes `probe` with the same release-on-error behavior as the single-pass probe.
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi_pass_probe_indices(
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -83,6 +91,8 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_size
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size(&probe.frame, probe_keys, overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size(&probe.frame, probe_keys, overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size(&probe.frame, probe_keys, overrides),
+        // `validate_root_hash_join` accepts these types. They never arrive because only the
+        // reusable-hash strategy (inner, left, full) builds a root hash join.
         JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } | JoinType::Cross => {
             unreachable!("validated above")
         },
@@ -115,6 +125,8 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_with
     .map_err(|error| join_index_error(error, node))
 }
 
+/// Whether one pass suffices: an inner join on one key, no residual predicate, and unique
+/// build keys. Each probe row then matches at most one build row and no size pass is needed.
 pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_single_pass_inner_probe_supported(
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -125,6 +137,7 @@ pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_single_pass_inner
         && build.build_keys_unique
 }
 
+/// Strategy label reported in the join operator metrics.
 pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_execution_strategy(
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -136,11 +149,19 @@ pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_execution_strateg
     }
 }
 
+/// Output-size bounds for one probe result. `None` means a projected column has no
+/// closed-form bound; see `BoundedRootHashJoinProbeState` for how the values are used.
 pub(in crate::exec::bounded::join::hash) struct RootHashJoinOutputReservationBounds {
     pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
     pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: Option<u64>,
 }
 
+/// Bounds the materialized output for the gather maps in `indices`: once for the full
+/// output row count and once for a single row.
+///
+/// Sizing a string column runs a device reduction over that column (see
+/// `join_side_output_upper_bound_bytes_for_row_counts`); this call can allocate on the
+/// query domain. A zero-row result bounds the single-row case at zero.
 pub(in crate::exec::bounded::join::hash) fn root_hash_join_output_reservation_bounds(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -179,6 +200,10 @@ pub(in crate::exec::bounded::join::hash) fn root_hash_join_output_reservation_bo
     Ok(RootHashJoinOutputReservationBounds { output_reservation_bytes, minimum_output_reservation_bytes })
 }
 
+/// Probes the resident build with one input frame and sizes the output for the result.
+///
+/// Consumes `build` and `input`; the returned state owns both. After any failure the probe
+/// frame, gather maps and build state are dropped and the caller has nothing to release.
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -221,6 +246,13 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
     })
 }
 
+/// Probes and materializes one chunk against a borrowed build and returns every output
+/// frame of the chunk.
+///
+/// The caller keeps `build` across chunks and releases it after the last one; this call
+/// never releases it, including on error. `input` is consumed. The probe frame and gather
+/// maps drop before the call returns. Join operator metrics are recorded for each call.
+/// Lane jobs call this with a lane-local clone of the build and only read the table.
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

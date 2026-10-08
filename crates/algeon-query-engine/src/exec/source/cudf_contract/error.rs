@@ -12,6 +12,14 @@ pub(in crate::exec::source) fn source_has_object_store_location(source: &LocalPa
     source.files.iter().any(|file| !file.location.is_local_path())
 }
 
+/// Wraps a cuDF error raised while converting or reading `source`.
+///
+/// cuDF error text for an object-store location can contain the object URI, including query
+/// parameters such as presigned signatures. If any file of the source is not a local path, the
+/// wrapper keeps the cuDF classification and a redacted `cudf_message` fact and drops the source
+/// chain, so `Display` and `Debug` of the `QueryError` do not print the URI. Local paths keep the
+/// chain. `cudf_error_for_location`, `cudf_error_for_chunk` and `cudf_error_for_file` apply the
+/// same rule to a single location.
 pub(in crate::exec::source) fn cudf_error_for_source(
     source: &LocalParquetSource,
     operation: &'static str,

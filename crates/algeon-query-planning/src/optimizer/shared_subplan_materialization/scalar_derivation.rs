@@ -1,3 +1,17 @@
+//! Scalar-aggregate derivation, the early pass of this module.
+//!
+//! The rule matches a scalar aggregate of `SUM`s without `DISTINCT` or `FILTER`,
+//! and a grouped aggregate without grouping sets, whose inputs have the same row
+//! set signature and whose `SUM` arguments agree after alias inlining. In the
+//! rewrite, the scalar aggregate becomes `SUM` over the grouped aggregate's sum
+//! columns, so the shared input is scanned once. As a precondition, every sum
+//! involved has an exact (integer or decimal) output type; regrouping a
+//! floating-point sum changes its rounding. The row set signature covers sources,
+//! filters, and inner or cross joins; projections and sorts are transparent, and
+//! any other operator, including an outer join, excludes the input. Facts: the
+//! scalar aggregate keeps its output schema. Candidates are always applied, so
+//! each row reports `applied`.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::DataType;
@@ -16,10 +30,12 @@ use crate::{
     util::{fnv1a64, sum_optional_u64},
 };
 
+/// One scalar aggregate to re-express over one grouped aggregate.
 #[derive(Debug, Clone)]
 struct ScalarAggregateDerivationRewrite {
     scalar_aggregate_node_id: NodeId,
     grouped_aggregate_node_id: NodeId,
+    /// `SUM(grouped_sum_alias) AS scalar_alias` for each scalar output.
     derived_spec: AggregateSpec,
 }
 
@@ -143,6 +159,8 @@ fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan)
                 grouped_aggregate_node_id: *grouped_id,
                 derived_spec,
             });
+            // The first matching grouped aggregate in plan order wins; a
+            // scalar aggregate is derived from one source only.
             break;
         }
     }
@@ -199,6 +217,8 @@ fn derived_scalar_aggregate_spec(
     Some(AggregateSpec::new(Vec::new(), aggr_exprs))
 }
 
+/// Whether the sum's declared output type is exact. Summing per-group sums
+/// reassociates the additions, which changes a floating-point result.
 fn sum_output_is_exact(plan: &QueryPlan, aggregate_node_id: NodeId, alias: &str) -> bool {
     let Some(data_type) = plan.node(aggregate_node_id).and_then(|node| {
         node.output_schema().fields().iter().find(|field| field.name() == alias).map(|field| field.data_type())
@@ -219,6 +239,10 @@ fn normalized_aggregate_argument_signature(plan: &QueryPlan, input: NodeId, expr
     expr.to_string()
 }
 
+/// Signature of the rows `node_id` produces, memoized per node across every
+/// candidate pair. A node reached again while its own signature is being
+/// computed is recorded as having none; plans are acyclic, so this guards
+/// the memo against a malformed input rather than a real cycle.
 fn rowset_signature(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -255,6 +279,10 @@ fn rowset_signature_uncached(
             .map(|input| format!("filter({input};predicate={})", filter.predicate)),
         PlanNode::Projection(projection) => rowset_signature(plan, projection.input, memo, visiting),
         PlanNode::Join(join) => {
+            // Only joins whose output rows are determined by the inputs and
+            // the match condition take part; an outer or semi join's row set
+            // also depends on which side is preserved, which the signature
+            // does not model.
             if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Cross) {
                 return None;
             }
@@ -357,6 +385,9 @@ impl<'a> ScalarAggregateDerivationRewriter<'a> {
         optimizer_rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
+    /// Appends a node, or returns the existing identical one. The scalar and
+    /// grouped inputs are equal subtrees by construction, so this is what
+    /// makes the derived aggregate read the grouped aggregate's input once.
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
         if let Some(existing) = self.nodes.iter().find(|node| node.kind == kind && node.facts == facts) {
             return existing.id;

@@ -29,20 +29,36 @@ use crate::observability::{
     RuntimeWorkerId, WorkerDefinitionRow,
 };
 
+/// Observation identity and lifecycle record for one accepted job.
+///
+/// Shared between the submitter's await side and the spawned task, which may
+/// finish concurrently: a submitter dropping its future requests cancellation
+/// at the same time the task records a terminal state. `lifecycle` makes
+/// that race produce one terminal event, recorded after any cancellation
+/// request that preceded it.
 pub(super) struct JobObservation {
     pub(super) observation: RuntimeObservationHandle,
     pub(super) job_id: RuntimeJobId,
     pub(super) job_kind: GpuExecutionJobKind,
     pub(super) device_ordinal: u32,
+    /// One of the `JOB_LIFECYCLE_*` states. Transitions are
+    /// `PENDING -> CANCELLATION_RECORDING -> CANCELLATION_REQUESTED -> TERMINAL`
+    /// and `PENDING -> TERMINAL`; `TERMINAL` is absorbing.
     pub(super) lifecycle: AtomicU8,
 }
 
 pub(super) const JOB_LIFECYCLE_PENDING: u8 = 0;
+/// Transient state held while the cancellation event is being written. A
+/// concurrent terminal transition spins on it so the two events reach the
+/// recorder in order.
 const JOB_LIFECYCLE_CANCELLATION_RECORDING: u8 = 1;
 const JOB_LIFECYCLE_CANCELLATION_REQUESTED: u8 = 2;
 const JOB_LIFECYCLE_TERMINAL: u8 = 3;
 
 impl JobObservation {
+    /// Records the job definition row and the `Enqueued` event. Called at
+    /// submission time, before any class or worker permit is awaited, so a
+    /// job rejected later still appears in the topology.
     pub(super) fn enqueued(&self) {
         self.observation.record_topology(RuntimeObservationRecordClass::JobDefinition, || {
             RuntimeTopologyRecord::JobDefinition(JobDefinitionRow {
@@ -55,6 +71,9 @@ impl JobObservation {
         self.record(GpuJobLifecycleState::Enqueued, None);
     }
 
+    /// Records the worker definition row and the `Started` event once the job
+    /// holds its worker seat. `None` names an inline run on the caller's own
+    /// pool worker, which has no seat of its own to report.
     pub(super) fn started(&self, worker_index: Option<usize>) -> RuntimeWorkerId {
         let worker_id = RuntimeWorkerId::new(format!(
             "{}-worker-{}",
@@ -105,6 +124,9 @@ impl JobObservation {
         }
     }
 
+    /// Records `lifecycle` as the job's single terminal event. The first
+    /// caller wins; later calls, including the guard `Drop` that follows an
+    /// explicit terminal call, are no-ops.
     pub(super) fn terminal(&self, lifecycle: GpuJobLifecycleState) {
         loop {
             let current = self.lifecycle.load(Ordering::Acquire);
@@ -150,6 +172,11 @@ impl JobObservation {
     }
 }
 
+/// Device-local job counters behind `GpuExecutionPoolSnapshot`.
+///
+/// `queued + active` is the number of live `JobCounterGuard`s, which shutdown
+/// uses as its census of outstanding work. A job is `queued` from acceptance
+/// until it holds a worker seat and `active` from then until its guard drops.
 #[derive(Debug, Default)]
 pub(super) struct PoolCounters {
     pub(super) active: AtomicUsize,
@@ -160,6 +187,8 @@ pub(super) struct PoolCounters {
     pub(super) peak_active_queries: AtomicUsize,
 }
 
+/// Cross-pool query-execution counters shared through
+/// `GpuExecutionQueryTracker`.
 #[derive(Debug, Default)]
 pub(super) struct QueryCounters {
     pub(super) active: AtomicUsize,
@@ -172,6 +201,13 @@ enum JobCounterState {
     Active,
 }
 
+/// RAII census entry for one accepted job.
+///
+/// Created on the submitting thread before the task is spawned, moved into
+/// the task, and dropped when the task body returns, panics, or is cancelled
+/// by runtime shutdown. Because Tokio drops a cancelled task's future, the
+/// counters are released on every exit path without the pool having to
+/// observe the task's fate.
 pub(super) struct JobCounterGuard {
     kind: GpuExecutionJobKind,
     counters: Arc<PoolCounters>,
@@ -179,10 +215,14 @@ pub(super) struct JobCounterGuard {
     query_tracker: GpuExecutionQueryTracker,
     state: JobCounterState,
     pub(super) terminal: JobTerminalGuard,
+    /// Runs in `Drop` after the terminal event and before the counters are
+    /// released. Coordinators use it to learn of completion in finish order.
     completion: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl JobCounterGuard {
+    /// Counts the job as queued immediately, so the census includes it even
+    /// if the spawn that follows is rejected and the guard drops at once.
     pub(super) fn new(
         kind: GpuExecutionJobKind,
         counters: Arc<PoolCounters>,
@@ -215,6 +255,9 @@ impl JobCounterGuard {
         guard
     }
 
+    /// Moves the job from queued to active once it holds a worker seat, and
+    /// returns the job/worker correlation that service-stream leases taken
+    /// by the body are tagged with.
     pub(super) fn activate(&mut self) -> RuntimeStreamLeaseScope {
         debug_assert_eq!(self.state, JobCounterState::Queued);
         decrement(&self.counters.queued);
@@ -266,8 +309,18 @@ impl Drop for JobCounterGuard {
     }
 }
 
+/// Guarantees a terminal lifecycle event for a job whose body never reached
+/// an explicit `terminal` call.
+///
+/// The body may stop running without returning: its future is dropped when
+/// the runtime shuts down, when the submitter drops an inline run, or during
+/// a panic unwind. `Drop` classifies which of those happened from the
+/// context available at that point.
 pub(super) struct JobTerminalGuard {
     observation: Arc<JobObservation>,
+    /// Whether a drop without a terminal event means the submitter cancelled
+    /// the job. True for inline runs, whose future is owned by the submitter;
+    /// false for spawned tasks, whose future is owned by the runtime.
     cancellation_on_drop: bool,
 }
 
@@ -284,6 +337,10 @@ impl JobTerminalGuard {
         self.observation.terminal(lifecycle);
     }
 
+    /// Records the implied terminal state when none was recorded explicitly.
+    /// A spawned task dropped by the runtime reports `Cancelled` only if the
+    /// submitter had asked for it; otherwise it reports `Dropped`, which
+    /// identifies runtime shutdown as the cause.
     pub(super) fn finish_drop(&mut self) {
         if self.observation.is_terminal() {
             return;
@@ -307,6 +364,12 @@ impl Drop for JobTerminalGuard {
     }
 }
 
+/// Runs a spawned job body on its worker seat and records its terminal state.
+///
+/// `Err(())` means the body panicked. The payload is discarded here because
+/// it cannot cross the `JoinHandle` as a value; the awaiting side maps the
+/// error to `job_panic_error`, and detached jobs ignore it. The seat is held
+/// until this future completes, including through the panic path.
 pub(super) async fn run_counted_job<F, T>(
     mut guard: JobCounterGuard,
     _seat: WorkerSeat,
@@ -328,6 +391,9 @@ where
     }
 }
 
+/// [`run_counted_job`] for a body built from the job's worker correlation.
+/// The builder runs after `activate`, so the scope it receives names the
+/// seat the body will run on.
 pub(super) async fn run_counted_job_scoped<B, F, T>(
     mut guard: JobCounterGuard,
     _seat: WorkerSeat,
@@ -350,6 +416,8 @@ where
     }
 }
 
+/// Pool whose runtime worker the current thread is, if any. Set by the
+/// supervisor's `on_thread_start` hook; `None` on host and blocking threads.
 pub(super) fn current_pool_id() -> Option<u64> {
     CURRENT_POOL_ID.with(Cell::get)
 }
@@ -358,6 +426,14 @@ pub(super) fn current_worker_index() -> Option<usize> {
     CURRENT_WORKER_INDEX.with(Cell::get)
 }
 
+/// `JoinHandle` wrapper that aborts the task when the awaiting future is
+/// dropped before completion.
+///
+/// Tokio detaches a task when its plain `JoinHandle` drops. For a pool job
+/// that would leave a GPU body running with no owner to release the
+/// attempt's resources, so the drop is treated as the submitter's
+/// cancellation. The abort is skipped when a terminal transition already won
+/// the lifecycle race, since the task is then finished or finishing.
 pub(super) struct AbortOnDropJoinHandle<T> {
     handle: JoinHandle<T>,
     observation: Arc<JobObservation>,
@@ -390,6 +466,8 @@ impl<T> Drop for AbortOnDropJoinHandle<T> {
     }
 }
 
+/// A pool needs at least one worker outside the lifecycle reserve, otherwise
+/// no query execution job could ever take a seat.
 pub(super) fn validate_worker_count(device_ordinal: usize, worker_count: usize) -> Result<()> {
     if worker_count <= RESERVED_LIFECYCLE_WORKERS {
         return Err(QueryError::new(
@@ -424,6 +502,8 @@ pub(super) fn job_cancelled_error(device_ordinal: usize, kind: GpuExecutionJobKi
         .with_source(error)
 }
 
+/// The peak is updated with `fetch_max` after the increment, so it is exact
+/// for the count that this increment produced even under concurrent updates.
 pub(super) fn increment_with_peak(active: &AtomicUsize, peak: &AtomicUsize) {
     let current = active.fetch_add(1, Ordering::AcqRel).saturating_add(1);
     peak.fetch_max(current, Ordering::AcqRel);

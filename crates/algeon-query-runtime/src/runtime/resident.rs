@@ -2,6 +2,16 @@
 //!
 //! Handles in this module are runtime/device-affine. Cloning shares the
 //! underlying native resources; host materialization is explicit.
+//!
+//! Besides the cuDF frame, a handle carries the lifetimes that make the frame
+//! safe to keep on the device: a `ResidentOwnerLease` for the bytes charged to
+//! the producing attempt's grant, transitive source owners for columns that alias
+//! an input frame's memory, a source-cache pin that keeps a cache entry from
+//! being evicted while the frame aliases it, and graph provenance. A consumer
+//! that reads a handle on its own stream wraps these owners with `for_reader`, so
+//! the owner's final release also waits for that stream's work; dropping a handle
+//! therefore never frees buffers a stream may still read. The release rules are
+//! owned by `website/docs/design/admission.mdx#resident-handoff-and-release`.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -51,9 +61,19 @@ pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
 pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
+    /// Grant retention for the bytes this frame published. `None` for frames
+    /// whose memory is accounted only by the allocator of the attempt that
+    /// holds them, including cache checkouts.
     resident_owner: Option<ResidentOwnerLease>,
+    /// Owners of input frames whose column memory this frame still aliases.
+    /// Narrowed on every projection so a derived frame retains only the
+    /// owners of columns it carries.
     retained_source_owners: Vec<RetainedSourceOwner>,
+    /// Owner of a graph normalization input kept alive until the graph
+    /// consumer takes it; not propagated to derived frames.
     retained_normalization_source: Option<ResidentOwnerLease>,
+    /// Keeps the local-Parquet cache entry this frame was copied from pinned,
+    /// and therefore non-evictable, for the frame's lifetime.
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
     producer_execution_scope: Option<PlanFingerprint>,
@@ -120,6 +140,9 @@ impl GpuDataFrame {
                 // owner alive instead of remeasuring a partial owner set.
                 Some(source_owner.clone())
             },
+            // A frozen grant accepts no further owner charge, so the derived
+            // frame keeps only the alias retention. Its fresh columns are
+            // accounted by the consuming attempt's own allocator.
             Some(source_owner) if source_owner.is_frozen_resident() => {
                 if aliases_source {
                     retained_source_owners.push(RetainedSourceOwner {
@@ -144,6 +167,9 @@ impl GpuDataFrame {
         Ok(output)
     }
 
+    /// Marks every retained owner as read on `stream`, so each owner's final
+    /// release waits for the work `stream` has enqueued when this frame and
+    /// its derivatives drop.
     fn read_on_stream(&mut self, stream: &CudaStream) {
         self.resident_owner = self.resident_owner.take().map(|owner| owner.for_reader(stream.clone()));
         self.retained_source_owners = mem::take(&mut self.retained_source_owners)
@@ -332,6 +358,8 @@ pub struct GpuHostBatchCursor {
     cursor: CudfHostBatchCursor,
     output_schema: SchemaRef,
     cancellation: ExecutionCancellation,
+    /// The result's runtime, whose stream the cursor copies on. Held so the
+    /// stream outlives the last copy and the owners below can fence on it.
     _runtime: Arc<cudf::Runtime>,
     _resident_owner: Option<ResidentOwnerLease>,
     _retained_source_owners: Vec<RetainedSourceOwner>,
@@ -465,6 +493,10 @@ impl GpuResultHandle {
             producer_execution_scope,
         } = frame.into_frame_and_residency();
         let resident_owner = resident_owner.or(frame_resident_owner);
+        // Binding is where the producer's stream is known. Its fence makes
+        // the owner's final release wait for the work that produced the
+        // output, and the backing pointers let the report commit attest that
+        // the frozen charge matches the registry's live allocations.
         if let Some(owner) = &resident_owner {
             owner.record_completion(context.runtime()?.stream())?;
             owner.set_backing_allocation_pointers(frame.backing_allocation_pointers().map_err(|error| {
@@ -815,6 +847,10 @@ impl GpuLocalParquetCachedResult {
         Ok(bytes as u64)
     }
 
+    /// Copies the cached value into `context`'s runtime, so the attempt
+    /// computes on memory its own allocation domain owns and the cache can
+    /// account its bytes independently of any attempt. The returned handle
+    /// holds `pin` for as long as the copied frame exists.
     pub(crate) fn checkout(
         &self,
         context: &ExecutionContext,
@@ -849,6 +885,10 @@ impl GpuLocalParquetCachedResult {
     }
 }
 
+/// Drops trailing DataFusion order columns the schema does not declare. The
+/// resident owner is kept whole because the selection aliases the same
+/// buffers; the transitive source owners are narrowed to the columns that
+/// remain.
 fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef) -> Result<GpuDataFrame> {
     if frame.num_columns() == schema.fields().len() {
         return Ok(frame);

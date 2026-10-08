@@ -3,6 +3,17 @@
 //! Optimizer rules in this module operate on [`QueryPlan`] IR only. They do
 //! not inspect SQL text, DataFusion plans, benchmark query ids, or adapter
 //! report rows.
+//!
+//! Every rule receives a plan that passed [`QueryPlan`] construction and
+//! returns one through `QueryPlan::rewrite`, so a rule may assume node ids
+//! equal positions, inputs precede consumers, and output schemas are derived.
+//! It may not assume any earlier rule ran, because options can disable any
+//! step. A rule that finds nothing to rewrite returns its input and
+//! `Unchanged`; `STEPS` runs several rules more than once and relies on that.
+//! Diagnostics are per rule and are merged into the rule's slot of
+//! [`NativeOptimizerDiagnostics`] on every run, so a rule that runs twice
+//! reports both runs. The design contract is
+//! `website/docs/design/native-lowering.mdx`.
 
 mod semijoin_reduction;
 
@@ -286,7 +297,9 @@ impl NativeOptimizerDiagnostics {
     }
 }
 
-/// A native optimizer pass.
+/// One rule invocation in `STEPS`. The same pass may appear several times;
+/// `run_pass` maps it to the rule function and the diagnostics slot it merges
+/// into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pass {
     ProjectionSimplification,
@@ -342,6 +355,14 @@ const STEPS: [(Pass, When); 18] = [
 ];
 
 /// Runs the native optimizer pass sequence over a query plan.
+///
+/// The plan is consumed; a caller that needs the unoptimized plan clones it
+/// first. An `Err` means a rule built a node list that fails the plan
+/// invariants or `resolver` failed, and no partially optimized plan is
+/// returned. `options` are not validated here; see
+/// [`NativeOptimizerOptions::validate`]. Shared-resident extraction runs after
+/// the pass table and may split the plan into producers and a consumer, which
+/// counts as a change even when no pass changed anything.
 pub fn optimize_query_plan(
     plan: QueryPlan,
     options: &NativeOptimizerOptions,
@@ -492,6 +513,12 @@ fn run_pass(
     })
 }
 
+/// Repeats join-filter reassociation until a run reports no change.
+///
+/// Each applied move can expose the next one, so one run is not enough. The
+/// iteration bound is the node count, which exceeds the number of joins any
+/// filter can cross; it ends only a loop that a rule defect would otherwise
+/// continue. The returned diagnostics cover every run.
 fn optimize_join_filter_reassociation_fixpoint(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,

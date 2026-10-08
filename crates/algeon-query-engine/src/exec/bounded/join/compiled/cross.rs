@@ -1,3 +1,18 @@
+//! Joins without equality keys or a residual predicate.
+//!
+//! `ProjectedCross` runs a `Cross` join. `KeylessOuterCross` runs a left join that builds its right
+//! side, or a full join, when the join has neither keys nor a residual. Both arrive as a `Prepared`
+//! probe state with both side frames fully resident. Nothing streams and nothing persists across
+//! probes.
+//!
+//! A cross product maps to cuDF's projected cross join plan, which reports the output row count
+//! before it materializes and gathers only the projected columns; this path builds no gather maps.
+//! An outer join of this shape equals the cross product unless one side is empty and the other is
+//! not (for a left join, only an empty right side). In that case each row of the non-empty side is
+//! emitted once, paired with nulls, from two gather maps: an ascending sequence for the preserved
+//! side and a constant -1 for the null-supplying side. The shared index materializer in the parent
+//! module gathers the output from them.
+
 use std::time::Instant;
 
 use query_runtime::metrics::{JoinOperatorMetrics, OperatorMetrics};
@@ -9,6 +24,9 @@ use super::{
     observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
 };
 
+/// Cross join of two resident sides into the projected output.
+///
+/// Consumes both frames; they drop when the call returns, on success and on error.
 pub(super) fn execute_compiled_projected_cross_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -26,6 +44,12 @@ pub(super) fn execute_compiled_projected_cross_join_materialize(
     )
 }
 
+/// Shared by the cross and keyless outer cross entry points; `execution_strategy` is the label the
+/// join metrics carry.
+///
+/// `output_reservation_bytes` in the metrics is the allocation size the cuDF plan reports for the
+/// output. It is recorded for observation only; the grant is enforced by the query allocator when
+/// `materialize` allocates.
 fn execute_compiled_projected_cross_join_materialize_with_strategy(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -98,6 +122,13 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     Ok(ResidentGpuFrame::with_device_bytes(GpuDataFrame::new(output), output_bytes))
 }
 
+/// Runs a predicate-free left or full join, choosing between the cross plan and gather maps.
+///
+/// The cross plan is used when the product is the whole answer: both sides non-empty, both
+/// empty, or a left join whose left side is empty. Otherwise one side is empty and the other is
+/// not, and the non-empty side is emitted with nulls through
+/// `execute_compiled_keyless_outer_cross_join_from_indices`. Any other join type is an
+/// invariant violation.
 pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -170,12 +201,17 @@ pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
     }
 }
 
+/// Side whose rows survive a keyless outer join when the opposite side is empty.
 #[derive(Debug, Clone, Copy)]
 enum PreservedKeylessOuterSide {
     Left,
     Right,
 }
 
+/// Emits every row of the preserved side once, paired with nulls for the other side.
+///
+/// The gather maps have one entry per preserved row. cuDF gather maps use 32-bit indices; a row
+/// count above `INT32_MAX` is rejected before anything is allocated.
 fn execute_compiled_keyless_outer_cross_join_from_indices(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -232,6 +268,8 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
     )
 }
 
+/// Builds the gather maps for the preserved side (an ascending sequence) and the null-supplying
+/// side (a constant -1).
 fn keyless_outer_cross_join_indices(
     context: &ExecutionContext,
     preserved_side: PreservedKeylessOuterSide,

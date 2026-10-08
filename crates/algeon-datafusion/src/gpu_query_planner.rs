@@ -1,3 +1,5 @@
+//! The one `QueryPlanner` a session with GPU SQL families installs.
+
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
@@ -10,6 +12,13 @@ use datafusion::{
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
 };
 
+/// Physical planner composing caller extension planners with the extension
+/// planner of each installed GPU SQL family.
+///
+/// DataFusion accepts one `QueryPlanner` per session, so each family install
+/// adds its planners here; the session's planner is never replaced. Caller
+/// planners run first, families in id order. Installing a family twice keeps
+/// the first registration.
 #[derive(Clone)]
 pub struct AlgeonQueryPlanner {
     caller_extension_planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>,

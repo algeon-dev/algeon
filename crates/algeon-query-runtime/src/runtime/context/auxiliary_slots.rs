@@ -21,11 +21,19 @@ use crate::runtime::deadline::block_until;
 #[derive(Debug)]
 pub(crate) struct AttemptAuxiliarySlots {
     device_ordinal: usize,
+    /// `S_d`, normalized to at least one so every admitted attempt can run one
+    /// lane or source read.
     capacity: usize,
+    /// Shared with each `AttemptAuxiliaryPermit`, which returns its slot on
+    /// drop wherever the permit ended up. Never closed.
     permits: Arc<Semaphore>,
 }
 
 /// RAII ownership of one admitted attempt's auxiliary stream allowance.
+///
+/// One slot of the attempt's `S_d`. It travels with the stream lease or lane
+/// it backs (`AttemptWorkLease`, `StreamBinding::AttemptWork`) and the slot
+/// returns when the permit drops, after the stream it backed.
 #[derive(Debug)]
 pub(crate) struct AttemptAuxiliaryPermit {
     _permit: OwnedSemaphorePermit,
@@ -74,6 +82,12 @@ impl AttemptAuxiliarySlots {
 
     /// Asynchronously acquires one attempt-local auxiliary slot without
     /// parking the caller's Tokio worker while another fragment owns it.
+    ///
+    /// The `biased` select prefers a permit that is already free over a
+    /// cancellation that fired in the same poll. After a cancellation or
+    /// deadline wake the loop re-runs `check`, so the error names the cause:
+    /// the typed cancellation, or the exhausted-capacity error with
+    /// `deadline_elapsed` set when only the caller's deadline passed.
     pub(crate) async fn acquire_with_cancellation_deadline_async(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
@@ -108,8 +122,14 @@ impl AttemptAuxiliarySlots {
     }
 
     /// Blocks the calling thread until a slot frees, cancellation is
-    /// requested, or the earlier of `deadline` and the cancellation deadline
-    /// passes. Each of them wakes the thread directly.
+    /// requested, or the deadline passes, whichever comes first.
+    ///
+    /// `deadline` is clamped to the cancellation's own deadline, and each of
+    /// the three events wakes the thread directly. The wait races
+    /// `cancel_requested` without a Tokio timer because `block_until` polls
+    /// the future from a parked thread and the park timeout enforces the
+    /// deadline. A permit acquired in the same poll as a cancellation is kept;
+    /// the semaphore has already released it.
     fn acquire_blocking(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
@@ -146,6 +166,8 @@ impl AttemptAuxiliarySlots {
         }
     }
 
+    /// Diagnostic estimate from the free count. Concurrent acquisitions can
+    /// move it between this read and the error that reports it.
     fn in_use(&self) -> usize {
         self.capacity.saturating_sub(self.permits.available_permits())
     }

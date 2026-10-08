@@ -9,10 +9,17 @@ use super::{
     *,
 };
 
+/// Handle to one object fetch running on the object-store control runtime. `finish` blocks the
+/// calling thread until the fetch has produced its result.
 pub(in crate::exec::source) struct PendingCacheMaintenanceFetch {
     receiver: std::sync::mpsc::Receiver<Result<CacheMaintenanceObject>>,
 }
 
+/// A fetched object together with its host byte reservation.
+///
+/// `permit` is charged for the payload and must live until the bytes are published to the cache
+/// file, because the payload is resident host memory until then. `release_after_publish`
+/// returns the reservation; dropping the object without it also returns it.
 pub(in crate::exec::source::lakehouse_cache) struct CacheMaintenanceObject {
     pub(in crate::exec::source::lakehouse_cache) bytes: bytes::Bytes,
     pub(in crate::exec::source::lakehouse_cache) permit: Option<CacheFillBytePermit>,
@@ -20,6 +27,8 @@ pub(in crate::exec::source::lakehouse_cache) struct CacheMaintenanceObject {
 }
 
 impl PendingCacheMaintenanceFetch {
+    /// Waits for the fetch. The result is the fetch error (object store failure, payload over the
+    /// remaining fill budget) or `Internal` if the worker dropped its sender without a result.
     pub(super) fn finish(self) -> Result<CacheMaintenanceObject> {
         self.receiver.recv().map_err(|error| {
             QueryError::new(
@@ -42,6 +51,17 @@ impl CacheMaintenanceObject {
     }
 }
 
+/// Starts fetching one S3 object for a cache fill and returns before the fetch completes.
+///
+/// Admission happens on the calling thread, in this order: the cancellation check, a host byte
+/// reservation from the cache-fill budget, then a cache-fill operation slot. Each wait is bounded
+/// by the cache-fill acquire timeout and ends in `ServiceOverloaded` on expiry; the byte
+/// reservation is released if the slot wait fails. The fetch itself runs on the object-store
+/// control runtime. The slot is held until the result has been sent, and the byte reservation
+/// travels with the object until `release_after_publish`.
+///
+/// `estimated_fetch_bytes` sizes the reservation. When it is unknown the whole budget is reserved,
+/// so an unsized fetch runs alone against the byte budget.
 pub(super) fn start_cache_maintenance_fetch(
     context: &ExecutionContext,
     location: &ParquetSourceLocation,
@@ -108,11 +128,15 @@ pub(super) fn start_cache_maintenance_fetch(
                 Ok(CacheMaintenanceObject { bytes, permit: Some(permit), actual_bytes })
             });
         let _ = sender.send(result);
+        // Naming the permit here moves it into this closure, which keeps the operation slot held
+        // for the whole fetch. It is released after the result is sent.
         drop(operation_permit);
     });
     Ok(PendingCacheMaintenanceFetch { receiver })
 }
 
+/// Bytes to reserve before a fetch: the estimate, or the whole budget when unknown, and at least
+/// one. `_max_source_reads_in_flight` is accepted and ignored.
 fn cache_fill_reserve_bytes(
     budget_bytes: u64,
     _max_source_reads_in_flight: usize,

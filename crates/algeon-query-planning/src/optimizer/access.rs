@@ -1,3 +1,10 @@
+//! Plan-shape accessors shared by optimizer rules.
+//!
+//! Each helper reads one node or one expression and answers a structural
+//! question: which local Parquet source sits at a node, which nodes consume it,
+//! which input column a projection output renames, which file columns a
+//! predicate reads. They hold no rule state and perform no rewrite.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
@@ -18,6 +25,9 @@ pub fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalP
     Some(source)
 }
 
+/// The local Parquet source at `node_id` in a node list under in-place edit.
+/// The id check rejects a list whose ids no longer match positions, so a rule
+/// cannot narrow the wrong source after a rebuild.
 pub(super) fn mutable_local_parquet_source(
     nodes: &mut [QueryNode],
     node_id: NodeId,
@@ -35,6 +45,8 @@ pub(super) fn mutable_local_parquet_source(
     Some(source)
 }
 
+/// Consumers of each node in plan order. A node that reads one input twice
+/// appears twice, and the sink is not a consumer.
 pub(super) fn consumers_by_node(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
     let mut consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
     for node in plan.nodes() {
@@ -45,6 +57,8 @@ pub(super) fn consumers_by_node(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId
     consumers
 }
 
+/// The input column a projection output passes through under any number of
+/// renames, or `None` for a computed output.
 pub(super) fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
     match expr {
         Expr::Column(column) => Some(column),
@@ -53,6 +67,9 @@ pub(super) fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
     }
 }
 
+/// [`simple_projection_column`] restricted to at most one rename. Key lineage
+/// uses it so a nested alias is reported as an expression-derived key instead
+/// of being traced.
 pub(super) fn simple_projection_column_single_alias(expr: &Expr) -> Option<&ColumnRef> {
     match expr {
         Expr::Column(column) => Some(column),
@@ -64,6 +81,8 @@ pub(super) fn simple_projection_column_single_alias(expr: &Expr) -> Option<&Colu
     }
 }
 
+/// The join output with `output_name`, or `None` when two outputs share the
+/// name and lineage by name would be ambiguous.
 pub(super) fn unique_join_output_for_name<'a>(join: &'a JoinNode, output_name: &str) -> Option<&'a JoinOutputColumn> {
     let mut matches = join.spec.output_projection.iter().filter(|output| output.output_name == output_name);
     let first = matches.next()?;
@@ -90,6 +109,9 @@ pub(crate) fn reader_projection_indices(
     Some(columns)
 }
 
+/// File-column indices that `expr` and `predicate` read, or `None` when any
+/// referenced column is a partition or missing-null column, which a reader
+/// predicate cannot evaluate, or when nothing is referenced.
 pub(super) fn reader_projection_indices_for_exprs(
     source: &LocalParquetSource,
     expr: &Expr,

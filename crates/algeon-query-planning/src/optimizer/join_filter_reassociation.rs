@@ -1,3 +1,27 @@
+//! Join-filter reassociation and residual-derived filter pushdown.
+//!
+//! Two rewrites share this rule and its diagnostics. Reassociation matches an
+//! inner equi-join `P` whose output projects one side only (the preserved
+//! side), whose preserved input is an inner join `C`, possibly under a renaming
+//! projection, and whose preserved-side keys all trace to one child `a` of `C`.
+//! It rewrites `P(C(a, b), f)` into `C(F(a, f), b)`, where `F` is a new inner
+//! join over the same key values that keeps `a`'s columns, then re-applies
+//! `P`'s projection. Row multiplicity is preserved because `f` matches the
+//! same key values it matched before, `P`'s output carries no column of `f`,
+//! and both joins require `NullsDoNotMatch`, so no null key changes sides.
+//! Residual pushdown matches an inner join with a residual predicate and
+//! inserts, below each input, the filter implied by every branch of the
+//! residual for that side. The residual stays on the join, so the pushed
+//! filter removes only rows the residual would remove.
+//!
+//! Both rewrites rebuild the node list, so `QueryPlan::rewrite` drops
+//! dynamic-filter routes through changed nodes and invalidates advisory
+//! bindings there; the rebuilt crossed join also discards its advisory byte
+//! statistics because its columns changed. The optimizer driver runs the pass
+//! to a fixpoint because one applied move can expose the next, and a pushed
+//! filter is skipped when its exact predicate already heads the subtree, which
+//! is what lets the fixpoint terminate. Rejection reasons are report contracts.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
@@ -157,10 +181,14 @@ pub(crate) fn optimize_join_filter_reassociation(
     })
 }
 
+/// Rebuilds the plan top down; `memo` maps each visited source node to its
+/// image and becomes the origin map for `RewrittenNodes::rebuilt`.
 struct JoinFilterReassociationRewriter<'a> {
     original: &'a QueryPlan,
     options: &'a JoinFilterReassociationOptions,
+    /// Supplies Parquet footer statistics for scalar range derivation.
     resolver: &'a dyn dimension_pruning::LocalParquetPruningResolver,
+    /// Parent counts with the sink counted as a consumer.
     consumer_counts: Vec<usize>,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
@@ -384,6 +412,11 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         self.push_filter_into_subtree(old_input, predicate)
     }
 
+    /// Places `predicate` as deep as the structure allows: through filters,
+    /// through projections that rename its columns, and through the one side
+    /// of an inner join that owns all its columns, then wraps the subtree it
+    /// reaches. A subtree that already starts with this exact predicate is
+    /// left alone, which is why the fixpoint terminates.
     fn push_filter_into_subtree(&mut self, old_input: NodeId, predicate: Expr) -> PushedFilterInput {
         if input_has_top_filter(self.original, old_input, &predicate) {
             let input_new = self.rewrite_subtree(old_input);
@@ -458,6 +491,9 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         self.wrap_filter_above_subtree(old_input, predicate)
     }
 
+    /// Wraps the subtree in a filter when its source is dimension-sized Parquet
+    /// or already resident. A filter over a fact scan would add a pass over
+    /// the large input for rows the residual removes later.
     fn wrap_filter_above_subtree(&mut self, old_input: NodeId, predicate: Expr) -> PushedFilterInput {
         if !residual_filter_pushdown_target_supported(self.original, old_input) {
             let input_new = self.rewrite_subtree(old_input);
@@ -628,10 +664,17 @@ struct PushedFilterInput {
     filtering_node_id: Option<NodeId>,
 }
 
+/// Where the parent join's preserved-side keys come from below the crossed
+/// join.
 struct PreservedInputLineage {
+    /// Renaming projection between the parent and the crossed join, rebuilt
+    /// above the new crossed join when present.
     projection_node_id: Option<NodeId>,
     crossed_join_node_id: NodeId,
+    /// Child of the crossed join that owns every key; the new filter join is
+    /// placed on this side.
     filtered_side: JoinSide,
+    /// The parent's keys restated as that child's columns, in key order.
     filtered_child_columns: Vec<ColumnRef>,
 }
 
@@ -740,6 +783,12 @@ fn input_has_top_filter(plan: &QueryPlan, node_id: NodeId, predicate: &Expr) -> 
     matches!(&node.kind, PlanNode::Filter(filter) if filter.predicate == *predicate)
 }
 
+/// A predicate on `side` that every row matching `expr` satisfies, or `None`.
+/// A term over `side` alone is necessary as it stands. A comparison across the
+/// two sides becomes a range test when the other side's values are bounded
+/// (see [`derive_side_scalar_range_filter`]). Conjuncts contribute
+/// independently; a disjunction contributes only when both branches do, as the
+/// OR of the two, since a matching row satisfies at least one branch.
 fn derive_side_necessary_filter(
     plan: &QueryPlan,
     join: &JoinNode,
@@ -774,6 +823,13 @@ fn derive_side_necessary_filter(
     }
 }
 
+/// Range test on `side` implied by a comparison between `side` and the other
+/// side, when the other side's expression has a known integer range over its
+/// filtered subtree (Parquet footer statistics through `resolver`, bounded by
+/// `OptimizerSourceTargetPolicy::residual_scalar_range_max_rows`). `Eq`
+/// yields the range envelope; an inequality yields the one bound every match
+/// satisfies. The literal takes the target's type, and a range that does not
+/// fit that type yields `None`.
 fn derive_side_scalar_range_filter(
     plan: &QueryPlan,
     join: &JoinNode,
@@ -892,6 +948,9 @@ fn infer_expr_type(plan: &QueryPlan, input: NodeId, expr: &Expr) -> Option<Arrow
     infer_expr_type_with_schema(expr, plan.node(input)?.output_schema())
 }
 
+/// Result type of `expr` over `schema`, used to type range literals. `None`
+/// for forms whose type depends on execution (`SUBSTRING`, `CONCAT`, `CASE`),
+/// which then receive no range filter.
 fn infer_expr_type_with_schema(expr: &Expr, schema: &SchemaRef) -> Option<ArrowDataType> {
     match expr {
         Expr::Column(column) => Some(schema.field_with_name(column.name()).ok()?.data_type().clone()),
@@ -1112,6 +1171,9 @@ fn combine_optional_filters(
     }
 }
 
+/// Which join input an expression's columns come from. A qualified column
+/// resolves by input index; an unqualified name resolves only when a single
+/// input carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExpressionScope {
     NoColumns,
@@ -1274,6 +1336,8 @@ fn strip_input_qualifiers(expr: &Expr) -> Expr {
     }
 }
 
+/// The one side every output of `join` comes from, or `None` when outputs mix
+/// sides or the projection is empty.
 fn parent_preserved_output_side(join: &JoinNode) -> Option<JoinSide> {
     let mut side = None;
     for output in &join.spec.output_projection {
@@ -1286,6 +1350,9 @@ fn parent_preserved_output_side(join: &JoinNode) -> Option<JoinSide> {
     side
 }
 
+/// `join` with its output projection narrowed to what `projection` keeps, so
+/// a join whose own output mixes sides still qualifies when the projection
+/// above it reads one side.
 fn projected_preserved_side_join(join: &JoinNode, projection: &ProjectionNode) -> Option<JoinNode> {
     let mut output_projection = Vec::with_capacity(projection.outputs.len());
     let mut side = None;

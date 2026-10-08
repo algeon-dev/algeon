@@ -1,3 +1,10 @@
+//! Arrow-to-cuDF conversion of a source's schema, output columns, partition columns and
+//! decimal reader types.
+//!
+//! cuDF fixed-point scale is the negative of the Arrow and Parquet decimal scale (scale 2 is
+//! cuDF scale -2). `ParquetReaderDecimalType::cudf_scale` is already in cuDF convention, while
+//! decimal literals carry the Arrow scale and pass through `arrow_decimal_scale_to_cudf_scale`.
+
 use cudf::{
     DataType as CudfDataType, TimestampResolution, TypeId,
     io::source::{
@@ -15,6 +22,8 @@ use query_planning::source::{
 use super::error::cudf_error_for_location;
 use crate::{datatypes::arrow_decimal_scale_to_cudf_scale, exec::source::*};
 
+/// Attaches per-column decimal storage types to a cuDF file. An empty slice leaves the file
+/// unchanged.
 pub(in crate::exec::source) fn attach_cudf_reader_decimal_types(
     cudf_file: CudfLocalParquetFile,
     reader_decimal_types: &[ParquetReaderDecimalType],
@@ -63,6 +72,10 @@ pub(in crate::exec::source) fn cudf_reader_decimal_type(
     })
 }
 
+/// Converts the source's logical schema, which covers every field, including partition and
+/// missing columns as well as the ones read from the file. A type cuDF cannot represent fails with
+/// `UnsupportedType`. List columns keep their Arrow type, because the cuDF dtype for a list does
+/// not carry the element type.
 pub(in crate::exec::source) fn cudf_source_schema(source: &LocalParquetSource) -> Result<CudfSourceSchema> {
     let columns = source
         .schema
@@ -146,6 +159,10 @@ pub(in crate::exec::source) fn cudf_source_required_columns(
         .collect()
 }
 
+/// Translates a planner column reference into the cuDF one. A file column becomes the position of
+/// its file index in `read_column_file_indices`, because cuDF `ReadColumn` indexes address the
+/// projected read list; fails with `InvalidPlan` if the column was not projected. A missing column
+/// carries no position and is materialized as nulls.
 pub(in crate::exec::source) fn cudf_source_column_ref(
     source: &LocalParquetSource,
     column: &str,
@@ -197,6 +214,8 @@ pub(in crate::exec::source) fn cudf_partition_columns(source: &LocalParquetSourc
         .collect()
 }
 
+/// Converts one hive-style partition value. `Date64` is carried as a millisecond timestamp and
+/// `Time32`/`Time64` as durations of the same unit. Interval values fail with `UnsupportedType`.
 pub(in crate::exec::source) fn cudf_partition_value(value: &LiteralValue) -> Result<CudfPartitionValue> {
     match value {
         LiteralValue::Null(data_type) => {

@@ -106,6 +106,9 @@ impl BackendCapabilities for RapidsBackend {
     }
 }
 
+/// Only the four arithmetic operators have a decimal output type to infer;
+/// comparisons and boolean operators produce a boolean and never reach this
+/// path through `binary_output_type`.
 fn cudf_binary_operator(op: BinaryOp) -> Result<BinaryOperator> {
     match op {
         BinaryOp::Add => Ok(BinaryOperator::Add),

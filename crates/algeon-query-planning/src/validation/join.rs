@@ -1,3 +1,19 @@
+//! Join node validation: key, residual and output projection contracts.
+//!
+//! Join keys, output columns and residual columns must be input-qualified
+//! (`ColumnQualifier::Input` 0 or 1), because both inputs may produce a column
+//! of one name; an unqualified or out-of-range qualifier is a malformed plan.
+//! A residual predicate is checked against one of two evaluators, chosen by
+//! the form `classify_join` assigns. The cuDF mixed join evaluates its
+//! residual as an AST expression while matching, and the AST has no string
+//! functions, no `CASE`, no null-aware comparison, no temporal casts, and
+//! divides integers without DataFusion's zero and overflow checks
+//! (`validate_join_residual_expr`). When the form is `KeyedEquiPostFilter`,
+//! the residual instead runs as a column-wise filter over the matched rows of
+//! an inner join, and `validate_post_join_residual_expr` admits the wider
+//! column-wise set. Execution reads the same classification, so the set
+//! validated here is the set that runs.
+
 use std::collections::BTreeSet;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
@@ -69,6 +85,8 @@ pub(crate) fn validate_join_capability(
         )
         .with_fact("join_type", &join.spec.join_type));
     }
+    // A left join probes with its preserved side, so no executor builds its
+    // left input; `classify_join` assigns no form to that spec either.
     if join.spec.join_type == JoinType::Left && join.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
@@ -126,6 +144,9 @@ pub(crate) fn validate_join_capability(
         require_timezone_free_operator_key(&right_type, "join right key")?;
         require_comparable_types(&left_type, &right_type)?;
     }
+    // The AST checker runs first. Only when it refuses and the join form runs
+    // the residual as a post-join filter does the wider checker decide, so an
+    // AST-evaluable residual is never reported against the filter rules.
     if let Some(predicate) = &join.spec.residual_predicate {
         let predicate_type = match validate_join_residual_expr(
             predicate,
@@ -337,6 +358,9 @@ fn validate_mark_join_output_projection(
     Ok(())
 }
 
+/// A residual that reads only one input is a filter that belongs below the
+/// join; evaluating it per candidate pair inside the mixed join would repeat
+/// the work once for every row of the other side.
 fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
     let mut left = false;
     let mut right = false;
@@ -440,6 +464,12 @@ pub(crate) fn walk_join_residual_column_sides(
     }
 }
 
+/// Type check of a residual the cuDF mixed join evaluates as an AST expression
+/// while matching. The AST admits columns, literals, `NOT`, null tests,
+/// numeric casts (`is_supported_ast_cast`), arithmetic without integer
+/// division, comparison, boolean logic, literal `IN` lists and fixed-day
+/// `Date32` interval arithmetic. Every other family is `UnsupportedExpression`
+/// here and may still run through the post-join filter path.
 fn validate_join_residual_expr(
     expr: &Expr,
     left_schema: &SchemaRef,
@@ -611,6 +641,11 @@ fn validate_join_residual_expr(
     }
 }
 
+/// Type check of a residual that runs as a column-wise filter over the matched
+/// rows of an inner join (`JoinForm::KeyedEquiPostFilter`). The admitted set is
+/// the single-input expression set with both inputs' columns in scope; the
+/// declared output type of a binary arithmetic node is kept, since it carries
+/// the decimal division scale.
 fn validate_post_join_residual_expr(
     expr: &Expr,
     left_schema: &SchemaRef,
@@ -1032,6 +1067,9 @@ fn validate_join_interval_binary_expr(
         }
         left
     };
+    // The AST has no timestamp arithmetic. A Date32 plus a whole number of
+    // days is an integer add on the day count, which is why the interval must
+    // carry no months and a day-resolution nanosecond part.
     let operand_type =
         validate_join_residual_expr(operand, left_schema, left_available, right_schema, right_available, ctx)?;
     if operand_type != ArrowDataType::Date32 {

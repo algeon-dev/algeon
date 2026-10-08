@@ -62,9 +62,19 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
     fn supports_type(&self, data_type: &ArrowDataType) -> bool;
 
     /// The Arrow output type of the backend's binary kernel for these operands.
+    ///
+    /// An `Err` means the kernel has no binding for the operand pair, and
+    /// validation reports it as an unsupported expression. Validation reaches
+    /// this after its own temporal, interval and decimal rules have run; a
+    /// declared `output_type` is accepted only for decimal division and is
+    /// checked by those rules rather than inferred here.
     fn binary_output_type(&self, op: BinaryOp, left: &ArrowDataType, right: &ArrowDataType) -> Result<ArrowDataType>;
 
     /// Proves the backend can bind this expression for this use.
+    ///
+    /// The check is structural and runs without device memory or a stream.
+    /// Its `Err` keeps the backend's own code and facts, which the validator
+    /// forwards unchanged so the report names the kernel that refused.
     fn check_expression(&self, expr: &Expr, expression_use: ExpressionUse) -> Result<()>;
 
     /// Proves the backend can bind this projection output.
@@ -83,12 +93,16 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
 ///
 /// This is a short-lived borrow, not stored state: neither [`QueryPlan`] nor
 /// the capability analysis nor a compiled artifact holds it, so plan IR and
-/// proof never take on an implementation's lifetime.
+/// proof never take on an implementation's lifetime. The one value that does
+/// outlive the pass is `policy`, which the admission artifact records so
+/// execution runs under the thresholds the plan was admitted with.
 ///
 /// [`QueryPlan`]: crate::plan::QueryPlan
 #[derive(Debug, Clone, Copy)]
 pub struct AnalysisContext<'a> {
     backend: &'a dyn BackendCapabilities,
+    /// Copied into the context so every pass and every error fact it emits
+    /// reads one policy; `admit` overrides it with the policy it decides under.
     policy: PlanningPolicy,
 }
 

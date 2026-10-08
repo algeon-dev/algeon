@@ -5,6 +5,14 @@
 //! satisfy these checks. Violations surface as
 //! [`QueryErrorCode::InvalidPlan`](crate::error::QueryErrorCode::InvalidPlan) and
 //! are bugs in the producer, not user errors.
+//!
+//! Each check guards a specific execution failure: id checks let the executor
+//! index tasks and resources by position; dependency and acyclicity checks
+//! keep the scheduler from starting a task before its inputs exist or waiting
+//! on itself; resource flow checks give every payload transfer an edge the
+//! executor moves or shares the frame through; barrier checks keep blocking
+//! operators from being read before they finish; the fused top-k check keeps
+//! a limit from being applied twice or never.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,6 +58,8 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> Result<()> {
     validate_schedule(pipeline).map_err(ScheduleRejection::into_error)
 }
 
+/// Runs every check and names the first failed contract. Identity checks run
+/// first because the later checks index tasks and resources by id.
 pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> std::result::Result<(), ScheduleRejection> {
     let task_ids = named(Reason::CompiledPipelineTaskIdentityInvalid, validate_tasks(pipeline))?;
     named(Reason::CompiledPipelineEdgeIdentityInvalid, validate_edges(pipeline, &task_ids))?;
@@ -214,6 +224,9 @@ fn validate_lifetime(
     Ok(())
 }
 
+/// Every non-source task has an incoming edge and every probe depends on its
+/// own build. A task without an input dependency would be ready at start and
+/// read a resource nothing has produced.
 fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<PipelineTaskId>) -> Result<()> {
     let mut incoming = BTreeSet::new();
     for edge in pipeline.edges() {
@@ -260,6 +273,8 @@ fn is_join_build_for_probe(pipeline: &CompiledPipeline, build_id: PipelineTaskId
     let Some(probe) = pipeline.tasks().iter().find(|task| task.id() == probe_id) else {
         return false;
     };
+    // Compiled join tasks always carry their plan node; the `None` cases admit
+    // hand-assembled test pipelines, which match by kind alone.
     build.kind() == PipelineTaskKind::JoinBuild
         && probe.kind() == PipelineTaskKind::JoinProbe
         && (build.plan_node().is_none() || probe.plan_node().is_none() || build.plan_node() == probe.plan_node())
@@ -321,6 +336,12 @@ fn validate_task_resource_references(
     Ok(())
 }
 
+/// Each resource's producer lists it as an output and each consumer as an
+/// input, every consumer is reachable from the producer and is reached by an
+/// edge carrying the resource, and the lifetime variant matches the consumer
+/// count. Reachability keeps a consumer from running before its producer; the
+/// carrying edge is the transfer along which the executor moves or shares the payload
+/// through, so a consumer without one would have no way to receive it.
 fn validate_resource_flow(pipeline: &CompiledPipeline) -> Result<()> {
     for resource in pipeline.resources() {
         let producer = task_by_id(pipeline, resource.producer())?;
@@ -424,6 +445,10 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> Result<()> {
     Ok(())
 }
 
+/// A host sink materializes to Arrow and retains no device resource; a
+/// GPU-resident sink retains one, the root output of the sink
+/// boundary's input task. Any other combination would leak a resident frame
+/// or return to the caller a resource the schedule never produced.
 fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> Result<()> {
     let sink_outputs = pipeline
         .resources()
@@ -468,6 +493,10 @@ fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> Result<()> {
     Ok(())
 }
 
+/// A shared producer edge carries its one resource and no other, and the shared,
+/// join input and sink input edges together reach every recorded consumer, so
+/// the executor's reference count for the shared frame equals the consumer
+/// count and the frame is released after the last consumer.
 fn validate_shared_resident_resource_edges(pipeline: &CompiledPipeline, resource: &ResidentResource) -> Result<()> {
     let shared_edges = pipeline
         .edges()
@@ -705,6 +734,11 @@ fn direct_data_consumers(pipeline: &CompiledPipeline, task: PipelineTaskId) -> B
         .collect()
 }
 
+/// Every downstream task of a barrier is reachable from one of its upstream
+/// tasks, so a barrier never introduces an ordering the edges do not already
+/// imply. Join barriers pair one build with one probe, or one probe with one
+/// materialize, of the same plan node; boundary barriers sit on tasks of the
+/// kind they name.
 fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> Result<()> {
     for barrier in pipeline.barriers() {
         if barrier.upstream_tasks().is_empty() {

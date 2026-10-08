@@ -1,5 +1,11 @@
+//! Report rows for shared-subplan materialization. Field names, the
+//! `filtered_aggregate_memory_shape` strings and the rejection reasons are
+//! read by TSV consumers and change only together with them.
+
 use crate::plan::NodeId;
 
+/// Rows from one or more runs of the module's passes; `merge` adds counts
+/// and appends candidates, so a value may cover both passes of the sequence.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SharedSubplanMaterializationDiagnostics {
     /// Number of grouped aggregate nodes considered as possible materialization roots.

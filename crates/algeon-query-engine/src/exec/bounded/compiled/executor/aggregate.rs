@@ -34,6 +34,9 @@ impl CompiledGpuTaskExecutor<'_> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
+        // When the contract lets the output stay a stream, finalization is
+        // deferred per frame and the merged group-key state stays resident in
+        // the producer; otherwise the aggregate finalizes into one frame.
         let preserve_output_stream = self.resource_data_form(output) == ResidentDataForm::FrameStream;
         let node = self.plan.node(node_id).ok_or_else(|| {
             invalid("compiled aggregate task references a missing plan node")
@@ -97,6 +100,10 @@ impl CompiledGpuTaskExecutor<'_> {
             payload => Err(self.reject_task_input(task, input, payload)?),
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
+        // Group-key filters are published from the complete key set before
+        // the output is stored, so a consumer scheduled after this task finds
+        // its routes ready. A source-stream payload has no key set yet and
+        // leaves its routes unpublished.
         let group_key_state = match &frame.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame: resident, .. } => Some(vec![resident.frame.clone()]),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.complete_group_key_state(),

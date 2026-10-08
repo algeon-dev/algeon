@@ -1,7 +1,8 @@
 //! Per-edge capability analysis.
 //!
-//! Each producer→consumer edge in the plan carries a set of contract kinds
-//! (column carriage, key carriage, partition compatibility, etc.). Rejections
+//! Each producer→consumer edge in the plan carries the residency contracts the
+//! consumer places on the producer (resident source input, join build or probe
+//! input, union position, sink materialization) and one decision. Rejections
 //! here are local to the edge; whole-plan admission lives in [`crate::admission`].
 
 use std::collections::BTreeSet;
@@ -18,6 +19,9 @@ use super::{
     rejection::Reason,
 };
 
+/// One edge per input slot of `kind`, in input order. The left-anti dedup
+/// check refines only an edge whose base decision is satisfied, so a missing
+/// producer keeps its own, more local, reason.
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {
     kind.input_ids()
         .iter()
@@ -132,6 +136,10 @@ fn anti_probe_input_is_dedup_proven(plan: &QueryPlan, node_id: NodeId, visiting:
     }
 }
 
+/// Contract kinds one edge carries: producer facts first (source format, join
+/// materialization), then the consumer's role facts. The shared-producer kind
+/// is added later by [`mark_shared_producer_edge_contracts`], once every edge
+/// exists.
 pub(super) fn edge_contract_kinds(
     plan: &QueryPlan,
     producer: NodeId,
@@ -178,6 +186,9 @@ pub(super) fn edge_contract_kinds(
     kinds
 }
 
+/// Base decision for an edge. Plan construction guarantees every producer
+/// exists, so a rejection here means the analysis ran over an unvalidated node
+/// list; residency itself is judged by the compiled pipeline contracts.
 pub(super) fn edge_decision(plan: &QueryPlan, producer: NodeId, consumer: EdgeConsumer) -> CapabilityDecision {
     if plan.node(producer).is_none() {
         return CapabilityDecision::rejected(
@@ -214,6 +225,9 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
     }
 }
 
+/// Semantic role of input `input_index` of `kind`. A join's roles follow its
+/// `build_side`: input 0 is the left side, and whichever side the spec builds
+/// is the build input.
 pub(crate) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     match kind {
         PlanNode::Aggregate(_) => InputRole::AggregateInput,
@@ -239,6 +253,9 @@ pub(crate) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     }
 }
 
+/// The edge from the root node to the sink. A deferred host sink is analyzed
+/// as a GPU-resident consumer because execution treats it as one; only a host
+/// Arrow sink carries the explicit materialization contract.
 pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     let producer = plan.sink().input();
     let consumer = match plan.sink() {
@@ -263,6 +280,9 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     EdgeContract { producer, consumer, contract_kinds, input_role: InputRole::SinkInput, decision }
 }
 
+/// Adds the shared-producer kind to every node-consumer edge of a producer
+/// with more than one consumer. Runs after all input edges exist because it
+/// needs the full consumer set; the sink edge is never marked. Idempotent.
 pub(super) fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut [EdgeContract]) {
     let consumers = consumer_nodes(plan);
     for (producer, producer_consumers) in consumers {

@@ -1,4 +1,17 @@
 //! Signal-only device memory allocation-failure counters.
+//!
+//! Signal-only means the counters inform reports and never admission: the
+//! ledger decides capacity from its own integer accounting, and a failed
+//! allocation is already a typed error at its source. The counters are
+//! written by the callback the device memory manager invokes inside RMM's
+//! failure handling, so that callback allocates nothing and takes no lock.
+//!
+//! The manager and its callback are process-lifetime, while backends are
+//! constructed per generation. The registry below therefore keeps one
+//! tracker per ordinal before installation (`pending`) and rebinds it to the
+//! manager's installation generation afterwards (`installed`), so a later
+//! backend recovers the tracker the live callback already points at instead
+//! of starting a second counter the callback would never update.
 
 use std::{
     collections::HashMap,
@@ -37,7 +50,11 @@ pub(crate) struct DeviceMemoryFailureTracker {
 #[derive(Debug)]
 struct DeviceMemoryFailureTrackerInner {
     device_ordinal: usize,
+    /// Zero until the tracker is bound to a manager installation; bound once
+    /// and never rebound to a different generation.
     installation_generation: AtomicU64,
+    /// Whether the live callback updates this tracker. Mutually exclusive
+    /// with `callback_install_unavailable`; both false before installation.
     callback_installed: AtomicBool,
     callback_install_unavailable: AtomicBool,
     allocation_failure_count: AtomicU64,
@@ -203,6 +220,11 @@ impl DeviceMemoryFailureTracker {
         Ok(trackers.pending.entry(device_ordinal).or_insert_with(|| Self::new(device_ordinal)).clone())
     }
 
+    /// Moves this tracker from the pending to the installed registry under
+    /// `generation`, after a successful manager installation. Idempotent for
+    /// the same tracker; a different tracker already bound to the generation,
+    /// or a pending candidate that is not this tracker, is refused so the
+    /// callback and the reported counters cannot diverge.
     pub(crate) fn commit_installation_generation(&self, generation: u64) -> Result<()> {
         self.bind_installation_generation(generation)?;
         let device_ordinal = self.device_ordinal();

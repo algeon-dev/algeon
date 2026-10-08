@@ -1,3 +1,24 @@
+//! Placement of dynamic filters from a join build on the probe-side Parquet leaf.
+//!
+//! A produced filter reaches the leaf in one of two forms. A reader predicate is merged into
+//! the source's own predicate and the Parquet reader prunes row groups and rows before
+//! decode. A post-decode filter runs as a stage after decode and removes rows only. The
+//! route's `consumer_lowering` proposes the form and the functions here decide, from the
+//! produced filter and the source, whether the proposal stands:
+//!
+//! - A reader-predicate route merges when `dynamic_filter_reader_predicate_should_merge`
+//!   accepts it. A range filter must also be selective enough against the selected source's
+//!   value range.
+//! - `PostDecodeOnly` and `SkippedUnsupportedStaticPredicateMix` routes always run post-decode.
+//! - A small-IN-list filter longer than `max_deferred_small_in_list_reader_values` is deferred
+//!   to post-decode, but only while another reader predicate remains to prune.
+//! - A hash-set filter has no reader form. It runs post-decode when reader pruning did not
+//!   change the selected row groups or bytes, the set is small enough, and the selected
+//!   source is large enough.
+//!
+//! The record functions fold row counts before and after the reader predicate into the
+//! dynamic-filter metrics.
+
 use std::collections::BTreeSet;
 
 use query_planning::policy::PlanningPolicy;
@@ -10,6 +31,9 @@ use super::{
 };
 use crate::rapids_backend::rapids_analysis_context;
 
+/// Ids of the routes whose filter is merged into the source reader predicate. Deferred
+/// routes, routes without a reader lowering, unproduced filters and routes with no consumer
+/// column are skipped. Errors come from reading the footers for the range check.
 pub(super) fn merged_reader_predicate_route_ids(
     source: &LocalParquetSource,
     routes: &[&DynamicFilterRoute],
@@ -49,6 +73,8 @@ pub(super) fn merged_reader_predicate_route_ids(
     Ok(ids)
 }
 
+/// Metric records for merged routes. `Empty` and hash-set filters have no reader predicate
+/// form and produce none.
 pub(super) fn source_reader_predicate_dynamic_filter_stages(
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
@@ -69,6 +95,9 @@ pub(super) fn source_reader_predicate_dynamic_filter_stages(
         .collect()
 }
 
+/// Routes whose long small-IN-list filter moves to post-decode. Empty unless some other
+/// reader predicate remains, either the source's own or a route that keeps its reader form,
+/// so deferring never leaves the reader without a predicate.
 pub(super) fn deferred_large_small_in_list_reader_predicate_routes(
     source: &LocalParquetSource,
     routes: &[&DynamicFilterRoute],
@@ -116,6 +145,9 @@ pub(super) fn large_small_in_list_reader_predicate_should_defer(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
 )]
+/// Builds the post-decode filter nodes for routes that need one, each with its route and
+/// filter for per-chunk row metrics. A route whose filter has no predicate over the source
+/// schema yields none.
 pub(super) fn source_post_decode_dynamic_filter_stages(
     source: &LocalParquetSource,
     source_node_id: NodeId,
@@ -167,6 +199,10 @@ pub(super) fn source_dynamic_filter_requires_post_decode(
             ))
 }
 
+/// Whether a hash-set filter on a reader-predicate route runs post-decode: reader pruning
+/// left the selected row groups and bytes unchanged, the set holds at most
+/// `max_unpruned_hash_set_post_decode_values` values, and the selected source has at least
+/// `min_unpruned_hash_set_post_decode_source_rows` known rows.
 pub(super) fn unpruned_reader_hash_set_should_run_post_decode(
     source: &LocalParquetSource,
     route: &DynamicFilterRoute,
@@ -197,6 +233,7 @@ pub(super) fn dynamic_filter_source_pruning_unchanged(
     before.row_groups == after.row_groups && before.source_bytes == after.source_bytes
 }
 
+/// Rows in the selected row groups of every file, or `None` when any file lacks row counts.
 pub(super) fn selected_source_known_rows(source: &LocalParquetSource) -> Option<u64> {
     source.files.iter().try_fold(0_u64, |total, file| {
         let row_group_rows = file.row_group_rows.as_ref()?;
@@ -210,6 +247,8 @@ pub(super) fn selected_source_known_rows(source: &LocalParquetSource) -> Option<
     })
 }
 
+/// Records rows before (the chunk's planned count, `None` when unknown) and after the
+/// reader predicate for one decoded chunk. No-op without reader dynamic filters.
 pub(super) fn record_dynamic_filter_reader_predicate_rows(
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     chunk: &SourceChunk,
@@ -234,6 +273,7 @@ pub(super) fn record_dynamic_filter_reader_predicate_rows(
     }
 }
 
+/// Batch form of the row record. The planned count is `None` when any chunk's is unknown.
 pub(super) fn record_dynamic_filter_reader_predicate_batch_rows(
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     batch: &SourceChunkBatch,

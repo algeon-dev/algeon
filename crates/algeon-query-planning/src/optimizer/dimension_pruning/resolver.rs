@@ -1,3 +1,5 @@
+//! Caller-supplied local Parquet facts for dimension-derived pruning.
+
 use super::{DimensionKeyFilter, Expr, KeyRange, LocalParquetSource};
 
 /// Local-filesystem reads a caller supplies for dimension-derived pruning and

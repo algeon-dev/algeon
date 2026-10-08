@@ -1,3 +1,18 @@
+//! Scheduled local Parquet chunk reads and their join protocol.
+//!
+//! `ScheduledLocalParquetRead::spawn` starts one chunk read and the consumer ends it with either
+//! `finish` (take the decoded frame at the commit point) or `abandon` (join and discard).
+//! A read runs in one of two arms. From an attempt's root context it is submitted as a
+//! `SupervisedWorker` job on the device executor's blocking lane, holding an `AttemptWorkLease`
+//! (attempt auxiliary permit plus a leased stream) until it is joined. From a context that already
+//! is an attempt work lease, such as an execution lane, it runs inline on that lease.
+//!
+//! This module does not count reads outstanding. The join-leaf scheduler keeps at most one
+//! optional read ahead of the required one, and only when `max_source_reads_in_flight` exceeds 1;
+//! for an admitted attempt, its auxiliary permits also bound the worker arm. The worker does not
+//! host-synchronize the decode; see `ReadinessEvent`. Design owner:
+//! `website/docs/design/data-path.mdx` and `website/docs/design/admission.mdx`.
+
 use std::{
     sync::{
         Arc,
@@ -23,8 +38,15 @@ use super::{
     parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 
+/// Process-wide span ids for source-read observations. The plan span is id 1 and operator-stage
+/// spans start at `1 << 32`, so this range sits between them.
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
 
+/// One started chunk read, owned by the consumer that spawned it.
+///
+/// The consumer must end it with `finish` or `abandon`. Both join the worker, observe the
+/// readiness event and record the consumer-join lifecycle events; a plain drop does none of
+/// that. `prefetch` only labels the read for the caller and does not change how it runs.
 pub(in crate::exec) struct ScheduledLocalParquetRead {
     chunk: SourceChunk,
     state: ScheduledLocalParquetReadState,
@@ -33,6 +55,9 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
 
 enum ScheduledLocalParquetReadState {
     /// A leased worker read scheduled from the attempt's root context.
+    ///
+    /// `source_read_lease` keeps the worker's stream and auxiliary permit held until the
+    /// consumer has joined the worker.
     Running {
         worker: SupervisedWorker<ScheduledLocalParquetReadResult>,
         source_read_lease: Box<AttemptWorkLease>,
@@ -47,6 +72,8 @@ enum ScheduledLocalParquetReadState {
     Inline { result: Box<ScheduledLocalParquetReadResult>, observation: Option<Arc<SourceReadObservation>> },
 }
 
+/// A joined chunk read whose readiness event has been synchronized. `finish` reports
+/// `observed_bytes` as 0; it does not measure device bytes.
 pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
     pub(in crate::exec) chunk: SourceChunk,
     pub(in crate::exec) frame: GpuDataFrame,
@@ -54,6 +81,8 @@ pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
     pub(in crate::exec) observed_row_group_count: Option<u64>,
 }
 
+/// What a read body returns. The readiness event is `None` only when recording it failed and the
+/// worker host-synchronized its stream instead, so the frame is already complete.
 struct ScheduledLocalParquetReadResult {
     frame: Result<(GpuDataFrame, Option<ReadinessEvent>)>,
     observed_row_group_count: Option<u64>,
@@ -71,6 +100,8 @@ struct ReadinessEvent {
 }
 
 impl ReadinessEvent {
+    /// Records a CUDA event on the context's stream. It must run on the worker, after the read
+    /// body's last enqueue, so the event orders after every decode kernel of the chunk.
     fn record_on_worker_stream(context: &ExecutionContext) -> Result<Self> {
         let event = context.runtime()?.record_completion_event().map_err(|error| {
             cudf_query_error(
@@ -82,6 +113,9 @@ impl ReadinessEvent {
         Ok(Self { event })
     }
 
+    /// Blocks the calling thread until the decode enqueued before the event has finished. A
+    /// failure is a deferred decode error from the chunk's own stream, reported with the chunk's
+    /// path, index and row-group facts.
     fn synchronize_for_commit(self, chunk: &SourceChunk) -> Result<()> {
         self.event.synchronize().map_err(|error| {
             attach_row_group_facts(
@@ -121,6 +155,9 @@ fn observe_abandoned_readiness(
     }
 }
 
+/// Observation identity of one scheduled read: a `source_read_worker` task and a `source_read`
+/// worker that exist in the topology for each read, including inline reads, so that lifecycle
+/// events resolve to definition rows. Shared by the submitter and the worker closure.
 struct SourceReadObservation {
     observation: RuntimeObservationHandle,
     metrics: MetricsRecorder,
@@ -132,6 +169,10 @@ struct SourceReadObservation {
 }
 
 impl SourceReadObservation {
+    /// Returns `None` when the context has no admitted plan-execution scope, in which case the
+    /// read runs unobserved. Writes the task and worker definition rows before any lifecycle
+    /// event can reference them. `attempt` is a caller-supplied ordinal that is part of the task
+    /// id, so two reads of one chunk get distinct tasks.
     fn new(context: &ExecutionContext, chunk: &SourceChunk, attempt: usize) -> Option<Arc<Self>> {
         let scope = context.runtime_execution_scope()?;
         let task_id = RuntimeTaskId::new(format!(
@@ -174,6 +215,8 @@ impl SourceReadObservation {
         (self.task_id.clone(), self.worker_id.clone())
     }
 
+    /// Returns the recorder's monotonic timestamp of the `Enqueued` event, or `None` when the
+    /// recorder dropped it (capture exhausted or disabled).
     fn enqueue(&self) -> Option<u64> {
         self.observation.record_with_context_timestamped(self.context.clone(), |_monotonic_ns| {
             RuntimeObservationPayload::SourceRead(Box::new(RuntimeSourceReadObservation {
@@ -219,6 +262,9 @@ impl SourceReadObservation {
     }
 }
 
+/// Start of one read's queue-wait measurement. It carries both the recorder timestamp and a
+/// local `Instant`, because trace capture can drop the `Enqueued` event while the queue-wait
+/// metric must still be reported.
 struct SourceReadQueueStart {
     recorder_monotonic_ns: Option<u64>,
     fallback_started_at: Instant,
@@ -231,10 +277,10 @@ impl SourceReadQueueStart {
         Self { recorder_monotonic_ns, fallback_started_at }
     }
 
-    // The sole recording site for queue wait: the totals must see the same
+    // The sole recording site for queue wait. The totals must see the same
     // measurement whether or not trace capture retained the worker-started
-    // event, so the fallback clock feeds the fact exactly as it feeds the
-    // caller's return value.
+    // event, so the local clock feeds the fact whenever the recorder clock is
+    // unavailable.
     fn worker_started(self, observation: Option<&SourceReadObservation>) -> Duration {
         let fallback = self.fallback_started_at.elapsed();
         let duration = match self.recorder_monotonic_ns {
@@ -251,6 +297,8 @@ impl SourceReadQueueStart {
     }
 }
 
+/// Records the worker-start event and queue wait, then runs `worker`. Used by both arms so that
+/// an inline read reports a (near zero) queue wait with the event shape of a leased read.
 fn run_source_read_worker<T, F>(
     queue_start: SourceReadQueueStart,
     observation: Option<Arc<SourceReadObservation>>,
@@ -277,7 +325,9 @@ where
     // Worker submission, cancellation, and process-exit drain are owned by
     // the runtime device executor; the engine only produces the source work
     // closure with its observation semantics. The single submission entry
-    // owns registration, pool admission, and the handle atomically.
+    // owns registration, pool admission, and the handle atomically. The
+    // closure runs on the executor's blocking lane under an execution-class
+    // job permit, never on the host runtime.
     let pool_observation = observation
         .as_ref()
         .map(|observation| observation.observation.clone())
@@ -289,6 +339,11 @@ where
 
 /// The one source-read body, run either on a leased worker or inline on an
 /// attempt work lease's own context and stream.
+///
+/// The returned closure never fails as a whole; a read error travels inside the result so that
+/// `finish` can attach the chunk facts at the join. It records one terminal lifecycle
+/// event: `ReadFinished`, `Cancelled` for `QueryErrorCode::Cancelled`, `ReadFailed` otherwise, or
+/// `Panicked` from `SourceReadWorkerGuard::drop` on unwind.
 fn read_local_parquet_chunk_worker(
     context: ExecutionContext,
     source: LocalParquetSource,
@@ -305,8 +360,8 @@ fn read_local_parquet_chunk_worker(
                 // Device-side consumers order through the frame's retained provenance fences;
                 // the worker records readiness instead of blocking on its stream so the pool
                 // slot recycles while decode drains. When the event cannot be recorded, the
-                // record failure is reported and the worker host-fences its stream before the
-                // frame ships, so success is never reported for an unverified frame.
+                // record failure is reported on stderr and the worker host-fences its stream
+                // before the frame ships, so success is never reported for an unverified frame.
                 match ReadinessEvent::record_on_worker_stream(&context) {
                     Ok(readiness) => Ok((frame, Some(readiness))),
                     Err(record_error) => {
@@ -346,6 +401,9 @@ fn read_local_parquet_chunk_worker(
     }
 }
 
+/// Records at most one terminal lifecycle event for a read body. `terminal` covers the normal
+/// exits; `Drop` adds `Panicked` only when it runs during unwinding and no terminal event was
+/// recorded.
 struct SourceReadWorkerGuard {
     observation: Option<Arc<SourceReadObservation>>,
     terminal_recorded: bool,
@@ -375,6 +433,10 @@ impl Drop for SourceReadWorkerGuard {
     }
 }
 
+/// Takes the attempt work lease first and starts the queue-wait clock second, so the queue-wait
+/// metric covers only the time between admission and worker start and excludes the wait for the
+/// attempt auxiliary permit and a stream. May block on both until they are free; the wait
+/// observes the context's cancellation.
 fn acquire_source_read_lease_then_enqueue(
     context: &ExecutionContext,
     observation: Option<&Arc<SourceReadObservation>>,
@@ -385,6 +447,15 @@ fn acquire_source_read_lease_then_enqueue(
 }
 
 impl ScheduledLocalParquetRead {
+    /// Starts reading `chunk`.
+    ///
+    /// From an attempt work lease context the read completes before this returns, and a read
+    /// error is deferred to `finish`. From any other context the call first takes an attempt work
+    /// lease, which blocks until an attempt auxiliary permit and a stream are free (cancellable),
+    /// then submits the read to the device executor and returns without waiting for it. Errors
+    /// from lease acquisition or submission, including a submission refused during process exit,
+    /// are returned here and nothing is left running. `budget_bytes` and `budget_boundary` are
+    /// forwarded to the bounded chunk read unchanged.
     #[expect(
         clippy::too_many_arguments,
         reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
@@ -450,6 +521,12 @@ impl ScheduledLocalParquetRead {
         self.prefetch
     }
 
+    /// Joins the read and returns its frame once the decode has completed on the device.
+    ///
+    /// Blocks the calling thread until the worker returns, then until the readiness event fires.
+    /// A worker panic maps to `QueryErrorCode::Internal` and a worker lost to shutdown to
+    /// `QueryErrorCode::Cancelled`; every error carries the chunk's path, index and row-group
+    /// facts. The attempt work lease is released before this returns, on success and on error.
     pub(in crate::exec) fn finish(self) -> Result<ScheduledLocalParquetReadOutput> {
         let ScheduledLocalParquetRead { chunk, state, .. } = self;
         let result = match state {
@@ -488,6 +565,8 @@ impl ScheduledLocalParquetRead {
                             &chunk,
                         ));
                     },
+                    // `Cancelled` covers pool shutdown as well as process exit; `None` means the
+                    // process-exit owner already joined the worker. Both report one reason.
                     Some(SupervisedWorkerJoin::Cancelled) | None => {
                         return Err(attach_row_group_facts(
                             QueryError::new(
@@ -524,6 +603,11 @@ impl ScheduledLocalParquetRead {
         })
     }
 
+    /// Joins and discards the read, then counts a `PrefetchAbandoned` source-read fact.
+    ///
+    /// Blocks until the worker returns, so the lease's stream is not released while the worker
+    /// still uses it. A read error or worker panic is not returned; a late decode failure is
+    /// recorded as an attempt cleanup failure by `observe_abandoned_readiness`.
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
         let ScheduledLocalParquetRead { chunk, state, .. } = self;
         match state {

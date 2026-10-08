@@ -5,12 +5,16 @@
 //! device worker scope as a single transaction. The envelope is built after
 //! the ledger transaction commits (inside the admission mutex) but while the
 //! admission mutex is released, so a bounded stream wait never blocks queue
-//! maintenance or cleanup. Admission is published; the `Admitted` lifecycle
-//! fact and the [`QueryHandle`]; only after every component validates.
+//! maintenance or cleanup. It is built on the placed device's GPU pool as a
+//! `ContextSetup` lifecycle job, which is the bounded waiter the admission
+//! contract allows for. Admission is published (the `Admitted` lifecycle fact
+//! and the `QueryHandle`) only after every component validates.
 //!
-//! Rollback drops components in reverse acquisition order (member → domain →
-//! stream → lane → grant), preserves the primary error, and restores every
-//! admission counter exactly. Fault injection via
+//! Rollback drops components in reverse acquisition order (member, domain,
+//! stream, lane, grant), preserves the primary error, and restores every
+//! admission counter to its prior value. When a root stream was already acquired, the
+//! terminal owners are parked behind that stream's cleanup fence so capacity
+//! returns only after the stream has synchronized. Fault injection via
 //! [`AdmissionTransactionProbe`] proves both properties at every step.
 
 #[cfg(test)]
@@ -333,8 +337,12 @@ pub(crate) struct RootStreamBinding {
 }
 
 /// GPU-bound components of an admitted attempt. Fields are declared in
-/// reverse acquisition order so dropping releases member → domain →
-/// stream/warm reservation.
+/// reverse acquisition order so dropping releases member, then domain, then
+/// stream.
+///
+/// The member and stream sit behind mutexes because `take_root_binding`
+/// consumes them through a shared reference from the first context
+/// acquisition, while the envelope itself stays owned by the lifetime.
 struct EnvelopePhysical {
     worker_scope: DeviceWorkerScope,
     root_member: Mutex<Option<cudf::StreamReservationLease>>,
@@ -457,6 +465,12 @@ impl Drop for AdmissionTeardown {
 }
 
 /// One admitted attempt's resource envelope.
+///
+/// Owned by the `QueryHandleLifetime` after publication and dropped by the
+/// release after the report commit. Its drop is the capacity release: the
+/// typed teardown returns the lane, grant, backend-generation permit, and
+/// lifecycle ticket in that order, and the grant's ledger observer wakes the
+/// admission queue. The drop therefore never runs under the admission mutex.
 pub(crate) struct AdmissionEnvelope {
     /// Retained so a pre-publication drop can account for deferred rollback
     /// cleanup until its stream callback has released the terminal sequence.
@@ -523,6 +537,13 @@ struct EnvelopeBuilder {
     memory_grant: Option<MemoryGrant>,
 }
 
+/// Parks a rollback's terminal owners behind the root stream's cleanup fence.
+///
+/// The stream may carry work from the failed build (the domain's root member
+/// was created on it). Returning the lane and grant before the stream cleanup
+/// thread has synchronized it would let a replacement attempt reuse that
+/// capacity while the stream is still settling, so the terminal sequence
+/// drops inside the after-quiescence callback instead.
 fn defer_rollback_capacity_release(
     service: &Arc<QueryServiceInner>,
     root_stream: StreamLease,

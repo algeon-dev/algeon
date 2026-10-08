@@ -112,15 +112,26 @@ pub struct DeviceResourceProfile {
     pub(crate) configured_limit_bytes: u64,
     pub(crate) headroom_bytes: u64,
     pub(crate) backend_reserve_bytes: u64,
+    /// `configured_limit_bytes - headroom_bytes`, before the backend reserve.
     pub(crate) usable_capacity_bytes: u64,
+    /// `M`: the bytes the ledger may promise to grants, residents, and cache.
     pub managed_capacity_bytes: u64,
     pub default_query_limit_bytes: u64,
+    /// `A_d`. Also the number of lifecycle job permits, root streams, and
+    /// attempt lanes.
     pub max_active_attempts: usize,
+    /// Equals `max_active_attempts`; one lane per admitted attempt.
     pub root_lane_count: usize,
+    /// Equals `max_active_attempts`; one root stream per admitted attempt.
     pub root_stream_count: usize,
+    /// `S_d`, normalized to at least 1.
     pub source_work_per_attempt: usize,
+    /// `A_d * S_d`: auxiliary stream slots and execution job permits for the
+    /// whole device.
     pub(crate) aux_source_work_capacity: usize,
+    /// At least `A_d + A_d * S_d`, checked by `resolve`.
     pub stream_pool_size: usize,
+    /// At least `A_d + A_d * S_d`, checked by `resolve`.
     pub worker_job_capacity: usize,
     pub cache_cap_bytes: u64,
 }

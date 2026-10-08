@@ -11,6 +11,13 @@ pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &Ex
     record_retryable_resource_error(error, metrics);
 }
 
+/// Halves a chunk by row group for a retry after a resource failure.
+///
+/// `None` means the chunk cannot shrink: it reads a whole file (no row-group
+/// list to split) or already holds at most `min_retry_chunk_row_groups`
+/// row groups. The caller then fails with the original error and the retry
+/// facts. Both halves keep the parent's file order so the outputs can be
+/// concatenated in place of the parent.
 pub(in crate::exec::bounded) fn split_retryable_chunk(
     chunk: &SourceChunk,
     min_retry_chunk_row_groups: usize,
@@ -32,6 +39,10 @@ pub(in crate::exec::bounded) fn split_retryable_chunk(
     Some((left, right))
 }
 
+/// Redistributes a parent's scan limit in file order: the left half may take
+/// up to the whole limit, the right half gets what the left half's known row
+/// count leaves. A child without a known row count takes the full remainder
+/// as its own limit, because the reader enforces the limit per chunk.
 fn apply_parent_scan_limit_to_retry_children(parent: &SourceChunk, left: &mut SourceChunk, right: &mut SourceChunk) {
     let Some(parent_limit) = parent.scan_limit_rows else {
         return;
@@ -60,6 +71,13 @@ fn apply_retry_child_scan_limit(child: &mut SourceChunk, remaining: &mut u64) {
     *remaining = 0;
 }
 
+/// Builds a child chunk over `row_group_indexes` of `parent`.
+///
+/// Size and row figures come from the footer's row-group vectors when the
+/// parent carries them and are otherwise scaled from the parent's totals by
+/// row-group share, which is why the child is marked `size_estimate_based`.
+/// The exact preflight byte count is dropped: it measured the parent's read
+/// and does not apply to a subset.
 pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> SourceChunk {
     let parent_row_group_count = parent.row_group_indexes.len();
     let known_row_group_bytes =
@@ -158,6 +176,9 @@ fn checked_row_group_sum(values: Option<&[u64]>, row_group_indexes: &[usize]) ->
     row_group_indexes.iter().try_fold(0u64, |total, row_group| total.checked_add(*values?.get(*row_group)?))
 }
 
+/// Facts for a chunk that failed with a retryable error and will not be
+/// retried: either it was already at minimum size or the attempt budget ran
+/// out. The committed counts tell a reader how much of the source survived.
 pub(in crate::exec::bounded) fn chunk_retry_facts(
     chunk: &SourceChunk,
     execution: &BoundedExecutionAttempt<'_>,

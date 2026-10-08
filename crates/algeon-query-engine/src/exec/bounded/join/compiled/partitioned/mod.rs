@@ -1,3 +1,22 @@
+//! Hash-partitioned joins for inputs too large to join in one pass: `PartitionedHashEqui` and
+//! `PartitionedMixedKeyedResidual`.
+//!
+//! Query planning selects them in `choose_join_strategy`; the engine does not re-decide. The driver
+//! (`driver.rs`) hash-partitions both inputs on the join keys with cuDF's `hash_partition_by`.
+//! Equal keys then meet in the same partition on both sides, and each partition pair is joined with
+//! the kernel of the unpartitioned strategy, which is the one-shot hash sequence for equi joins
+//! (`hash_equi.rs`) and the mixed join for residual joins (`mixed_keyed.rs`). Each pair runs inside
+//! a `JoinMaterializationTxn`.
+//!
+//! `partitioned_join_partition_count` decides the first split from the sizing policies
+//! (`BoundedPartitionTargetPolicy`, `BoundedPartitionRowPolicy`); those own the bounds. The count
+//! only sets the first split. When a pair still fails with a retryable resource error, the driver
+//! retries it with a smaller probe range or with a two-way repartition of that pair.
+//!
+//! A streamed probe holds the partitioned build side for its whole length, plus one probe piece in
+//! partitioned form until its last partition is joined. A resident join holds both partitioned
+//! sides until the last pair is joined.
+
 use query_planning::error::ResourceBoundary;
 
 use super::{
@@ -45,12 +64,16 @@ pub(super) use mixed_keyed::{
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream,
 };
 
+/// Rows `[offset, offset + len)` inside one partition, relative to the partition's first row. Retry
+/// work narrows a partition to such a range.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinRowRange {
     pub(super) offset: usize,
     pub(super) len: usize,
 }
 
+/// Accepts keyed inner, left (build side right) and full joins without a residual predicate. Any
+/// other shape is an invariant violation, because planning classifies the join form first.
 pub(super) fn validate_partitioned_hash_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
     if matches!(node.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
@@ -71,6 +94,9 @@ pub(super) fn validate_partitioned_hash_equi_join(node: &JoinNode) -> Result<()>
     .with_fact("output_projection_len", node.spec.output_projection.len()))
 }
 
+/// Accepts keyed inner, left (build side right) and full joins with a residual predicate, and semi
+/// or anti joins that build their right side and output left columns only. Any other shape is an
+/// invariant violation.
 pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
     if !node.spec.keys.is_empty()
@@ -98,6 +124,11 @@ pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) ->
     .with_fact("output_projection_len", node.spec.output_projection.len()))
 }
 
+/// Partition count for a join of two inputs of the given device sizes.
+///
+/// The count rises with the larger input's size relative to the partitioned-join byte target and is
+/// clamped to the range 2 to 1024. The upper bound is also the ceiling for retry repartitioning in
+/// `driver.rs`.
 pub(super) fn partitioned_join_partition_count(context: &ExecutionContext, left_bytes: u64, right_bytes: u64) -> usize {
     let MemoryControlPolicy { device_budget_bytes, .. } = context.memory_control_policy();
     let target_partition_bytes = partitioned_join_target_partition_bytes(device_budget_bytes);
@@ -106,6 +137,9 @@ pub(super) fn partitioned_join_partition_count(context: &ExecutionContext, left_
     partitions.clamp(2, 1024) as usize
 }
 
+/// Partition count for a mixed residual join: the larger of the byte-based count and the row-based
+/// count that `BoundedPartitionRowPolicy` derives from the larger input's rows and the device
+/// budget.
 fn partitioned_mixed_join_partition_count(
     context: &ExecutionContext,
     left_rows: u64,
@@ -127,10 +161,14 @@ pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionConte
     partitioned_join_target_partition_bytes(device_budget_bytes)
 }
 
+/// Per-partition byte target from the internal partition policy, scaled by the device budget.
 pub(super) fn partitioned_join_target_partition_bytes(device_budget_bytes: u64) -> u64 {
     BoundedPartitionTargetPolicy::default().partitioned_join_target_bytes(device_budget_bytes)
 }
 
+/// Label for the `reusable_rejected_reason` strategy fact, recomputed from the sizes seen at
+/// execution with the planner's large-build and large-probe thresholds. The fallback label
+/// `partitioned_strategy_selected` covers a choice the thresholds do not explain.
 pub(super) fn partitioned_join_reusable_rejected_reason(
     build_rows: u64,
     build_bytes: u64,
@@ -151,6 +189,11 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
     }
 }
 
+/// Hash-partitions one resident side on `keys` into one contiguous frame plus partition offsets.
+///
+/// Consumes `input`. The input frame and the partitioned copy are both live during the call and the
+/// input drops when it returns. A resource failure carries the side and the `join_hash_partition`
+/// boundary (see `with_partition_side`).
 pub(super) fn hash_partition_join_side(
     execution: &mut BoundedExecutionAttempt<'_>,
     side: JoinSide,
@@ -210,6 +253,12 @@ pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
     drop(side);
 }
 
+/// Returns a row range of one partition as an owned side frame.
+///
+/// A split partition read in full shares its columns with the stored partition. Every other range
+/// is sliced into a copy. A range outside the partition is an invariant violation
+/// (`partition_retry_range_invalid`). The stored partitions are only borrowed; releasing the
+/// returned frame leaves them intact for a retry.
 pub(super) fn slice_partition_join_side_range(
     execution: &mut BoundedExecutionAttempt<'_>,
     side: JoinSide,
@@ -257,6 +306,7 @@ pub(super) fn slice_partition_join_side_range(
     Ok(BoundedJoinSideFrame { frame, rows: len as u64, bytes })
 }
 
+/// The full row range of one partition.
 pub(super) fn partition_row_range(input: &PartitionedJoinSide, partition: usize) -> Result<PartitionedJoinRowRange> {
     let (_, _, len) = partition_bounds(input, partition)?;
     Ok(PartitionedJoinRowRange { offset: 0, len })
@@ -291,6 +341,8 @@ fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(&D
     }
 }
 
+/// Whether probe chunks can be joined independently and their outputs concatenated: inner joins,
+/// and left joins whose probe side is preserved.
 pub(super) fn partitioned_streaming_probe_supported(node: &JoinNode) -> bool {
     super::stateless_streaming_probe_supported(node)
 }

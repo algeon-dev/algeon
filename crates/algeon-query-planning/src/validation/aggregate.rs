@@ -1,3 +1,15 @@
+//! Aggregate node validation: output naming, AVG and statistical output
+//! contracts, and reserved state alias collisions.
+//!
+//! The backend proves it can bind the spec and reports the output names its
+//! binding produces (`BackendCapabilities::aggregate_output_names`); the
+//! declared output schema must list those names in that order, so the proof
+//! and the schema check read one result. Two state contracts reserve internal
+//! aliases a visible output may not reuse: AVG expands into sum and count
+//! state columns (`AvgStateAliases`), and a global SUM, MIN or MAX partial
+//! carries a valid-count column (`global_valid_count_state_alias`) that the
+//! final merge sums to learn whether any non-null input existed.
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
@@ -9,6 +21,8 @@ use crate::backend::{AggregateBinding, AnalysisContext};
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__algeon_native_global_valid_count_";
 
+/// Output name the statistical aggregate path gives a group expression: the
+/// alias, else the column's display name, else the rendered expression.
 pub(crate) fn host_group_expr_output_name(expr: &Expr) -> String {
     match expr {
         Expr::Alias { alias, .. } => alias.clone(),
@@ -17,6 +31,9 @@ pub(crate) fn host_group_expr_output_name(expr: &Expr) -> String {
     }
 }
 
+/// Whether a `COUNT` argument is the planner's count-star representation: any
+/// non-null literal. `LiteralValue::Null` is excluded because `COUNT` of a null
+/// literal is zero.
 pub fn global_count_star_expr(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -128,6 +145,12 @@ fn validate_reserved_aggregate_aliases(
     Ok(())
 }
 
+/// Output and state contracts of one aggregate node. Global aggregates have
+/// their own naming rule (no key columns) and valid-count state. A grouped spec
+/// with a floating statistical aggregate runs through the statistical
+/// aggregate execution contract, which names its outputs from the group
+/// expressions and aliases itself; the libcudf binding proof does not apply to
+/// it, and distinct arguments are outside it.
 pub(super) fn validate_aggregate_capability(
     node: &AggregateNode,
     output_schema: &ArrowSchemaRef,
@@ -181,6 +204,11 @@ pub(super) fn validate_aggregate_capability(
     Ok(())
 }
 
+/// The spec given to the backend binding proof. That proof lowers every
+/// argument as a column, while a filtered `COUNT(*)` carries a literal
+/// argument the filtered-aggregate executor handles itself. The literal is
+/// swapped for a synthetic column name so the proof still covers the rest of
+/// the spec; the name never reaches execution.
 fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
     let mut validation = spec.clone();
     for (index, expr) in validation.aggr_exprs.iter_mut().enumerate() {
@@ -247,6 +275,8 @@ pub fn validate_global_aggregate_capability(spec: &AggregateSpec, output_schema:
     Ok(())
 }
 
+/// Global aggregates lower every argument as a column except the count-star
+/// literal, which the executor counts without reading a column.
 fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
     match expr.function {
         AggregateFunction::Count if !expr.distinct && global_count_star_expr(&expr.expr) => Ok(()),

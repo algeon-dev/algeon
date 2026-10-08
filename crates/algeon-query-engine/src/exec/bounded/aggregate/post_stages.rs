@@ -4,6 +4,15 @@ use super::{
     finalize_avg_output_columns_with_budget, observe_device_memory_bytes,
 };
 
+/// Finalizes the merged state of a source-adjacent partitioned merge into the aggregate's output
+/// columns.
+///
+/// Returns `input` unchanged unless the aggregate has global final state
+/// (`aggregate_spec_has_global_final_state`). Otherwise any AVG state is divided into its output
+/// column under a budget token for `final_aggregate_projection`, and the frame is narrowed to the
+/// output schema's column names, which drops the remaining state columns. A failure carries
+/// `final_projection` as its resume boundary with a single attempt, because the input is consumed
+/// and the step is not retried here.
 pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -90,6 +99,10 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
     Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }
 
+/// Whether the merged frame carries state columns the output schema does not: AVG sum and count in
+/// any aggregate, and the valid count of SUM, MIN and MAX in a global aggregate. Aggregates without
+/// it merge directly to their output columns. The partitioned merge also skips per-partition top-k
+/// pruning for them, because their sort columns are not final before this projection.
 pub(in crate::exec::bounded::aggregate) fn aggregate_spec_has_global_final_state(spec: &AggregateSpec) -> bool {
     aggregate_spec_has_avg(spec)
         || spec.group_exprs.is_empty()

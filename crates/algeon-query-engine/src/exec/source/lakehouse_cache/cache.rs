@@ -1,3 +1,23 @@
+//! Local filesystem copies of object-store Parquet files.
+//!
+//! A lakehouse cache entry is a byte-for-byte copy of one object at the path
+//! the planner resolved for it, plus a footer sidecar. This module owns the
+//! foreground fill that a read waits for, the background fill a read enqueues
+//! and does not wait for, the read pins that protect an entry while cuDF reads
+//! it, the optimized batch files that replace a multi-file batch read, and
+//! size-based eviction.
+//!
+//! Every coordination primitive is a file, because fills and reads happen
+//! from several processes against one cache root. A `<entry>.lock` created
+//! with `create_new` is the exclusive fill lock; a `.<entry>.read.<pid>...pin`
+//! is one reader's pin; a `.<entry>.tmp.<pid>.<nonce>` is a fill in progress,
+//! published by `rename`. Lock and pin files record their pid, and a holder
+//! whose pid is gone from `/proc` is treated as dead and its file removed.
+//! An entry counts as complete only when its size equals the size the source
+//! metadata declared, and it is served or filled only under a caller-provided
+//! content identity, so cached bytes are never attributed to an object version
+//! they may not belong to.
+
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -40,6 +60,8 @@ use crate::{
     },
 };
 
+/// Process-wide sequence that keeps two pins taken in the same nanosecond by
+/// the same process from colliding on their file name.
 pub(super) static LAKEHOUSE_CACHE_READ_PIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(in crate::exec::source) fn ensure_local_cache_parquet_file(
@@ -78,6 +100,9 @@ pub(in crate::exec::source) fn ensure_local_cache_parquet_chunk(
     )
 }
 
+/// Outcome of asking for a background fill. `Skipped` carries the reason the
+/// source-read metrics row publishes; a skip is never an error, because the
+/// read that asked has its own data path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::source) enum BackgroundLakehouseCacheFillEnqueue {
     Enqueued,
@@ -114,10 +139,17 @@ pub(in crate::exec::source) fn enqueue_background_lakehouse_cache_chunk_fill(
     )
 }
 
+/// Marker file that keeps eviction from removing one entry while a read uses
+/// it. Held by the reader until the cuDF read has returned; `Drop` removes the
+/// marker. A pin left behind by a process that died is recognized by its pid
+/// and removed by the next eviction pass.
 pub(in crate::exec::source) struct LakehouseCacheReadPin {
     pub(super) path: Option<PathBuf>,
 }
 
+/// Cache location of one Parquet file that stands in for a whole chunk batch.
+/// The path is derived from a hash of everything that shapes the decoded
+/// frame, so a changed schema, column set or member file yields a new entry.
 #[derive(Debug, Clone)]
 pub(in crate::exec::source) struct LakehouseOptimizedBatchCacheEntry {
     pub(in crate::exec::source) path: PathBuf,
@@ -183,6 +215,13 @@ pub(in crate::exec::source) fn local_cache_optimized_batch_entry(
     })
 }
 
+/// Writes a batch frame as one Parquet file under the entry's fill lock.
+///
+/// `Ok(false)` means another writer published the entry first. The write goes
+/// to a temp file and is renamed into place, so a reader never opens a partial
+/// file; the row-group size follows the cache policy so the optimized file
+/// reads back in chunks the planner can size. Eviction runs after the publish
+/// with this entry protected.
 pub(in crate::exec::source) fn publish_lakehouse_optimized_batch_frame(
     context: &ExecutionContext,
     entry: &LakehouseOptimizedBatchCacheEntry,
@@ -251,6 +290,14 @@ pub(in crate::exec::source) fn publish_lakehouse_optimized_batch_frame(
     Ok(true)
 }
 
+/// Pins an existing entry against eviction.
+///
+/// The entry is checked before and after the pin file is created. Eviction
+/// checks for pins before it removes an entry, so once the pin exists a
+/// concurrent evictor either saw it and skipped the entry, or had already
+/// removed the entry, which the second check detects. A missing entry is a
+/// dependency failure: the planner resolved a cache hit the filesystem no
+/// longer holds.
 fn acquire_lakehouse_cache_read_pin(
     context: &ExecutionContext,
     cache_path: &Path,
@@ -308,6 +355,15 @@ fn acquire_lakehouse_cache_read_pin(
     Ok(LakehouseCacheReadPin { path: Some(pin_path) })
 }
 
+/// Whether a batch may be served from, or written to, an optimized file.
+///
+/// The feature is opt-in through `ALGEON_LAKEHOUSE_OPTIMIZED_BATCH_CACHE=1`.
+/// Eligibility requires that the optimized file reproduce the member read
+/// without change. Every member selects all of its file's row groups, the
+/// source frame is the read columns unchanged, and every column is fixed
+/// width, so the cuDF write and re-read round-trip the types byte for byte. The policy
+/// also bounds the batch's estimated read bytes so the cache holds many small
+/// batches rather than a few large rewrites.
 fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &SourceChunkBatch) -> bool {
     let policy = LakehouseCachePolicy::default();
 
@@ -345,6 +401,12 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &Sou
         })
 }
 
+/// Text whose hash names an optimized batch entry. It covers every source
+/// field that shapes the decoded frame and every member chunk's identity,
+/// resolved-source contract and row-group list. Member signatures are sorted
+/// so two batches over the same files in a different order share one entry.
+/// Location-like values enter as length-tagged hashes, which keeps paths and
+/// URIs out of file names.
 pub(super) fn local_cache_optimized_batch_signature(source: &LocalParquetSource, batch: &SourceChunkBatch) -> String {
     let mut signature = String::from(
         "optimized-local-cache-source-batch-v4-small-fixed-width-rowgroup-normalized-adaptive-dictionary\n",
@@ -511,6 +573,17 @@ pub fn sanitize_cache_component(value: &str) -> String {
     if sanitized.is_empty() { "unknown".to_string() } else { sanitized }
 }
 
+/// Foreground fill: returns once a complete entry exists at `cache_path`.
+///
+/// A complete entry of the expected size is served at once. A planned cache
+/// hit that is missing or the wrong size is an error rather than a refill,
+/// because the plan was costed as a hit and the mismatch means planning and
+/// the filesystem disagree. Otherwise the fill lock is taken, the entry is
+/// rechecked (another process may have finished it while this one waited),
+/// the object is fetched through the maintenance runtime, its size is checked
+/// against the metadata, and the bytes are published by rename. The fetch's
+/// byte permit is released only after the publish, so the cache fill budget
+/// counts the bytes until they are on disk.
 #[expect(
     clippy::too_many_arguments,
     reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
@@ -637,6 +710,8 @@ fn validate_lakehouse_cache_fetch_size(
     Err(error)
 }
 
+/// Whether a cached file is complete. Without a declared size no file is
+/// trusted, so a source without size metadata always takes the fill path.
 pub(super) fn complete_cache_file_matches_expected_size(cache_path: &Path, expected_bytes: Option<u64>) -> bool {
     let Ok(metadata) = fs::metadata(cache_path) else {
         return false;
@@ -650,6 +725,15 @@ pub(super) fn complete_cache_file_matches_expected_size(cache_path: &Path, expec
     metadata.len() == expected_bytes
 }
 
+/// Starts a background fill for an entry the current read did not need.
+///
+/// Nothing here waits. The fill lock is tried once (twice if the first
+/// holder proved dead), and the fill concurrency permit and the byte budget
+/// permit are both taken with a zero timeout; any contention skips the fill
+/// with a named reason. Once admitted, the fetch runs on the maintenance
+/// runtime holding the lock, both permits and a temp file, and the completion
+/// callback records the outcome, prints one diagnostic line and runs
+/// eviction. The caller's read never observes the fill's result.
 fn enqueue_background_lakehouse_cache_entry_fill(
     context: &ExecutionContext,
     location: &ParquetSourceLocation,
@@ -858,6 +942,8 @@ fn enqueue_background_lakehouse_cache_entry_fill(
     Ok(BackgroundLakehouseCacheFillEnqueue::Enqueued)
 }
 
+/// Fill lock moved into the background fetch; removed when the fetch future
+/// completes or is dropped.
 struct BackgroundLakehouseCacheLock {
     path: PathBuf,
 }
@@ -868,6 +954,9 @@ impl Drop for BackgroundLakehouseCacheLock {
     }
 }
 
+/// Foreground fill lock. `path` is `None` when the lock was not taken because
+/// another filler completed the entry while this caller waited; there is then
+/// no file to remove and the caller proceeds to its recheck.
 struct LakehouseCacheLock {
     path: Option<PathBuf>,
 }
@@ -880,6 +969,12 @@ impl Drop for LakehouseCacheLock {
     }
 }
 
+/// Takes the exclusive fill lock, waiting in bounded sleeps for a live holder.
+///
+/// A lock whose holder is dead is removed and retried at once. While waiting,
+/// the entry appearing complete ends the wait with a no-op lock. The wait is
+/// a blocking `thread::sleep` on the calling thread, bounded by the policy's
+/// attempt count, and cancellation is checked before each attempt.
 fn acquire_lakehouse_cache_lock(
     context: &ExecutionContext,
     cache_path: &Path,
@@ -975,6 +1070,8 @@ fn publish_lakehouse_cache_file(
         )
         .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
+    // Close the synced handle before the rename so no open descriptor refers
+    // to the published entry under its temp name.
     drop(temp_file);
     if let Err(error) = fs::rename(&temp_path, cache_path) {
         let _ = fs::remove_file(&temp_path);
@@ -1002,6 +1099,9 @@ pub(super) fn lakehouse_cache_lock_path(cache_path: &Path) -> PathBuf {
     cache_path.with_file_name(format!("{file_name}.lock"))
 }
 
+/// Removes a lock whose recorded pid no longer exists in `/proc`, or whose
+/// content is unreadable and older than the policy's stale age. Without
+/// `/proc` liveness cannot be checked and no lock is ever treated as stale.
 fn remove_lakehouse_cache_lock_if_stale(lock_path: &Path) -> bool {
     let Ok(lock_content) = fs::read_to_string(lock_path) else {
         return false;
@@ -1060,7 +1160,7 @@ pub(super) fn lakehouse_cache_read_pin_path(cache_path: &Path) -> PathBuf {
     cache_path.with_file_name(format!(".{file_name}.read.{}.{}.{}.pin", std::process::id(), nonce, sequence))
 }
 
-// Filesystem cache entry metadata used to choose eviction victims.
+/// Filesystem cache entry metadata used to choose eviction victims.
 #[derive(Debug)]
 pub(super) struct LakehouseCacheEntry {
     pub(in crate::exec::source) path: PathBuf,
@@ -1068,6 +1168,11 @@ pub(super) struct LakehouseCacheEntry {
     last_used: SystemTime,
 }
 
+/// Removes least recently used data files until the root is within
+/// `max_bytes`. The entry named by `protected_path`, entries under a fill
+/// lock and entries with an active read pin are skipped; a removed entry takes its
+/// footer sidecar with it. Every failure is ignored, because eviction runs
+/// after a read or fill that must not fail on account of cache housekeeping.
 pub(super) fn evict_lakehouse_cache(cache_root: Option<&str>, protected_path: &Path, max_bytes: Option<u64>) {
     let Some(max_bytes) = max_bytes.filter(|value| *value > 0) else {
         return;
@@ -1148,6 +1253,8 @@ fn lakehouse_cache_entry_has_sidecar_lock(path: &Path) -> bool {
     lakehouse_cache_lock_path(path).exists() || lakehouse_cache_entry_has_read_pin(path)
 }
 
+/// Whether any live reader pins `path`. An unreadable parent directory counts
+/// as pinned, since eviction must not remove what it cannot inspect.
 pub(super) fn lakehouse_cache_entry_has_read_pin(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
@@ -1172,6 +1279,9 @@ fn is_lakehouse_cache_read_pin_name(name: &str) -> bool {
     name.starts_with('.') && name.contains(".read.") && name.ends_with(".pin")
 }
 
+/// A pin is active unless its name carries a pid that is provably gone from
+/// `/proc`; a dead holder's pin is removed on the way. Unparseable names, the
+/// current process and hosts without `/proc` all count as active.
 fn lakehouse_cache_read_pin_is_active(pin_path: &Path, pin_name: &str) -> bool {
     let Some(read_suffix) = pin_name.rsplit_once(".read.").map(|(_, suffix)| suffix) else {
         return true;
@@ -1217,6 +1327,13 @@ pub(super) fn lakehouse_cache_io_error(
     error
 }
 
+/// Background fill body, run on the maintenance runtime.
+///
+/// Streams the object into a temp file while the byte permit grows with the
+/// bytes received; a permit that cannot grow abandons the fill (`Ok(None)`),
+/// since the budget is shared with fills a reader may be waiting on. The size
+/// is checked against the metadata before publish, and the lock guard lives
+/// for the whole future so no second fill of the entry can start.
 #[expect(
     clippy::too_many_arguments,
     reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
@@ -1345,6 +1462,8 @@ async fn stream_lakehouse_cache_fill(
         )
         .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
+    // Close the synced handle before the rename so no open descriptor refers
+    // to the published entry under its temp name.
     drop(temp_file);
     if let Err(error) = fs::rename(&temp_path, &cache_path) {
         let _ = fs::remove_file(&temp_path);

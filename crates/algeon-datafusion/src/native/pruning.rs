@@ -1,3 +1,10 @@
+//! Byte-range coalescing and row-group selection for native Parquet scans.
+//!
+//! DataFusion splits a file into byte ranges across partitions; the native
+//! reader reads row groups. This module maps each file's ranges back to a
+//! whole-file read or an explicit row-group selection, and evaluates
+//! pruning-only predicates against row-group statistics.
+
 use std::{path::PathBuf, sync::Arc};
 
 use arrow::datatypes::SchemaRef;

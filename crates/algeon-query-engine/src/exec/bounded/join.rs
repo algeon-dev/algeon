@@ -1,3 +1,14 @@
+//! Join stages of a bounded attempt.
+//!
+//! A join runs as build, probe and materialize steps. Each step takes the previous step's
+//! state by value. The holder of a state owns its device allocations, and an early return
+//! drops them. `hash` is the reusable root hash join, `leaf` streams a local Parquet source
+//! into a join input, `probe_parallel` decides when hash probe chunks run on execution lanes,
+//! and `compiled` selects the strategy for each join node and calls into `hash` for the
+//! reusable-hash strategy. Lowering to cuDF join calls (residual predicates, output
+//! projection) lives in `exec::join`. See the design documents on native lowering and GPU
+//! execution for the operator contracts.
+
 use std::time::Instant;
 
 use super::{

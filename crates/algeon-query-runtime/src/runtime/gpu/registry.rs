@@ -1,4 +1,24 @@
 //! Process-level GPU device registry for service execution.
+//!
+//! Installation is two-phase. `resolve_install_plans` reads inventory facts
+//! and resolves every device's `DeviceResourceProfile` with no CUDA side
+//! effects, so a configuration error on any device fails before anything is
+//! installed. `install_resolved` then installs, per device and in order, the
+//! process-lifetime device memory manager, the service stream pool, the
+//! ledger, and the `DeviceContext`, recording each in the construction
+//! journal so a later failure rolls back what already exists.
+//!
+//! The managed capacity `M` is frozen here. It is planned from pre-install
+//! facts and re-resolved once after the memory manager exists, because the
+//! manager's own installation consumes device memory the earlier facts could
+//! not see. `M` only moves down in that step. The capacity table in
+//! `website/docs/design/admission.mdx` owns the derived counts.
+//!
+//! The device memory manager and cuDF's device health are process-lifetime
+//! state, while the backend can be constructed more than once per process.
+//! The health identity recorded on install binds the manager's installation
+//! generation to a per-ordinal record so a later backend generation reuses
+//! the same manager or fails, and never installs a second one.
 
 use std::{
     collections::HashMap,
@@ -29,6 +49,12 @@ use crate::{
 };
 
 /// Soft managed-capacity calculation for one installed device.
+///
+/// `Automatic` starts from the capacity Algeon owns (the static partition
+/// limit, or CUDA-visible total memory), subtracts `headroom_bytes`, falls
+/// back to `fallback_bytes` when nothing would remain, and applies the
+/// optional fraction. `Explicit` is validated against the owned capacity and
+/// rejected above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceRegistryCapacityPolicy {
     Automatic { headroom_bytes: u64, fallback_bytes: u64, fraction: Option<GpuMemoryFraction> },
@@ -36,6 +62,10 @@ pub(crate) enum DeviceRegistryCapacityPolicy {
 }
 
 /// Physical allocation ownership represented by the process manager.
+///
+/// A static partition becomes the manager's `allocation_limit_bytes` and is
+/// part of its installation identity, so two backends configured with
+/// different partitions on one device cannot share a manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceRegistryMemoryPartition {
     WholeDevice,
@@ -143,6 +173,8 @@ impl ResolvedDeviceInstallPlans {
     }
 }
 
+/// One device between memory-manager installation and context creation. The
+/// capacity freeze rewrites `discovered.resource_profile` in place.
 struct ManagedDevice {
     device: cudf::DeviceId,
     discovered: ResolvedDeviceInstallPlan,
@@ -152,13 +184,22 @@ struct ManagedDevice {
     engine_health_identity: EngineDeviceHealthIdentity,
 }
 
+/// Three generations that together identify which health state a report or
+/// a recovery decision refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EngineDeviceHealthIdentity {
+    /// Process-lifetime counter minted the first time this ordinal is
+    /// installed; stable across backend generations that reuse the manager.
     pub(crate) device_health_generation: u64,
+    /// The live-backend lease generation this context was installed under.
     pub(crate) backend_health_generation: u64,
+    /// cuDF's generation for the installed device memory manager; a context
+    /// must observe the same value in the manager state it was built from.
     pub(crate) memory_manager_installation_generation: u64,
 }
 
+/// Per-ordinal record kept for the whole process, because the memory manager
+/// it describes is never uninstalled while the process runs.
 #[derive(Debug, Clone, Copy)]
 struct PersistentDeviceHealthRecord {
     device_health_generation: u64,
@@ -283,6 +324,8 @@ impl DeviceRegistry {
                 DeviceMemoryFailureTracker::for_installation_state(ordinal, installation_before)?;
             let (mr_manager, memory_manager_installation) =
                 install_device_memory_manager(device, &memory_failure_tracker, requested_options)?;
+            // Recorded before anything else can fail, so rollback owns the
+            // manager handle even if this device's context is never built.
             construction_journal.record_memory_manager(mr_manager.clone())?;
             let installation_generation = memory_manager_installation.installation_generation.ok_or_else(|| {
                 QueryError::new(
@@ -430,6 +473,14 @@ impl DeviceRegistry {
     }
 }
 
+/// Binds the installed manager's generation to the ordinal's process-lifetime
+/// health record, creating the record on first install.
+///
+/// A device already reported unhealthy by cuDF is refused here, before the
+/// backend is published. A record whose installation generation differs from
+/// the live manager's means the manager was replaced without an engine
+/// recovery transition; that is refused as well, with reason
+/// `incompatible_installation_generation_reuse`.
 fn bind_engine_device_health(
     device: cudf::DeviceId,
     installation: cudf::DeviceMemoryManagerInstallationState,
@@ -632,6 +683,16 @@ fn managed_capacity_bytes(
     })
 }
 
+/// Installs, or reuses, the Algeon-owned device memory manager with its
+/// allocation-failure callback.
+///
+/// On every outcome the tracker's callback flags are brought in line with
+/// what cuDF reports, because the callback can remain installed after a
+/// failed or partial installation, and a later backend must then recover that
+/// tracker; a second callback would leave the first updating counters nobody
+/// reads. Only an installation that cuDF reports as owned and reusable is
+/// accepted; an options mismatch is reported with the specific conflict
+/// error.
 fn install_device_memory_manager(
     device: cudf::DeviceId,
     memory_failure_tracker: &DeviceMemoryFailureTracker,

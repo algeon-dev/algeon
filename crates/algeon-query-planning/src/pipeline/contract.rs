@@ -68,6 +68,10 @@ pub(super) fn resolve_task_and_resource_contracts(
     graph.into_parts()
 }
 
+/// Working state of contract resolution. Tasks and resources are indexed by
+/// id position; `task` and `resource` return `None` when an id is out of
+/// position so that a malformed graph resolves to the narrowest contract
+/// instead of a wrong one.
 struct ContractGraph<'a> {
     plan: &'a QueryPlan,
     tasks: Vec<PipelineTask>,
@@ -76,6 +80,11 @@ struct ContractGraph<'a> {
 }
 
 impl ContractGraph<'_> {
+    /// Accepted input form by task kind. Unary and aggregate tasks pull a
+    /// source or frame stream; join build and probe accept every produced form
+    /// because the join executor stages whatever arrives; a fused top-k sort
+    /// consumes a stream while a full sort needs the whole frame; a window and
+    /// everything else take one complete frame.
     fn with_task_contracts(mut self) -> Self {
         for index in 0..self.tasks.len() {
             let contract = match self.tasks[index].kind() {
@@ -810,6 +819,8 @@ impl ContractGraph<'_> {
     }
 }
 
+/// Edge normalization is the only task that takes ownership of its input
+/// frame; every other kind reads a frame it can share.
 fn task_consumes_input_exclusively(task: &PipelineTask) -> bool {
     task.kind() == PipelineTaskKind::EdgeNormalize
 }

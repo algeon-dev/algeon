@@ -1,3 +1,11 @@
+//! Column lineage below an aggregate: whether a column can be carried from a
+//! source up to the aggregate input, and from which join input.
+//!
+//! The `materialized` variants also accept a column a widened source would
+//! add; the plain variants see only what the plan reads today. A join can
+//! carry a column only when one input and not the other can, since the
+//! rewrite must know which side to extend.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{Field, Schema};
@@ -126,6 +134,9 @@ pub(super) fn subtree_can_propagate_materialized_column(
     }
 }
 
+/// Source identity of a column argument: rowset fingerprint plus the file or
+/// partition reference it reads. Two members whose arguments share one name
+/// but resolve to different sources must not be combined.
 pub(super) fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> Option<String> {
     match expr {
         Expr::Column(column) => scalar_input_column_lineage_signature(plan, node_id, column.name()),
@@ -185,6 +196,9 @@ fn materialized_expr_lineage(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> 
     }
 }
 
+/// Whether the representative's input exposes a column under the member's
+/// argument name without a source lineage for it. The member's argument
+/// would then bind to that unrelated column in the shared aggregate.
 pub(super) fn scalar_input_expr_name_collides_with_unresolved_output(
     plan: &QueryPlan,
     node_id: NodeId,

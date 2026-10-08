@@ -1,3 +1,5 @@
+//! Size guard for the outer-join null-rejection rewrite.
+
 /// Internal policy for outer-join null-rejection rewrites.
 ///
 /// The large-input guard keeps null-introducing right inputs in their original
@@ -11,6 +13,8 @@ pub(in crate::optimizer) struct OuterJoinNullRejectionPolicy {
 impl OuterJoinNullRejectionPolicy {
     pub(in crate::optimizer) const DEFAULT_LARGE_NULL_REJECTED_RIGHT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
+    /// An unknown size is not large: a left join whose right input has no byte
+    /// estimate stays eligible for the rewrite.
     pub(in crate::optimizer) fn null_introducing_input_is_large(self, right_input_bytes: Option<u64>) -> bool {
         right_input_bytes.is_some_and(|bytes| bytes > self.large_null_rejected_right_input_bytes)
     }

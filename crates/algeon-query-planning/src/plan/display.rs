@@ -1,8 +1,9 @@
 //! `Display` formatting for [`QueryPlan`] and its nodes.
 //!
-//! The format is human-oriented diagnostic text used by triage tools, not a
-//! stable parser surface. Bump the relevant report TSV schema instead of
-//! parsing display output.
+//! The format is human-oriented diagnostic text read by triage tools. It is
+//! excluded from the plan fingerprint and offers no parsing contract; a tool
+//! that needs a field extends the owning report TSV family in place instead
+//! of parsing this output.
 
 use std::fmt;
 

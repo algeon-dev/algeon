@@ -1,3 +1,24 @@
+//! Aggregate-join pushdown: a pre-aggregate on one join input before the join.
+//!
+//! The rule matches an aggregate of `SUM`, `COUNT` or `AVG` without `DISTINCT` or
+//! `FILTER`, with plain-column group keys, over an optional chain of projections
+//! over a join with no residual predicate. The join is inner with every measure
+//! on one side; left with group keys on the left and `COUNT` measures on the
+//! right; or left semi with everything on the left. In the rewrite, the measure
+//! side is pre-aggregated by its group columns and its join keys, the join is
+//! rebuilt over that pre-aggregate, and the final aggregate merges the states:
+//! `SUM` of partial sums and counts, and `AVG` as a sum and count pair divided in
+//! a projection above. A left join coalesces null states to zero first. As a
+//! precondition, `SUM` and `COUNT` distribute over the join multiplicity, so
+//! grouping the measure side by its join keys before the join yields the same
+//! totals as grouping the joined rows, provided every measure reads one side and
+//! that side's keys stay group columns. Facts: every new node gets a derived
+//! schema; a state column from a null introducing side becomes nullable.
+//!
+//! Under a policy threshold, a pre-aggregate over an inner join with a union
+//! input is distributed into one join and aggregate per branch, a union, and
+//! a merge, so each branch is joined once with the other side.
+
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use super::{
@@ -44,6 +65,9 @@ pub(in crate::optimizer::aggregate_join_pushdown) use preaggregate::{
 };
 pub(in crate::optimizer::aggregate_join_pushdown) use rewriter::AggregateJoinPushdownRewriter;
 
+/// Runs the rule once over the plan. Every aggregate is a candidate and gets
+/// one diagnostics row; an `Err` means the rewriter built a node list that
+/// fails the plan invariants.
 pub(crate) fn optimize_aggregate_join_pushdown(
     plan: QueryPlan,
     options: &AggregateJoinPushdownOptions,

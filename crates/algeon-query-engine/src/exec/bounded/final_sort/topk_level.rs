@@ -6,6 +6,11 @@ pub(super) enum TopKLevelItem {
     Carry { partial_index: usize },
 }
 
+/// Builds the next level's candidates from a successful level, in group order.
+///
+/// Merged items move in as they are. Carried items move out of `candidates` by index. The
+/// candidates that merged groups consumed drop when this returns. A carry index that repeats
+/// or is out of range is an internal invariant violation and panics.
 pub(super) fn commit_topk_merge_level(
     candidates: Vec<CommittedPartial>,
     level_output: Vec<TopKLevelItem>,

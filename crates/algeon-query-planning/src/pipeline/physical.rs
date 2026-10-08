@@ -117,7 +117,11 @@ pub struct AggregateInputHints {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinPlan {
     form: JoinForm,
+    /// Strategy chosen from planning-time size facts; it sets the memory
+    /// shape admission assumed and stays allowed through every narrowing.
     planned: JoinStrategy,
+    /// Strategies the task's input, state and output forms admit. Starts as
+    /// every strategy of `form` and is only ever narrowed.
     allowed: Vec<JoinStrategy>,
 }
 
@@ -203,8 +207,12 @@ pub struct AggregatePlan {
 /// the sort, and the limit the sort fused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopKFusion {
+    /// Projection nodes between the aggregate and the sort, each the sole
+    /// consumer of its input; the aggregate applies them before the top-k.
     pub post_aggregate_projections: Vec<NodeId>,
+    /// Sort whose `FusedTopK` strategy this fusion extends downward.
     pub sort_node: NodeId,
+    /// Limit the sort fused; its fetch bounds the aggregate output.
     pub limit_node: NodeId,
 }
 

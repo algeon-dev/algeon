@@ -1,4 +1,11 @@
 //! Process-wide ownership of the live Algeon GPU backend.
+//!
+//! One backend at a time may own device memory managers and ledgers in a
+//! process; two would each account the same VRAM as promisable. The
+//! claim is taken after configuration validation and before any device is
+//! installed, and the lease releases the slot when its last clone drops. The
+//! generation it mints is what `EngineDeviceHealthIdentity` records as the
+//! backend health generation.
 
 use std::{
     collections::BTreeSet,

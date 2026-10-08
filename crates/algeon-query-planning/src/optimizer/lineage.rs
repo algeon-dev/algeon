@@ -1,24 +1,54 @@
+//! Source-column lineage for optimizer rules.
+//!
+//! A lineage says where a column visible at a node came from: a source node
+//! and column, whether the path crossed an aggregate group key, and whether any
+//! node on the path has more than one consumer. Dynamic-filter route discovery
+//! uses a unique lineage as the proof that a keyset or predicate stated on the
+//! node's column can be stated on the source column. The walks differ in what
+//! they cross: [`lineages_for_column`] crosses sorts, limits and aggregate
+//! group keys under an [`AggregateGroupKeyLineage`] policy;
+//! [`simple_lineages_for_column`] stops at aggregates and limits; the walk
+//! below a consumed aggregate crosses only filters, projections, joins and
+//! unions over local Parquet sources, because the keyset it proves is applied
+//! by a Parquet reader.
+
 use crate::{
     expr::Expr,
     plan::{AggregateNode, JoinSide, NodeId, PlanNode, QueryPlan},
     source::SourceNode,
 };
 
+/// One origin of a column: a source column, possibly seen through an aggregate
+/// group key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SourceColumnLineage {
     pub(super) source_node_id: NodeId,
     pub(super) source_column: String,
+    /// Aggregate whose group key the path crossed. The column's value set is
+    /// then that aggregate's key set, which has one row per distinct key.
     pub(super) aggregate_group_key_node_id: Option<NodeId>,
+    /// Whether any node between the queried node and the source has more than
+    /// one consumer. Narrowing the source would then narrow those consumers.
     pub(super) has_shared_path: bool,
 }
 
+/// What an aggregate on the path means for the lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AggregateGroupKeyLineage {
+    /// The caller produces a keyset at the aggregate: a group key stands for
+    /// the source column under the aggregate's output name.
     Producer,
+    /// The caller applies a keyset below the aggregate at a Parquet reader:
+    /// the group key is followed to its pre-aggregate Parquet column, and a
+    /// limit above the aggregate ends the lineage because the reader sees
+    /// rows the limit has not yet cut.
     Consumer,
+    /// An aggregate ends the lineage.
     Reject,
 }
 
+/// The one lineage of `column_name` at `node_id`, or `None` when the column has
+/// no traceable origin or more than one, as below a union of two sources.
 pub(super) fn unique_lineage(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -203,6 +233,8 @@ fn aggregate_group_key_lineages(
         .collect()
 }
 
+/// Output name of a group key that is a column or an aliased expression; a
+/// computed key without an alias has no name a consumer can refer to.
 pub(super) fn aggregate_group_key_output_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Column(column) => Some(column.display_name()),
@@ -211,6 +243,9 @@ pub(super) fn aggregate_group_key_output_name(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Whether `column_name` at `node_id` is an output of `aggregate_node_id`
+/// reached only through renaming projections and sorts, so its value set is
+/// the keyset that aggregate produces, with nothing added or removed.
 pub(super) fn producer_input_is_direct_aggregate_keyset_alias(
     plan: &QueryPlan,
     node_id: NodeId,

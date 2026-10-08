@@ -1,3 +1,20 @@
+//! Final merge of aggregate partials: regrouping the partial states of all chunks into the
+//! aggregate's result. The partial-to-final contract is described in `aggregate.rs`.
+//!
+//! - `compiled.rs` merges a retained set of partials. A lone partial only needs its projection.
+//!   When the aggregate capability decision selects the partitioned merge and the partials
+//!   justify more than one partition, every partial is hash-partitioned on the group keys and
+//!   each partition is merged on its own. Otherwise groups of `merge_fan_in` consecutive partials
+//!   merge level by level.
+//! - `incremental.rs` merges while partials arrive, into per-partition states; retained bytes
+//!   follow the merged state.
+//! - `partitioned.rs` finishes an incremental merge for source-adjacent aggregates: per-partition
+//!   top-k pruning, concatenation, then the final projection.
+//!
+//! This file holds the pieces they share: the partition count for a partial set, hash-partitioning
+//! a partial by group key, the top-k candidate analysis, and the concatenation of merged
+//! partitions.
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use query_planning::{
     capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
@@ -22,12 +39,16 @@ pub(in crate::exec::bounded::aggregate) use incremental::{
 };
 pub(in crate::exec::bounded::aggregate) use partitioned::execute_incremental_source_adjacent_final_aggregate_merge;
 
+/// A sort with a limit that the partitioned merge can apply to each merged partition before the
+/// partitions are concatenated. Each group lives in one partition; a row outside its partition's
+/// top `keep_rows` cannot belong to the global top rows.
 pub(super) struct PartitionedFinalMergeTopK<'a> {
     sort: SortNode,
     limit: &'a LimitNode,
     keep_rows: usize,
 }
 
+/// Totals reported in the `partitioned_merge_topk_*` strategy facts.
 #[derive(Default)]
 pub(super) struct PartitionedFinalMergeTopKStats {
     enabled: bool,
@@ -37,6 +58,9 @@ pub(super) struct PartitionedFinalMergeTopKStats {
     partition_count: usize,
 }
 
+/// Partition count for merging a set of partials: from their total device bytes against the
+/// aggregate partition byte target, and never below the minimum that the final-merge policy derives
+/// from the number of partials.
 pub(super) fn partitioned_final_merge_partition_count(
     context: &ExecutionContext,
     partials: &[CommittedPartial],
@@ -47,6 +71,10 @@ pub(super) fn partitioned_final_merge_partition_count(
     partitioned_aggregate_partition_count(context, input_bytes).max(partial_partition_floor)
 }
 
+/// Hash-partitions one partial on the group-key columns and slices it into one partial per
+/// partition. Consumes `partial`; the partitioned copy and the slices exist beside each other while
+/// the slices are made. The hash partition runs under a budget token for
+/// `final_aggregate_hash_partition` and records a hash-partition stage.
 pub(super) fn partition_final_merge_partial(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -174,6 +202,11 @@ pub(super) fn slice_partitioned_final_merge_partition(
     Ok(ResidentGpuFrame::with_device_bytes(gpu, bytes))
 }
 
+/// Returns the top-k that the partitioned merge may apply per partition, or `None`.
+///
+/// It needs a sort and a limit without an offset, no global final state (the sort columns would not
+/// be final yet), and a sort that maps through the post-aggregate projections onto aggregate output
+/// columns.
 pub(super) fn partitioned_final_merge_topk_candidate<'a>(
     bounded: &'a BoundedPlan<'a>,
 ) -> Result<Option<PartitionedFinalMergeTopK<'a>>> {
@@ -231,6 +264,8 @@ pub(super) fn project_topk_sort_column_through_stage(
     }
 }
 
+/// Keeps at most the candidate rows of one merged partition, using the final sort with a fetch.
+/// Without a candidate the frame is returned unchanged. The totals accumulate in `topk_stats`.
 pub(super) fn apply_partitioned_final_merge_topk(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -284,6 +319,8 @@ pub(super) fn apply_partitioned_final_merge_topk(
     Ok(output_frame)
 }
 
+/// Concatenates merged partitions in input order under a budget token for
+/// `partitioned_final_aggregate_output_concat`. One input is returned as it is. Consumes `inputs`.
 pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_outputs(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -337,6 +374,8 @@ pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_o
     Ok(ResidentGpuFrame::with_device_bytes(concatenated, output_bytes))
 }
 
+/// The smaller fan-in to retry with after a retryable resource error, or `None` once the policy
+/// minimum is reached.
 pub(in crate::exec::bounded) fn reduce_merge_fan_in(merge_fan_in: usize) -> Option<usize> {
     BoundedFinalMergePolicy::default().reduce_merge_fan_in(merge_fan_in)
 }

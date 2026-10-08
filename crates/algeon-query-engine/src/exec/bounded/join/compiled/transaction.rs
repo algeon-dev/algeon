@@ -2,7 +2,18 @@ use super::{
     BoundedJoinSideFrame, CompiledJoinIndices, GpuDataFrame, ResidentGpuFrame, release_bounded_join_side_frame,
 };
 
-/// Transaction boundary for native join materialization owners.
+/// Owns the side frames and gather maps of one join materialization until the owner ends it.
+///
+/// `with_sides` takes the left input (index 0) and the right input (index 1), and `set_indices`
+/// adds the gather maps computed from them. The output frame is never stored here. Both
+/// `commit_frame` and `rollback` release the gather maps first and then the sides from last to
+/// first, before the caller's next allocation on the query domain; `commit_frame` additionally
+/// returns the caller's output as a `ResidentGpuFrame`.
+///
+/// A rollback restores no operator state. The error that caused it propagates, and a retry is
+/// the caller's decision, for example the partitioned driver that still owns the partition the
+/// sides were sliced from. Every path must end in `commit_frame` or `rollback`; dropping a
+/// transaction that still holds resources fails a `debug_assert!`.
 #[must_use]
 pub(in crate::exec) struct JoinMaterializationTxn {
     sides: Vec<BoundedJoinSideFrame>,
@@ -33,6 +44,7 @@ impl JoinMaterializationTxn {
         (self.side(0), self.side(1))
     }
 
+    /// Stores the gather maps. A transaction holds one set; a second call panics.
     pub(in crate::exec::bounded::join::compiled) fn set_indices(&mut self, indices: CompiledJoinIndices) {
         assert!(self.indices.is_none(), "join materialization txn indices already set");
         self.indices = Some(indices);
@@ -42,15 +54,20 @@ impl JoinMaterializationTxn {
         self.indices.as_ref().expect("join materialization transaction indices should be set")
     }
 
+    /// Releases the gather maps while keeping the sides. The one-shot residual path calls it once
+    /// the candidate frame exists, which frees the maps before the residual filter allocates.
     pub(in crate::exec::bounded::join::compiled) fn drop_indices(&mut self) {
         self.indices = None;
     }
 
+    /// Releases the gather maps and sides, then returns `frame` as the join output. `device_bytes`
+    /// is the output size the caller observed.
     pub(in crate::exec) fn commit_frame(mut self, frame: GpuDataFrame, device_bytes: u64) -> ResidentGpuFrame {
         self.release_uncommitted();
         ResidentGpuFrame::with_device_bytes(frame, device_bytes)
     }
 
+    /// Releases the gather maps and sides without producing an output.
     pub(in crate::exec) fn rollback(mut self) {
         self.release_uncommitted();
     }

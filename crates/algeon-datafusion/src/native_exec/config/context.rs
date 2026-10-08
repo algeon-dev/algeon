@@ -1,3 +1,12 @@
+//! Acquisition of the native execution context for one fragment.
+//!
+//! `execution_context_async` is where a fragment admits: it finds the attempt
+//! ticket, acquires the attempt's one admission through it, and stamps the
+//! context with query and trace correlation. It awaits in the admission queue
+//! and returns a typed error when the queue deadline passes, the attempt is
+//! cancelled, or no backend is installed; it never creates a context outside
+//! an attempt.
+
 use std::sync::Arc;
 
 use query_planning::error::{QueryError, Result as QueryEngineResult};
@@ -54,6 +63,13 @@ impl AlgeonNativeExecutionContext {
 }
 
 impl AlgeonNativeExecutionConfig {
+    /// Acquires the admitted native context for the fragment executing in
+    /// `task_context`.
+    ///
+    /// Awaits the attempt's admission when this fragment is the first to ask,
+    /// or joins the admission already placed. Fails with `InvalidRequest`
+    /// (`reason = gpu_backend_required`) when neither the task context nor the
+    /// config carries admission authority.
     pub(crate) async fn execution_context_async(
         &self,
         task_context: Arc<TaskContext>,

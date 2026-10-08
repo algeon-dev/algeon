@@ -1,3 +1,11 @@
+//! Adapter projection of the planning crate's admission decision.
+//!
+//! `query_planning::admission::admit` owns the capability proof and the
+//! compiled pipeline. This module calls it once per candidate in the sink form
+//! execution runs, stamps query and trace correlation, and projects the result
+//! into the report rows `NativePlanningDiagnostics` carries. It performs no
+//! device admission; the runtime does that at execution.
+
 use query_engine::rapids_backend::rapids_analysis_context;
 use query_planning::{
     admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit},

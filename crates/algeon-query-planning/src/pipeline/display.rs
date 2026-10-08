@@ -1,7 +1,8 @@
 //! `Display` formatting for compiled pipeline IR.
 //!
 //! Output is diagnostic text used by triage tools. The format is not part of
-//! the report contract; bump the report TSV schema instead of parsing this.
+//! the report contract; a tool that needs stable fields reads the report TSV
+//! families, which change in place with their consumers.
 
 use std::fmt;
 

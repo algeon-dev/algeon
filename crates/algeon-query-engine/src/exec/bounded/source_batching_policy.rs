@@ -1,3 +1,13 @@
+//! Byte and row caps for bounded source reads and source-adjacent aggregate batches.
+//!
+//! The query domain's allocator is the only enforcer of the attempt's cap (see
+//! `website/docs/design/admission.mdx`, "The allocation path"). The policy here
+//! decides how much encoded input one read or one raw batch requests at a time,
+//! so that the decoded columns, staged copies and partition slices that are live
+//! together usually fit under that cap. A miss surfaces as a typed allocation
+//! failure that the chunk-split retry handles; nothing in this module reserves
+//! memory or vetoes an allocation.
+
 use query_planning::{chunk::SourceChunkPlanningPolicy, execution_contracts::MemoryControlPolicy};
 
 /// Internal batching caps for bounded local-Parquet source work.
@@ -5,6 +15,10 @@ use query_planning::{chunk::SourceChunkPlanningPolicy, execution_contracts::Memo
 /// These values describe runtime batching shapes, not user-facing resource
 /// controls. Keep the public/admin surface on bounded memory policy and source
 /// planning mode until production evidence shows a stable tuning contract.
+///
+/// Every method is a pure function of its arguments and the policy constants.
+/// Byte inputs are the planner's encoded-size estimates unless a name says
+/// `observed` or `decoded`; the working-set models translate between the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_batch_read_max_planned_bytes: u64,
@@ -60,6 +74,15 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR: usize =
         4;
 
+    /// Encoded-byte target for one generic (not source-adjacent) source batch.
+    ///
+    /// The base target is the grant-derived `max_source_chunk_bytes` of the
+    /// planning policy. `decode_scratch_risk` is set by the caller when the
+    /// source carries a reader predicate and some chunk has filter-only column
+    /// bytes; the predicate pass then decodes columns that leave no trace in the
+    /// output frame, and the fixed planned-read ceiling bounds that pass however
+    /// large the grant is. `None` only when the planning policy has no byte
+    /// target.
     pub(in crate::exec::bounded) fn generic_source_batch_target_bytes(
         self,
         memory_policy: MemoryControlPolicy,
@@ -73,6 +96,9 @@ impl BoundedSourceBatchingPolicy {
         }
     }
 
+    /// Target for a join leaf whose caller supplies its own byte limit. The
+    /// result is always finite: an absent limit yields the planned-read ceiling
+    /// so a leaf planned without a byte target still batches.
     pub(in crate::exec::bounded) fn capped_source_batch_target_bytes(
         self,
         max_batch_source_read_bytes: Option<u64>,
@@ -82,10 +108,20 @@ impl BoundedSourceBatchingPolicy {
             .or(Some(self.source_batch_read_max_planned_bytes))
     }
 
+    /// Row-group cap for each chunk of a grouped aggregate with a string group
+    /// key (applied by `apply_source_adjacent_aggregate_chunk_caps`). The
+    /// footer's encoded size of a string column does not bound its decoded
+    /// offsets and characters, and libcudf groupby state over string keys grows
+    /// with distinct keys, so the chunk is bounded by row-group count as well
+    /// as by bytes.
     pub(in crate::exec::bounded) fn source_adjacent_grouped_aggregate_max_operator_row_groups(self) -> usize {
         self.source_adjacent_grouped_aggregate_max_operator_row_groups
     }
 
+    /// Encoded-byte target for one raw source batch, the multi-chunk read that
+    /// stays unaggregated until the source-adjacent filter and projections have
+    /// run. The policy's `max_source_chunk_bytes` remains an upper bound; the
+    /// working-set share below can only lower it.
     pub(in crate::exec::bounded) fn source_adjacent_raw_source_batch_target_bytes(
         self,
         memory_policy: MemoryControlPolicy,
@@ -98,6 +134,10 @@ impl BoundedSourceBatchingPolicy {
         Some(memory_policy.max_source_chunk_bytes.min(target))
     }
 
+    /// The raw batch's working-set share divided by the copies that can be
+    /// live at once: the decoded input plus the staged copies counted by the
+    /// stage copy factor for a grouped aggregate, or the decoded input and one
+    /// partial otherwise.
     pub(in crate::exec::bounded) fn source_adjacent_raw_source_batch_max_bytes(
         self,
         device_budget_bytes: u64,
@@ -108,6 +148,15 @@ impl BoundedSourceBatchingPolicy {
         (self.source_adjacent_raw_batch_working_set_target_bytes(device_budget_bytes) / copies).max(1)
     }
 
+    /// Whether one group-key partition's pending inputs should be concatenated
+    /// and partially aggregated now.
+    ///
+    /// The first bound reached releases the batch. The input count bounds the
+    /// `concat_many` fan-in, the row-group count bounds how much source a retry
+    /// of that partial has to redo, and the observed device bytes bound the
+    /// concatenated frame. Callers report zero observed bytes for a single
+    /// pending input, so a lone input waits for company unless its row groups
+    /// alone reach the cap.
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_ready(
         self,
         input_count: usize,
@@ -120,6 +169,10 @@ impl BoundedSourceBatchingPolicy {
             || observed_device_bytes >= self.source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
     }
 
+    /// Device-byte bound for one partition batch, a fixed share of the cap
+    /// clamped to the min and max batch bytes. The same bound applies to all
+    /// retained partitions together (`source_adjacent_pending_partitions_ready`),
+    /// since their resident partials share one grant.
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_byte_limit_for_budget(
         self,
         device_budget_bytes: u64,
@@ -131,6 +184,11 @@ impl BoundedSourceBatchingPolicy {
         )
     }
 
+    /// Byte target for a join leaf read entirely with remote-direct reads and
+    /// materialized into one frame (no stages, scan limit or partition
+    /// columns). The larger ceiling trades fewer object-store requests against a
+    /// larger decoded frame; the caller only selects it when the whole leaf is
+    /// concatenated into one frame anyway.
     pub(in crate::exec::bounded) fn remote_direct_materialized_join_source_batch_max_bytes(self) -> u64 {
         self.remote_direct_materialized_join_source_batch_max_bytes
     }

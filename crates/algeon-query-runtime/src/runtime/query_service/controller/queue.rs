@@ -32,6 +32,10 @@ use crate::{
 };
 
 impl AdmissionController {
+    /// Reserves a queue position for a submission whose device entries are
+    /// still being resolved. `None` means the queue and the pending set
+    /// together are at `max_waiters`, which the caller reports as
+    /// `admission_queue_full`.
     pub(in crate::runtime::query_service) fn reserve_pending_preflight_locked(
         self: &Arc<Self>,
         state: &mut AdmissionState,
@@ -271,6 +275,9 @@ impl AdmissionController {
         state.queued.iter().filter(|request| request.is_queue_member(now)).count()
     }
 
+    /// Removes one request and wakes the queue, since the removal may make a
+    /// younger waiter the oldest runnable one. The caller finishes the
+    /// returned request after releasing the mutex.
     pub(in crate::runtime::query_service) fn abandon_queued_request_locked(
         &self,
         state: &mut AdmissionState,
@@ -331,6 +338,9 @@ impl AdmissionController {
         None
     }
 
+    /// Shutdown-path lock: recovers a poisoned guard, because the queue and
+    /// ticket state stay valid across a panic, and gives up at `deadline`
+    /// with a cleanup-deadline error instead of waiting out a placement.
     pub(in crate::runtime::query_service) fn lock_admission_until(
         &self,
         deadline: Instant,
@@ -340,6 +350,14 @@ impl AdmissionController {
             .ok_or_else(|| query_service_shutdown_timeout(operation, None, "admission_mutex"))
     }
 
+    /// Removes every cancelled, expired, or newly impossible request under
+    /// the admission mutex and returns them for completion outside it.
+    ///
+    /// Runs on submission so a full queue of dead waiters cannot reject live
+    /// work. Each removed request has its terminal error recorded in its
+    /// shared `QueuedAdmissionTerminal` before the mutex is released, because
+    /// the owning waiter may step before the sweep's `finish` runs and must
+    /// find its exact error rather than a missing request.
     pub(in crate::runtime::query_service) fn sweep_expired_queued_requests_locked(
         &self,
         state: &mut AdmissionState,

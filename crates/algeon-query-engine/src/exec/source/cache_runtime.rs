@@ -13,6 +13,11 @@ use super::{
 };
 use crate::chunk::SourceChunkBatch;
 
+/// Tries to enqueue a background lakehouse cache fill for a file this call read from S3.
+///
+/// Never fails the read. An enqueue error is flattened into the outcome string, and the row is
+/// recorded only when the source asked for `Background` fill mode, so sources that never fill do
+/// not emit rows for every skipped enqueue.
 pub(super) fn record_background_cache_file_fill_enqueue(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -38,6 +43,8 @@ pub(super) fn record_background_cache_file_fill_enqueue(
     }
 }
 
+/// Chunk counterpart of `record_background_cache_file_fill_enqueue`; it follows the failure and
+/// recording rules described there.
 pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionContext, chunk: &SourceChunk) {
     let outcome = match enqueue_background_lakehouse_cache_chunk_fill(context, chunk) {
         Ok(BackgroundLakehouseCacheFillEnqueue::Enqueued) => "enqueued".to_string(),
@@ -57,6 +64,15 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionCont
     }
 }
 
+/// Reads a batch from its optimized cache file instead of the per-chunk files.
+///
+/// The optimized file holds the batch's source frame as written by
+/// `publish_lakehouse_optimized_batch_frame`, so the read uses a plain Parquet read with the
+/// source's read columns and none of the source contract: eligibility already excludes reader
+/// predicates, scan limits and partition columns. The file is pinned against eviction and the read
+/// holds an I/O lease. The frame is allocated under the execution budget token, cast to the
+/// declared schema, and tagged with the first chunk's index as its source order key. A failure
+/// carries the batch index and chunk count.
 #[expect(
     clippy::too_many_arguments,
     reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::exec::{operators::attach_budget_token_failure_facts, retry::backoff_before_retry};
 
+/// Candidate row range sizing for the serial first pass.
 #[derive(Clone, Copy)]
 struct TopKCandidatePlan {
     keep_rows: usize,
@@ -31,6 +32,8 @@ struct TopKMergeAttempt {
     attempt: usize,
 }
 
+/// Coordinator state for a frame fan-out: the unassigned row ranges, a shared clone of the
+/// parent frame, and candidates in commit order.
 struct FrameCandidateState {
     ranges: std::vec::IntoIter<(usize, usize)>,
     parent: GpuDataFrame,
@@ -38,11 +41,15 @@ struct FrameCandidateState {
     candidates: Vec<CommittedPartial>,
 }
 
+/// Coordinator state for a stream fan-out. Pulls stay on the coordinator because the
+/// payload has a single cursor.
 struct StreamCandidateState<'p> {
     payload: &'p mut ResidentFrameStreamPayload,
     candidates: Vec<CommittedPartial>,
 }
 
+/// How a failure to create a candidate's sort token is reported: as the token error itself
+/// (`Direct`) or wrapped with the final sort runtime facts (`RuntimeFacts`).
 #[derive(Clone, Copy)]
 enum TopKWorkTokenFailureMode {
     Direct,
@@ -50,6 +57,33 @@ enum TopKWorkTokenFailureMode {
 }
 
 impl FinalSortExecutor<'_, '_, '_> {
+    /// Global top-k of `input`: sort row ranges into candidates, merge candidates level by
+    /// level, then apply the limit.
+    ///
+    /// Every candidate holds the first `skip + fetch` rows of its inputs under the sort
+    /// order. The last candidate therefore holds the global top rows, and the closing limit
+    /// applies the offset and fetch. A zero-row limit returns an empty frame without sorting,
+    /// and an empty input returns itself.
+    ///
+    /// Candidates come from ranges of `rows_per_chunk` rows, sized from the device budget left
+    /// after `input`. At `initial_attempt == 1` with two or more lanes and two or more
+    /// ranges, the ranges run concurrently, each sized against a per-lane share of that
+    /// remainder. If the fan-out fails with a query-cap rejection and `max_attempts` exceeds
+    /// 1, one backoff precedes a serial rerun of all ranges at attempt 2. A serial failure
+    /// has nothing narrower to try and returns with `hierarchical_topk_initial_failed` facts.
+    ///
+    /// Each merge level concatenates groups of `merge_fan_in` candidates on the coordinator,
+    /// sorts and truncates each group, and carries a trailing group of one unchanged. A
+    /// query-cap rejection with attempts left halves the fan-in (rounded up, floor 2) and
+    /// redoes the level from the same candidates; otherwise the error returns with
+    /// `final_sort_topk_retry_facts` naming the level and fan-in. A failed level leaves the
+    /// candidates intact and drops the groups it had merged; a successful level drops the
+    /// candidates it consumed. Merge attempts count from `initial_attempt` against
+    /// `max_attempts`; the rerun after a failed full sort (`initial_attempt` 2) has fewer
+    /// reductions available.
+    ///
+    /// The closing limit has no retry; its failures report `attempt == max_attempts`.
+    /// `input` stays allocated until this function returns, through every merge level.
     pub(super) fn hierarchical_topk(
         &mut self,
         limit: &LimitNode,
@@ -271,6 +305,9 @@ impl FinalSortExecutor<'_, '_, '_> {
         Ok(state.candidates)
     }
 
+    /// Serial first pass: sorts and truncates each `rows_per_chunk` range of `input` in order
+    /// on the coordinator, holding one sorted range at a time besides the finished candidates.
+    /// The first error returns and the finished candidates drop.
     fn initial_topk_candidates(
         &mut self,
         input: &CommittedPartial,
@@ -295,6 +332,15 @@ impl FinalSortExecutor<'_, '_, '_> {
         Ok(candidates)
     }
 
+    /// Top-k over pulled frames: every non-empty frame becomes one candidate. Candidate size
+    /// follows the producer and nothing re-chunks it. Empty frames pass through unsorted.
+    ///
+    /// Merge levels and the closing limit match `hierarchical_topk`. The first pass has no
+    /// retry: pulled frames are consumed by the pass that pulled them. A failure drops
+    /// the buffered frames and returns with `hierarchical_topk_stream_initial_failed` facts.
+    /// With lanes and `initial_attempt == 1` the pulled frames run on lanes, and an unknown
+    /// frame count is treated as two or more. A payload with nothing to pull, or one that
+    /// yields no frame, is `InvalidPlan`. The caller releases the producer.
     pub(super) fn hierarchical_topk_stream(
         &mut self,
         limit: &LimitNode,
@@ -411,6 +457,8 @@ impl FinalSortExecutor<'_, '_, '_> {
         self.apply_final_limit(candidate, limit, self.max_attempts)
     }
 
+    /// A zero-row limit over a stream: limits the first frame to keep the output schema and
+    /// drops the other buffered frames. The caller releases the producer.
     fn zero_limit_stream(
         &mut self,
         limit: &LimitNode,
@@ -456,6 +504,8 @@ impl FinalSortExecutor<'_, '_, '_> {
         self.observe_final_sort_output(output, attempt)
     }
 
+    /// Candidate for one row range of a retained frame, sliced on the coordinator stream under
+    /// the sort's token.
     fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
         const BOUNDARY: &str = "final_sort_topk_chunk";
         self.sort_and_limit_topk_candidate(
@@ -507,6 +557,12 @@ impl FinalSortExecutor<'_, '_, '_> {
         )
     }
 
+    /// Sorts the frame produced by `frame_for_sort` and truncates it to `keep_rows`.
+    ///
+    /// `frame_for_sort` runs under the sort's budget token; a slice or concatenation is
+    /// attributed to that stage. The truncation uses a second token. A sort failure gains the
+    /// final sort runtime facts for `memory_boundary`; `work_token_failure_mode` decides the
+    /// same for a failure to create the sort token. A limit-token failure returns as is.
     fn sort_and_limit_topk_candidate(
         &mut self,
         memory_boundary: &'static str,
@@ -585,6 +641,11 @@ impl FinalSortExecutor<'_, '_, '_> {
         self.observe_final_sort_output(frame, attempt)
     }
 
+    /// Merges `candidates` in groups of `merge.merge_fan_in` and returns one item per group:
+    /// `Merged` for two or more candidates, `Carry` naming the candidate of a group of one.
+    ///
+    /// The slice is not consumed. `commit_topk_merge_level` applies the result after a full
+    /// level succeeds. An error returns at once, dropping the groups already merged.
     fn topk_merge_level_attempt(
         &mut self,
         candidates: &[CommittedPartial],
@@ -612,6 +673,9 @@ impl FinalSortExecutor<'_, '_, '_> {
         Ok(output)
     }
 
+    /// Concatenates one group on the coordinator stream, then sorts and truncates it. The
+    /// group's candidates stay alive during the concatenation and the sort; a group of
+    /// `n` candidates holds the inputs, the concatenation and the sorted copy.
     fn topk_merge_group_attempt(
         &mut self,
         candidates: &[CommittedPartial],
@@ -630,6 +694,7 @@ impl FinalSortExecutor<'_, '_, '_> {
         )
     }
 
+    /// Applies the query's skip and fetch to the last candidate. No retry runs here.
     fn apply_final_limit(
         &mut self,
         candidate: CommittedPartial,

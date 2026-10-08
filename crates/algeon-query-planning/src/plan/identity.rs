@@ -288,6 +288,11 @@ impl QueryPlan {
     }
 
     /// Digest with the listed GPU-resident source facts hashed as absent.
+    ///
+    /// The sink contributes its input id and caller-visible host schema only,
+    /// so the sink kind is excluded by construction and a host sink and a
+    /// deferred host sink of the same schema agree. Dynamic-filter routes are
+    /// hashed because they change which source reads a runtime filter.
     fn execution_fingerprint_masking(&self, masked: &[DeferredGraphSourceFactSlots]) -> PlanFingerprint {
         let Self { nodes, sink, annotations: Annotations { dynamic_filter_routes, advisory: _ } } = self;
         let mut hasher = PlanHasher::new();
@@ -334,6 +339,9 @@ pub struct DeferredGraphExecutionScopeIdentity {
     source_fact_slots: Vec<DeferredGraphSourceFactSlots>,
 }
 
+/// Which optional facts of one GPU-resident source were absent at admission.
+/// A `true` slot is masked on both sides of the comparison; a `false` slot
+/// stays in the digest, so a bound the admitted plan knew must still match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DeferredGraphSourceFactSlots {
     node_index: usize,
@@ -365,6 +373,9 @@ impl DeferredGraphExecutionScopeIdentity {
         Self { execution_fingerprint: plan.execution_fingerprint_masking(&source_fact_slots), source_fact_slots }
     }
 
+    /// Whether `plan` is the admitted fragment once its deferred facts are
+    /// ignored. The admitted plan's slots mask both sides, so a plan that
+    /// gained facts matches and one that changed a known fact does not.
     pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
         self.execution_fingerprint == plan.execution_fingerprint_masking(&self.source_fact_slots)
     }

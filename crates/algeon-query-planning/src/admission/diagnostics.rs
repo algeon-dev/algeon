@@ -1,3 +1,9 @@
+//! Report facts for bounded join admission.
+//!
+//! Fact keys and the `node:value` comma-separated list encoding are TSV report
+//! contracts. A change here changes the report family in place together with
+//! its consumers, goldens and fixtures.
+
 use std::collections::BTreeMap;
 
 use super::AdmissionDecision;

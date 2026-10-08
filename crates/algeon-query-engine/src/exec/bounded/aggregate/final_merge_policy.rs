@@ -1,3 +1,12 @@
+//! Fan-in and partition bounds for merging bounded aggregate partials.
+//!
+//! Chunk execution leaves one partial per committed chunk (or per partition
+//! batch). The final merge regroups those partials into the SQL result, and
+//! this policy bounds how many partials one merge level reads at once and how
+//! the incremental merge batches raw partials before hash-partitioning them.
+//! The fan-in floor of two is structural: a level that merges a single partial
+//! produces the same partial and makes no progress.
+
 /// Internal bounded final-merge policy.
 ///
 /// These values control how aggregate partials are regrouped after bounded
@@ -22,6 +31,10 @@ impl BoundedFinalMergePolicy {
     pub(in crate::exec::bounded) const DEFAULT_INCREMENTAL_PARTITION_BATCH_DIVISOR: u64 = 4;
     pub(in crate::exec::bounded) const DEFAULT_INCREMENTAL_MIN_FLUSH_DIVISOR: u64 = 8;
 
+    /// Floor on the partitioned final merge's partition count: one per partial,
+    /// capped. Many small partials would otherwise collapse into the one or two
+    /// partitions their summed bytes justify, and each partition is merged
+    /// whole.
     pub(in crate::exec::bounded) fn partitioned_final_merge_partial_partition_floor(
         self,
         partial_count: usize,
@@ -32,6 +45,10 @@ impl BoundedFinalMergePolicy {
         )
     }
 
+    /// Fan-in for the next attempt after a merge level failed with a
+    /// retryable resource error: halved, rounding up, never below the minimum.
+    /// `None` means the fan-in was already minimal and this retry path is
+    /// exhausted; the caller reports the original failure.
     pub(in crate::exec::bounded) fn reduce_merge_fan_in(self, merge_fan_in: usize) -> Option<usize> {
         if merge_fan_in <= self.final_merge_min_fan_in {
             return None;
@@ -40,6 +57,10 @@ impl BoundedFinalMergePolicy {
         Some(merge_fan_in.div_ceil(self.final_merge_retry_fan_in_divisor).max(self.final_merge_min_fan_in))
     }
 
+    /// Whether admitting the next partial into a compiled merge level would
+    /// push the level's input past `threshold_bytes`, the planned source chunk
+    /// target. The first two partials are admitted regardless, since a level
+    /// below the minimum fan-in cannot make progress.
     pub(in crate::exec::bounded) fn should_stop_compiled_final_merge_fan_in_selection(
         self,
         fan_in: usize,
@@ -50,6 +71,8 @@ impl BoundedFinalMergePolicy {
         fan_in >= self.final_merge_min_fan_in && selected_bytes.saturating_add(partial_bytes) > threshold_bytes
     }
 
+    /// Clamps a selected fan-in to the minimum and to the partial count, so a
+    /// merge over fewer partials than the minimum still runs as one level.
     pub(in crate::exec::bounded) fn compiled_final_merge_fan_in(self, fan_in: usize, partial_count: usize) -> usize {
         fan_in.clamp(self.final_merge_min_fan_in, partial_count)
     }

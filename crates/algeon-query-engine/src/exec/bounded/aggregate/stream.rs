@@ -1,3 +1,20 @@
+//! Partial-aggregate stage of the compiled aggregate, fed by a frame stream or a source stream.
+//!
+//! `execute_compiled_bounded_aggregate_from_stream` takes resident frames, such as a join output.
+//! `execute_compiled_bounded_aggregate_from_source_stream` takes a deferred Parquet leaf. Both pick
+//! one of these paths from the aggregate spec:
+//!
+//! - Aggregates that need all rows at once (median, floating statistical aggregates in
+//!   DataFusion-exact mode, DISTINCT) union their input and run one single-stage aggregate.
+//! - GPU-native statistical aggregates keep one statistical partial per frame and merge them in
+//!   one step.
+//! - Everything else computes a partial per frame or chunk, with a proactive split when the
+//!   partial's size bound exceeds the device budget (`sizing.rs`). The partials enter a
+//!   `CompiledStreamPartials` accumulator, which merges them as described in `aggregate.rs`.
+//!
+//! A source stream whose plan has source-adjacent stages can instead go to `source_adjacent.rs`,
+//! which fuses the stages with group-key partitioning.
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
@@ -29,6 +46,12 @@ use crate::exec::{
     source::observed_chunk_row_group_count,
 };
 
+/// Aggregates a stream of resident frames into the final output.
+///
+/// Consumes the stream. The frame stream's producer is released on every path, and frames not yet
+/// pulled are released when a partial or a merge step fails. Dispatch tests, in order, for an empty
+/// input, GPU-native statistical partials, whole-input aggregates (median and floating statistical
+/// aggregates), DISTINCT, and finally the partial and merge path.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -152,6 +175,18 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
 }
 
 #[expect(clippy::too_many_arguments, reason = "compiled aggregate carries its source and borrowed run lanes")]
+/// Aggregates a deferred Parquet leaf into the final output.
+///
+/// A spec that requires the whole input is tested first, which sends every floating statistical
+/// aggregate to the union path before the GPU-native statistical check runs, unlike the frame
+/// stream path above. Next, a plan with source-adjacent stages goes to `source_adjacent.rs` when it
+/// partitions by group key or chunk batching is enabled. The remaining case computes one partial
+/// per source chunk, across lanes through `dispatch` when one is given and the spec has no grouping
+/// sets, and serially otherwise.
+///
+/// On the serial path a merge failure ends the aggregate, because source work cannot be replayed
+/// after earlier partials were committed. `preserve_output_stream` asks for a lazy frame stream
+/// instead of one concatenated frame when the incremental merge is in use.
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -270,6 +305,11 @@ pub(in crate::exec::bounded) struct AggregateChunkOutput {
     pub(in crate::exec::bounded) source_row_groups: u64,
 }
 
+/// Computes the committed partials of one source chunk.
+///
+/// The stream's chunk execution owns decode and operator retries. Each successful piece of the
+/// chunk adds its partials to the returned `AggregateChunkOutput`, and the caller inserts them into
+/// merge state. A stage record ties each piece's partial aggregate to the chunk index and attempt.
 pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -334,6 +374,12 @@ pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
 /// Partitioned shapes retain their existing incremental owner. Other
 /// mergeable aggregates use a stable binary reduction, retaining at most one
 /// normalized state per level; grouping sets keep their existing final merge.
+/// Which accumulator holds the partials of the stream is fixed at construction (`new`):
+///
+/// - `Incremental` when the aggregate has no grouping sets and the capability decision selects
+///   the partitioned merge for the final stage.
+/// - `Folded` for other aggregates that either group by a key or expect more than eight partials.
+/// - `Retained` for a few global partials and for grouping sets.
 pub(in crate::exec::bounded::aggregate) enum CompiledStreamPartials<'a> {
     Retained {
         node_id: NodeId,
@@ -353,6 +399,10 @@ pub(in crate::exec::bounded::aggregate) enum CompiledStreamPartials<'a> {
 }
 
 impl<'a> CompiledStreamPartials<'a> {
+    /// Chooses the accumulator for a stream expected to yield `expected_partials` partials.
+    ///
+    /// `expected_input_rows` is the producer's declared row total when it has one. Only the
+    /// incremental merge reads either value, and only to size its first partition count.
     pub(in crate::exec::bounded::aggregate) fn new(
         execution: &BoundedExecutionAttempt<'_>,
         node_id: NodeId,
@@ -388,6 +438,13 @@ impl<'a> CompiledStreamPartials<'a> {
         })
     }
 
+    /// Takes ownership of one chunk's partials and folds them into the accumulator.
+    ///
+    /// An error is terminal for the aggregate: earlier partials of the call may already be merged,
+    /// so the chunk cannot be replayed. In `Folded`, each partial is first normalized to merge
+    /// state so that raw partials and merged states never share a concatenation. Equal levels merge
+    /// as a binary carry. At most one state per level is retained, and the merge order follows the
+    /// order of `extend` calls, independent of lane completion order.
     pub(in crate::exec::bounded::aggregate) fn extend(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -442,6 +499,13 @@ impl<'a> CompiledStreamPartials<'a> {
         }
     }
 
+    /// Merges what remains and returns the final output.
+    ///
+    /// `Folded` merges its occupied levels, from the earliest input interval to the latest, in one
+    /// final merge. `Retained` merges every partial, or aggregates an empty input when none
+    /// arrived. `Incremental` finishes its partitions and either concatenates them or, when
+    /// `preserve_output_stream` is set, returns them as a lazy stream finalized one partition per
+    /// pull.
     pub(in crate::exec::bounded::aggregate) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -492,6 +556,10 @@ impl<'a> CompiledStreamPartials<'a> {
     }
 }
 
+/// GPU-native statistical aggregate over resident frames: one statistical partial per frame, merged
+/// in one step by `execute_compiled_bounded_statistical_final_merge_from_partials`. All partials
+/// are retained until the stream ends. The stream's remaining frames are released if a partial
+/// fails.
 fn execute_compiled_bounded_statistical_aggregate_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -543,6 +611,8 @@ fn execute_compiled_bounded_statistical_aggregate_from_stream(
     )
 }
 
+/// GPU-native statistical aggregate over a source stream: one statistical partial per chunk through
+/// the chunk consumer, then the same single-step merge as the frame stream path.
 fn execute_compiled_bounded_statistical_aggregate_from_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -585,6 +655,8 @@ fn execute_compiled_bounded_statistical_aggregate_from_source_stream(
     )
 }
 
+/// Unions the statistical partials into one frame and merges them under a budget token for
+/// `compiled_statistical_aggregate_final_merge`.
 fn execute_compiled_bounded_statistical_final_merge_from_partials(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -614,6 +686,7 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
     )
 }
 
+/// Computes the statistical partial (moment state) of one frame. Consumes `input`.
 fn execute_compiled_bounded_statistical_partial_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -660,6 +733,8 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
+/// DISTINCT aggregates cannot merge per-chunk states. The frames are concatenated and aggregated in
+/// one stage. A single frame skips the concatenation.
 fn execute_compiled_bounded_distinct_aggregate_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -719,6 +794,8 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     })
 }
 
+/// Computes the partial state of one resident frame with no source evidence and no proactive split.
+/// Used for the partitions of a hash-partitioned input (`partitioned.rs`).
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -738,6 +815,10 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggr
     )
 }
 
+/// Computes the partial state of one frame, as one or more committed partials.
+///
+/// A frame whose partial-state bound exceeds the device budget is split in halves first and can
+/// therefore yield more than one partial. The final merge treats them as extra chunks.
 fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -759,6 +840,13 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
     )
 }
 
+/// Splits `input` in halves while its partial-state upper bound exceeds the device budget and
+/// `retry_budget` remains, then computes the partial of each piece.
+///
+/// The sizing bound alone triggers the split, with no allocation failure, retry counter or backoff
+/// involved (see `sizing.rs`). Each level of splitting spends one unit of `retry_budget`, and a
+/// frame with no bound runs whole. Partials come back in input row order. An error from either half
+/// drops the partials already produced for the other.
 #[expect(clippy::too_many_arguments, reason = "partial work preserves its source evidence through split retries")]
 fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -833,6 +921,10 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     .map(|partial| vec![partial])
 }
 
+/// One partial aggregate under a budget token, with partial-aggregate metrics (input rows, output
+/// rows, state bytes). `input_evidence` is present for source chunks and selects the
+/// `chunk_operator` token boundary; otherwise the boundary is
+/// `compiled_aggregate_partial_state_work`.
 fn execute_compiled_bounded_partial_aggregate_from_frame_with_evidence(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -883,7 +975,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_evidence(
 }
 
 /// Splits a frame proactively when its partial state can outgrow the budget.
-/// Without a bound the frame runs whole.
+/// Without a bound the frame runs whole, and a frame of one row never splits.
 fn should_split_compiled_aggregate_stream_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     input: &ResidentGpuFrame,
@@ -895,10 +987,14 @@ fn should_split_compiled_aggregate_stream_frame(
         && upper_bound_bytes.is_some_and(|bytes| bytes > execution.device_budget_bytes())
 }
 
+/// Levels of proactive splitting allowed: one less than the context's retry attempt limit.
 fn compiled_aggregate_frame_retry_budget(context: &ExecutionContext) -> usize {
     RetryLimits::of(context).max_attempts - 1
 }
 
+/// Slices a frame at its row midpoint into two owned frames and observes their device bytes. The
+/// source frame is released when the call returns. A frame of fewer than two rows is an invariant
+/// violation.
 fn split_compiled_aggregate_stream_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

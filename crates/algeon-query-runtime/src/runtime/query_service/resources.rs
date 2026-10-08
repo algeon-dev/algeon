@@ -107,6 +107,9 @@ impl DeviceResidentCaches {
     }
 
     pub(super) fn close_and_drain_until(&self, _deadline: Instant) -> Result<()> {
+        // Close every graph cache before draining any, so a drain on one
+        // device does not wait while another device still accepts new
+        // resident graphs. Each source cache closes and drains in one call.
         #[cfg(feature = "cugraph")]
         for cache in self.devices.values() {
             cache.graph.close()?;
@@ -122,6 +125,13 @@ impl DeviceResidentCaches {
     }
 }
 
+/// The installed GPU resources of one service generation.
+///
+/// Field order is the drop order and is load-bearing: anything that leases
+/// from a pool or cache is declared before it. The construction journal in
+/// `backend_core` holds clones of the pools and contexts as well, so dropping
+/// this value does not by itself destroy them; it only releases the service's
+/// references.
 #[derive(Debug, Clone)]
 pub(super) struct QueryServiceResources {
     /// The execution-context scope of each installed device. Declared first so
@@ -142,6 +152,9 @@ impl QueryServiceResources {
         DeviceResidentCaches::install(devices)
     }
 
+    /// Stops new stream leases on every device without waiting. Visits every
+    /// pool even after one fails; see `CleanupErrorPriority` for which error
+    /// is returned.
     pub(super) fn close_stream_pools(&self) -> Result<()> {
         let operation = "query_engine.query_service.close_stream_pools";
         let mut errors = CleanupErrorPriority::default();

@@ -6,6 +6,12 @@ use super::{
 };
 use crate::exec::bounded::run_budgeted;
 
+/// Runs the stream's post-decode filter and projection stages on `input` in order on the
+/// calling thread, each under a budget token labeled `join_source_filter` or
+/// `join_source_projection`.
+///
+/// Consumes `input`; an error drops it with any intermediate frame. After a dynamic-filter
+/// stage the chunk's rows before and after are recorded.
 pub(super) fn apply_join_leaf_source_stream_stages(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,

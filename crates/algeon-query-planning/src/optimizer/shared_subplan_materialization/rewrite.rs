@@ -1,3 +1,12 @@
+//! Rewrite planning and the node rewriter for the late materialization pass.
+//!
+//! `shared_aggregate_family_rewrite_plan` decides, without touching the plan,
+//! how one family is shared and which predicate each branch keeps; every
+//! `Err` is the report reason for that family. `SharedSubplanMaterializationRewriter`
+//! then rebuilds the plan: the representative subtree is cloned once per
+//! family with widened sources, and each member aggregate is replaced by its
+//! branch node over that clone.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -37,6 +46,11 @@ use crate::{
     source::SourceNode,
 };
 
+/// Shape signature of a scalar family's aggregate input, or `None` when it has
+/// an operator the scalar rewrite cannot clone with extra columns (a limit,
+/// aggregate, window, union or GPU function). Identity projections, filters
+/// that repeat the reader predicate, and, when allowed, column projections are
+/// left out so branches that differ only in those compare equal.
 pub(super) fn scalar_materialization_input_shape(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -153,18 +167,28 @@ fn count_star_projection_is_elidable(projection: &ProjectionNode) -> bool {
         })
 }
 
+/// How one family is shared. The representative's subtree is the one cloned;
+/// the other members contribute only their predicates and columns.
 #[derive(Debug, Clone)]
 pub(super) struct SharedAggregateFamilyRewrite {
     family_key: String,
     representative_aggregate_node_id: NodeId,
+    /// Reader predicate the cloned source gets, by source fingerprint. Absent
+    /// for a source whose predicate every member shares.
     widened_source_predicates: BTreeMap<String, Expr>,
+    /// Columns the cloned source must read beyond the representative's, by
+    /// source fingerprint. Grouped families never widen columns.
     widened_source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
     kind: SharedAggregateFamilyRewriteKind,
 }
 
 #[derive(Debug, Clone)]
 enum SharedAggregateFamilyRewriteKind {
+    /// Each member becomes a filter over the shared aggregate; `None` means
+    /// the member reads the shared aggregate directly.
     Grouped { branch_filters: BTreeMap<NodeId, Option<Expr>> },
+    /// Each member becomes a projection that renames its `FILTER`ed outputs
+    /// of the one shared scalar aggregate.
     ScalarFiltered { required_aggregate_input_columns: BTreeSet<String>, branches: Vec<ScalarFilteredAggregateBranch> },
 }
 
@@ -181,6 +205,8 @@ struct ScalarFilteredAggregateOutput {
     aggregate_expr: AggregateExpr,
 }
 
+/// Sources whose reader predicate differs between members and so must be
+/// widened. A source read identically by every member keeps its predicate.
 fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> BTreeSet<String> {
     let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
     for signature in family {
@@ -197,6 +223,9 @@ fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> 
         .collect()
 }
 
+/// Plans how `family` is shared, or names the reason it cannot be. The
+/// reason is a report contract; the check order fixes which one a family with
+/// several defects reports.
 pub(super) fn shared_aggregate_family_rewrite_plan(
     plan: &QueryPlan,
     family: &[AggregateMaterializationSignature],
@@ -253,6 +282,16 @@ struct FactoredGroupedSourcePredicate {
     branch_predicates: BTreeMap<NodeId, Option<Expr>>,
 }
 
+/// Splits the members' reader predicates on one source into the conjuncts
+/// they all share and the conjuncts that vary.
+///
+/// The shared source keeps the common conjuncts and reads the disjunction of
+/// the varying ones, so it produces every row any member needs and no row
+/// none of them needs. Each member re-applies its own varying conjuncts after
+/// the aggregate, which is correct only when they read group columns the
+/// source emits unchanged; any other column is a `PredicateNotPostAggregateFilterable`
+/// rejection. A member with no varying conjunct needs every row the common
+/// part admits, so the disjunction is then omitted.
 fn factored_grouped_source_predicate(
     family: &[AggregateMaterializationSignature],
     fingerprint: &str,
@@ -330,6 +369,16 @@ fn split_conjuncts(predicate: Expr) -> Vec<Expr> {
     }
 }
 
+/// Plans a scalar filtered family: one aggregate whose expressions are every
+/// member's aggregates with that member's reader predicate as a `FILTER`
+/// clause, over the shared source read with the disjunction of those
+/// predicates.
+///
+/// The filter columns must reach the aggregate input, so every projection and
+/// join on the way is checked for the ability to carry them, and the widened
+/// column set must be unambiguous across sources. Count-star arguments are
+/// rewritten to a literal because the shared input no longer has the
+/// member's count-preserving column.
 fn shared_scalar_filtered_aggregate_rewrite_plan(
     plan: &QueryPlan,
     family: &[AggregateMaterializationSignature],
@@ -539,11 +588,22 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     })
 }
 
+/// Rebuilds a plan with each applied family's members replaced.
+///
+/// `memo` maps the source nodes that were cloned unchanged to their images
+/// and becomes the rewrite origin. Replaced aggregates and the nodes of a
+/// cloned materialization are kept out of it on purpose: a route or advisory
+/// bound to a member aggregate describes that member alone, and `rewrite`
+/// discards side state whose node has no image.
 pub(super) struct SharedSubplanMaterializationRewriter<'a> {
     original: &'a QueryPlan,
     families_by_key: BTreeMap<String, SharedAggregateFamilyRewrite>,
+    /// Member aggregate to the key of the family that replaces it.
     replacements: BTreeMap<NodeId, String>,
+    /// The one shared node per family, created on first use.
     materialized_nodes: BTreeMap<String, NodeId>,
+    /// Branch node per replaced member, created on first use so a member
+    /// consumed twice gets one image.
     branch_nodes: BTreeMap<NodeId, NodeId>,
     pub(super) nodes: Vec<QueryNode>,
     pub(super) memo: BTreeMap<NodeId, NodeId>,
@@ -656,6 +716,9 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         new_id
     }
 
+    /// Clones the representative's subtree for `family`. Sources that match a
+    /// widened entry get the widened predicate and columns, and a scalar
+    /// family's root becomes the combined `FILTER`ed aggregate.
     fn clone_materialized_subtree(&mut self, old_id: NodeId, family: &SharedAggregateFamilyRewrite) -> NodeId {
         let old_node = self.original.node(old_id).expect("optimizer input node must exist");
         if old_id == family.representative_aggregate_node_id
@@ -722,6 +785,10 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         self.push_node(new_kind, new_facts)
     }
 
+    /// Scalar-family clone that threads the columns the `FILTER` clauses need
+    /// down to the sources and back up: each projection and join output is
+    /// extended with the required columns its input can supply. Operators
+    /// the plan check excluded are unreachable here, so they panic.
     fn clone_materialized_subtree_with_required_columns(
         &mut self,
         old_id: NodeId,

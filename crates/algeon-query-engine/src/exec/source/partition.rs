@@ -8,6 +8,11 @@ use super::{
 };
 use crate::datatypes::{UnrepresentableLiteral, cudf_scalar_value};
 
+/// Appends one constant column per partition column, broadcasting the file's partition value to
+/// every row. The value count must match the partition columns or the call fails with
+/// `InvalidPlan`. `row_count_override` gives the row count when the frame has no columns, in which
+/// case `frame.num_rows()` cannot be used. A source without partition columns returns the frame
+/// unchanged.
 pub(super) fn inject_partition_columns(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -52,6 +57,8 @@ pub(super) fn inject_partition_columns(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Builds a `rows`-long column of one partition value. A typed null partition value becomes a null
+/// scalar of its type; interval values fail with `UnsupportedType`.
 pub(super) fn partition_value_series(
     context: &ExecutionContext,
     value: &LiteralValue,

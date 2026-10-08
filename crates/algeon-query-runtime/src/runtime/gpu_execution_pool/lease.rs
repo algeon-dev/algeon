@@ -25,7 +25,7 @@ pub struct GpuExecutorLease {
     /// An attempt's root execution job is root-class work, one per attempt. A
     /// second native island of the same attempt executes on an auxiliary
     /// fragment context that already owns an attempt auxiliary permit, so its
-    /// execution job is auxiliary work backed by that permit -- the same
+    /// execution job is auxiliary work backed by that permit, under the same
     /// ownership rule the context-setup job and the execution lanes follow.
     /// Without this, both islands of one attempt would charge the root class,
     /// whose capacity is one job per admitted attempt.

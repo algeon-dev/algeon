@@ -22,7 +22,11 @@ pub struct AttemptExecutionRound {
 
 #[derive(Debug, Default)]
 struct AttemptExecutionRoundState {
+    /// Claimed and still producing. An occurrence leaves this set when it
+    /// completes or when its claim is dropped.
     active: HashSet<String>,
+    /// Produced successfully. Only these satisfy a dependant's predecessors,
+    /// and an occurrence here can never be claimed again.
     completed: HashSet<String>,
 }
 
@@ -45,6 +49,12 @@ impl AttemptExecutionRound {
 
     /// Claims the concrete final-plan occurrence selected by the adapter's
     /// execution-path lineage.
+    ///
+    /// `Ok(None)` when the round has no manifest, as for a plan executed
+    /// without an admission artifact. A poisoned round lock fails the claim
+    /// with reason `execution_round_lock_poisoned`. `complete` and `abandon`
+    /// recover a poisoned lock, because a producer that finished must still be
+    /// recorded for its dependants.
     #[doc(hidden)]
     pub fn begin_host_occurrence(
         &self,

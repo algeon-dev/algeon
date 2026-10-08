@@ -1,3 +1,11 @@
+//! cuDF-level lowering of native joins.
+//!
+//! Checks the join subset the engine executes, translates plan join specs into cuDF join
+//! options (null equality, mixed-join key and predicate columns, predicate-join columns),
+//! lowers residual predicates to cuDF AST expressions (`residual`), gathers output
+//! projections from join indices (`output`), and holds the null-aware anti join rewrite.
+//! Strategy selection and the build, probe and materialize stages live in `bounded::join`.
+
 use cudf::{DataFrame, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, NullEquality as CudfNullEquality};
 use query_planning::plan::{JoinNullEquality, JoinSide, JoinType};
 
@@ -16,6 +24,14 @@ pub(super) use output::{
 };
 pub(super) use residual::{JoinResidualColumns, lower_join_residual_predicate, residual_input_columns};
 
+/// Rejects join specs no native executor can run.
+///
+/// Accepts inner, left, full, left semi, left anti (null-aware or not), left mark and cross
+/// joins with a non-empty output projection. A left join must build on the right side, and a
+/// cross join cannot carry a residual predicate. Errors are `UnsupportedOperator` or
+/// `InvalidPlan` with a `join_type` fact. The check looks at the spec only; which strategy
+/// executes a type is decided later, and passing it does not mean every strategy accepts the
+/// node.
 pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     if !matches!(
         node.spec.join_type,
@@ -61,6 +77,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
     Ok(())
 }
 
+/// Options for a keyless conditional join over the residual predicate columns.
 pub(super) fn dataframe_predicate_join_options(
     residual_columns: &JoinResidualColumns,
 ) -> DataFramePredicateJoinOptions {
@@ -69,6 +86,12 @@ pub(super) fn dataframe_predicate_join_options(
         .right_columns(residual_columns.names(JoinSide::Right).iter().map(String::as_str))
 }
 
+/// Options for a mixed join: equality on the keys plus the residual predicate over its
+/// columns.
+///
+/// Key and predicate-column lists follow `residual_columns.cudf_left_side()`; they must
+/// come from the same layout that lowered the predicate. A layout with exchanged inputs
+/// swaps which plan side is passed to cuDF as the left table.
 pub(super) fn dataframe_mixed_join_options(
     left_keys: &[String],
     right_keys: &[String],
@@ -117,6 +140,9 @@ pub(super) enum NullAwareAntiProbe {
     DropNullKeys,
 }
 
+/// Chooses the probe restriction for a null-aware `LeftAnti` join from the complete right
+/// input. Plan validation limits null-aware anti joins to one key column. A NULL in any
+/// right key column yields `Empty`.
 pub(super) fn null_aware_anti_probe(
     node: &JoinNode,
     right: &DataFrame,
@@ -133,6 +159,10 @@ pub(super) fn null_aware_anti_probe(
 }
 
 /// Returns the restricted left probe input, or `None` when it is unchanged.
+///
+/// `Empty` slices to zero rows and `DropNullKeys` filters out rows with a NULL key; a
+/// probe without NULL keys is returned as `None` so no copy is made. A cuDF failure maps to
+/// `query_engine.join.null_aware_anti_probe`.
 pub(super) fn null_aware_anti_probe_input(
     left: &DataFrame,
     left_keys: &[String],
@@ -180,6 +210,7 @@ pub(super) fn probe_side(build_side: JoinSide) -> JoinSide {
     }
 }
 
+/// Picks the left or right value of a per-side metric for `side`.
 pub(super) fn side_metric(side: JoinSide, left: u64, right: u64) -> u64 {
     match side {
         JoinSide::Left => left,

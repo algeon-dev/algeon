@@ -158,6 +158,10 @@ pub(crate) fn placement_candidate_snapshot(
     });
     let can_ever_fit_query_cap = snapshot.can_ever_fit_query_cap(request.requested_query_cap_bytes);
     let admitted_cap = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes);
+    // A device that cannot admit now ranks with zero spare capacity; the
+    // `can_admit_now` ordering in the snapshot comparison puts it after every
+    // device that can, so this value only orders the saturated candidates
+    // among themselves.
     let spare_capacity_bytes = admitted_cap.map_or(0, |cap| {
         snapshot
             .query_share_bytes

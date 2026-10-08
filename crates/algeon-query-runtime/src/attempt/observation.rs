@@ -31,6 +31,8 @@ pub(crate) struct AttemptObservation {
 }
 
 impl AttemptObservation {
+    /// Opens the session and records the `Started` boundary, so the first
+    /// event of every attempt timeline is its begin.
     pub(super) fn new(
         query_id: QueryId,
         trace_id: Option<TraceId>,

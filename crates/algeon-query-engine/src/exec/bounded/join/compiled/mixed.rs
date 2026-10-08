@@ -1,3 +1,21 @@
+//! Keyed joins whose residual predicate is evaluated while matching (`MixedKeyedResidual`).
+//!
+//! The planner picks this strategy for keyed inner, left, full, semi and anti joins whose residual
+//! can run inside the matching kernel. For an inner join, a residual containing CASE, IS DISTINCT
+//! FROM, IS NOT DISTINCT FROM or a decimal division filters after matching and goes to the one-shot
+//! path (`residual.rs`); other join types reject such a residual during planning. Large inputs use
+//! the partitioned variant instead (`partitioned/mixed_keyed.rs`).
+//!
+//! The cuDF primitive is the mixed join: it hashes the equality keys and evaluates the lowered AST
+//! predicate on each candidate pair. The call has two steps. `mixed_*_join_size_data` counts the
+//! matches and returns a size-data object, and its `materialize_indices` produces the gather maps.
+//! The size data is consumed by that second step and its device size is reported as
+//! `mixed_size_data_bytes`.
+//!
+//! Only the build frame persists across probe chunks. The streamed inner variant runs the whole
+//! size-then-indices sequence once per chunk against it. Semi and anti joins that build their left
+//! side use `left_state.rs`, which keeps match state across chunks.
+
 use std::time::Instant;
 
 mod left_state;
@@ -12,6 +30,11 @@ use super::{
     stream_bounded_join_leaf_local_parquet_source_serial,
 };
 
+/// Joins two resident sides with the mixed kernel and gathers the output.
+///
+/// When the plan builds the left side of an inner or full join, `CompiledMixedJoinCall` runs cuDF
+/// with the inputs exchanged and restores plan orientation in the gather maps. The shared index
+/// materializer owns both frames from the point the gather maps exist.
 pub(super) fn execute_compiled_mixed_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -52,6 +75,15 @@ pub(super) fn execute_compiled_mixed_join_materialize(
     )
 }
 
+/// Probes a deferred Parquet leaf against the resident build frame, one chunk at a time (inner
+/// joins only).
+///
+/// Each chunk is projected and joined on its own with `build.input`, and its output is appended to
+/// the `MixedStreamed` state in chunk order. Concatenating chunk outputs is valid for an inner join
+/// only; a join that preserves unmatched rows needs the complement across all chunks and is
+/// rejected here as an invariant violation. The leaf stream may call the consumer again with a
+/// smaller piece of a chunk after a retryable resource error. An output is therefore appended only
+/// after the whole chunk succeeded. On error the build frame is released before the error returns.
 pub(super) fn execute_compiled_mixed_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -102,6 +134,8 @@ fn materialize_compiled_mixed_join_probe_chunk(
     execute_compiled_mixed_join_materialize(execution, node_id, node, left, right)
 }
 
+/// Shares the build frame's columns so one chunk's join can own and release a
+/// `BoundedJoinSideFrame` without freeing the build that later chunks still read.
 fn alias_compiled_mixed_join_build_chunk(build: &BoundedJoinSideFrame) -> BoundedJoinSideFrame {
     BoundedJoinSideFrame { frame: build.frame.clone(), rows: build.rows, bytes: build.bytes }
 }

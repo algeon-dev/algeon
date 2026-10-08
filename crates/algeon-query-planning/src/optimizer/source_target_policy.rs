@@ -1,3 +1,12 @@
+//! Size limits that bound which sources a pushdown rewrite may target.
+//!
+//! Semijoin reduction and join-filter reassociation read these limits so a
+//! pushed keyset or predicate lands on a dimension-sized source. A filter
+//! pushed onto a fact scan would add a pass over the large input for rows the
+//! join removes later. Rows and bytes are alternatives: either bound satisfied
+//! makes a target dimension-sized, and a target with no estimate on either is
+//! not.
+
 /// Internal source-target gates shared by optimizer rewrites.
 ///
 /// These limits keep predicate/keyset pushdown rewrites focused on
@@ -24,6 +33,8 @@ impl OptimizerSourceTargetPolicy {
             || target_bytes.is_some_and(|bytes| bytes <= self.dimension_target_max_bytes)
     }
 
+    /// Largest filtered subtree whose scalar value range a residual pushdown
+    /// may derive from footer statistics; above it the derivation is skipped.
     pub(in crate::optimizer) fn residual_scalar_range_max_rows(self) -> u64 {
         self.residual_scalar_range_max_rows
     }

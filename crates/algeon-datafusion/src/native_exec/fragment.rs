@@ -438,6 +438,11 @@ impl AlgeonNativeExec {
                 )
                 .await?;
                 let plan = admitted.plan();
+                // Footer pruning resolves the plan at execution, after the
+                // ticket's evidence was aggregated at planning. The resolved
+                // plan must refine a scope the ticket already attests to; a
+                // different plan would run under evidence that never
+                // described it.
                 if execution_config.lakehouse_footer_pruning()
                     && let Some(ticket) =
                         execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
@@ -493,6 +498,9 @@ impl AlgeonNativeExec {
                 }
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
+                // The whole schedule runs in this one pool job; the cursor it
+                // returns performs the chunked device-to-host egress on later
+                // polls.
                 run_gpu_execution_task(
                     gpu_executor,
                     observation,
@@ -729,6 +737,9 @@ impl GpuResidentProducer for AlgeonNativeExec {
             if !self.gpu_inputs.is_empty() {
                 return self.execute_composed_gpu_result(native_context, partition, task_context).await;
             }
+            // A shared producer runs once per island execution. The first
+            // reading unit computes and retains the result; later units take
+            // a clone from the island's result scope.
             let shared_results = if self.shared_consumer_count > 1 {
                 let results = shared_resident_results(&task_context).ok_or_else(|| {
                     Error::new(

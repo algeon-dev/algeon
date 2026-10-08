@@ -1,3 +1,13 @@
+//! Residual filtering for one-shot equi joins whose predicate cannot run inside the mixed kernel.
+//!
+//! An inner join with equality keys and a residual containing CASE, IS DISTINCT FROM, IS NOT
+//! DISTINCT FROM or a decimal division is classified `KeyedEquiPostFilter` and always runs as
+//! `OneShotEqui`. The equality gather maps pair every key match, and the residual removes pairs
+//! afterwards. This module gathers a candidate frame that holds the output columns plus every
+//! column the residual reads, under generated `__algeon_native_one_shot_residual_*` names. It
+//! then filters the candidate with the residual rewritten to those names
+//! (`rewrite_join_residual_for_candidate`) and selects the final output columns.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Instant,
@@ -13,6 +23,17 @@ use super::{
     residual_input_columns, side_metric,
 };
 
+/// Gathers the key-matched candidate rows, filters them with the residual, and returns the final
+/// output with its chunk metrics.
+///
+/// Takes both side frames and the equality gather maps into a `JoinMaterializationTxn`. Every
+/// failure path calls `rollback` and success calls `commit_frame`. The gather maps are released
+/// with `drop_indices` once the candidate frame exists, before the filter allocates; the side
+/// frames stay until commit because the metrics read their row counts. `candidate_rows` and
+/// `expected_index_bytes` come from the preflight, and the gathered values are compared with them
+/// in debug builds only. The filter runs under a budget token for `join_residual_filter_output`,
+/// which shares the stream's allocator member and does not change the grant. Its failures carry the
+/// token's allocation peak.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -174,6 +195,10 @@ pub(super) struct OneShotResidualCandidateProjection {
     final_output_names: Vec<String>,
 }
 
+/// Plans the candidate frame: the node's output projection followed by one generated column for
+/// each input column the residual reads, the residual rewritten onto those generated names, and the
+/// output names to keep after filtering. Fails with `UnsupportedExpression` when the residual
+/// references a column that is not input-qualified.
 pub(super) fn one_shot_residual_candidate_projection(node: &JoinNode) -> Result<OneShotResidualCandidateProjection> {
     let residual_columns = residual_input_columns(node)?;
     let mut projection = node.spec.output_projection.clone();
@@ -211,6 +236,8 @@ pub(super) fn one_shot_residual_candidate_projection(node: &JoinNode) -> Result<
     Ok(OneShotResidualCandidateProjection { projection, predicate, final_output_names })
 }
 
+/// Returns a generated candidate column name that is unique within `used_names`, which records it.
+/// The name embeds the side, the column's position and a sanitized copy of the source name.
 pub(super) fn residual_candidate_column_name(
     side: JoinSide,
     index: usize,
@@ -242,6 +269,9 @@ pub(super) fn residual_candidate_side_key(side: JoinSide) -> u8 {
     }
 }
 
+/// Rewrites input-qualified column references in `expr` to the generated candidate column names,
+/// leaving the rest of the expression unchanged. A column absent from `residual_output_names` is an
+/// invariant violation (`InvalidPlan`).
 pub(super) fn rewrite_join_residual_for_candidate(
     expr: &Expr,
     residual_output_names: &BTreeMap<(u8, String), String>,

@@ -6,6 +6,12 @@ use crate::exec::{
     source::{attach_row_group_facts_if_absent, parquet_chunk_path_fact},
 };
 
+/// Where a resource failure happened and how far the run had progressed, for
+/// attachment to the error.
+///
+/// Facts are attached with `with_fact_if_absent` and the boundary is set only
+/// when none is present, so an outer stage wrapping an inner failure keeps
+/// the inner location.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::exec) struct RuntimeResourceFacts<'a> {
     pub(in crate::exec) memory_boundary: &'static str,
@@ -13,7 +19,11 @@ pub(in crate::exec) struct RuntimeResourceFacts<'a> {
     pub(in crate::exec) node_id: NodeId,
     pub(in crate::exec) attempt: usize,
     pub(in crate::exec) max_attempts: usize,
+    /// The granularity at which a retry could resume (`source_chunk`,
+    /// `source_chunk_batch`, or a stage name when no resume exists).
     pub(in crate::exec) resume_boundary: &'static str,
+    /// Read at attach time for the committed chunk and partial counts, which
+    /// tell a reader how much work a retry would not have to repeat.
     pub(in crate::exec) metrics: &'a ExecutionMetrics,
 }
 

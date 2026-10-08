@@ -1,3 +1,13 @@
+//! Lowering of a normalized native tree into DataFusion-free query IR.
+//!
+//! The walk is top-down: each parent states a `Demand` (fields it reads, row
+//! count only, row limit, order) and the child lowers to satisfy it, so column
+//! and limit pushdown are part of lowering. Each lowered input keeps
+//! `FieldBinding`s from DataFusion output indices to executable native names,
+//! which stay unique within a node. A failure is a `LoweringFailure`;
+//! `within_operator` names the operator whose lowering failed when no deeper
+//! site named a cause.
+
 mod advisory;
 mod aggregate;
 mod bindings;

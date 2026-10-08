@@ -1,3 +1,10 @@
+//! Validation and resolution of DataFusion Parquet scans as native sources.
+//!
+//! A scan lowers when its object store, partition columns, reader factory,
+//! declared ordering, file groups and byte ranges can be represented by the
+//! native local or S3 Parquet source. Footers are read through the planning
+//! pass's `FooterScope`; nothing here opens data pages.
+
 use std::collections::BTreeSet;
 #[cfg(feature = "cugraph")]
 use std::sync::Arc;

@@ -1,3 +1,26 @@
+//! Aggregate execution on libcudf groupby and reductions, with the single-stage and partial
+//! entry points shared by the unbounded `Exec` path and bounded execution.
+//!
+//! An aggregate runs in one of three stages (`AggregateExecutionStage`). `Single` computes the result
+//! from one input frame. `Partial` turns one chunk into mergeable state, and the final merge combines
+//! the states from all chunks
+//! (`website/docs/design/native-lowering.mdx#partitions-and-result-semantics`). State is shaped so
+//! that a merge is again a cuDF aggregate over the state columns: COUNT states are summed, SUM, MIN
+//! and MAX merge with themselves, and AVG travels as a (sum, count) pair (`AvgStateAliases`) that is
+//! divided only after the last merge. MEDIAN has no mergeable state and exists only in single-stage
+//! grouped execution. Distinct aggregates are not merged from partial state; the bounded coordinator
+//! concatenates their raw input and runs them single-stage.
+//!
+//! A FILTER clause never reaches lowering. `prepare_aggregate_input_frame` first materializes
+//! each filtered argument as a column that is NULL where the predicate is not true, and the
+//! rewritten spec carries no filter.
+//!
+//! Variance and standard deviation take a separate path chosen by the context's statistical
+//! mode. `statistical.rs` computes them on the GPU from summable moments. `host_exact.rs`
+//! copies the input to host memory and replays DataFusion's accumulators. `groupby.rs` is the
+//! single place that calls libcudf groupby; it requests `include_null_keys` because libcudf
+//! drops rows with a NULL group key by default and SQL GROUP BY keeps them as one group.
+
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -121,6 +144,9 @@ pub(in crate::exec) struct PartialAggregateInputEvidence {
     pub(in crate::exec) source_adjacent_max_partition_fan_in: Option<u64>,
 }
 
+/// Hashes the identity and read shape of `chunks` (source node, file, row groups, read columns
+/// and size estimates, in order) into the `source_chunk_fingerprint` strategy fact. `None` for
+/// an empty slice.
 pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[SourceChunk]) -> Option<u64> {
     if chunks.is_empty() {
         return None;
@@ -129,6 +155,8 @@ pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[Sour
     Some(fnv1a64(signature.as_bytes()))
 }
 
+/// Adds the strategy facts that name the statistical contract behind a variance or stddev
+/// result: the functions, their `ddof`, the execution `mode` and the mode's tolerance contract.
 pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_contract_facts(
     facts: &mut BTreeMap<&'static str, String>,
     spec: &AggregateSpec,
@@ -153,6 +181,14 @@ pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_
     facts.insert("statistical_aggregate_ddof", statistical_ddof.join(","));
 }
 
+/// Single-stage aggregate of `input` with no budget token. Used by the unbounded `Exec` path
+/// and by whole-partition window aggregates.
+///
+/// After `prepare_aggregate_input_frame` the spec goes to the first matching branch: the
+/// DataFusion-exact host path, the GPU-native statistical path (grouped, no grouping sets),
+/// global reductions (no group keys), grouping sets, and otherwise one libcudf groupby. The
+/// grouped branch finalizes AVG after the groupby, casts count and reduction columns to the
+/// output schema's types and selects the schema's columns in order.
 pub(in crate::exec) fn execute_aggregate(
     context: &ExecutionContext,
     node: &AggregateNode,
@@ -163,6 +199,10 @@ pub(in crate::exec) fn execute_aggregate(
 ) -> Result<GpuDataFrame> {
     let (frame, spec, prepared_input_schema) =
         prepare_aggregate_input_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
+    // Checked ahead of every other branch, so in exact mode a global or grouped spec runs entirely
+    // on the host, including its non-statistical aggregates. The host path does not read
+    // `spec.grouping_sets`; capability validation rejects grouping sets combined with floating
+    // statistical aggregates before execution.
     if should_execute_datafusion_exact_floating_statistical_aggregate(context, &spec) {
         return execute_datafusion_exact_host_aggregate(
             context,
@@ -259,6 +299,17 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
     execute_aggregate_with_budget_for_node(context, None, node, input_schema, input, output_schema, token, metrics)
 }
 
+/// Single-stage aggregate under `token`, the bounded counterpart of `execute_aggregate`.
+///
+/// An aggregate with FILTER clauses first gets a byte estimate for materializing its masked
+/// arguments from `select_filtered_global_aggregate_strategy` or
+/// `select_filtered_grouped_aggregate_strategy`. When that estimate exceeds a fraction of the
+/// token's stage request, the aggregate runs as row-chunked state merged at the end
+/// (`filtered_global.rs`, `filtered_grouped.rs`) and this function returns from that branch.
+/// Otherwise the single-pass decision is kept and recorded with the later strategy facts, also
+/// when input preparation or the groupby fails. A grouped aggregate without grouping sets then
+/// selects a groupby strategy; `PreparedSortGroupby` returns early and every other choice runs
+/// the libcudf groupby here. `node_id` ties the recorded decisions to the plan node.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -344,6 +395,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     } else {
         None
     };
+    // The exact-host path reports the filtered materialization facts itself through
+    // `extra_strategy_facts`, so only a failure from it needs the single-pass record below.
     let filtered_global_exact_host = filtered_global_strategy.is_some()
         && should_execute_datafusion_exact_floating_statistical_aggregate(context, &node.spec);
     let (frame, spec, prepared_input_schema) = match prepare_aggregate_input_frame(
@@ -599,6 +652,9 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     Ok(GpuDataFrame::new(output))
 }
 
+/// True when `spec` has a floating STDDEV or VAR aggregate and the context's statistical mode is
+/// `datafusion_exact_host_welford`. The whole spec then runs on the host accumulators of
+/// `host_exact.rs`, including any non-statistical aggregates beside the statistical ones.
 pub(in crate::exec) fn should_execute_datafusion_exact_floating_statistical_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -640,6 +696,10 @@ fn record_single_grouped_aggregate_strategy_decision(
     );
 }
 
+/// Records the strategy decision of a single-stage grouped aggregate. A spec with floating
+/// statistical aggregates replaces `selected_strategy` with `stddev_samp_<mode>` (when every
+/// statistical function is STDDEV_SAMP) or `floating_statistical_<mode>`, and adds the contract
+/// facts, because the strategy selector has no notion of statistical modes.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -693,6 +753,15 @@ pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_str
     );
 }
 
+/// Turns one input chunk into mergeable partial state under `token`.
+///
+/// Output columns follow `lower_partial_aggregate_spec`: group keys (plus the grouping id for
+/// grouping sets), then one column per aggregate with AVG split into a sum and a count column.
+/// A global partial adds a valid-count column next to each SUM, MIN and MAX value (named by
+/// `global_valid_count_state_alias`), which the final merge sums. MEDIAN fails with
+/// `UnsupportedOperator` because it has no mergeable state. Filtered aggregates take the
+/// row-chunked path when the single-pass estimate is too large, as in
+/// `execute_aggregate_with_budget_for_node`; the state they return has the same shape.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -830,6 +899,14 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     )
 }
 
+/// Partial aggregate of one chunk without row chunking.
+///
+/// The prepared spec takes the first matching branch: global partial state when there are no
+/// group keys, the grouping-sets partial, and otherwise a strategy chosen from the capability
+/// decision and `input_evidence`. `EncodedKeyPartial` and `PreparedSortGroupby` return early;
+/// the default runs the libcudf groupby. `filtered_grouped_strategy` is the single-pass decision
+/// of a grouped filtered aggregate and is recorded on the failure paths that precede a
+/// strategy record.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -943,6 +1020,10 @@ fn execute_partial_aggregate_with_budget_single_pass(
     let selection_elapsed = selection_timer.elapsed();
     let mut prepared_partial_input = None;
     let mut prepared_preflight_elapsed = Duration::ZERO;
+    // Strategy selection kept the default groupby for a source-adjacent chunk partitioned by group
+    // key. Prepared sort groupby can still pay off, depending on the group count, which only the
+    // prepared sort reveals. The preflight prepares it once under the token; a selected strategy
+    // reuses that prepared state and a rejected one drops it.
     if source_adjacent_prepared_sort_groupby_runtime_candidate(
         &decision,
         input_rows,
@@ -980,6 +1061,8 @@ fn execute_partial_aggregate_with_budget_single_pass(
                 }
             },
             Err(error) => {
+                // Only a retryable resource failure declines the strategy, and the chunk then
+                // continues on the default groupby. Any other error fails the chunk.
                 let Some(declined) =
                     decline_prepared_sort_groupby_runtime_preflight_for_resource_error(decision, &error)
                 else {
@@ -1094,6 +1177,9 @@ fn execute_partial_aggregate_with_budget_single_pass(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Marks the runtime preflight of prepared sort groupby as `declined_resource_error` when
+/// `error` is a retryable resource failure, and returns `None` for any other error. The decision
+/// keeps its `selected_strategy`, so the caller continues with the default groupby.
 fn decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
     mut decision: AggregateStrategyCapabilityDecision,
     error: &QueryError,

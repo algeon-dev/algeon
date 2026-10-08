@@ -1,3 +1,17 @@
+//! Joins with a residual predicate and no equality keys (`KeylessConditional`).
+//!
+//! The planner sends inner joins, left joins that build their right side, full joins, and left semi
+//! or anti joins that build their left side here. Both sides are resident `Prepared` frames and
+//! nothing streams; the parent module concatenates a chunked probe input first.
+//!
+//! The cuDF primitive is the conditional join. The lowered residual is an AST expression evaluated
+//! on left-right pairs, and no hash table exists. Inner, left, semi and anti joins run a
+//! `conditional_*_join_size` pass that counts the output rows, then an `*_indices_with_output_size`
+//! pass that must receive that count. A full join keeps the size-data object from
+//! `conditional_full_join_size_data` and materializes the gather maps from it; its device size is
+//! reported as `mixed_size_data_bytes`. The join metrics label the left side as build and the right
+//! as probe for every join type here, because no side builds a table.
+
 use std::time::Instant;
 
 use cudf::ops::ast::AstExpression;
@@ -9,6 +23,8 @@ use super::{
     materialize_compiled_indices_output, residual_input_columns,
 };
 
+/// Joins two resident sides under the lowered residual and gathers the output through the shared
+/// index materializer, which takes ownership of both frames once the gather maps exist.
 pub(super) fn execute_compiled_keyless_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -93,6 +109,9 @@ pub(super) fn execute_compiled_keyless_join_materialize(
     )
 }
 
+/// Counts the rows the conditional join will produce. The result is the `output_size` argument of
+/// `keyless_conditional_join_indices_with_output_size` for the same inputs, predicate and options.
+/// Full joins never call it, because their size data is retained.
 pub(super) fn keyless_conditional_join_output_size(
     join_type: KeylessConditionalJoinKind,
     left: &DataFrame,
@@ -116,6 +135,11 @@ pub(super) fn keyless_conditional_join_output_size(
     result.map_err(|error| join_index_error(error, node))
 }
 
+/// Produces the gather maps for a sized conditional join.
+///
+/// `output_size` must be the count `keyless_conditional_join_output_size` returned for the same
+/// inputs. Semi and anti joins return left-row indices only (`CompiledJoinIndices::LeftOnly`);
+/// inner and left joins return a left and a right gather map.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"

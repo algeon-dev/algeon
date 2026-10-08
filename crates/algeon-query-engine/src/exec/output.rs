@@ -64,7 +64,8 @@ pub struct QueryExecutionResult {
 /// Work that belongs to the plan but runs after [`super::execute_query_plan`]
 /// returns, such as a deferred host sink, records through
 /// [`Self::recorder`]. A [`QueryMetrics`] value is a projection taken with
-/// [`Self::snapshot`].
+/// [`Self::snapshot`]. Clones share the recorder's observation owner; a fact recorded
+/// through any clone appears in every later snapshot.
 #[derive(Debug, Clone)]
 pub struct PlanMetrics {
     recorder: MetricsRecorder,

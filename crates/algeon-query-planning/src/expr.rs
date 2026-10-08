@@ -43,6 +43,10 @@ pub(crate) fn representation_cast_preserves_identity(source_type: &DataType, tar
         )
 }
 
+/// The column and target type of a cast, itself possibly aliased, whose operand
+/// is a bare or aliased column. Paired with
+/// [`representation_cast_preserves_identity`] it finds casts that change only
+/// the string representation and keep row identity.
 #[doc(hidden)]
 pub fn representation_cast_column(expr: &Expr) -> Option<(&ColumnRef, &DataType)> {
     match expr {
@@ -52,6 +56,8 @@ pub fn representation_cast_column(expr: &Expr) -> Option<(&ColumnRef, &DataType)
     }
 }
 
+/// The `(months, days, nanoseconds)` of a month-day-nano interval literal, when
+/// `expr` is one.
 #[doc(hidden)]
 pub fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
@@ -75,8 +81,11 @@ pub enum Expr {
     Column(ColumnRef),
     /// A typed literal value.
     Literal(LiteralValue),
+    /// SQL `NOT`; a null operand yields null.
     Not(Box<Expr>),
+    /// SQL `IS NULL`; the result is never null.
     IsNull(Box<Expr>),
+    /// SQL `IS NOT NULL`; the result is never null.
     IsNotNull(Box<Expr>),
     /// Explicit cast to an Arrow data type.
     Cast {
@@ -134,33 +143,55 @@ pub enum Expr {
         /// `(start - 1) + length` must fit in `i32`.
         length: Option<i32>,
     },
+    /// SQL `LOWER`; requires a string input and keeps its type.
     Lower(Box<Expr>),
+    /// SQL `UPPER`; requires a string input and keeps its type.
     Upper(Box<Expr>),
+    /// SQL `TRIM(trim_chars FROM expr)`.
+    ///
+    /// `trim_chars` is a set: every leading or trailing character that appears
+    /// in it is removed. An empty set is the identity. The DataFusion frontend
+    /// lowers the one-argument SQL form with a single space and omits the node
+    /// when the set is empty.
     Trim {
+        /// String expression trimmed at both ends.
         expr: Box<Expr>,
+        /// Characters removed from both ends.
         trim_chars: String,
     },
+    /// Leading-only form of [`Self::Trim`], with the same set semantics.
     LTrim {
+        /// String expression trimmed at its start.
         expr: Box<Expr>,
+        /// Characters removed from the start.
         trim_chars: String,
     },
+    /// Trailing-only form of [`Self::Trim`], with the same set semantics.
     RTrim {
+        /// String expression trimmed at its end.
         expr: Box<Expr>,
+        /// Characters removed from the end.
         trim_chars: String,
     },
     /// Literal substring containment test.
     StringContains {
+        /// String expression searched.
         expr: Box<Expr>,
+        /// Literal substring; wildcards have no meaning here.
         pattern: String,
     },
     /// Literal prefix test.
     StartsWith {
+        /// String expression tested.
         expr: Box<Expr>,
+        /// Literal prefix.
         prefix: String,
     },
     /// Literal suffix test.
     EndsWith {
+        /// String expression tested.
         expr: Box<Expr>,
+        /// Literal suffix.
         suffix: String,
     },
     /// SQL `CHARACTER_LENGTH(expr)` string expression.
@@ -186,6 +217,7 @@ pub enum Expr {
     /// Native execution follows DataFusion semantics: null inputs contribute
     /// empty strings rather than producing a null output row.
     Concat(Vec<Expr>),
+    /// SQL `ABS` over a numeric input.
     Abs(Box<Expr>),
     /// SQL unary arithmetic or math function.
     ///
@@ -354,6 +386,9 @@ impl Expr {
         })
     }
 
+    /// Unqualified reference resolved by name against the node's single input.
+    /// Multi-input nodes use [`Self::input_column`], since the same leaf name
+    /// may appear on both sides.
     pub fn column(name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::unqualified(name))
     }
@@ -367,10 +402,15 @@ impl Expr {
         Self::Column(ColumnRef::input(input, name, display_name))
     }
 
+    /// Typed literal; the Arrow type travels with the value.
     pub fn literal(value: LiteralValue) -> Self {
         Self::Literal(value)
     }
 
+    /// Binary operation whose result type the backend infers from the
+    /// operands. Use [`Self::binary_with_output_type`] when the frontend
+    /// declares a type the backend cannot infer, such as a decimal division's
+    /// result scale.
     pub fn binary(left: Self, op: BinaryOp, right: Self) -> Self {
         Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: None }
     }
@@ -380,38 +420,49 @@ impl Expr {
         Self::Binary { left: Box::new(left), op, right: Box::new(right), output_type: Some(output_type) }
     }
 
+    /// SQL `NOT`; the [`Not`] operator impl builds the same node.
     pub fn logical_not(expr: Self) -> Self {
         Self::Not(Box::new(expr))
     }
 
+    /// SQL `IS NULL`; the result is never null.
     pub fn is_null(expr: Self) -> Self {
         Self::IsNull(Box::new(expr))
     }
 
+    /// SQL `IS NOT NULL`; the result is never null.
     pub fn is_not_null(expr: Self) -> Self {
         Self::IsNotNull(Box::new(expr))
     }
 
+    /// Explicit cast to `target_type`. See [`Self::try_cast`] for the form
+    /// that yields null for values the target cannot represent.
     pub fn cast(expr: Self, target_type: DataType) -> Self {
         Self::Cast { expr: Box::new(expr), target_type }
     }
 
+    /// SQL `TRY_CAST`; native execution admits only `Utf8` to integer targets.
     pub fn try_cast(expr: Self, target_type: DataType) -> Self {
         Self::TryCast { expr: Box::new(expr), target_type }
     }
 
+    /// SQL `LIKE` without an `ESCAPE` clause; `%` and `_` are wildcards.
     pub fn like(expr: Self, pattern: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: false }
     }
 
+    /// SQL `NOT LIKE` without an `ESCAPE` clause.
     pub fn not_like(expr: Self, pattern: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: true }
     }
 
+    /// SQL `LIKE ... ESCAPE escape`; validation checks the escape clause
+    /// before execution.
     pub fn like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: false }
     }
 
+    /// SQL `NOT LIKE ... ESCAPE escape`.
     pub fn not_like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
         Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: true }
     }
@@ -424,42 +475,54 @@ impl Expr {
         Self::Substring { expr: Box::new(expr), start, length }
     }
 
+    /// SQL `LOWER`; requires a string input and keeps its type.
     pub fn lower(expr: Self) -> Self {
         Self::Lower(Box::new(expr))
     }
 
+    /// SQL `UPPER`; requires a string input and keeps its type.
     pub fn upper(expr: Self) -> Self {
         Self::Upper(Box::new(expr))
     }
 
+    /// SQL `TRIM(trim_chars FROM expr)`; see [`Self::Trim`] for the set
+    /// semantics of `trim_chars`.
     pub fn trim(expr: Self, trim_chars: impl Into<String>) -> Self {
         Self::Trim { expr: Box::new(expr), trim_chars: trim_chars.into() }
     }
 
+    /// Leading-only trim; see [`Self::Trim`].
     pub fn ltrim(expr: Self, trim_chars: impl Into<String>) -> Self {
         Self::LTrim { expr: Box::new(expr), trim_chars: trim_chars.into() }
     }
 
+    /// Trailing-only trim; see [`Self::Trim`].
     pub fn rtrim(expr: Self, trim_chars: impl Into<String>) -> Self {
         Self::RTrim { expr: Box::new(expr), trim_chars: trim_chars.into() }
     }
 
+    /// Boolean test that `expr` contains the literal `pattern`; no wildcard
+    /// interpretation.
     pub fn string_contains(expr: Self, pattern: impl Into<String>) -> Self {
         Self::StringContains { expr: Box::new(expr), pattern: pattern.into() }
     }
 
+    /// Boolean test that `expr` starts with the literal `prefix`.
     pub fn starts_with(expr: Self, prefix: impl Into<String>) -> Self {
         Self::StartsWith { expr: Box::new(expr), prefix: prefix.into() }
     }
 
+    /// Boolean test that `expr` ends with the literal `suffix`.
     pub fn ends_with(expr: Self, suffix: impl Into<String>) -> Self {
         Self::EndsWith { expr: Box::new(expr), suffix: suffix.into() }
     }
 
+    /// SQL `CHARACTER_LENGTH` with the frontend-declared `output_type`.
     pub fn string_length(expr: Self, output_type: DataType) -> Self {
         Self::StringLength { expr: Box::new(expr), output_type }
     }
 
+    /// SQL `REGEXP_REPLACE`; `replacement` may contain back-references.
     pub fn regexp_replace(
         expr: Self,
         pattern: impl Into<String>,
@@ -474,18 +537,24 @@ impl Expr {
         }
     }
 
+    /// SQL `CONCAT`; null inputs contribute empty strings, as in DataFusion.
     pub fn concat(exprs: Vec<Self>) -> Self {
         Self::Concat(exprs)
     }
 
+    /// SQL `ABS` over a numeric input.
     pub fn abs(expr: Self) -> Self {
         Self::Abs(Box::new(expr))
     }
 
+    /// Unary math function with the frontend-declared `output_type`; see
+    /// [`UnaryMathOp`] for the IEEE 754 domain behavior of each function.
     pub fn unary_math(op: UnaryMathOp, expr: Self, output_type: DataType) -> Self {
         Self::UnaryMath { op, expr: Box::new(expr), output_type }
     }
 
+    /// SQL `ROUND`; ties round away from zero, and `output_type` carries the
+    /// decimal scale the frontend declared.
     pub fn round(expr: Self, decimal_places: i32, output_type: DataType) -> Self {
         Self::Round { expr: Box::new(expr), decimal_places, output_type }
     }
@@ -506,26 +575,36 @@ impl Expr {
         Self::InList { expr: Box::new(expr), list, negated: true }
     }
 
+    /// Null-aware inequality; the result is never null.
     pub fn is_distinct_from(left: Self, right: Self) -> Self {
         Self::IsDistinctFrom { left: Box::new(left), right: Box::new(right) }
     }
 
+    /// Null-aware equality; the result is never null.
     pub fn is_not_distinct_from(left: Self, right: Self) -> Self {
         Self::IsNotDistinctFrom { left: Box::new(left), right: Box::new(right) }
     }
 
+    /// Searched `CASE`. The IR requires an `ELSE` expression; a frontend
+    /// supplies one for a SQL `CASE` that omits it.
     pub fn case(branches: Vec<CaseWhen>, else_expr: Self) -> Self {
         Self::Case { branches, else_expr: Box::new(else_expr) }
     }
 
+    /// SQL `EXTRACT(field FROM expr)`; native execution supports the fields in
+    /// [`DatePart::EXTRACT_FIELDS`].
     pub fn extract(field: DatePart, expr: Self) -> Self {
         Self::Extract { field, expr: Box::new(expr) }
     }
 
+    /// SQL `DATE_TRUNC`; native execution supports the fields in
+    /// [`DatePart::DATE_TRUNC_FIELDS`].
     pub fn date_trunc(field: DatePart, expr: Self, output_type: DataType) -> Self {
         Self::DateTrunc { field, expr: Box::new(expr), output_type }
     }
 
+    /// Renames the output field without changing evaluation. See
+    /// [`alias_wrapped_column`] for the rename that stays zero-copy.
     pub fn alias(self, alias: impl Into<String>) -> Self {
         Self::Alias { expr: Box::new(self), alias: alias.into() }
     }

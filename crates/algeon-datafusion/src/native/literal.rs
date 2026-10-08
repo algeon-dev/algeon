@@ -1,3 +1,5 @@
+//! Lowering of DataFusion scalar literals into native literal values.
+
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, IntervalMonthDayNanoType, TimeUnit};

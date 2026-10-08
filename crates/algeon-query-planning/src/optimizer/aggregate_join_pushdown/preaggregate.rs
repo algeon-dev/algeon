@@ -1,3 +1,10 @@
+//! Construction of the pre-aggregate: its group columns, state columns,
+//! schema and spec, plus the rebuilt join's schema.
+//!
+//! State aliases are generated under the `__algeon_native_preagg_` prefix and
+//! kept clear of the aggregate's output names and the group columns, so the
+//! rebuilt join's output projection cannot collide.
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::{
@@ -7,12 +14,16 @@ use super::{
     simple_projection_column, zero_filled_count_expr,
 };
 
+/// One group column of the pre-aggregate: a measure-side group key, or a join
+/// key of that side retained so the rebuilt join can match on it.
 #[derive(Clone)]
 pub(in crate::optimizer::aggregate_join_pushdown) struct PreAggregateColumn {
     pub(in crate::optimizer::aggregate_join_pushdown) source_name: String,
     pub(in crate::optimizer::aggregate_join_pushdown) output_name: String,
 }
 
+/// The partial state one original measure becomes: one column for `SUM` and
+/// `COUNT`, a sum and a count for `AVG`.
 #[derive(Clone)]
 pub(in crate::optimizer::aggregate_join_pushdown) struct PreAggregateMeasureState {
     pub(in crate::optimizer::aggregate_join_pushdown) original_function: AggregateFunction,
@@ -276,6 +287,9 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn join_with_replaced_input(
     rewritten
 }
 
+/// Merge spec for per-branch pre-aggregates: group by the pre-aggregate's
+/// group outputs and `SUM` each state under its own alias. `None` for grouping
+/// sets, which the union form does not distribute.
 pub(in crate::optimizer::aggregate_join_pushdown) fn final_aggregate_spec_after_union_preagg(
     preagg_spec: &AggregateSpec,
     preagg_schema: &SchemaRef,
@@ -297,6 +311,8 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn final_aggregate_spec_after_
     Some(AggregateSpec::new(group_exprs, aggr_exprs))
 }
 
+/// Schema of the rebuilt join: the aggregate's group outputs, then the state
+/// columns, nullable when the pre-aggregated side can be null-extended.
 pub(in crate::optimizer::aggregate_join_pushdown) fn new_join_output_schema(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,

@@ -1,3 +1,13 @@
+//! GPU interpreter for compiled pipeline tasks.
+//!
+//! `CompiledGpuTaskExecutor` implements `CompiledTaskExecutor` for resident
+//! GPU payloads. It owns the state the resource ledger does not model: join
+//! build and probe state keyed by plan node (build and probe tasks declare no
+//! output resources), the dynamic filters produced so far, the host sink
+//! output, and the GPU-resident input handles until their last scheduled
+//! read. The per-operator task bodies live in the submodules; this file holds
+//! construction, output settlement, the sink handoffs and the release hooks.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -47,6 +57,10 @@ mod terminal;
 mod unary;
 mod vector;
 
+/// Whether a failed build-key uniqueness probe may be ignored. The probe only
+/// refines strategy selection, so a temporary resource condition leaves the
+/// fact unknown and selection proceeds without it; any other failure is a
+/// real error and fails the task.
 pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -> bool {
     matches!(
         error.code(),
@@ -57,18 +71,41 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
 }
 
 /// Compiled task interpreter for bounded GPU work.
+///
+/// Lives for one scheduler run on the coordinator thread. Everything below is
+/// coordinator state; lane jobs receive owned work and never see the
+/// executor.
 pub struct CompiledGpuTaskExecutor<'a> {
+    /// The attempt view operators run under: root context, device budget cap
+    /// for budget tokens, and the metrics owner.
     pub(super) execution: BoundedExecutionAttempt<'a>,
+    /// Present only for a lane-borrow run. Shares the run's lane leases, so a
+    /// task that expands chunk work never acquires a second lane set.
     pub(super) aggregate_dispatch: Option<super::lanes::AggregateLaneDispatch>,
     pub(super) plan: &'a QueryPlan,
     pub(super) policy: PlanningPolicy,
     pub(super) pipeline: &'a CompiledPipeline,
+    /// Handles still awaiting a scheduled read. A handle is removed after its
+    /// last read so the input's device memory can be released while the rest
+    /// of the run proceeds.
     pub(super) gpu_inputs: GpuResidentInputMap,
+    /// Scheduled reads left per input name, counted from the pipeline's
+    /// `GpuResidentSource` tasks at construction.
     pub(super) remaining_gpu_input_reads: BTreeMap<String, usize>,
+    /// Produced and skipped filters by route. Consumers check readiness
+    /// before reading; compiled control edges order producers ahead of them.
     pub(super) dynamic_filters: DynamicFilterSet,
+    /// Routes already applied to a shared source frame, so a later consumer
+    /// of the same resource does not filter it again.
     pub(super) source_post_decode_applied_routes: BTreeMap<ResidentResourceId, BTreeSet<DynamicFilterId>>,
+    /// Build state from `JoinBuild` to `JoinProbe`, keyed by join node. It is
+    /// never a declared resource; the probe task finds it by node id, so the
+    /// ledger does not see it.
     pub(super) join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
+    /// Probe state from `JoinProbe` to `JoinMaterialize`. Drained in
+    /// `cleanup_after_error` because it can hold device tables.
     pub(super) join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
+    /// Set once by the sink materialize task and taken once by the caller.
     pub(super) host_output: Option<RecordBatch>,
 }
 
@@ -146,6 +183,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         Ok(inputs)
     }
 
+    /// Settles every output before any reaches the ledger. On a settle
+    /// failure the outputs settled so far and the ones not yet visited are
+    /// released here, because the scheduler never sees them and cannot.
     fn settle_task_outputs(
         &mut self,
         task: &PipelineTask,
@@ -175,6 +215,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })
     }
 
+    /// Turns the sink-output resource into the handle the caller keeps after
+    /// the run.
+    ///
+    /// Must run while any lane leases are still held; `run_resident_lane_borrow`
+    /// guarantees that ordering. The output's device bytes are retained
+    /// against the attempt's grant through a resident owner lease so the
+    /// result stays accounted after the attempt's own working set is gone.
+    /// Succeeds once per run.
     pub(crate) fn take_gpu_output(
         &mut self,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
@@ -254,6 +302,8 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<Vec<(ResidentResourceId, Self::Resource)>> {
+        // Cancellation is cooperative at task boundaries here; chunk loops and
+        // source reads check again between their own units of work.
         self.execution.context().check_cancellation("query_engine.exec.bounded.compiled.task")?;
         self.execution.metrics().record_compiled_pipeline_task_mapping(
             task.id(),
@@ -288,6 +338,10 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         result
     }
 
+    /// Frames and unstarted source streams release through `Drop` at the end
+    /// of the match. A frame stream and a started prefetch need the attempt:
+    /// the stream to release producer-retained storage, the prefetch to join
+    /// the read worker it already started.
     fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { .. } => {},
@@ -306,6 +360,9 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         self.release_resource(resource, payload)
     }
 
+    /// Releases the state the ledger does not track. Probe state goes through
+    /// its release routine because it may hold device tables that need the
+    /// attempt; build state and input handles release by `Drop`.
     fn cleanup_after_error(&mut self) -> Result<()> {
         while let Some((_, probe)) = self.join_probes.pop_first() {
             release_bounded_compiled_join_probe_state(&mut self.execution, probe);

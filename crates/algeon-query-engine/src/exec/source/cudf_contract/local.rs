@@ -1,3 +1,15 @@
+//! Builds cuDF source, file and chunk descriptors from planner sources, and attaches the lowered
+//! reader predicate.
+//!
+//! Row-group selection follows the cuDF convention: `None` reads every row group of the file and
+//! `Some(vec![])` is an explicit empty selection that is preserved. A chunk with
+//! `reads_all_row_groups` maps to `None` even when its `row_group_indexes` list is empty.
+//!
+//! Per-row-group byte, row-count and null-count facts are attached when the plan has them. cuDF
+//! derives each chunk's byte and row-count facts from them and, for a local path read without a
+//! reader predicate, skips decoding a nullable read column whose selected row groups are all
+//! null. A missing fact only disables that use; it does not fail the read.
+
 use std::{path::Path, sync::Arc};
 
 use cudf::{
@@ -30,6 +42,12 @@ use crate::{
     source_chunk::SourceMetadataCache,
 };
 
+/// Builds the cuDF source and chunk for one planned chunk of one file.
+///
+/// The reader predicate is lowered after the chunk exists because a decimal predicate is typed
+/// from the chunk's file (see `predicate`). For an S3 file read directly, the chunk's decimal
+/// reader types are first replaced by types verified against the file footer. Fails with
+/// the descriptor, predicate or attach error carrying the chunk's path, indexes and row groups.
 pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -76,6 +94,12 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
     Ok((cudf_source, cudf_chunk))
 }
 
+/// Builds one cuDF source and one cuDF chunk per planned chunk for a multi-chunk read.
+///
+/// The read columns, schema and predicate come from the first chunk and the shared `source`, so
+/// all chunks must read the same columns. Chunks of one file share one cuDF file entry. The
+/// returned chunk list is in the input order. Fails with `InvalidPlan` for an empty batch; a
+/// decimal predicate whose reader dtype differs between chunks fails in cuDF.
 pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -170,6 +194,9 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     Ok((cudf_source, cudf_chunks))
 }
 
+/// Builds the cuDF source and chunk for reading a whole `LocalParquetFile`, honoring the file's
+/// own row-group selection (`file.row_groups`). `chunk_index` identifies the read in the cuDF
+/// chunk, and both indexes appear in errors.
 pub(in crate::exec::source) fn cudf_local_parquet_source_file_selection(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -215,6 +242,14 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_file_selection(
     Ok((cudf_source, cudf_chunk))
 }
 
+/// Returns decimal reader types verified against the file footer, or `None` when no verification
+/// applies.
+///
+/// Verification applies only to an S3 file read directly (`RemoteDirect`) under a reader
+/// predicate that references a decimal column. The decimal storage width cuDF decodes (Decimal32,
+/// Decimal64 or Decimal128) is a property of the file, and the predicate's literal scalars must
+/// match it, so the types supplied by the plan are checked against the footer. Every other source
+/// returns `None` and keeps the planned types. A footer read failure is returned as the error.
 pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -224,6 +259,9 @@ pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk(
     footer_verified_reader_decimal_types_for_chunk_with_cache(context, source, chunk, &mut metadata_cache)
 }
 
+/// As `footer_verified_reader_decimal_types_for_chunk`, sharing `metadata_cache` so a batch reads
+/// each file footer once. A chunk that is marked footer-verified and already carries decimal
+/// types reuses them without a footer read.
 pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk_with_cache(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -246,6 +284,8 @@ pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk_wi
     )
 }
 
+/// Copies `chunk` with the given decimal types and marks them footer-verified, which lets the
+/// next call to `footer_verified_reader_decimal_types_for_chunk_with_cache` skip the footer.
 pub(in crate::exec::source) fn chunk_with_reader_decimal_types(
     chunk: &SourceChunk,
     reader_decimal_types: Vec<ParquetReaderDecimalType>,
@@ -314,6 +354,12 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_from_file<'a>(
     cudf_local_parquet_source_from_files(source, [cudf_file], read_columns, operation)
 }
 
+/// Builds the cuDF source contract from already-converted files.
+///
+/// The schema covers every logical field of the source. `read_columns` is the subset decoded from
+/// the files; the output, pure-filter and `ReadColumn` references index into it rather than
+/// into the file schema. A pure-filter column is read to evaluate the predicate and is not part of the
+/// output.
 pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
     source: &LocalParquetSource,
     cudf_files: impl IntoIterator<Item = CudfLocalParquetFile>,
@@ -343,7 +389,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
 }
 
 /// Attaches a lowered reader predicate to a cudf source contract, enriching
-/// attach failures with the read's identity facts.
+/// attach failures with the read's identity facts. `None` returns the source unchanged. The
+/// predicate must have been lowered against the same source and chunks it is attached to.
 #[expect(
     clippy::too_many_arguments,
     reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
@@ -377,6 +424,12 @@ pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
     Ok(cudf_source)
 }
 
+/// Converts one planned chunk's file into a cuDF file entry.
+///
+/// An S3 file read with `RemoteDirect` becomes a remote datasource entry that cuDF reads through
+/// KvikIO range requests; local files and files served from the local lakehouse cache
+/// (`LocalCacheKvikio`) become path entries. The plan's size, row-group, projected-byte and
+/// pure-filter-byte facts are attached when present.
 pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
     context: &ExecutionContext,
     chunk: &SourceChunk,
@@ -475,6 +528,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
     Ok(cudf_file)
 }
 
+/// Converts a whole `LocalParquetFile` into a cuDF file entry. Counterpart of
+/// `cudf_local_parquet_file_for_chunk` for reads that do not go through chunk planning.
 pub(in crate::exec::source) fn cudf_local_parquet_file(
     context: &ExecutionContext,
     file: &LocalParquetFile,

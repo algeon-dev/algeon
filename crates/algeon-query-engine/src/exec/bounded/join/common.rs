@@ -1,3 +1,11 @@
+//! Join-side frames and output-size bounds shared by the join stages.
+//!
+//! `BoundedJoinSideFrame` is a join input narrowed to the columns the join needs. The
+//! sizing functions bound the bytes a gathered join output can retain from the input column
+//! dtypes and an output row count. The hash join uses those bounds to cut its output into
+//! slices before any output column is allocated. A bound is an estimate for slicing and
+//! metrics. The grant itself is enforced by the query allocator.
+
 use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType as ArrowDataType;
@@ -10,6 +18,12 @@ use super::{
     observe_device_memory_bytes, select_join_input,
 };
 
+/// One join input narrowed to the columns the join needs, with its row count and device
+/// bytes.
+///
+/// Built from a consumed `ResidentGpuFrame`. The holder owns the device allocations, which
+/// free when the value drops. `rows` and `bytes` are read once when the side is prepared
+/// and never updated.
 pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) frame: DataFrame,
     pub(in crate::exec::bounded) rows: u64,
@@ -21,6 +35,11 @@ pub(in crate::exec::bounded) fn release_bounded_join_side_frame(side: BoundedJoi
     drop(side);
 }
 
+/// Narrows `input` to `columns` plus any hidden DataFusion order columns it carries, and
+/// reads the result's row count and device bytes.
+///
+/// Consumes `input`. A missing column or a device accounting failure drops it; the caller
+/// has nothing to release after an error.
 pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     input: ResidentGpuFrame,
@@ -65,6 +84,10 @@ pub(super) fn sum_bounds(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     left.zip(right).map(|(left, right)| left.saturating_add(right))
 }
 
+/// Upper bound on the bytes `columns` of `frame` retain after a gather of
+/// `expected_output_rows` rows, or `None` when a column has no closed-form bound.
+///
+/// Single-row-count form of `join_side_output_upper_bound_bytes_for_row_counts`.
 pub(super) fn join_side_output_upper_bound_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -84,6 +107,16 @@ pub(super) fn join_side_output_upper_bound_bytes(
     Ok(bounds.into_iter().next().flatten())
 }
 
+/// Bounds the retained bytes of `columns` of `frame` for each entry of
+/// `expected_output_row_counts`, in the same order.
+///
+/// Hidden DataFusion order columns of `frame` are added to `columns`, because the gathered
+/// output carries them. Each column's bound input is computed once and reused for every row
+/// count. A string column needs its longest value, found by a device reduction over the
+/// whole column (byte counts, then a maximum) under a budget token on the attempt context;
+/// this call can allocate on the query domain. A list column is bounded by the whole
+/// input column per gathered row. A column with no bound turns every entry into `None`.
+/// Errors carry `node_id`, `side` and `expected_output_rows` facts where known.
 pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -127,6 +160,8 @@ pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
         .collect()
 }
 
+/// Per-column input to the output bound. Lists have their own rule because a gathered
+/// row's child payload is bounded only by the whole input column.
 #[derive(Clone)]
 enum JoinOutputColumnBound {
     Standard(JoinOutputColumnUpperBoundInput),
@@ -166,6 +201,10 @@ fn join_output_columns_upper_bound_bytes(
     Ok(Some(total))
 }
 
+/// Names of the output-projected columns of `side`, one entry per projection entry.
+///
+/// Duplicates are kept: a source column projected twice is two output columns that each
+/// retain bytes. `projected_output_columns` lists each source column once.
 pub(super) fn projected_output_columns_for_retained_sizing(
     projection: &[JoinOutputColumn],
     side: JoinSide,
@@ -231,6 +270,10 @@ fn join_output_upper_bound_column_for_frame_column(
     })))
 }
 
+/// Longest value of a string column in bytes, by a device reduction under a budget token.
+///
+/// An empty frame returns 0 without touching the device, and so does a column whose
+/// maximum is null.
 fn max_string_byte_length_for_join_output_sizing(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

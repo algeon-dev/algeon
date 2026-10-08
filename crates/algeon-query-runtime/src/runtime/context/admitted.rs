@@ -24,6 +24,8 @@ use crate::observability::AttemptComposedScheduleProjection;
 /// fragment joins.
 #[derive(Debug, Default)]
 pub(in crate::runtime) struct AdmittedPlanIdentities {
+    /// Replaced wholesale on each join. Readers clone the `Arc` and validate
+    /// against one consistent snapshot while a fragment may be joining.
     evidence: Mutex<Option<Arc<AttemptCapabilityEvidence>>>,
 }
 
@@ -89,6 +91,10 @@ impl ExecutionContext {
             .filter(|shape| shape.output_schema_fingerprint() == expected_schema)
             .collect::<Vec<_>>();
         if matching_shapes.is_empty() {
+            // A plan admitted only as a producer occurrence or a manifest
+            // occurrence has no execution-scope shape of its own; its
+            // identity was fixed when that occurrence was composed, so it
+            // passes on the occurrence alone.
             if evidence.producer_occurrence_scope_count_for_plan(plan) > 0 {
                 return Ok(());
             }
@@ -153,7 +159,7 @@ impl ExecutionContext {
     }
 
     /// Universal pre-GPU gate for service-created execution contexts. Direct
-    /// contexts remain unrestricted and return success without a evidence.
+    /// contexts remain unrestricted and return success without evidence.
     pub fn validate_admitted_plan_capabilities(&self, plan: &QueryPlan) -> Result<()> {
         let Some((evidence, _)) = self.validated_admitted_identity(plan)? else {
             return Ok(());

@@ -1,3 +1,6 @@
+//! Finishing an incremental merge for source-adjacent aggregates: per-partition top-k pruning,
+//! concatenation, and the final projection.
+
 use std::time::Duration;
 
 use super::{
@@ -9,6 +12,15 @@ use super::{
     record_grouped_aggregate_strategy_decision,
 };
 
+/// Finishes `merge` and returns the aggregate's final output frame.
+///
+/// Each merged partition may be pruned to its top rows first when the plan has an eligible sort and
+/// limit (`partitioned_final_merge_topk_candidate`); pruning before concatenation keeps the global
+/// top rows because a group lives in one partition. The partitions are then concatenated and
+/// `execute_final_aggregate_projection` finalizes AVG and drops state columns.
+/// `aligned_key_columns` is present when partials arrived pre-partitioned by group key, which the
+/// strategy facts record as a skipped rehash. A merge that produced no partition aggregates an
+/// empty input.
 pub(in crate::exec::bounded::aggregate) fn execute_incremental_source_adjacent_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -81,6 +93,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_incremental_source_adjacent_f
     execute_final_aggregate_projection(execution, bounded, merged)
 }
 
+/// Writes the final-merge strategy decision with the partition counts and the per-partition top-k
+/// totals. `extra_facts` adds caller-specific entries.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"

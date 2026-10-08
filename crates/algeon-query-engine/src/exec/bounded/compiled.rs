@@ -47,6 +47,13 @@ use scheduler::CompiledPipelineScheduler;
 
 use crate::exec::{ExecutionMetrics, output::QueryOutput};
 
+/// Runs one compiled pipeline to its sink output on the calling thread.
+///
+/// The caller is the attempt's root `QueryExecution` pool job, so this blocks
+/// that worker for the whole run. A resident-sink pipeline eligible for lane
+/// borrowing takes the lane path, which moves `gpu_inputs` into the shared
+/// dispatch support; every other pipeline runs the serial interpreter. On
+/// `Err` the scheduler has already released every resident payload.
 pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -114,6 +121,9 @@ fn lane_dispatch_support(
     ))
 }
 
+/// Publishes the task, edge, barrier, sink and resource rows before the first
+/// task runs, so lifecycle events recorded during the run resolve against
+/// them. Ids are plan-execution scoped; two plans may reuse local task ids.
 fn record_compiled_pipeline_topology(
     scope: &RuntimeExecutionObservationScope,
     pipeline: &CompiledPipeline,
@@ -200,6 +210,8 @@ fn record_compiled_pipeline_topology(
     }
 }
 
+/// Join builds whose form requires the whole build side resident before any
+/// probe work; the scheduler ranks these ahead of other ready tasks.
 fn prioritized_join_build_tasks(pipeline: &CompiledPipeline) -> BTreeSet<PipelineTaskId> {
     pipeline
         .tasks()

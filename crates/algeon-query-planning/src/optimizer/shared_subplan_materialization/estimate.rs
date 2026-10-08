@@ -1,3 +1,9 @@
+//! Size estimate for a scalar filtered family's shared materialization.
+//!
+//! The estimate is a report fact; it admits or rejects nothing. The executor
+//! compares the filtered input it observes against the attempt budget at run
+//! time.
+
 use std::collections::BTreeSet;
 
 use super::signature::AggregateMaterializationSignature;
@@ -72,6 +78,10 @@ impl Default for SharedScalarFilteredMaterializationEstimatePolicy {
     }
 }
 
+/// Bytes a single pass over the shared input would hold: the largest member's
+/// selected source bytes, one value column per aggregate expression, and one
+/// predicate mask per distinct exact source. `None` when no member has a
+/// row count.
 pub(super) fn estimate_shared_scalar_filtered_materialization(
     family: &[AggregateMaterializationSignature],
 ) -> Option<SharedScalarFilteredMaterializationEstimate> {

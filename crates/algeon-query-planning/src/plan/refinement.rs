@@ -1,4 +1,12 @@
 //! Execution-time source refinement of an admitted plan.
+//!
+//! Footer pruning runs after admission and may only narrow what a local
+//! Parquet source reads: fewer row groups per file and a reader predicate that
+//! extends the admitted one. Everything else, including node facts and the
+//! sink, must be unchanged. `AdmittedPlan::with_pruned_sources` relies on this
+//! check to admit the refined plan under the same mode and policy without
+//! re-deriving capability from scratch; a difference it reports is an internal
+//! invariant violation, never a fallback.
 
 use super::{PlanNode, QueryNode, QueryPlan};
 use crate::{
@@ -40,6 +48,10 @@ fn node_is_source_refinement(admitted: &QueryNode, refined: &QueryNode) -> bool 
     admitted == refined
 }
 
+/// Rebuilds `before` with `after`'s row-group selections and reader predicate,
+/// then compares. Equality after the rebuild proves no other field changed,
+/// including derived diagnostics, which `refresh_diagnostics` recomputes so a
+/// stale display field cannot fail the comparison.
 fn source_is_refinement(before: &LocalParquetSource, after: &LocalParquetSource) -> bool {
     if before.files.len() != after.files.len()
         || !reader_predicate_extends(before.reader_predicate.as_ref(), after.reader_predicate.as_ref())

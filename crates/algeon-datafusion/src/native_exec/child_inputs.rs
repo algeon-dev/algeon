@@ -67,6 +67,8 @@ enum StagedNativeChild {
     Host { spec: NativeChildInputSpec, schema: SchemaRef, batches: Vec<RecordBatch> },
 }
 
+/// Children ready for upload. `reservation` charges every retained Arrow batch
+/// to the DataFusion pool until `upload` moves them to the device.
 #[derive(Debug)]
 pub(crate) struct StagedNativeChildren {
     children: Vec<StagedNativeChild>,
@@ -99,6 +101,14 @@ pub(crate) struct HostToDeviceUpload {
     pub(crate) bytes: u64,
 }
 
+/// Runs every ordinary child to completion and keeps producers unexecuted.
+///
+/// Staging finishes before the caller acquires the native context, so no GPU
+/// grant is held while DataFusion children run. Producers are prepared here
+/// (metadata, bounded host inputs) and executed later inside the shared
+/// context. A child that holds a producer under DataFusion operators is
+/// validated against the final-plan occurrence manifest before it runs as host
+/// Arrow.
 pub(crate) async fn stage_native_children(
     specs: Vec<NativeChildInputSpec>,
     task_context: Arc<TaskContext>,
@@ -317,6 +327,8 @@ async fn stage_child_partition(
     check_cancellation(cancellation)?;
     let mut stream = spec.plan.execute(partition, task_context)?;
     let mut batches = Vec::new();
+    // A child stream can stay pending indefinitely; the select wakes on the
+    // cancellation token so staging ends without waiting for input.
     while let Some(batch) = tokio::select! {
         batch = stream.try_next() => batch?,
         error = cancellation.terminated(HOST_INPUT_STAGING) => return Err(staging_cancelled(error)),
@@ -399,6 +411,8 @@ fn record_batches_to_gpu(
             error,
         ))
     })?;
+    // cuDF cannot infer a schema from zero batches, so an empty child uploads
+    // one empty batch in the staged schema.
     let imported = if batches.is_empty() {
         let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
         let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).map_err(DataFusionError::from)?;

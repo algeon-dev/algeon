@@ -1,4 +1,20 @@
 //! Terminal GPU cleanup and admission capacity release.
+//!
+//! A release runs in two halves separated by a stream cleanup fence. The
+//! first half, on the thread or pool job that took the lifetime's resources,
+//! decides which fence applies: the root context's stream lease when a
+//! context was acquired, the envelope's unconsumed root stream when it was
+//! not, or none for a ledger-only envelope. The second half runs in that
+//! stream's cleanup completion after `cudaStreamSynchronize`: the report
+//! commit (health, disposition, seal), then the envelope drop that returns
+//! the lane, grant, backend permit, and lifecycle ticket in that order.
+//! Report-ready therefore always precedes capacity reuse, which is the
+//! ordering `website/docs/design/admission.mdx` requires.
+//!
+//! Every path is consuming. A release that cannot reach its fence, because a
+//! queued callback was dropped or a thread unwound, commits with
+//! `CallbackAbandoned`, which marks the backend unhealthy before capacity is
+//! returned.
 
 use std::{
     collections::BTreeMap,
@@ -31,6 +47,11 @@ use crate::{
 /// prepared frozen resident bytes.
 const FROZEN_RESIDENT_PUBLISH_FAILED_REASON: &str = "frozen_resident_publish_failed";
 
+/// The resources taken from a `QueryHandleLifetime`, being released.
+///
+/// Fields are `Option` because `start_release` moves the whole value into a
+/// guard owned by the stream cleanup callback and leaves an empty shell
+/// behind (`empty_recovered_release`), whose `Drop` then has nothing to do.
 pub(super) struct QueryHandleRelease {
     pub(super) service: Option<Arc<QueryServiceInner>>,
     pub(super) admission_request_id: AdmissionRequestId,
@@ -58,7 +79,11 @@ pub(super) struct QueryHandleRelease {
     /// begins. The timestamp is obtained only from an admitted attempt clock.
     pub(super) outcome_terminal_domain_usage: Option<AttemptTimedDomainUsage>,
     pub(super) terminal_outcome: RuntimeTerminalOutcome,
+    /// Set by the first `start_release`; a second entry only completes the
+    /// internal cleanup.
     pub(super) release_started: bool,
+    /// Set once the envelope and service references are gone. `Drop` checks
+    /// it to tell a finished release from an abandoned one.
     pub(super) internal_cleanup_finished: bool,
 }
 
@@ -137,6 +162,13 @@ impl QueryHandleRelease {
         self.start_release();
     }
 
+    /// Chooses the cleanup fence and installs the second half behind it.
+    ///
+    /// On the two fenced paths `self` is moved into a `QueryHandleReleaseGuard`
+    /// captured by the fence's completion closures, and the value left behind
+    /// is an empty shell. The guard's `finish` runs `complete_internal_cleanup`
+    /// after quiescence, and its `Drop` runs the same if the callback is
+    /// dropped unrun, which is how a dropped callback still returns capacity.
     fn start_release(&mut self) {
         if self.release_started {
             self.complete_without_stream_cleanup();
@@ -185,6 +217,9 @@ impl QueryHandleRelease {
             drop_recovering(Some(root_context), "root execution context");
             return;
         }
+        // A root context without its stream lease still references the
+        // attempt domain; it must be gone before `release_unconsumed_physical`
+        // destroys that domain below.
         drop(root_context);
         // Fence accounting on root-stream cleanup; publishing from the GPU job can deadlock reentrant backend close.
         let commit = self.prepare_report_commit();
@@ -222,6 +257,8 @@ impl QueryHandleRelease {
         }
     }
 
+    /// The shell left in place of a release that moved into a fence guard.
+    /// Both completion flags are set so its `Drop` does nothing.
     fn empty_recovered_release() -> Self {
         Self {
             service: None,
@@ -287,6 +324,9 @@ impl QueryHandleRelease {
         self.complete_internal_cleanup();
     }
 
+    /// Returns the admission resources after the report commit has run.
+    /// Idempotent, and never called while the admission mutex is held: the
+    /// envelope drop releases the grant, whose ledger observer takes it.
     fn complete_internal_cleanup(&mut self) {
         if self.internal_cleanup_finished {
             return;
@@ -382,6 +422,8 @@ impl Drop for QueryHandleRelease {
     }
 }
 
+/// Drops a resource whose destructor may run CUDA calls, containing a panic
+/// so one failed destructor cannot abandon the rest of the release sequence.
 fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
     if panic::catch_unwind(AssertUnwindSafe(|| drop(value))).is_err() {
         eprintln!("[query-engine] warning: query service {resource} drop panicked during cleanup recovery");

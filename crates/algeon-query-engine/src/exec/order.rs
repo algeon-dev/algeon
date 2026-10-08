@@ -1,3 +1,17 @@
+//! Hidden DataFusion order columns.
+//!
+//! DataFusion accumulates floating-point statistical aggregates in row order; results that
+//! must match it bit for bit depend on the order rows reach the aggregate. When
+//! `statistical_aggregate_execution_mode` is DataFusion-exact and the plan contains such an
+//! aggregate, `execute_query_plan` enables order tracking for the whole query. Source reads
+//! then append two Int64 columns holding a major ordinal (file or chunk index) and the row
+//! position, joins renumber and carry the columns of their inputs, and
+//! `sort_by_datafusion_order_if_present` restores the order before the aggregate.
+//!
+//! The columns are recognized by name prefix alone and survive the source-read worker
+//! threads. Without tracking, none of these functions finds or creates a
+//! column and each reduces to a no-op or a copy of its input list.
+
 use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
@@ -14,6 +28,8 @@ use super::{ExecutionMetrics, cudf_query_error};
 const SOURCE_ORDER_MAJOR_COLUMN: &str = "__algeon_native_df_order_0";
 const SOURCE_ORDER_ROW_COLUMN: &str = "__algeon_native_df_order_1";
 
+/// Whether any aggregate in `plan` is a floating-point statistical function whose result
+/// depends on input row order.
 pub(in crate::exec) fn plan_requires_datafusion_exact_statistical_order(plan: &QueryPlan) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
         PlanNode::Aggregate(aggregate) => {
@@ -36,6 +52,12 @@ pub(in crate::exec) fn datafusion_order_columns(frame: &DataFrame) -> Vec<String
         .collect()
 }
 
+/// Adds the two hidden order columns to a freshly read source frame: `major_ordinal` as a
+/// constant and the row position from zero.
+///
+/// Returns the frame unchanged when tracking is off or the columns already exist. Otherwise
+/// the frame is first relocated into the context's runtime. Failures map to
+/// `query_engine.datafusion_order.source`; an ordinal beyond Int64 is `InvalidPlan`.
 pub(in crate::exec) fn append_source_order_columns(
     context: &ExecutionContext,
     frame: DataFrame,
@@ -88,6 +110,7 @@ pub(in crate::exec) fn append_source_order_columns(
         })
 }
 
+/// `columns` plus the frame's hidden order columns that are not already listed.
 pub(in crate::exec) fn join_input_columns_with_order(frame: &DataFrame, columns: &[String]) -> Vec<String> {
     let mut output = columns.to_vec();
     for order_column in datafusion_order_columns(frame) {
@@ -106,6 +129,12 @@ pub(in crate::exec) fn join_side_projection_with_order(frame: &DataFrame, column
     }
 }
 
+/// Appends the join inputs' hidden order columns to `columns` under fresh sequential names.
+///
+/// The side listed first gets the lower numbers and is the major key of a later sort by
+/// these columns. An inner join lists the preserved side first, matching which input
+/// DataFusion's hash join streams in order; every other join type lists left, then right.
+/// A `None` frame contributes nothing.
 pub(in crate::exec) fn append_datafusion_join_order_columns(
     columns: &mut Vec<(String, cudf::Series)>,
     left: Option<&DataFrame>,
@@ -144,6 +173,9 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
     Ok(())
 }
 
+/// Stably sorts `frame` by its hidden order columns, or returns it unchanged when it has
+/// none. The sort time is added to the operator time; a cuDF failure maps to
+/// `query_engine.datafusion_order.sort`.
 pub(in crate::exec) fn sort_by_datafusion_order_if_present(
     context: &ExecutionContext,
     frame: DataFrame,

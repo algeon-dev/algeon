@@ -13,6 +13,14 @@ use super::{
 };
 use crate::exec::retry::{is_retryable_resource_error, record_retryable_resource_error};
 
+/// Gathers one probe chunk's output as a list of slice frames and records the join
+/// operator metrics once for the chunk.
+///
+/// Slice rows follow the remaining output bound against the stream target, recomputed each
+/// iteration. A chunk with no output rows still yields one empty frame so the result keeps
+/// its schema. `probe` and `indices` are consumed and drop when the call returns, after
+/// every slice has been gathered; `build` is borrowed. If a slice fails after the slice
+/// retry, frames gathered so far are dropped and the error is returned.
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -176,17 +184,29 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     Ok(outputs)
 }
 
+/// Pull source that gathers a probe result one slice at a time.
+///
+/// Owns the whole probe state (build, probe frame, gather maps) until `release_owned` runs:
+/// at the end of the stream (`finish_success`), on `ResidentFrameStreamSource::release`, or
+/// when the source drops. A consumer that stops after an error must call `release`, since
+/// an error does not release anything, and for a non-empty result a further pull
+/// re-attempts the same slice (`offset` advances only after a slice succeeds).
+/// `pending_outputs` holds the frames of the most recently gathered slice; it holds more than one
+/// frame only after a retry split. Frames already returned to the consumer belong to it.
 pub(in crate::exec::bounded::join::hash) struct RootHashJoinMaterializeStreamSource {
     pub(in crate::exec::bounded::join::hash) context: ExecutionContext,
     pub(in crate::exec::bounded::join::hash) node_id: NodeId,
     pub(in crate::exec::bounded::join::hash) node: JoinNode,
     pub(in crate::exec::bounded::join::hash) build: Option<BoundedRootHashJoinBuildState>,
     pub(in crate::exec::bounded::join::hash) probe: Option<BoundedJoinSideFrame>,
+    /// Keeps the paired gather maps allocated; `left_indices` and `right_indices` order
+    /// the same maps by plan side.
     pub(in crate::exec::bounded::join::hash) indices: Option<cudf::DataFrameHashJoinPairIndices>,
     pub(in crate::exec::bounded::join::hash) left_indices: Option<cudf::DataFrameJoinIndices>,
     pub(in crate::exec::bounded::join::hash) right_indices: Option<cudf::DataFrameJoinIndices>,
     pub(in crate::exec::bounded::join::hash) gather_map_bytes: u64,
     pub(in crate::exec::bounded::join::hash) output_reservation_bytes: Option<u64>,
+    /// Taken by `finish_success`; metrics are reported at most once.
     pub(in crate::exec::bounded::join::hash) timer: Option<Instant>,
     pub(in crate::exec::bounded::join::hash) pending_outputs: VecDeque<ResidentGpuFrame>,
     pub(in crate::exec::bounded::join::hash) offset: usize,
@@ -232,6 +252,8 @@ impl RootHashJoinMaterializeStreamSource {
         }
     }
 
+    /// Gathers rows `offset..offset + take` into `pending_outputs`, with the slice retry of
+    /// `materialize_bounded_root_hash_join_index_slice`. On error nothing is queued.
     pub(in crate::exec::bounded::join::hash) fn materialize_slice(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
@@ -271,6 +293,9 @@ impl RootHashJoinMaterializeStreamSource {
         Ok(())
     }
 
+    /// Reports the join operator metrics, then releases everything. Only the normal end of
+    /// the stream reaches it; a stream stopped by an error or by `release` reports no join
+    /// metrics.
     pub(in crate::exec::bounded::join::hash) fn finish_success(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if let (Some(timer), Some(build), Some(probe)) = (self.timer.take(), self.build.as_ref(), self.probe.as_ref()) {
             let build_side = build.build_side;
@@ -312,6 +337,8 @@ impl RootHashJoinMaterializeStreamSource {
         self.release_owned();
     }
 
+    /// Drops queued frames, the gather maps, the probe frame and then the build state.
+    /// Idempotent; every field is empty after the first call.
     pub(in crate::exec::bounded::join::hash) fn release_owned(&mut self) {
         self.pending_outputs.clear();
         self.left_indices = None;
@@ -332,6 +359,7 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
             if let Some(output) = self.pending_outputs.pop_front() {
                 return Some(Ok(output));
             }
+            // A zero-row result still yields one empty frame so the output keeps its schema.
             if self.output_len == 0 {
                 if self.emitted_empty_output {
                     self.finish_success(execution);
@@ -370,6 +398,8 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
     }
 }
 
+/// Slice retry uses the shared resource-failure classification: only a query-cap rejection
+/// shrinks the slice.
 pub(in crate::exec::bounded::join::hash) fn is_retryable_join_stream_slice_error(error: &QueryError) -> bool {
     is_retryable_resource_error(error)
 }
@@ -398,7 +428,8 @@ pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_stream_chunk_rows
     }
 }
 
-/// The share of `total_bytes` that `rows` of `total_rows` carry.
+/// The share of `total_bytes` that `rows` of `total_rows` carry, rounded up. An unknown
+/// total stays unknown and a zero-row total is returned whole.
 pub(in crate::exec::bounded::join::hash) fn proportional_join_stream_bytes(
     total_bytes: Option<u64>,
     rows: u64,
@@ -412,6 +443,9 @@ pub(in crate::exec::bounded::join::hash) fn proportional_join_stream_bytes(
         as u64)
 }
 
+/// Target output bound for one slice, from the memory control policy and the attempt's
+/// device budget. A slice always holds at least one row; a row whose bound exceeds the
+/// target still gathers as a slice of its own.
 pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
     execution: &BoundedExecutionAttempt<'_>,
 ) -> u64 {

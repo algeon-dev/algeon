@@ -18,6 +18,9 @@ pub(super) fn consumer_nodes(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> 
     consumers
 }
 
+/// The first non-projection node at or below `node_id`, with the number of
+/// projections peeled to reach it. `None` only for a missing node or a cycle,
+/// neither of which a constructed plan contains.
 pub(super) fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: NodeId) -> Option<(NodeId, usize)> {
     let mut current = node_id;
     let mut projection_count = 0;
@@ -35,6 +38,8 @@ pub(super) fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: No
     }
 }
 
+/// The first node at or below `node_id` that is neither a filter nor a
+/// projection, with the chain of peeled nodes listed consumer-first.
 pub(super) fn peel_resident_unary_chain_for_capability(
     plan: &QueryPlan,
     node_id: NodeId,

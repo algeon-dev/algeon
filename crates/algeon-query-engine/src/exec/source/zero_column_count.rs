@@ -1,3 +1,11 @@
+//! Zero-column `COUNT(*)` sources, answered from Parquet row-count metadata.
+//!
+//! A frame with no columns carries no row count, so a count-only scan cannot be expressed as a
+//! cuDF read with an empty projection. The planner instead marks the source as a zero-column
+//! count source, and this module emits an `Int64` column named `ZERO_COLUMN_COUNT_COLUMN` with
+//! one row per chunk holding that chunk's row count. The aggregate sums the column. No data page
+//! is read, so these sources report no Parquet read time.
+
 use std::time::Instant;
 
 use super::{
@@ -7,6 +15,12 @@ use super::{
     record_bounded_parquet_source_metrics,
 };
 
+/// Produces the count frame for a whole source with one row per planned chunk.
+///
+/// Every chunk must carry a row count from the Parquet footer or row-group metadata; a chunk
+/// without one fails with `InvalidPlan`; no data is read as a fallback. The frame has
+/// one row per chunk rather than one per source row. Records the planned `ParquetSource` facts
+/// and the total source row count as the input batch.
 pub(super) fn read_zero_column_count_source(
     context: &ExecutionContext,
     source_node_id: NodeId,
@@ -42,6 +56,8 @@ pub(super) fn read_zero_column_count_source(
     zero_column_count_frame(context, &counts, metrics)
 }
 
+/// Uploads `row_counts` as the `Int64` count column. A count above `i64::MAX` fails with
+/// `InvalidPlan`.
 pub(super) fn zero_column_count_frame(
     context: &ExecutionContext,
     row_counts: &[u64],
@@ -82,6 +98,9 @@ pub(super) fn zero_column_count_frame(
     Ok(GpuDataFrame::new(frame))
 }
 
+/// Builds the one-row count frame for a single chunk under an execution budget token, so the
+/// allocation is accounted at `budget_boundary` like any other bounded chunk read. Fails with
+/// `InvalidPlan` for a count above `i64::MAX` or a budget that does not fit `usize`.
 pub(super) fn zero_column_count_chunk_frame_with_budget(
     context: &ExecutionContext,
     row_count: u64,

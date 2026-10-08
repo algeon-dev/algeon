@@ -4,6 +4,18 @@
 //! DataFusion. Composed wrappers can pass GPU-resident fragment results between
 //! native subplans, but the final DataFusion-facing boundary still streams
 //! host Arrow.
+//!
+//! `ExecutionPlan::execute` on these wrappers performs no GPU work and claims
+//! no grant; it returns a stream whose first poll admits the attempt, runs the
+//! fragment's whole schedule on the device's GPU execution pool, and keeps the
+//! result on the device. Each later poll moves one bounded chunk to host
+//! memory under a DataFusion memory-pool reservation. Every failure crosses
+//! into DataFusion once, as `DataFusionError::External` around an adapter
+//! `Error` whose facts keep the native classification; a failure after native
+//! execution started ends the attempt without a CPU replay. A GPU-resident
+//! producer's output belongs to the context of the composed root that runs it
+//! and is released with that root's stream. The lifetime contract is in
+//! `website/docs/design/admission.mdx`.
 
 use std::{collections::HashSet, sync::Arc};
 

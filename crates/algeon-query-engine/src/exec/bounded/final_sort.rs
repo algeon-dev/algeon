@@ -1,3 +1,21 @@
+//! Global ORDER BY and ORDER BY ... LIMIT over committed chunk results.
+//!
+//! A global order cannot come from independently sorted chunks. The final sort either sorts
+//! the whole input at once (`full_sort`) or, when a finite limit makes it cheaper, runs a
+//! hierarchical top-k (`hierarchical_topk`). A top-k sorts row ranges into candidates of
+//! `skip + fetch` rows, then merges candidate groups level by level, where each merge
+//! concatenates, sorts and truncates to the same bound. `sort_lane` states why the final
+//! candidate equals the global top rows; only the closing limit applies the offset. Neither
+//! path asks for a stable sort; rows tied on the sort key have no defined order.
+//!
+//! Retry shrinks the working set. A full sort with a limit that hits a query-cap rejection
+//! reruns as a hierarchical top-k at attempt 2. Inside a top-k, a failed lane fan-out reruns
+//! its candidates serially, and a failed merge level halves its fan-in and redoes that level
+//! from the same candidates, down to a fan-in of 2. Candidate row ranges never shrink, and
+//! a serial first-attempt candidate failure has nothing narrower to try. Other error codes,
+//! including physical device exhaustion, return unchanged (`exec::retry`). The query
+//! allocator enforces the cap in every path; the budget tokens here only label stages.
+
 use std::time::Instant;
 
 use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
@@ -27,6 +45,18 @@ use topk_level::*;
 use super::compiled::lanes::AggregateLaneDispatch;
 use crate::exec::retry::{ResourceFailureRecovery, RetryLimits, backoff_before_retry, resource_failure_recovery};
 
+/// Sorts a committed input globally and applies `limit`, if any.
+///
+/// With a limit, `should_use_hierarchical_topk` chooses between a top-k at attempt 1 and a
+/// full sort. A full sort that fails with a query-cap rejection reruns as a top-k at
+/// attempt 2 after a backoff, when `max_attempts` allows and a limit exists. Without a limit,
+/// or with a single attempt, the error returns with `retry_attempts_exhausted` retry facts.
+/// A top-k failure returns as it is, since the top-k carries its own retry. `limit` must
+/// carry a fetch bound for the top-k; planning does not fuse an offset-only limit into the
+/// sort, and one passed here fails with `UnsupportedOperator`. Consumes `input`.
+///
+/// Final sort time is added to the metrics on every exit. When `dispatch` has two or more
+/// lanes, the first top-k attempt fans its candidates out to them.
 pub(super) fn execute_final_sort_node_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -121,6 +151,8 @@ pub(super) fn execute_final_sort_node_with_retry(
     }
 }
 
+/// `execute_final_sort_node_with_retry` for a resident frame that has not been committed as
+/// a partial.
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -132,6 +164,9 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retr
     execute_final_sort_node_with_retry(execution, node_id, sort, limit, input, dispatch)
 }
 
+/// Full sort of a raw frame with no limit, serially on the coordinator. Chunk-local sorts
+/// cannot replace a global sort; no lane fan-out applies. There is no shrinking retry
+/// without a limit: a query-cap rejection returns with `retry_attempts_exhausted` facts.
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -163,6 +198,12 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     }
 }
 
+/// Top-k over a stream of frames, without materializing the whole input.
+///
+/// Each pulled frame becomes one candidate. The producer is released on every exit, and
+/// buffered frames not yet pulled are dropped when the top-k fails. See
+/// `hierarchical_topk_stream` for the retry behavior. It is narrower than the frame path
+/// because pulled frames are consumed by the attempt that pulled them.
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -180,6 +221,11 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     result
 }
 
+/// State shared by the final sort strategies for one node.
+///
+/// `dispatch` is the compiled run's lane dispatcher. It is `None` when the sort runs outside
+/// a lane-capable run, and the top-k then stays serial. `max_attempts` is the context's
+/// retry limit, shared by the full-sort rerun and the merge-level retries.
 struct FinalSortExecutor<'a, 'e, 'd> {
     execution: &'a mut BoundedExecutionAttempt<'e>,
     dispatch: Option<&'d AggregateLaneDispatch>,
@@ -188,6 +234,9 @@ struct FinalSortExecutor<'a, 'e, 'd> {
     max_attempts: usize,
 }
 
+/// Adds the final sort boundary, attempt numbers and committed-progress counts to a
+/// resource failure. Other error classes pass through, and facts already present win, so
+/// an inner stage keeps its own location.
 fn final_sort_runtime_facts(
     memory_boundary: &'static str,
     node_id: NodeId,
@@ -208,6 +257,8 @@ fn final_sort_runtime_facts(
     .attach_to(error)
 }
 
+/// Reads the device bytes of a sorted or truncated frame and wraps it as a partial. A
+/// device accounting failure gains the `final_sort_output` boundary facts.
 fn observe_final_sort_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -223,6 +274,8 @@ fn observe_final_sort_output(
 }
 
 impl FinalSortExecutor<'_, '_, '_> {
+    /// Budget token labeled `boundary`, sized to the attempt's device budget. The token names
+    /// the stage in diagnostics; it does not reserve memory.
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.device_budget_bytes())
     }
@@ -257,6 +310,13 @@ impl FinalSortExecutor<'_, '_, '_> {
             .with_fact("max_attempts", self.max_attempts)
     }
 
+    /// Whether a top-k is cheaper than sorting the whole input for this limit.
+    ///
+    /// True for a zero-row limit, or when the candidate bound (`skip + fetch` rows at the
+    /// input's average row size) is at most half the input bytes. Also true when the input
+    /// exceeds the source chunk byte target while the bound fits it. False for an empty
+    /// input or a bound covering every row. An offset-only limit has no bound and fails
+    /// with `UnsupportedOperator`.
     fn should_use_hierarchical_topk(&self, limit: &LimitNode, input: &CommittedPartial) -> Result<bool> {
         let keep_rows = topk_candidate_rows(limit.spec)?;
         if keep_rows == 0 {

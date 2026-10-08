@@ -60,6 +60,9 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
             union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_rows(plan, *input)?))
         },
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(1),
+        // A grouped aggregate's row count is its key cardinality, which no plan
+        // fact bounds below the input; a join's depends on key distribution. Both
+        // stay unknown so no caller treats the input count as the output count.
         PlanNode::Aggregate(_)
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)

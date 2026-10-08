@@ -17,6 +17,9 @@ use super::{NodeId, PlanNode, QueryNode};
 #[derive(Debug, Clone)]
 pub(crate) struct NodeRemap {
     forward: BTreeMap<NodeId, NodeId>,
+    /// Inverse of `forward`. Well defined only because `new` requires an
+    /// injective image; a merge that maps two sources to one image must be
+    /// filtered out by the caller before construction.
     backward: BTreeMap<NodeId, NodeId>,
 }
 
@@ -44,7 +47,9 @@ impl NodeRemap {
         Self::new((0..len).map(|index| (NodeId(index), NodeId(index))).collect())
     }
 
-    /// Composes this mapping with the one applied after it.
+    /// Composes this mapping with the one applied after it. A source node
+    /// whose image `next` drops has no image in the result, so one lookup
+    /// through the composition answers whether a node survived both steps.
     pub(crate) fn then(&self, next: &Self) -> Self {
         Self::new(self.forward.iter().filter_map(|(old, mid)| Some((*old, next.remap(*mid)?))).collect())
     }
@@ -136,6 +141,12 @@ pub(crate) fn clone_plan_node_with_inputs(
 
 /// Drops the nodes `root` cannot reach and renumbers the rest in their
 /// current order.
+///
+/// Keeping the relative order is what preserves the input-before-consumer
+/// invariant without a topological sort: `check_node_order` has already
+/// verified it for the uncompacted list. The caller must have run that check,
+/// because this function indexes `nodes` by id and panics on a root or input
+/// outside the list.
 pub(crate) fn compact_reachable_nodes(nodes: Vec<QueryNode>, root: NodeId) -> (Vec<QueryNode>, NodeId, NodeRemap) {
     let mut reachable = vec![false; nodes.len()];
     let mut stack = vec![root];

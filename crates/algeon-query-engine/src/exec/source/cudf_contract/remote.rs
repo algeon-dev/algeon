@@ -1,3 +1,11 @@
+//! Typed remote Parquet contract for S3 files that cuDF reads directly through KvikIO.
+//!
+//! Remote reads have one mode, `RemoteReadMode::RequireKvikio`. There is no fallback to a path
+//! reader or to a host download: if the build has no KvikIO remote datasource, the attach fails
+//! with `CudfUnsupported`, and every failure carries `fallback_allowed = false`. Errors raised
+//! here use the `*_without_source` constructor so object URIs stay out of the error chain.
+//! Design owner: `website/docs/design/data-path.mdx`.
+
 use std::sync::Arc;
 
 use cudf::io::{
@@ -13,6 +21,14 @@ use query_runtime::runtime::{S3ObjectStoreKey, S3SourceStorageCredential, Source
 
 use crate::exec::source::{cudf_query_error_without_source, *};
 
+/// Attaches the remote profile and read mode to `cudf_file`, and checks that this build can serve
+/// it. A file with no remote source (a local path) is returned unchanged.
+///
+/// Fails with the storage profile or credential error when the profile cannot be resolved, with
+/// the cuDF attach error when cuDF rejects the contract, and with `CudfUnsupported` when
+/// `remote_parquet_capability` does not report a KvikIO remote datasource. On a miss in the
+/// recent-credential cache, default-chain credentials are resolved on the object-store control
+/// runtime while the calling thread blocks for the result.
 pub(in crate::exec::source) fn attach_cudf_remote_parquet_contract(
     context: &ExecutionContext,
     cudf_file: CudfLocalParquetFile,
@@ -43,6 +59,9 @@ pub(in crate::exec::source) fn attach_cudf_remote_parquet_contract(
     Ok(cudf_file)
 }
 
+/// Accepts only `KvikioRemoteDatasource`. Every other disposition, such as a disabled backend
+/// build or an unsupported credential mode, is an error whose facts name the disposition and the
+/// backend build status.
 pub(in crate::exec::source) fn validate_remote_kvikio_capability(
     resolved_source: &ResolvedParquetSource,
     capability: &RemoteParquetCapability,
@@ -105,6 +124,9 @@ pub(in crate::exec::source) fn remote_parquet_capability_disposition_label(
     }
 }
 
+/// Builds the cuDF remote profile for a resolved source. Without a storage profile id the profile
+/// is `shared_process_env`, which sets nothing and relies on the libcudf and KvikIO process-global
+/// settings.
 pub(in crate::exec::source) fn cudf_remote_parquet_profile(
     context: &ExecutionContext,
     resolved_source: &ResolvedParquetSource,
@@ -136,7 +158,8 @@ pub(in crate::exec::source) fn cudf_remote_parquet_profile(
 /// Resolves default-chain AWS credentials for remote-direct reads.
 ///
 /// KvikIO requires static credentials; the object-store provider owns the
-/// shared credential identity and its cache/refresh behavior.
+/// shared credential identity and its cache/refresh behavior. Returns `None` for a source that
+/// is not `RemoteDirect` or whose profile does not use the default chain.
 pub(in crate::exec::source) fn resolve_remote_direct_default_chain_credential(
     context: &ExecutionContext,
     resolved_source: &ResolvedParquetSource,
@@ -172,6 +195,9 @@ pub(in crate::exec::source) fn resolve_remote_direct_default_chain_credential(
         .map_err(attach_resolution_facts)
 }
 
+/// Maps a storage profile to the cuDF remote profile. Empty region and endpoint strings are
+/// treated as unset. cuDF takes a path-style flag, which is the inverse of the profile's
+/// virtual-hosted-style flag.
 pub(in crate::exec::source) fn cudf_remote_parquet_profile_from_storage(
     profile_id: Option<&str>,
     storage_profile: Option<&SourceStorageProfile>,

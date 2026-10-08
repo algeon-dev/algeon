@@ -1,8 +1,20 @@
+//! Node fan-out helper shared by optimizer rules.
+//!
+//! [`parent_counts`] is where rules learn whether a node has more than one
+//! consumer. A rule that moves or edits an operator reads it first, because a
+//! node with two parents cannot be rewritten for one of them without changing
+//! what the other reads.
+
 // Canonical home is `crate::plan`; re-exported while optimizer rules still
 // spell node-input remapping through this module.
 use crate::plan::QueryPlan;
 pub(super) use crate::plan::clone_plan_node_with_inputs;
 
+/// Number of input edges that reach each node, indexed by node position.
+///
+/// A node listed twice among one consumer's inputs (a join of one source with
+/// itself) counts twice. The sink edge is not counted, so a plan root has
+/// zero parents. Lineage walks treat a count above one as a shared path.
 pub(crate) fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = vec![0; plan.node_count()];
     for node in plan.nodes() {

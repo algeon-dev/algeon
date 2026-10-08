@@ -57,6 +57,9 @@ impl CompiledGpuTaskExecutor<'_> {
             },
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
+        // Build state is not a declared resource: the probe task takes it by
+        // join node id, and the compiled control edge from build to probe is
+        // what orders the two.
         self.join_builds.insert(node_id, build);
         Ok(Vec::new())
     }
@@ -168,6 +171,9 @@ impl CompiledGpuTaskExecutor<'_> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
+        // The build moves into the probe state; after this point a failed
+        // probe is released through `join_probes` in `cleanup_after_error`,
+        // or through the probe function's own error path before insertion.
         let build = self.join_builds.remove(&node_id).ok_or_else(|| {
             invalid("compiled join probe task ran before join build state was available")
                 .with_fact("compiled_task_id", task.id())
@@ -180,6 +186,10 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
+        // Dynamic filters that target this probe apply to the probe input
+        // before it reaches the hash table, so the filtered rows never pay for
+        // a probe; the resident-frame arm filters in place, the stream arms
+        // wrap lazily.
         let lazy_output = self.join_probe_output_consumed_as_stream(node_id);
         let probe = match self.take_task_input(task, state, input)? {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {

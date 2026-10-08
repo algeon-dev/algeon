@@ -1,3 +1,11 @@
+//! Row-count partitioning bounds for bounded joins and source-adjacent aggregates.
+//!
+//! Byte targets (`partition_target_policy`) size a partition by its input bytes.
+//! Some cuDF operations allocate per input row or per key match rather than per
+//! byte, and this module supplies the row-based bounds those operations need.
+//! Like the byte targets, these values shape work; the query domain's allocator
+//! alone enforces the cap.
+
 use query_planning::execution_contracts::MemoryControlPolicy;
 
 /// Internal row-count policy for bounded partitioned work.
@@ -25,6 +33,14 @@ impl BoundedPartitionRowPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_PARTITIONS: usize = 1;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_MIN_PARTITIONS: usize = 32;
 
+    /// Rows of the larger input that one partition of a mixed join (equality
+    /// keys plus a residual predicate) may hold.
+    ///
+    /// cuDF's mixed join evaluates the residual AST over every equality match
+    /// and its size-data pass allocates per probe row, so a byte target over
+    /// the inputs does not bound that temporary. The row target grows with the
+    /// cap between a floor that keeps small grants from over-partitioning and a
+    /// ceiling at which the per-row temporaries stop being the limiting term.
     pub(in crate::exec::bounded) fn mixed_join_target_rows(self, memory_policy: MemoryControlPolicy) -> u64 {
         self.mixed_join_target_rows_for_budget(memory_policy.device_budget_bytes)
     }
@@ -34,6 +50,11 @@ impl BoundedPartitionRowPolicy {
             .clamp(self.mixed_join_min_target_rows, self.mixed_join_max_target_rows)
     }
 
+    /// Partition count for a partitioned mixed join: the byte-derived count,
+    /// raised when the larger input exceeds `target_rows` per partition. The
+    /// result is at least two (one partition would copy the inputs for no
+    /// split) and at most the logical partition ceiling that the partitioned
+    /// join driver also applies to retry repartitioning.
     pub(in crate::exec::bounded) fn mixed_join_partition_count(
         self,
         byte_partitions: usize,
@@ -47,10 +68,18 @@ impl BoundedPartitionRowPolicy {
         byte_partitions.max(row_partitions)
     }
 
+    /// Floor for a build side partitioned while its input streams in. Two is
+    /// the smallest split under which a probe chunk pairs with less than the
+    /// whole build; one partition would only add a copy.
     pub(in crate::exec::bounded) fn hash_frame_stream_min_partitions(self) -> usize {
         self.hash_frame_stream_min_partitions
     }
 
+    /// Floor for the group-key partition count of a source-adjacent aggregate.
+    /// It follows the chunk count so a many-chunk input spreads its retained
+    /// partials over more partitions than small per-chunk byte estimates would
+    /// pick, and it is capped so partition bookkeeping does not grow with
+    /// every chunk.
     pub(in crate::exec::bounded) fn source_adjacent_partitioned_aggregate_min_partition_count(
         self,
         chunk_count: usize,

@@ -13,6 +13,15 @@ use super::{
     record_source_read,
 };
 
+/// Reads one whole file through the cuDF source contract and returns the execution frame
+/// (`SourceReadMode::ExecutionFrame`, which includes pure-filter columns).
+///
+/// This is the unbudgeted whole-file path: the read runs with `Exec::RETAINED`, so its output is
+/// not charged to an execution budget token, unlike the chunk read. The call holds an I/O lease
+/// for the duration of the read; a server context rejects the lease once graceful shutdown has
+/// begun. Cancellation is checked before the lease. A cuDF failure carries the file path and
+/// selected row-group count, and the error chain is dropped for object-store files. Records the
+/// read time, `ParquetSource` and input-batch facts, and one `file` metrics row.
 #[expect(
     clippy::too_many_arguments,
     reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
@@ -76,6 +85,8 @@ pub(super) fn read_local_parquet_file(
     Ok(frame)
 }
 
+/// Same redaction rule as `cudf_contract::error`: the cuDF error chain is kept only for local
+/// paths, because for object-store files it can contain the object URI.
 fn read_cudf_error_for_file(
     operation: &'static str,
     message: &'static str,
@@ -89,6 +100,9 @@ fn read_cudf_error_for_file(
     }
 }
 
+/// Row groups a whole-file read covers: the explicit selection, else the count in the plan's
+/// metadata, else the count in the local file footer. Reports 0 when none of these is available,
+/// for example an object-store file without recorded metadata.
 fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
     if let Some(row_groups) = &file.row_groups {
         return row_groups.len() as u64;

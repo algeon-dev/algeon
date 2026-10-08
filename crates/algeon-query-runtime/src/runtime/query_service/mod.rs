@@ -1,4 +1,18 @@
 //! Bounded native query-service admission harness.
+//!
+//! The query service is the process-scoped admission authority for native
+//! attempts: one bounded queue, one admission controller over the per-device
+//! ledgers, and the GPU resources (device contexts, stream pools, execution
+//! pools, resident caches) those ledgers account for. `backend_core` installs
+//! it behind a resource generation and closes it through the phased drain
+//! defined here. The contract is `website/docs/design/admission.mdx`.
+//!
+//! Submodules split along ownership lines. `controller` owns scheduling state
+//! and never a CUDA object; `admission` owns the queued request, its placement
+//! step, and the terminal completion payload; `service` builds the admission
+//! envelope and publishes handles; `handle` owns an admitted attempt's
+//! resources until its one release; `resources` owns the installed GPU
+//! resources and their teardown order.
 
 use std::sync::Mutex;
 
@@ -56,6 +70,14 @@ pub use service::{
     BackendDiagnostics, QueryActivityLease, QueryAdmissionRequest, QueryService, QueryServiceAdmissionSnapshot,
 };
 
+/// Phases of one service drain pass, in execution order.
+///
+/// `StreamPoolClose` stops new stream leases so no admitted attempt can start
+/// GPU work the later phases would have to wait for. `AdmissionQuiescence`
+/// waits for every queued request, pending submission, and lifecycle ticket;
+/// the three phases after it are reported as pending rather than entered
+/// while it is unfinished, because an attempt still releasing needs the
+/// execution pool to run its cleanup job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryServiceDrainPhase {
     StreamPoolClose,
@@ -79,6 +101,12 @@ impl QueryServiceDrainPhase {
     }
 }
 
+/// One phase's result in a drain pass.
+///
+/// `DeadlineElapsed` is retryable: the next pass re-enters the phase. Any
+/// other error is `PermanentFailure`, which the close coordinator records as
+/// fail-closed; the two are distinguished by the `cleanup_deadline_elapsed`
+/// marker on the error rather than by its code.
 #[derive(Debug)]
 pub(crate) enum QueryServiceDrainPhaseOutcome {
     Quiescent {
@@ -157,6 +185,9 @@ impl QueryServiceDrainOutcome {
     }
 }
 
+/// Records one admission lifecycle event on the attempt's observation.
+/// `queue_depth` is the queue length at the moment of the event as seen under
+/// the admission mutex, so callers record while they still hold it.
 fn record_admission_lifecycle(
     observation: &RuntimeObservationHandle,
     admission_request_id: AdmissionRequestId,

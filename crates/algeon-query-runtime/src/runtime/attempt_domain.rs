@@ -1,4 +1,12 @@
 //! Immutable hard allocator domain for one admitted attempt.
+//!
+//! The admission envelope creates one `AttemptAllocationDomain` per grant and
+//! owns it; execution contexts hold clones and stream member leases. The
+//! domain id is the grant's generation, and its allocation limit and ceiling
+//! both equal the grant bytes, which `create` verifies against the cudf domain
+//! it built. The fork streams libcudf's `fork_streams` provider creates are
+//! members of the same domain, so their allocations count against the grant.
+//! The allocation path contract is in `website/docs/design/admission.mdx`.
 
 use std::sync::{
     Arc,
@@ -19,7 +27,10 @@ use crate::native_error::cudf_query_error;
 pub struct AttemptAllocationDomain {
     domain: Arc<cudf::QueryMemoryDomain>,
     grant_identity: GrantIdentity,
+    /// Shared by every clone so member ids stay unique within the domain.
     next_member_id: Arc<AtomicU64>,
+    /// Equal to the grant bytes, so no member carries a quota below the query
+    /// cap; the domain ceiling shared by all members is the only limit.
     member_limit_bytes: u64,
 }
 
@@ -84,6 +95,10 @@ impl AttemptStreamProviderRoute {
         })
     }
 
+    /// Drains every auxiliary fork before the route is dropped. The release
+    /// path runs it from the root stream's cleanup completion; a failure is
+    /// recorded as a stream synchronization failure of that cleanup and the
+    /// route is dropped regardless.
     pub(super) fn synchronize_auxiliary_for_teardown(&self) -> Result<()> {
         self.registration.synchronize_auxiliary_for_teardown().map_err(|error| {
             cudf_query_error(
@@ -208,6 +223,8 @@ impl AttemptAllocationDomain {
         // Auxiliary forks plus the parent's reserved fork, which the native
         // route takes as the last registered entry.
         let capacity = auxiliary_capacity.max(1) + 1;
+        // Stream creation and registration run with the attempt device
+        // current; the guard restores the caller's device on every exit path.
         let _entry = DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
             cudf_query_error(operation, "failed to enter the attempt stream-provider device", error)
         })?;

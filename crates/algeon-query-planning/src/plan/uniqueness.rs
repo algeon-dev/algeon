@@ -13,10 +13,17 @@ use crate::{
     source::SourceNode,
 };
 
+/// Whether some derived key of `node_id` is a subset of `columns`. Any
+/// superset of a unique key is unique, so a key that fits inside the asked
+/// columns proves distinctness on them. An id outside `nodes` proves nothing.
 pub(crate) fn partial_plan_node_is_unique_on(nodes: &[QueryNode], node_id: NodeId, columns: &BTreeSet<String>) -> bool {
     unique_keys_by_node(nodes).get(node_id.index()).is_some_and(|keys| keys.iter().any(|key| key.is_subset(columns)))
 }
 
+/// Keys for every node, in node order. Each node reads only entries before
+/// it, which the input-before-consumer invariant guarantees exist. Nodes
+/// that may duplicate or interleave rows (union, edge normalization, vector
+/// and ML algorithms) and grouping-set aggregates contribute no key.
 fn unique_keys_by_node(nodes: &[QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
     let mut by_node = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -79,6 +86,11 @@ fn unique_keys_by_node(nodes: &[QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
     by_node
 }
 
+/// A side's keys survive a join when each of its rows can appear at most
+/// once in the output: the other side is unique on the join keys, a lowering
+/// proved at most one match for this side, or the join is semi/anti and this
+/// is the left side. A proved bound on the other side carries this side's
+/// keys only when that side is also unique on the join keys.
 fn join_unique_keys(
     join: &JoinNode,
     left_keys: &[BTreeSet<String>],
@@ -126,6 +138,9 @@ fn join_unique_keys(
     output
 }
 
+/// Translates input keys to output names. A key survives only when every one
+/// of its columns is projected; a column projected under several names yields
+/// one output key per combination, since each alias carries the same values.
 fn remap_unique_key_sets(
     input: &[BTreeSet<String>],
     mappings: impl IntoIterator<Item = (String, String)>,
@@ -172,6 +187,10 @@ fn identity_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) 
     }
 }
 
+/// The input column whose distinct values `expr` preserves one to one: a
+/// column, an alias or representation cast of one, or `column + 0` on a
+/// non-nullable integer. Adding a non-zero literal is excluded because
+/// wrapping arithmetic could map two inputs to one output.
 fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) -> Option<&'a str> {
     if let Some(column) = identity_source_column(expr, input_schema) {
         return Some(column);

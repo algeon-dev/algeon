@@ -51,6 +51,13 @@ pub(super) fn check_node_order(nodes: &[QueryNode], root: NodeId) -> Result<()> 
 
 /// Validates a complete node list and sink and derives every node's output
 /// schema, in node order.
+///
+/// Order matters: `check_node_order` runs first so the schema pass may index
+/// inputs by id and read a schema already derived; reachability and the sink
+/// check run last because they read derived schemas. A node whose declared
+/// schema differs from the derived one is overwritten, except for aggregates,
+/// joins and unions, whose declaration is the contract. Every error carries
+/// `InvalidPlan` and the offending node id as a fact.
 pub(super) fn validated_plan_parts(mut nodes: Vec<QueryNode>, sink: &ResultSink) -> Result<Vec<QueryNode>> {
     check_node_order(&nodes, sink.input())?;
     for position in 0..nodes.len() {
@@ -231,6 +238,9 @@ fn check_union_inputs(id: NodeId, union: &UnionNode, declared: &SchemaRef, input
     Ok(())
 }
 
+/// Every node must be reachable from the sink input. Walking in reverse
+/// order suffices because inputs precede consumers, which `check_node_order`
+/// established before this runs.
 fn check_reachable(nodes: &[QueryNode], root: NodeId) -> Result<()> {
     let mut reachable = vec![false; nodes.len()];
     reachable[root.index()] = true;

@@ -1,3 +1,20 @@
+//! The native physical optimizer rule and the final-plan binding.
+//!
+//! `AlgeonNativePhysicalOptimizerRule` runs twice per planning pass (count-only
+//! probe, then final rewrite; see `crate::session`). The final rewrite of the
+//! query root binds a completed plan to execution: it numbers GPU function
+//! occurrences, records the attempt's final disposition, aggregates the
+//! capability evidence of every native unit, mints or extends the invocation's
+//! admission ticket, and roots the plan in `NativeAdmissionExec`. Candidate
+//! declines leave the DataFusion plan in place and are reported, never raised;
+//! a malformed plan, an invalid configuration, or an unsatisfied
+//! `NativeRequired` requirement is an error. Planning diagnostics belong to the
+//! invocation that planned, because the rule instance is shared by every query
+//! of a session.
+//!
+//! The selection contract lives in `website/docs/design/native-lowering.mdx`
+//! ("Select an execution path" and "Require GPU execution").
+
 use std::sync::{Arc, Mutex, PoisonError};
 
 use datafusion::{
@@ -73,6 +90,14 @@ fn enforce_no_datafusion_cpu(plan: &dyn ExecutionPlan, report: Option<&PlanningR
     Ok(())
 }
 
+/// The `FinalPlanRequirementUnsatisfied` error for a completed plan that keeps
+/// DataFusion CPU operators under `NativeRequired`.
+///
+/// `message()` stays free of caller identifiers. The first unsupported
+/// candidate's column or blocking element travels as `ClientDetail`, its
+/// bounded classification as log-safe facts, and the admission rejection's
+/// own facts as raw facts, following the disclosure model in
+/// `website/docs/design/errors.mdx`.
 pub(crate) fn final_plan_requirement_error(
     plan: &dyn ExecutionPlan,
     disposition: FinalPlanDisposition,
@@ -326,6 +351,8 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
             let _footers = invocation.map(Invocation::footer_scope);
             self.rewrite(plan, invocation, &config.optimizer)
         };
+        // The pass ends before the rewrite result is inspected, so a failed
+        // rewrite also releases the invocation's footer cache.
         if self.ends_planning_pass()
             && let Some(invocation) = invocation
         {
@@ -366,9 +393,15 @@ impl AlgeonNativePhysicalOptimizerRule {
         invocation: Option<&Invocation>,
         optimizer_options: &OptimizerOptions,
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<PlanningReport>)> {
+        // A plan already rooted in its admission node is final. DataFusion can
+        // run the optimizer pipeline over it again (`optimize_with_diagnostics`,
+        // coverage), and the binding below must run once per plan.
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok((plan, None));
         }
+        // The count-only probe may already have selected this plan. The final
+        // rewrite then keeps the selection, binds admission below, and records
+        // no second report; the probe's record already describes it.
         let already_selected = peel_cooperative_native_exec(&plan)
             .or_else(|| plan_holds_native_selection(plan.as_ref()).then(|| Arc::clone(&plan)));
         let retains_prior_selection_report = already_selected.is_some();
@@ -419,6 +452,11 @@ impl AlgeonNativePhysicalOptimizerRule {
         };
         let mut optimized = optimized;
         let binds_final_plan = self.ends_planning_pass();
+        // Final binding runs once, on the query root's final rewrite. Occurrence
+        // ids are assigned before evidence is collected because the execution
+        // manifest is part of that evidence, and the attempt learns its
+        // disposition before the ticket is minted so the admission that
+        // follows has a planning predecessor in the lifecycle.
         if binds_final_plan {
             let mut next_occurrence = 0_u64;
             optimized.plan = bind_gpu_function_host_occurrences(optimized.plan, true, &mut next_occurrence)?;
@@ -434,6 +472,8 @@ impl AlgeonNativePhysicalOptimizerRule {
         } else {
             None
         };
+        // A cuGraph input subplan's root stays unwrapped; the outer run wraps
+        // the query root once, above the graph.
         if self.plans_query_root()
             && let Some((source, evidence)) = native_admission
         {
@@ -520,6 +560,9 @@ fn plan_native_admission(
         return Ok(None);
     }
     let evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(ticket_ask_error)?;
+    // `false` means another fragment of this invocation minted the ticket
+    // first. This plan's units join its evidence; the ticket stays the one the
+    // attempt admits under.
     if let Some((ticket, false)) =
         invocation.and_then(|invocation| invocation.attempt_admission_ticket(source.clone(), Some(evidence.clone())))
     {
@@ -558,6 +601,14 @@ fn gpu_function_execution_manifest(plan: &dyn ExecutionPlan) -> Result<Option<At
     })
 }
 
+/// Wraps each GPU function whose result crosses into DataFusion as host Arrow
+/// in a `GpuFunctionHostOccurrenceExec` carrying a plan-unique occurrence id.
+///
+/// Ids are `<producer>#<n>` in pre-order, so the same function reached twice
+/// (DataFusion inlines CTE references) gets two occurrences. A function read on
+/// the device by a native unit or by another producer is a GPU-resident input
+/// and is left unwrapped. Execution later validates each host occurrence
+/// against the manifest built from these ids.
 fn bind_gpu_function_host_occurrences(
     plan: Arc<dyn ExecutionPlan>,
     materializes_host_result: bool,
@@ -609,6 +660,13 @@ fn bind_gpu_function_host_occurrences(
     Ok(Arc::new(GpuFunctionHostOccurrenceExec::new(plan, occurrence_id, producer_identity)))
 }
 
+/// Collects the manifest entries for the host occurrences below `plan` and
+/// returns the occurrence ids that `plan`'s parent reads through it.
+///
+/// Each entry records the host occurrences below it as predecessors, in the
+/// order DataFusion executes them. A host-materializing producer without a
+/// bound occurrence is an adapter defect: binding and collection must have
+/// walked the same final plan.
 fn collect_gpu_function_occurrences(
     plan: &dyn ExecutionPlan,
     materializes_host_result: bool,
@@ -704,6 +762,10 @@ fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
         || plan.children().iter().any(|child| plan_contains_gpu_execution(child.as_ref()))
 }
 
+/// Appends one evidence item per executable native unit below `plan`:
+/// composed host units with their producers, graph executions, GPU-resident or
+/// host producers, and lowered leaf units. `materializes_host_result` selects
+/// which of a producer's two evidences applies at this position.
 fn collect_native_fragment_capability_evidences(
     plan: &dyn ExecutionPlan,
     materializes_host_result: bool,

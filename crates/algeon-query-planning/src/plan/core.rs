@@ -39,6 +39,11 @@ pub struct QueryPlan {
 
 /// Facts bound to node ids that follow the plan through
 /// [`QueryPlan::rewrite`] without taking part in execution.
+///
+/// Rules never edit these directly. A rule returns nodes only, and `rewrite`
+/// decides which bindings survive from how the rule described its output
+/// (see `RewriteOrigin`). The execution fingerprint excludes advisory
+/// bindings, so dropping or invalidating one changes no plan identity.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Annotations {
     /// Dynamic-filter producer/consumer routes between plan nodes.
@@ -55,6 +60,8 @@ pub(crate) struct RewrittenNodes {
     origin: RewriteOrigin,
 }
 
+/// How a rule's output nodes relate to the nodes it rewrote. `rewrite` reads
+/// this to decide which side state it can carry over without re-deriving it.
 enum RewriteOrigin {
     /// Every source node kept its id; new nodes may be appended.
     InPlace,
@@ -86,6 +93,10 @@ impl RewrittenNodes {
         for image in origin.values() {
             *sources_per_image.entry(*image).or_default() += 1;
         }
+        // Two sources mapped to one image were merged. The merged node stands
+        // for neither source alone, so a route endpoint or advisory bound to
+        // one of them must not move onto it; without an entry, `rewrite`
+        // discards that state.
         let origin = origin.into_iter().filter(|(_, image)| sources_per_image[image] == 1).collect();
         Self { nodes, root, origin: RewriteOrigin::Rebuilt(NodeRemap::new(origin)) }
     }
@@ -168,6 +179,12 @@ impl QueryPlan {
         self.rebuilt(self.nodes.clone(), root, &origin, |input| ResultSink::GpuResident { input })
     }
 
+    /// Shared tail of every rewrite: checks the new node list, compacts it to
+    /// the nodes `root` reaches, constructs the plan through
+    /// [`Self::from_parts`], and carries side state across `origin` composed
+    /// with the compaction. `check_node_order` runs first because compaction
+    /// indexes the list by id and would follow the wrong node for an id that
+    /// is out of position.
     fn rebuilt(
         &self,
         nodes: Vec<QueryNode>,
@@ -304,6 +321,10 @@ impl QueryPlan {
         let input = self.root_id();
         let output_schema = Arc::clone(self.root_node().output_schema());
         let root = NodeId(self.nodes.len());
+        // Appending keeps every invariant `from_parts` checks: the new id is
+        // its position, its only input precedes it, and the retargeted sink
+        // reaches it and, through it, everything the old root reached. The
+        // node is pushed without re-validating the plan for that reason.
         let output_ordering = spec.expressions.clone();
         self.nodes.push(QueryNode {
             id: root,

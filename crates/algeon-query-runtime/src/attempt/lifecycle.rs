@@ -1,4 +1,17 @@
 //! Pure fixed execution-attempt lifecycle state.
+//!
+//! `AttemptLifecycle` is a state machine with no clock, lock, or I/O of its
+//! own. The attempt owner holds it under the attempt lock and supplies every
+//! timestamp, so each transition is atomic with respect to the report that
+//! completion receivers read. Transitions validate before they mutate; a
+//! rejected transition leaves the lifecycle unchanged.
+//!
+//! The phase order is `Unclaimed -> Claimed -> Admitted -> Terminal ->
+//! Finalized -> Ready`. An attempt that never requests a device skips
+//! `Claimed` and `Admitted`; a request rejected or cancelled in the queue
+//! skips `Admitted`. `Terminal` fixes the outcome and every later phase
+//! carries that same value. `Ready` is absorbing. The design contract lives in
+//! `website/docs/design/admission.mdx`.
 use std::{error::Error, fmt};
 
 #[cfg(test)]
@@ -17,15 +30,27 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptLifecycleError {
+    /// A second terminal outcome was offered after one was fixed. The first
+    /// stands; paths that race to terminalize read this as another path
+    /// having decided already.
     DoubleTerminalization,
-    InvalidOrder {
-        boundary: &'static str,
-        reason: &'static str,
-    },
+    /// A boundary arrived out of order, or with a timestamp earlier than the
+    /// boundary before it. `reason` names the check that failed.
+    InvalidOrder { boundary: &'static str, reason: &'static str },
+    /// A disposition that differs from the recorded one. Repeating the same
+    /// disposition is accepted.
     DispositionConflict,
+    /// Finalization or report-ready was requested before the outcome was
+    /// fixed.
     ReportBeforeTerminal,
+    /// A cleanup commit for an attempt that never held a grant.
     CleanupWithoutAdmission,
+    /// A second cleanup commit with different facts. An identical repeat is
+    /// accepted.
     TerminalCommitConflict,
+    /// The attempt's finalizer was already consumed, by an admission claim
+    /// that still holds it or by an earlier not-admitted finalization. Raised
+    /// by the owner module; the state machine itself never produces it.
     FinalizationUnavailable,
     /// The attempt's one admission right is already consumed, by an earlier
     /// claim or by finishing the attempt without admission.
@@ -89,11 +114,13 @@ enum AttemptPhase {
     Claimed { requested_ns: u64 },
     /// Admission published a grant.
     Admitted(Box<AttemptAdmitted>),
-    /// The outcome is terminal.
+    /// The outcome is terminal. `admission` keeps how far admission got so
+    /// the cleanup commit or not-admitted finalization that follows can be
+    /// validated against it.
     Terminal { terminal_ns: u64, outcome: RuntimeTerminalOutcome, admission: TerminalAdmission },
     /// The finalizer is consumed; the report is not ready yet.
     Finalized { terminal_ns: u64, outcome: RuntimeTerminalOutcome, admission: FinalizedAdmission },
-    /// The report-ready boundary is recorded.
+    /// The report-ready boundary is recorded. No transition leaves this phase.
     Ready { terminal_ns: u64, ready_ns: u64, outcome: RuntimeTerminalOutcome, admission: FinalizedAdmission },
 }
 
@@ -112,6 +139,9 @@ pub(crate) struct AttemptLifecycle {
     phase: AttemptPhase,
 }
 
+/// Records a set-once timestamp. A repeat is accepted without comparison
+/// because the first value is the published one; a first value earlier than
+/// `previous` is rejected as a regression.
 fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str) -> Result<(), AttemptLifecycleError> {
     if slot.is_some() {
         return Ok(());
@@ -298,6 +328,8 @@ impl AttemptLifecycle {
         Ok(())
     }
 
+    /// Records the published grant, moving the claim to `Admitted`. A repeat
+    /// after admission is accepted and changes nothing.
     pub(crate) fn admitted(&mut self, fact: AttemptAdmissionFact, at: u64) -> Result<(), AttemptLifecycleError> {
         self.rejects_gpu_boundary("admitted")?;
         if self.phase.admitted().is_some() {
@@ -407,6 +439,9 @@ impl AttemptLifecycle {
         }
     }
 
+    /// Records the start of physical execution, once. Allowed without a grant
+    /// because a CPU-fallback attempt executes physically with no device;
+    /// refused while planning is open and for an unplanned attempt.
     pub(crate) fn physical(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         if self.planning_started.is_some() && self.planning_finished.is_none() {
             return Err(AttemptLifecycleError::InvalidOrder {
@@ -427,6 +462,9 @@ impl AttemptLifecycle {
         first(&mut self.physical, at, previous, "physical_execution_started")
     }
 
+    /// Records the first GPU work, once. It requires a grant, because GPU
+    /// execution without admission would mean device allocations the ledger
+    /// never committed.
     pub(crate) fn gpu(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         let Some(admitted_ns) = self.phase.admitted().map(|admitted| admitted.admitted_ns) else {
             return Err(AttemptLifecycleError::InvalidOrder {
@@ -437,6 +475,10 @@ impl AttemptLifecycle {
         first(&mut self.gpu, at, admitted_ns, "gpu_execution_started")
     }
 
+    /// Classifies the attempt, once. `Unplanned` is refused after any
+    /// admission, GPU, or physical boundary and `CpuFallback` after any
+    /// admission or GPU boundary, so a disposition can never understate what
+    /// the attempt already did.
     pub(crate) fn disposition(&mut self, d: AttemptDisposition) -> Result<(), AttemptLifecycleError> {
         match self.disposition {
             None => {
@@ -461,6 +503,15 @@ impl AttemptLifecycle {
         }
     }
 
+    /// Fixes the attempt's outcome. This is the only transition into
+    /// `Terminal`; the admission-rejection path and the owner's release paths
+    /// all pass through it.
+    ///
+    /// A missing disposition defaults to `Unplanned` and is then checked
+    /// against the recorded boundaries like an explicit one. When no primary
+    /// failure was captured, one is derived from `outcome`, which is how a
+    /// control outcome (`Cancelled`, `Dropped`, `Panicked`) still publishes a
+    /// text-free summary.
     pub(crate) fn terminalize(
         &mut self,
         outcome: RuntimeTerminalOutcome,
@@ -669,6 +720,10 @@ impl AttemptLifecycle {
         Ok(())
     }
 
+    /// Records the report-ready boundary, the last transition. The finalizer
+    /// must have been consumed first; from `Terminal` the reason is
+    /// `finalization_incomplete`, which distinguishes a skipped finalizer from
+    /// a missing outcome. Idempotent once ready.
     pub(crate) fn ready(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         let (terminal_ns, outcome, admission) = match &self.phase {
             AttemptPhase::Finalized { terminal_ns, outcome, admission } => {
@@ -699,6 +754,10 @@ impl AttemptLifecycle {
         Ok(())
     }
 
+    /// Projects the timeline into the report. `outcome_terminal_ns` falls back
+    /// to the submission time while the attempt is still running; the owner
+    /// builds the report only after `ready`, so a published report never
+    /// carries that fallback.
     pub(crate) fn timestamps(&self) -> AttemptTimestamps {
         let terminal_ns = self.phase.terminal().map(|(at, _)| at);
         AttemptTimestamps {

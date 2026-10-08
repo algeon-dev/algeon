@@ -131,9 +131,12 @@ pub struct AdmissionRejection {
     cause: RejectionCause,
 }
 
+/// Which contract refused the plan; it selects the error a caller reports.
 #[derive(Debug, Clone)]
 enum RejectionCause {
+    /// Capability analysis, compilation or structural support refused it.
     CompiledContract,
+    /// The requested statistical aggregate execution mode cannot run it.
     ExecutionMode,
     /// The validator found the plan well formed but outside what the backend
     /// supports. The error keeps the validator's code, operation, message,
@@ -215,6 +218,10 @@ pub fn admit(
         return Ok(AdmissionDecision::Rejected(AdmissionRejection::validation(error)));
     }
     let admission = capability_first_bounded_pipeline_admission(plan, ctx)?;
+    // The mode check runs before the candidate status is read, so a mode
+    // refusal is reported ahead of a compiled-contract rejection;
+    // `is_execution_mode_refusal` lets a frontend that may fall back tell the
+    // two apart.
     if let Some(rejection) = statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
     {
         return Ok(AdmissionDecision::Rejected(AdmissionRejection {

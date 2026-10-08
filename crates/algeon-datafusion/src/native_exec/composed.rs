@@ -433,6 +433,8 @@ impl AlgeonNativeExec {
                     "algeon_datafusion.native_composed.gpu_execution_pool",
                     move |gpu_stream_scope| async move {
                         let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
+                        // One result scope per island execution; producers and
+                        // nested units read shared results through it.
                         let execution_task_context = task_context_with_shared_resident_results(
                             context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context)),
                         );
@@ -551,6 +553,8 @@ impl AlgeonNativeExec {
         Ok(output)
     }
 
+    /// Tickets of this unit and its producer subtree, deduplicated by pointer:
+    /// one ticket is reachable through several producers of one invocation.
     pub(super) fn composed_prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {
         let mut tickets = self.execution_config.query_admission_ticket().into_iter().collect::<Vec<_>>();
         for child in &self.gpu_inputs {

@@ -1,3 +1,21 @@
+//! Filtered grouped aggregates (`agg(x) FILTER (WHERE p)` with GROUP BY keys) under a budget
+//! token.
+//!
+//! Selection follows the rule of `filtered_global.rs`: the estimated bytes of masking every
+//! filtered argument in one pass are compared with a fraction of the token's stage request,
+//! and a larger estimate switches to row chunks. Each chunk is grouped segment by segment into
+//! partial state (`lower_avg_state_aggregations` splits AVG into a sum and a count), and the
+//! chunk states are concatenated. A chunk state has at most one row per distinct key of that
+//! chunk, so a key can repeat across chunks; the single-stage path groups the concatenated
+//! state again with `lower_final_aggregate_spec`, and the partial stage returns it for the
+//! plan's final merge.
+//!
+//! Segments of one chunk group the same rows by the same keys, so they produce the same key
+//! set. `merge_filtered_grouped_segment_frames` relies on that to join them side by side.
+//! Aggregates without a mergeable state (distinct counts, MEDIAN, variance, standard
+//! deviation) cannot run in chunks; with a too-large estimate, selection fails with
+//! `UnsupportedOperator`.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -19,7 +37,11 @@ use super::{
 };
 use crate::prepared::lower_avg_state_aggregations;
 
-// Admission decision plus segmentation plan for filtered grouped aggregates.
+/// Outcome of `select_filtered_grouped_aggregate_strategy`.
+///
+/// `decision` is the capability decision whose facts are recorded with the aggregate.
+/// `rows_per_chunk` and `filtered_inputs_per_segment` size the row-chunked run; when
+/// `use_segmented` is false they describe one chunk of all rows and one segment.
 #[derive(Debug, Clone)]
 pub(super) struct FilteredGroupedAggregateStrategyDecision {
     pub(super) use_segmented: bool,
@@ -28,6 +50,8 @@ pub(super) struct FilteredGroupedAggregateStrategyDecision {
     filtered_inputs_per_segment: usize,
 }
 
+/// Counters gathered while a row-chunked run executes, reported as `filtered_grouped_*` strategy
+/// facts. The observed peaks come from the budget window around the whole run.
 #[derive(Debug, Clone, Default)]
 struct FilteredGroupedSegmentRuntimeStats {
     chunk_count: u64,
@@ -43,12 +67,21 @@ struct SegmentedFilteredGroupedPartialState {
     stats: FilteredGroupedSegmentRuntimeStats,
 }
 
+/// A chunk with its filter predicates evaluated into Boolean columns, shared by every segment
+/// of the chunk. `predicate_aliases` maps predicate text to its column.
 struct FilteredGroupedPreparedChunk {
     frame: DataFrame,
     schema: ArrowSchemaRef,
     predicate_aliases: BTreeMap<String, String>,
 }
 
+/// Chooses between the single-pass and the row-chunked form for a filtered grouped aggregate.
+///
+/// The estimate adds the retained input frame, the group key columns, and for each filtered
+/// aggregate one masked value column, one validity mask and one predicate byte per row. The
+/// row-chunked form is chosen when the estimate exceeds the single-pass threshold. If an
+/// aggregate state cannot be merged at that point, selection fails with `UnsupportedOperator`.
+/// Row and segment sizing follow `select_filtered_global_aggregate_strategy`.
 pub(super) fn select_filtered_grouped_aggregate_strategy(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -149,6 +182,8 @@ pub(super) fn select_filtered_grouped_aggregate_strategy(
     })
 }
 
+/// Copies the filtered-aggregate facts of `filtered` into a decision made by the general
+/// strategy selector, so the groupby strategy row also reports the materialization estimate.
 pub(super) fn apply_filtered_grouped_materialization_facts(
     decision: &mut AggregateStrategyCapabilityDecision,
     filtered: &FilteredGroupedAggregateStrategyDecision,
@@ -183,6 +218,9 @@ pub(super) fn apply_filtered_grouped_materialization_facts(
     }
 }
 
+/// Records the decision row of a failed row-chunked run with zero output rows. The chunk
+/// counters and observed peaks of the failed run are not carried over, so the row holds the
+/// planned sizes and zero actuals.
 #[expect(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
@@ -251,6 +289,9 @@ pub(super) fn record_filtered_grouped_single_pass(
     );
 }
 
+/// Single-stage row-chunked run: builds the chunk states, groups them again by key with
+/// `lower_final_aggregate_spec`, finalizes AVG, casts reductions and counts to the output
+/// schema's types and selects the output columns.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -321,6 +362,9 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     Ok(output)
 }
 
+/// Partial-stage row-chunked run. Returns the concatenated chunk states without merging them, so
+/// a key can appear once per chunk, with counts cast to the output schema's types. The plan's
+/// final merge combines the rows.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -375,6 +419,8 @@ pub(super) fn execute_segmented_filtered_grouped_partial_aggregate_with_budget(
     Ok(output)
 }
 
+/// Splits `input` into row chunks, builds each chunk's state and concatenates the states. An
+/// empty input runs one empty chunk and returns no state rows.
 fn execute_segmented_filtered_grouped_partial_state(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -431,6 +477,10 @@ fn execute_segmented_filtered_grouped_partial_state(
     Ok(SegmentedFilteredGroupedPartialState { frame, stats })
 }
 
+/// Partial state of one chunk. The predicates are evaluated once, then the aggregates are
+/// processed in segments. A segment closes before the next filtered aggregate once it holds
+/// `filtered_inputs_per_segment` of them; unfiltered aggregates join the open segment without
+/// counting. Masked arguments are released when their segment finishes.
 fn execute_filtered_grouped_partial_state_for_chunk(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
@@ -508,6 +558,11 @@ fn execute_filtered_grouped_partial_segment(
     Ok(GpuDataFrame::new(output))
 }
 
+/// Joins the segment states of one chunk into a single state frame, one column set per segment.
+///
+/// Every segment grouped the same chunk by the same keys, so all segment frames hold the same key
+/// set and an inner merge on the keys places each aggregate's state beside the others. The merge
+/// does not preserve row order, which later stages do not depend on.
 fn merge_filtered_grouped_segment_frames(
     spec: &AggregateSpec,
     mut segment_frames: Vec<GpuDataFrame>,
@@ -523,6 +578,7 @@ fn merge_filtered_grouped_segment_frames(
                 cudf::MergeOptions::new()
                     .on(key_names.iter().map(String::as_str).collect::<Vec<_>>())
                     .how_inner()
+                    // NULL keys form a group, so they must match each other.
                     .null_equality(cudf::NullEquality::Equal),
             )
             .map_err(|error| {
@@ -547,6 +603,8 @@ fn merge_filtered_grouped_segment_frames(
     Ok(GpuDataFrame::new(merged))
 }
 
+/// Evaluates each distinct filter predicate of `spec` once into a nullable Boolean column.
+/// A NULL predicate result masks its row, as SQL FILTER requires.
 fn prepare_filtered_grouped_predicates_for_chunk(
     chunk: &DataFrame,
     input_schema: &ArrowSchemaRef,
@@ -590,6 +648,10 @@ fn prepare_filtered_grouped_predicates_for_chunk(
     Ok(FilteredGroupedPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
+/// Replaces each filtered aggregate's argument with `CASE WHEN predicate THEN argument ELSE
+/// NULL END`. An AVG argument is also cast to the type of its sum state, filtered or not,
+/// as `prepare_aggregate_input_frame` does for the grouped form. Other unfiltered aggregates
+/// pass through unchanged.
 fn prepare_filtered_grouped_partial_segment(
     prepared_chunk: &FilteredGroupedPreparedChunk,
     input_schema: &ArrowSchemaRef,
@@ -648,6 +710,8 @@ fn prepare_filtered_grouped_partial_segment(
     Ok((frame, prepared_indexed))
 }
 
+/// Partial lowering of one segment's aggregates. Each carries its index in the full spec, which
+/// keeps the AVG state aliases (`AvgStateAliases::for_aggregate_index`) unique across segments.
 fn indexed_partial_grouped_aggregate(
     spec: &AggregateSpec,
     indexed_exprs: &[(usize, AggregateExpr)],
@@ -781,6 +845,9 @@ struct FilteredGroupedMaterializationFootprint {
     max_segment_input_bytes_per_row: u64,
 }
 
+/// The `UnsupportedOperator` error for a spec that needs the row-chunked form but holds an
+/// aggregate whose state cannot be merged. Its facts mirror the strategy facts, with
+/// `selected_strategy` set to `none`.
 fn unsupported_large_filtered_grouped_stateful_merge_error(
     footprint: &FilteredGroupedMaterializationFootprint,
     input_rows: u64,
@@ -811,6 +878,8 @@ fn unsupported_large_filtered_grouped_stateful_merge_error(
     .with_fact("filtered_grouped_strategy_input_rows", input_rows)
 }
 
+/// Byte estimate for the single-pass form. Counts as
+/// `estimate_filtered_global_materialization_footprint` does, plus the group key columns.
 fn estimate_filtered_grouped_materialization_footprint(
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,

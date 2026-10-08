@@ -11,6 +11,11 @@ use std::fmt;
 use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
 
 /// Typed scalar literal in native expression IR; nulls carry an explicit [`DataType`].
+///
+/// [`Self::data_type`] is total: every variant names one Arrow type, so
+/// validation types a literal without a schema. `PartialEq` only, because
+/// `Float32` and `Float64` carry NaN; two literals that compare equal have the
+/// same type and the same non-NaN value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     /// Boolean scalar.
@@ -133,7 +138,8 @@ impl LiteralValue {
         }
     }
 
-    /// Zero of an integer type, or `None` for any other type.
+    /// Zero of an integer type, or `None` for any other type. Count merging
+    /// uses it to read a merged global count's null as zero.
     pub(crate) fn integer_zero(data_type: &DataType) -> Option<Self> {
         match data_type {
             DataType::Int8 => Some(Self::Int8(0)),

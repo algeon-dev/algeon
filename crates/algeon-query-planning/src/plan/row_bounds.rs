@@ -19,6 +19,11 @@ pub(crate) enum RowBoundProvenance {
 
 /// Returns a mathematically hard upper bound on the root row count when the
 /// native plan can prove one without executing any source.
+///
+/// `None` means no proof exists, which never rejects a plan by itself; callers
+/// that need a bound for a resident side input report its absence as their
+/// own rejection. Arithmetic is checked, so an overflowing Cartesian product
+/// also yields `None`.
 pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
     query_plan_node_hard_row_upper_bound(plan, plan.root_id())
 }
@@ -52,6 +57,8 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
             },
         },
         PlanNode::Projection(projection) => input_bound(projection.input),
+        // A filter keeps the input's bound but downgrades an exact count: the
+        // predicate may drop rows, so only the upper bound survives.
         PlanNode::Filter(filter) => {
             input_bound(filter.input).map(|(rows, _)| (rows, RowBoundProvenance::PlanHardUpperBound))
         },
@@ -106,6 +113,8 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
                 {
                     Some(left_rows)
                 },
+                // `max(1)` keeps the unmatched left rows an empty right side
+                // still emits.
                 JoinType::Left => left_rows.checked_mul(input_bound(join.inputs[1])?.0.max(1)),
                 JoinType::Full => {
                     let right_rows = input_bound(join.inputs[1])?.0;
@@ -114,9 +123,9 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
             }?;
             Some((rows, RowBoundProvenance::PlanHardUpperBound))
         },
-        // A graph algorithm node's output cardinality depended on the deleted
-        // memory model's edge/vertex accounting; it no longer contributes a
-        // provable row bound.
+        // A graph algorithm's output is per vertex, per edge or per path
+        // depending on the algorithm, and this module derives no bound from the
+        // source vertex facts, so it proves nothing here.
         PlanNode::GraphAlgorithm(_) => None,
         PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
     }

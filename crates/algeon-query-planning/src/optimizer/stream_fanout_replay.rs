@@ -1,3 +1,19 @@
+//! Stream fanout replay: a private copy of a shared probe input for each join
+//! that streams it.
+//!
+//! The rule matches a node whose only consumers are the probe inputs of two or
+//! more joins without residuals, where every strategy that can run each join
+//! pulls its probe chunk by chunk, and whose subtree is sources, filters,
+//! projections and residual-free inner joins. In the rewrite, the subtree is
+//! cloned once per consuming join, so each join streams its own copy. As a
+//! precondition, the clones compute the same rows, so results are unchanged; the
+//! trade is repeated scan and filter work for streaming. A resident resource with
+//! several consumers is collected into one frame (`ResourceSharing`), which would
+//! hold the whole probe side in device memory and serialize the joins behind it.
+//! Every clone keeps the facts of the node it copies. The clones have no image
+//! in the rewrite origin, so routes into the replayed subtree are dropped and
+//! rediscovered by the late route discovery pass.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
@@ -127,11 +143,19 @@ pub(crate) fn optimize_stream_fanout_replay(
     Ok(StreamFanoutReplayResult { plan: rewritten_plan, change, diagnostics })
 }
 
+/// Rebuilds the plan with each fanout node's subtree copied per reader.
+///
+/// Nodes outside a fanout subtree are memoized and keep one image; a fanout
+/// node and everything below it are cloned fresh on every reach, and those
+/// clones are kept out of `memo` so the rewrite origin never maps one source
+/// node to two images.
 struct StreamFanoutReplayRewriter<'a> {
     original: &'a QueryPlan,
     fanout_nodes: BTreeSet<NodeId>,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
+    /// Fanout nodes at least one reader reached; a candidate outside the
+    /// sink-reachable subtree is never reached and reports as not applied.
     applied_fanouts: BTreeSet<NodeId>,
     changed: bool,
 }
@@ -203,6 +227,9 @@ enum CloneMode {
     Fresh,
 }
 
+/// Fanout nodes to replay, each with the joins that probe it. A node with any
+/// consumer other than a streaming probe is excluded, because that consumer
+/// would still need the shared frame.
 fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
     let direct_consumers = consumers_by_node(plan);
     let mut probe_consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
@@ -245,6 +272,9 @@ fn probe_input_index(join: &JoinNode) -> usize {
     }
 }
 
+/// Whether cloning the subtree only repeats streaming work. An aggregate,
+/// sort, limit, union or GPU function below the fanout would be recomputed as
+/// a whole per copy, so such subtrees stay shared.
 fn stream_replayable_subtree(plan: &QueryPlan, root: NodeId) -> bool {
     let mut visiting = BTreeSet::new();
     stream_replayable_subtree_inner(plan, root, &mut visiting)

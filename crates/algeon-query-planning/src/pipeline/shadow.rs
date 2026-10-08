@@ -1,4 +1,11 @@
 //! Diagnostic memory composition over the executable dependency graph.
+//!
+//! The estimate is a diagnostic artifact and never an admission input: the
+//! query domain's allocator enforces allocation limits during execution
+//! (`website/docs/design/admission.mdx`). Overlap is derived from the edge
+//! relation alone. Two tasks neither of which reaches the other may run at
+//! the same time, so their workspaces and live resources are summed; the
+//! envelope therefore bounds a schedule the executor may never produce.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +19,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "precision", rename_all = "snake_case")]
 pub enum ShadowBytes {
+    /// A size with the name of the component model that produced it.
     Estimated { bytes: u64, model: String },
+    /// No model covers the quantity. Any sum or maximum that includes an
+    /// unknown is itself unknown.
     Unknown { reason: String },
 }
 
@@ -63,7 +73,12 @@ pub struct ShadowResourceLifetime {
 pub struct ShadowTaskEnvelope {
     pub task: usize,
     pub plan_node: Option<usize>,
+    /// Resources that may be resident while this task runs: produced by a
+    /// task this one does not precede, and not yet released because some
+    /// consumer does not precede this task either.
     pub live_resources: Vec<usize>,
+    /// This task and every task unordered relative to it, whose workspace may
+    /// be allocated at the same time.
     pub overlapping_workspaces: Vec<usize>,
     pub query_owned_bytes: ShadowBytes,
     pub borrowed_resident_bytes: ShadowBytes,
@@ -100,6 +115,8 @@ impl CompiledPipeline {
             ));
         }
         let count = self.tasks().len();
+        // Transitive closure of the edge relation (Warshall): afterwards
+        // `precedes[a][b]` means task `a` finishes before task `b` starts.
         let mut precedes = vec![vec![false; count]; count];
         for edge in self.edges() {
             precedes[edge.from().index()][edge.to().index()] = true;

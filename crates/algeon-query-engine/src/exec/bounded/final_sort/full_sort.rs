@@ -15,6 +15,13 @@ impl FinalSortExecutor<'_, '_, '_> {
         self.full_sort_limit_attempt_from_frame(limit, &input.frame, attempt)
     }
 
+    /// One attempt at a complete sort of `input`, followed by the limit when one is given.
+    ///
+    /// Prepares the sort order, reads its retained bytes, sizes the output, and gathers the
+    /// sorted frame under a second token. The borrowed input stays allocated throughout, so
+    /// the sorted copy of the whole input coexists with it. A limit that keeps every row
+    /// returns the sorted frame as is. There is no retry here; errors carry final sort
+    /// resource facts for `attempt`.
     pub(super) fn full_sort_limit_attempt_from_frame(
         &mut self,
         limit: Option<&LimitNode>,

@@ -1,3 +1,10 @@
+//! Output projection of native joins: which input columns each side keeps, and the gather of
+//! the projected columns from join indices.
+//!
+//! Join output columns are named by the plan's `JoinOutputColumn` projection, in projection
+//! order. Hidden DataFusion order columns (see `exec::order`) ride along on each side and are
+//! appended after the projected columns under fresh sequential names.
+
 use std::collections::BTreeSet;
 
 use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, Exec};
@@ -12,6 +19,7 @@ use crate::exec::{
     append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order,
 };
 
+/// Cross join options that project each side as `(source column, output name)` pairs.
 pub(in crate::exec) fn dataframe_cross_join_options(projection: &[JoinOutputColumn]) -> DataFrameCrossJoinOptions {
     let left_projection = projection.iter().filter_map(|column| {
         (column.side == JoinSide::Left).then_some((column.column.name(), column.output_name.as_str()))
@@ -22,6 +30,8 @@ pub(in crate::exec) fn dataframe_cross_join_options(projection: &[JoinOutputColu
     DataFrameCrossJoinOptions::new().left_projection(left_projection).right_projection(right_projection)
 }
 
+/// Reorders a cross join result to the projection's output order. The cross join call takes
+/// separate left and right projections; an interleaved plan order has to be restored here.
 pub(in crate::exec) fn reorder_projected_cross_join_output(
     output: DataFrame,
     projection: &[JoinOutputColumn],
@@ -36,6 +46,8 @@ pub(in crate::exec) fn reorder_projected_cross_join_output(
     })
 }
 
+/// Columns one input must keep: key columns first, then the side's output-projected columns,
+/// then residual predicate columns, each name once in that first-seen order.
 pub(in crate::exec) fn projected_input_columns<'a>(
     key_columns: &[String],
     output_projection: &[JoinOutputColumn],
@@ -63,6 +75,8 @@ pub(in crate::exec) fn projected_input_columns<'a>(
     columns
 }
 
+/// Selects `columns` from `frame`, adding any hidden order columns it carries. `side` labels
+/// the error facts.
 pub(in crate::exec) fn select_join_input(
     frame: DataFrame,
     columns: &[String],
@@ -76,6 +90,14 @@ pub(in crate::exec) fn select_join_input(
     })
 }
 
+/// Gathers the projected columns of both sides by their join indices and returns one frame
+/// in projection order, followed by the hidden order columns.
+///
+/// `left_indices` and `right_indices` must have equal length (the output row count).
+/// A side with no projected or order columns is not gathered; a projection entry that names
+/// such a side is `InvalidPlan`. `join_type` and `preserved_side` decide the order in which
+/// the sides' hidden order columns are appended (see `append_datafusion_join_order_columns`).
+/// cuDF failures map to `query_engine.join.output_projection` with the side as a fact.
 #[expect(
     clippy::too_many_arguments,
     reason = "join materialization passes build/probe/output inputs explicitly beside the attempt state"
@@ -128,6 +150,9 @@ pub(in crate::exec) fn materialize_join_output_projection(
     })
 }
 
+/// Gathers the left columns for a join whose output has only left columns (semi and anti
+/// joins). A projection that names a right-side column is `InvalidPlan`, and so is one with
+/// no left column at all.
 pub(in crate::exec) fn materialize_left_only_join_output_projection(
     left: &DataFrame,
     indices: &DataFrameJoinIndices,
@@ -252,6 +277,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     })
 }
 
+/// Source column names projected from `side`, each once, in first-seen order.
 pub(in crate::exec) fn projected_output_columns(projection: &[JoinOutputColumn], side: JoinSide) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut columns = Vec::new();
@@ -264,6 +290,7 @@ pub(in crate::exec) fn projected_output_columns(projection: &[JoinOutputColumn],
     columns
 }
 
+/// Gathers `columns` of `frame` at `indices`, or returns `None` when the side has no columns.
 fn materialize_join_side_projection(
     frame: &DataFrame,
     indices: &DataFrameJoinIndices,

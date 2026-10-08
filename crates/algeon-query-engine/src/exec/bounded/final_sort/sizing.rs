@@ -1,5 +1,7 @@
 use super::{ExecutionBudgetReport, QueryError, QueryErrorCode, Result};
 
+/// Bytes the prepared sort retains between prepare and materialize, from the budget report.
+/// A report without the figure is an `Internal` error.
 pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Result<u64> {
     let bytes = report.retained_bytes().ok_or_else(|| {
         let error = QueryError::new(
@@ -18,6 +20,7 @@ pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Resul
     Ok(bytes as u64)
 }
 
+/// Average bytes per row, rounded up and at least 1. An empty input returns its byte count.
 pub(super) fn estimated_bytes_per_row(bytes: u64, rows: usize) -> u64 {
     if rows == 0 {
         return bytes.max(1);
@@ -25,11 +28,14 @@ pub(super) fn estimated_bytes_per_row(bytes: u64, rows: usize) -> u64 {
     bytes.div_ceil(rows as u64).max(1)
 }
 
+/// `bytes_per_row * rows`, saturating at `u64::MAX`.
 pub(super) fn estimate_rows_bytes(bytes_per_row: u64, rows: usize) -> u64 {
     let bytes = u128::from(bytes_per_row) * rows as u128;
     bytes.min(u128::from(u64::MAX)) as u64
 }
 
+/// Rows per top-k candidate range: as many as fit `available_bytes` when each row is
+/// charged three times its estimated bytes, at least 1 and at most `input_rows`.
 pub(super) fn final_sort_rows_per_chunk(input_rows: usize, bytes_per_row: u64, available_bytes: u64) -> usize {
     if input_rows == 0 {
         return 1;

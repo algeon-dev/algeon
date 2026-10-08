@@ -1,4 +1,30 @@
 //! Deferred service-stream cleanup supervisor and its fail-closed accounting.
+//!
+//! A leased runtime cannot return to the pool until `cudaStreamSynchronize`
+//! has confirmed that every operation enqueued on its stream has completed;
+//! otherwise the next lease holder could overwrite buffers the previous
+//! holder's kernels still read. That synchronize blocks the host, and leases
+//! are dropped on host-runtime tasks, GPU pool workers, and inside other
+//! `Drop` impls, none of which may block on the device. Each pool therefore
+//! owns one thread, `algeon-stream-cleanup-d{device}-p{pool}`, that receives
+//! `StreamCleanupJob`s over a channel, synchronizes, and either idles or
+//! destroys the runtime. The release row of the admission table in
+//! `website/docs/design/admission.mdx` names this thread as the place where
+//! `cudaStreamSynchronize` runs for each leased stream.
+//!
+//! Fail-closed means every path that cannot prove a stream was synchronized
+//! sets the pool's `closed` flag and destroys the idle set: a failed
+//! synchronize, a cleanup job dropped unrun because the thread panicked, and
+//! an enqueue that finds the thread gone. A closed pool rejects new leases
+//! and destroys each returning runtime, so an unsynchronized stream is never
+//! reused.
+//!
+//! The thread's outcome is not inferred from pool counters. An owner requests
+//! shutdown, one caller is elected to join the thread, and that joiner
+//! commits the terminal state that every later caller observes. The
+//! process-exit hook joins the thread in `ProcessExitPhase::StreamPool`, the
+//! last phase, because supervised workers and pool jobs still hold leases
+//! during the earlier phases.
 
 use std::{
     any::Any,
@@ -166,8 +192,15 @@ type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;
 /// Typed evidence handed to the pre-quiescence cleanup callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamCleanupOutcome {
+    /// The stream synchronized; the runtime was idled or, on a closed pool,
+    /// destroyed.
     Completed,
+    /// The stream did not synchronize. The runtime was destroyed and the pool
+    /// closed; the attempt's release commit records a cleanup failure.
     StreamSynchronizationFailed,
+    /// The callback runs from a `Drop`, because the cleanup job was never
+    /// executed or the completion was rejected. Whether the stream
+    /// synchronized is unknown, and the pool is closed.
     CallbackAbandoned,
 }
 
@@ -177,6 +210,13 @@ impl StreamCleanupOutcome {
     }
 }
 
+/// The two callbacks a lease owner installs for the end of its cleanup.
+///
+/// Each runs at most once. `before_quiescence` runs while the cleanup is still
+/// counted in `active_cleanups`; `after_quiescence` runs after the counters
+/// are released. Dropping an instance with either callback still present runs
+/// them under the abandonment protocol, so a payload that never reached the
+/// cleanup thread still completes its handoff.
 #[derive(Default)]
 pub(super) struct StreamCleanupCompletion {
     before_quiescence: Option<StreamCleanupCallback>,
@@ -239,17 +279,33 @@ pub(super) struct StreamCleanupSupervisor {
     pub(super) device: cudf::DeviceId,
     pub(super) pool_id: u64,
     pub(super) probe: ServiceStreamTestProbeSlot,
+    /// The receiver is owned by the worker thread and is dropped there; that
+    /// drop runs the abandonment protocol on queued jobs.
     pub(super) sender: mpsc::Sender<StreamCleanupJob>,
+    /// Serializes every send with the shutdown request and with the
+    /// process-exit flag check, so a cleanup job is either queued ahead of
+    /// the `Shutdown` message or returned to the caller, never queued behind
+    /// a shutdown the worker has already consumed.
     pub(super) submission_gate: Mutex<()>,
     pub(super) control: Arc<StreamCleanupSupervisorControl>,
+    /// Consumed by the elected joiner or by the process-exit hook. `None`
+    /// afterwards, and also while a self-join was refused.
     pub(super) join: Mutex<Option<thread::JoinHandle<StreamCleanupWorkerOutcome>>>,
+    /// One of the `STREAM_CLEANUP_SUPERVISOR_*` constants; recorded because a
+    /// `JoinHandle` can be joined only once.
     pub(super) join_disposition: AtomicU64,
+    /// Present from `attach_pool` until the worker thread finishes or a join
+    /// succeeds. The worker removes it itself on exit, so a thread that ends
+    /// without any joiner does not stay in the process-exit snapshot.
     pub(super) process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
     /// The owning pool, whose close and quiescence waiters wake when this
     /// supervisor commits its terminal state.
     pool: OnceLock<Weak<ServiceStreamPoolInner>>,
 }
 
+/// Why a cleanup job could not be queued; the job comes back so the caller
+/// decides its fate. `ProcessExit` jobs are leaked, `SupervisorStopped` jobs
+/// run synchronously on the caller's thread.
 pub(super) enum StreamCleanupEnqueueError {
     ProcessExit(StreamCleanupJob),
     SupervisorStopped(StreamCleanupJob),
@@ -269,6 +325,11 @@ pub(super) const STREAM_CLEANUP_SUPERVISOR_NOT_JOINED: u64 = 0;
 pub(super) const STREAM_CLEANUP_SUPERVISOR_JOINED: u64 = 1;
 pub(super) const STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED: u64 = 2;
 
+/// Shutdown handshake between pool owners and the cleanup thread.
+///
+/// Lock order: a pool waiter holds the pool mutex and then takes `state`
+/// (through `ensure_not_failed`); the joiner therefore releases `state`
+/// before it takes the pool mutex in `notify_pool_waiters`.
 #[derive(Debug, Default)]
 pub(super) struct StreamCleanupSupervisorControl {
     pub(super) state: Mutex<StreamCleanupSupervisorState>,
@@ -277,11 +338,19 @@ pub(super) struct StreamCleanupSupervisorControl {
 
 #[derive(Debug, Default)]
 pub(super) struct StreamCleanupSupervisorState {
+    /// Set once. A worker that exits before this is set is reported as
+    /// `Unexpected`, because only shutdown is allowed to end the thread.
     pub(super) shutdown_requested: bool,
+    /// Election flag; one caller at a time joins the thread. A joiner that
+    /// times out before the join clears it so another caller can retry.
     pub(super) joiner_active: bool,
+    /// Set once by the elected joiner. Every later wait or health check
+    /// replays it.
     pub(super) terminal: Option<StreamCleanupSupervisorTerminal>,
 }
 
+/// What the worker thread itself returns. `Clean` means the executor saw the
+/// `Shutdown` message; `Unexpected` means its receiver disconnected first.
 #[derive(Debug, Clone)]
 pub(super) enum StreamCleanupWorkerOutcome {
     Clean,
@@ -289,6 +358,11 @@ pub(super) enum StreamCleanupWorkerOutcome {
     Unexpected { detail: &'static str },
 }
 
+/// The committed terminal state. It differs from the worker outcome in two
+/// ways: a `Clean` worker exit without a prior shutdown request becomes
+/// `Unexpected`, and a panic carries the `stage` it happened in,
+/// `cleanup_executor` for a callback or cleanup panic inside the loop and
+/// `thread_join` for a panic after the worker produced its outcome.
 #[derive(Debug, Clone)]
 pub(super) enum StreamCleanupSupervisorTerminal {
     Clean,
@@ -324,6 +398,10 @@ impl std::fmt::Debug for StreamCleanupSupervisor {
 }
 
 impl StreamCleanupSupervisor {
+    /// Spawns the cleanup thread. The returned supervisor is not yet bound to
+    /// a pool or registered for process exit; `attach_pool` does both once
+    /// the pool's `Arc` exists. A spawn failure is an `Internal` error with
+    /// reason `stream_cleanup_supervisor_spawn_failed` and no thread to join.
     pub(super) fn start(device: cudf::DeviceId, pool_id: u64, probe: ServiceStreamTestProbeSlot) -> Result<Arc<Self>> {
         let (sender, receiver) = mpsc::channel();
         let control = Arc::new(StreamCleanupSupervisorControl::default());
@@ -401,6 +479,12 @@ impl StreamCleanupSupervisor {
         self.sender.send(job)
     }
 
+    /// Queues a cleanup job unless process exit or shutdown has begun.
+    ///
+    /// Both flags are read under `submission_gate`, the same lock the
+    /// process-exit hook and `request_shutdown` hold while they set them, so
+    /// a job is either queued before the worker can see `Shutdown` or
+    /// returned in the error for the caller to leak or run inline.
     pub(super) fn enqueue_before_process_exit(
         &self,
         job: StreamCleanupJob,
@@ -417,6 +501,10 @@ impl StreamCleanupSupervisor {
         self.sender.send(job).map_err(|error| StreamCleanupEnqueueError::SupervisorStopped(error.0))
     }
 
+    /// Queues the `Shutdown` message behind every cleanup already enqueued,
+    /// so the worker drains them before it exits. Idempotent. A failed send
+    /// means the receiver is already gone; that is not a terminal state by
+    /// itself, the join classifies it.
     pub(super) fn request_shutdown(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         let _submission = self.lock_submission_until(deadline, operation)?;
         let mut state = self.lock_control_until(deadline, operation)?;
@@ -425,6 +513,7 @@ impl StreamCleanupSupervisor {
         }
         state.shutdown_requested = true;
         let send_failed = self.sender.send(StreamCleanupJob::Shutdown).is_err();
+        // The test probe may rendezvous with another thread that needs `state`.
         drop(state);
         if send_failed {
             self.probe.notify_shutdown_send_failure();
@@ -519,6 +608,8 @@ impl StreamCleanupSupervisor {
             }
             if !state.joiner_active {
                 state.joiner_active = true;
+                // The join path relocks `state` to commit; the worker thread
+                // never takes it, so the join itself needs nothing held.
                 drop(state);
                 return self.join_and_commit_terminal_until(deadline, operation);
             }
@@ -564,6 +655,8 @@ impl StreamCleanupSupervisor {
         state.terminal = Some(terminal.clone());
         state.joiner_active = false;
         self.control.changed.notify_all();
+        // Lock order: pool waiters hold the pool mutex while they take
+        // `state`, and `notify_pool_waiters` takes the pool mutex.
         drop(state);
         self.notify_pool_waiters();
         self.terminal_result(operation, &terminal)
@@ -585,6 +678,9 @@ impl StreamCleanupSupervisor {
         operation: &'static str,
     ) -> Result<std::thread::Result<StreamCleanupWorkerOutcome>> {
         let mut join = self.lock_join_until(deadline, operation)?;
+        // `JoinHandle::join` has no timeout, so wait for `is_finished` under
+        // the caller's deadline first and only then join, which then cannot
+        // block for longer than the thread's final unwind.
         if let Some(handle) = join.as_ref() {
             while !handle.is_finished() {
                 if Instant::now() >= deadline {
@@ -630,6 +726,9 @@ impl StreamCleanupSupervisor {
             if joined.is_ok() { STREAM_CLEANUP_SUPERVISOR_JOINED } else { STREAM_CLEANUP_SUPERVISOR_JOIN_FAILED },
             Ordering::Release,
         );
+        // `unregister_process_exit` takes the registry lock the exit hook
+        // holds while iterating registrations; do not hold the join lock
+        // across it.
         drop(join);
         self.unregister_process_exit();
     }
@@ -642,6 +741,9 @@ impl StreamCleanupSupervisor {
         }
     }
 
+    /// A `Clean` worker exit is only clean if an owner asked for it. The
+    /// receiver disconnecting on its own means every sender was dropped
+    /// while the supervisor state still expected a running thread.
     fn terminal_from_worker_outcome(
         outcome: StreamCleanupWorkerOutcome,
         shutdown_requested: bool,
@@ -728,6 +830,10 @@ impl StreamCleanupSupervisor {
     }
 }
 impl Drop for ServiceStreamPoolInner {
+    /// Runs when the last pool clone is gone. Leases hold pool clones, so no
+    /// lease exists and no further cleanup can be enqueued; the `Shutdown`
+    /// message queues behind the cleanups already queued, and the thread
+    /// unregisters itself from the process-exit hook when it exits.
     fn drop(&mut self) {
         self.cleanup_supervisor.request_shutdown_from_drop();
     }
@@ -748,6 +854,10 @@ impl ProcessExitShutdown for ProcessExitStreamPool {
 }
 
 impl ServiceStreamPool {
+    /// Passes a returning runtime to the cleanup thread. Called from
+    /// `StreamLease::drop` and `StreamSlot::drop`, on whatever thread drops
+    /// them; the only CUDA calls here are on the fallback paths, which run
+    /// when the pool mutex is poisoned or the cleanup thread is gone.
     pub(super) fn enqueue_cleanup(
         &self,
         runtime: Arc<cudf::Runtime>,
@@ -779,6 +889,8 @@ impl ServiceStreamPool {
         };
         if !registered {
             let synchronized = runtime.synchronize().is_ok();
+            // The runtime is destroyed before the epoch releases the service
+            // generation its memory manager belongs to.
             drop(runtime);
             drop(resource_epoch);
             if let Some(completion) = completion.as_mut() {
@@ -845,11 +957,17 @@ pub(super) struct DeferredStreamCleanup {
     permit_class: StreamPermitClass,
 }
 
+/// Which pool counter currently accounts for this job, so the abandonment
+/// recovery in `Drop` can release that one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeferredStreamCleanupPhase {
+    /// Counted in `pending_cleanups`.
     Pending,
+    /// Counted in `active_cleanups`; the runtime may already be destroyed.
     Active,
+    /// Counters released; only the `after_quiescence` callback remains.
     AfterAccounting,
+    /// Nothing left for `Drop` to do.
     Complete,
 }
 
@@ -931,6 +1049,13 @@ impl DeferredStreamCleanup {
         }
     }
 
+    /// Releases the class permit and either idles or destroys the runtime.
+    ///
+    /// The class permit is released only here, after synchronization, so a
+    /// new lease of the same class cannot start while the returned stream
+    /// still has work queued. Waiters are not woken yet; that happens in
+    /// `finish_active_accounting`, after the `before_quiescence` callback has
+    /// released the attempt's capacity.
     fn finish_runtime_accounting(&mut self, synchronized: bool) {
         let mut idle_to_drop = Vec::new();
         match self.pool.inner.state.lock() {
@@ -944,6 +1069,9 @@ impl DeferredStreamCleanup {
                 } else {
                     state.created = state.created.saturating_sub(1);
                     if !synchronized {
+                        // A stream that will not synchronize leaves the device
+                        // state unknown. Close the pool and destroy every idle
+                        // runtime as well; none of them can be proven safe.
                         self.pool.inner.closed.store(true, Ordering::Release);
                         state.synchronization_failures = state.synchronization_failures.saturating_add(1);
                         idle_to_drop = std::mem::take(&mut state.idle);
@@ -955,6 +1083,9 @@ impl DeferredStreamCleanup {
                 eprintln!("[query-engine] warning: failed to finish accounted stream cleanup");
             },
         }
+        // Taken now so the abandonment recovery in `Drop` finds no runtime to
+        // synchronize or count a second time. Runtimes are destroyed outside
+        // the pool mutex and before the epoch releases the service generation.
         drop(self.runtime.take());
         drop(idle_to_drop);
         drop(self.resource_epoch.take());
@@ -974,9 +1105,13 @@ impl DeferredStreamCleanup {
         self.phase = DeferredStreamCleanupPhase::AfterAccounting;
     }
 
+    /// Path for a poisoned pool mutex: the counters cannot be trusted, so the
+    /// runtime is synchronized on a best-effort basis and destroyed, and the
+    /// completion is told the synchronization failed.
     fn discard_after_accounting_failure(&mut self) {
         if let Some(runtime) = self.runtime.take() {
             let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
+            // Destroyed before the epoch releases the service generation.
             drop(runtime);
         }
         drop(self.resource_epoch.take());
@@ -987,10 +1122,16 @@ impl DeferredStreamCleanup {
         self.phase = DeferredStreamCleanupPhase::Complete;
     }
 
+    /// Runs from `Drop` when `run` did not reach `Complete`: the receiver was
+    /// dropped with this job still queued, or a callback panicked mid-run.
+    /// It runs on the cleanup thread during that thread's unwind. The
+    /// synchronize is wrapped in `catch_unwind` because a second panic during
+    /// an unwind aborts the process.
     fn recover_after_abandonment(&mut self) {
         let had_runtime = self.runtime.is_some();
         if let Some(runtime) = self.runtime.take() {
             let _ = catch_unwind(AssertUnwindSafe(|| runtime.synchronize()));
+            // Destroyed before the epoch releases the service generation.
             drop(runtime);
         }
         drop(self.resource_epoch.take());
@@ -1024,6 +1165,7 @@ impl DeferredStreamCleanup {
                 eprintln!("[query-engine] warning: failed to recover abandoned stream cleanup accounting");
             },
         }
+        // Stream destruction runs after the match arm released the pool mutex.
         drop(idle_to_drop);
         self.pool.inner.available.notify_waiters();
         self.pool.inner.state_changed.notify_all();
@@ -1126,6 +1268,9 @@ pub(super) enum StreamCleanupJob {
     Control(Box<dyn StreamCleanupControlJob>),
 }
 
+/// Body of the cleanup thread. A panic inside the executor loop is caught
+/// here so the thread can still drop its receiver and return a classified
+/// outcome; the joiner reports the panic with stage `cleanup_executor`.
 fn run_stream_cleanup_worker(
     receiver: mpsc::Receiver<StreamCleanupJob>,
     _control: &StreamCleanupSupervisorControl,

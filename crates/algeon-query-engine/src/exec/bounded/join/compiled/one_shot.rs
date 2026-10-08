@@ -1,3 +1,20 @@
+//! Keyed equi joins that build a hash table for one materialization and discard it (`OneShotEqui`).
+//!
+//! `choose_join_strategy` in query-planning picks this strategy for a keyed join that is small on
+//! both sides but has key types the reusable table cannot prebuild (nested types), for a left join
+//! with a small preserved probe and unique build keys, and for an inner join whose residual cannot
+//! run inside the mixed kernel (see `residual.rs`). Inner joins accept a residual. Left joins
+//! (build side right) and full joins do not, as `validate_one_shot_equi_join` enforces.
+//!
+//! The cuDF sequence, in `materialize_compiled_keyed_equality_join_indices_with_preflight`, builds
+//! a hash table over the build keys, counts the output rows with a probe-size call, and probes
+//! again with that exact count to get the gather maps. The table is local to that helper and is
+//! dropped before the output is gathered.
+//!
+//! Only the projected build frame persists across probe chunks. Each streamed chunk rebuilds the
+//! table from it and runs the sequence alone. `ReusableHashEqui` is the strategy that keeps one
+//! table across chunks.
+
 use std::time::Instant;
 
 use super::{
@@ -14,12 +31,19 @@ use super::{
 };
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
 
+/// Build frame and not yet joined probe frames of a one-shot join probed lazily.
+///
+/// No cuDF work has run. Whoever holds this state must either turn it into a payload with
+/// `one_shot_equi_join_frame_stream_probe_to_payload` or release the build frame and the inputs
+/// (`release_bounded_compiled_join_probe_state`).
 pub(in crate::exec::bounded) struct OneShotEquiJoinFrameStreamProbeState {
     pub(in crate::exec::bounded) build: BoundedCompiledPreparedJoinBuildState,
     pub(in crate::exec::bounded) inputs: ResidentFrameStreamPayload,
     probe_columns: Vec<String>,
 }
 
+/// Rejects join shapes this executor does not run. Planning classifies the join form first; a
+/// failure here is an invariant violation (`compiled_join_strategy_unsupported`).
 pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
     if matches!(node.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
@@ -42,6 +66,11 @@ pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
 
 // The remaining prepared materializers intentionally mirror the root bounded
 // join primitives, but start after build/probe input preparation.
+/// Joins two prepared resident sides in one pass and returns the output frame.
+///
+/// With a residual predicate the output comes from `materialize_compiled_one_shot_residual_output`;
+/// otherwise the gather maps go to the shared index materializer. Both frames are released on every
+/// error path before the error returns.
 pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -118,6 +147,13 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     )
 }
 
+/// Joins a deferred Parquet leaf against the resident build frame, one chunk at a time.
+///
+/// Every chunk is a separate one-shot join. Per-chunk counters accumulate into
+/// `StreamedOneShotJoinSummary`, and the single metric row for the node is written when the outputs
+/// are materialized. The leaf stream may call the consumer again with a smaller piece of a chunk
+/// after a retryable resource error. An output is therefore appended only after the whole chunk
+/// succeeded. On error the build frame is released before the error returns.
 pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -154,6 +190,10 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     }
 }
 
+/// Defers the join of a frame stream: returns a `OneShotLazyStream` state and joins no chunk yet.
+///
+/// Chunks are joined when the materialize task, or a consumer of the preserved stream, pulls them.
+/// If the probe columns cannot be resolved, the inputs and the build frame are released here.
 pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
@@ -203,6 +243,12 @@ pub(super) fn one_shot_equi_join_frame_stream_probe_to_payload(
     )
 }
 
+/// Producer behind the lazy one-shot stream. Each pull joins one probe frame against the build
+/// frame and yields that chunk's output, which belongs to the caller.
+///
+/// The source retains the build frame and the unread inputs until `release`, which the owning
+/// payload calls after the stream drains, on early stop and on error. At exhaustion it records the
+/// node's metric row once and releases its state.
 struct OneShotEquiJoinProbeStreamSource {
     node_id: NodeId,
     node: JoinNode,
@@ -277,6 +323,12 @@ impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
     }
 }
 
+/// Joins one prepared probe chunk against the build frame and returns that chunk's output.
+///
+/// Consumes `probe`; the build frame is only borrowed, because later chunks join against it. With a
+/// residual predicate the build frame is aliased (shared columns) so the transaction in
+/// `materialize_compiled_one_shot_residual_output` can own and release it. Counters are added to
+/// `summary` only when the chunk succeeds.
 pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -381,6 +433,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     Ok(ResidentGpuFrame::with_device_bytes(GpuDataFrame::new(output), output_bytes))
 }
 
+/// Shares the build frame's columns so one chunk can own and release a `BoundedJoinSideFrame`
+/// without freeing the build that later chunks still read.
 fn alias_compiled_one_shot_build_chunk(build: &BoundedJoinSideFrame) -> BoundedJoinSideFrame {
     BoundedJoinSideFrame { frame: build.frame.clone(), rows: build.rows, bytes: build.bytes }
 }

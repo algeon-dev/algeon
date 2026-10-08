@@ -1,3 +1,9 @@
+//! Device-to-host materialization of the final bounded frame.
+//!
+//! This is the one place a native result becomes Arrow on the host. It has no retry: a
+//! failure is reported once with the host-materialization resume boundary, and the frame is
+//! consumed either way.
+
 use std::{sync::Arc, time::Instant};
 
 use arrow::{
@@ -11,6 +17,8 @@ use super::{
     QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
 };
 
+/// Copies a GPU result to a host `RecordBatch`, blocking the calling thread until the copy
+/// completes, and records the time and the row and byte counts of the transfer.
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();
     let output = input.to_host_record_batch()?;
@@ -19,6 +27,11 @@ pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMet
     Ok(output)
 }
 
+/// Materializes `frame` to host Arrow with the sink schema attached.
+///
+/// Consumes `frame`. Errors carry host-materialization resource facts at attempt 1 of 1 and
+/// retry facts naming the committed chunks and partials; a caller can tell what completed
+/// before the failure. `_input_device_bytes` is unused.
 pub(in crate::exec) fn materialize_bounded_frame_to_host(
     execution: &mut BoundedExecutionAttempt<'_>,
     frame: GpuDataFrame,
@@ -60,6 +73,10 @@ fn materialize_to_host_with_schema(
     record_batch_with_sink_schema(output, output_schema)
 }
 
+/// Attaches `schema` to a materialized batch. Column count and each column's data type must
+/// already match by ordinal, else `InvalidPlan`; names, nullability and metadata come from
+/// the sink schema. A non-nullable sink field over an array that holds nulls fails when the
+/// batch is built.
 fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     if batch.num_columns() != schema.fields().len() {
         return Err(QueryError::new(

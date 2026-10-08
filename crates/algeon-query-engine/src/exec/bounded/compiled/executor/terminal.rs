@@ -153,6 +153,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact_if_absent("plan_node_id", final_node_id)
                 .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str())
         })?;
+        // The host batch is not a resident resource; it leaves through
+        // `take_host_output` once the scheduler returns.
         self.host_output = Some(output);
         Ok(Vec::new())
     }

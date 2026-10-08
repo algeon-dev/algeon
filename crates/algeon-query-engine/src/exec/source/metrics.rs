@@ -3,6 +3,12 @@ use query_runtime::observability::{RuntimeExecutionObservationScope, SourceReadF
 use super::{ExecutionMetrics, LocalParquetSource, QueryError, SourceChunk, SourceChunkPlan, comma_separated_usize};
 
 /// Records what a source's chunk plan already knows about its Parquet files.
+///
+/// The `ParquetSource` fact reports planned values rather than bytes read. `known_bytes` per file
+/// is the larger of the file size and the sum of planned row-group bytes for that file, plus the
+/// planned bytes of any chunk whose file index is outside the source. `selected_row_groups` sums
+/// the chunks' known counts, with 0 for an unknown count. Planning time is recorded as metadata
+/// load time.
 pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     source: &LocalParquetSource,
     chunk_plan: &SourceChunkPlan,
@@ -54,6 +60,7 @@ pub(in crate::exec) fn admitted_source_read_scope(
     scope
 }
 
+/// Renders the chunk's row-group selection for error facts: `all`, or a comma-separated list.
 pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {
     if chunk.reads_all_row_groups {
         return "all".to_string();
@@ -62,6 +69,8 @@ pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {
     comma_separated_usize(&chunk.row_group_indexes)
 }
 
+/// Adds `row_group_indexes` to a source error, and `row_group_count` when the chunk names its row
+/// groups. Overwrites facts of the same name; use the `_if_absent` form to keep an inner value.
 pub(in crate::exec) fn attach_row_group_facts(error: QueryError, chunk: &SourceChunk) -> QueryError {
     let error = error.with_fact("row_group_indexes", format_row_groups(chunk));
     if chunk.reads_all_row_groups { error } else { error.with_fact("row_group_count", chunk.row_group_indexes.len()) }

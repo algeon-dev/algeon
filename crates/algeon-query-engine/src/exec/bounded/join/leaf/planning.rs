@@ -1,3 +1,12 @@
+//! Chunk planning for a deferred Parquet leaf stream.
+//!
+//! Each constructor validates the source, derives the chunk planning policy from the
+//! memory-control policy, planning mode and a `SourceTaskMemoryModel` for the consumer, and
+//! plans chunks. Planning may load Parquet footers on the calling thread. The stream starts
+//! with no stages or dynamic filters; later builders add them. The aggregate variants also
+//! cap chunk sizes from the aggregate input hints. Every planned chunk is counted in the
+//! source metrics, and the retry limits of the context are copied into the stream.
+
 use query_planning::pipeline::AggregateInputHints;
 
 use super::{

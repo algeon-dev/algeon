@@ -8,8 +8,12 @@ use super::{
     read_local_parquet_chunk_batch_required_only_no_commit, source_adjacent::execute_source_adjacent_chunk_stages,
 };
 
+/// One chunk's frame after the source-adjacent stages, with the figures of
+/// the decoded source frame that stage metrics compare against.
 pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) partial: CommittedPartial,
+    /// Row groups the read represented. Prefers what the reader observed over
+    /// the planned count, which can differ for a chunk reading a whole file.
     pub(in crate::exec::bounded) source_row_group_count: u64,
     /// Rows decoded by the source read before source-adjacent stages ran.
     pub(in crate::exec::bounded) source_rows: u64,
@@ -59,6 +63,9 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
     Ok(RawSourceInput { partial, source_row_group_count, source_rows, source_bytes })
 }
 
+/// Decodes one chunk and observes its device bytes. Records the attempt fact
+/// only; the caller records the commit once the output has survived its
+/// stages and retries, because a chunk that fails later is read again.
 pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -85,6 +92,10 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
     Ok(output)
 }
 
+/// Row groups a chunk will read, known without decoding. A chunk that reads a
+/// whole local file has no explicit index list, so the count comes from the
+/// file footer; that is a host file open on the executing thread, and a
+/// footer error yields `None` while the read itself proceeds.
 pub(in crate::exec::bounded::chunks) fn source_chunk_static_read_row_groups(chunk: &SourceChunk) -> Option<u64> {
     if let Some(row_groups) = chunk.known_read_row_group_count() {
         return Some(row_groups as u64);

@@ -1,3 +1,17 @@
+//! The route discovery pass body.
+//!
+//! For each supported join and key orientation the pass resolves the producer
+//! lineage, then each consumer lineage, and picks the consumer that can reduce
+//! work earliest: the local Parquet source when its key column is reader
+//! visible and no other consumer depends on the unfiltered rows, otherwise the
+//! first filter above it, otherwise the join's probe. A consumer key with
+//! several source lineages, or a source with several parents, takes a
+//! source-level route only under the `keyset_constraints` proof; otherwise one
+//! join-probe route stands in for all of them. Every orientation is recorded
+//! once in the diagnostics with its reason, so `considered_count` counts
+//! orientations and residual candidates rather than joins. Route ids are
+//! positions in the returned list.
+
 use super::{
     AggregateGroupKeyLineage, AnalysisContext, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterConsumer,
     DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
@@ -14,6 +28,8 @@ use super::{
 };
 use crate::optimizer::NativeOptimizerChange;
 
+/// Outcome of discovery. `change` is `Changed` when at least one route was
+/// attached; the plan's nodes are the input's nodes.
 pub(crate) struct DynamicFilterRouteDiscoveryResult {
     pub(crate) plan: QueryPlan,
     pub(crate) change: NativeOptimizerChange,
@@ -87,6 +103,10 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 diagnostics.candidates.push(candidate);
                 continue;
             };
+            // When the build input is a direct alias of a grouping-only
+            // aggregate's key set, that aggregate is the producer: its keys are
+            // the build keys, and the payload exists once it finishes, so the
+            // dependency root moves from the build input to the aggregate.
             let aggregate_group_key_producer =
                 producer_lineage.aggregate_group_key_node_id.filter(|aggregate_node_id| {
                     producer_input_is_direct_aggregate_keyset_alias(
@@ -109,6 +129,9 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 orientation.consumer_key.name(),
                 AggregateGroupKeyLineage::Consumer,
             ));
+            // A probe key with no source lineage (a join output, union, or an
+            // expression) can still be filtered after decode at a filter or at
+            // the probe itself.
             if consumer_lineages.is_empty() {
                 let Some((consumer, consumer_column)) =
                     post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true, ctx)
@@ -173,6 +196,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 continue;
             };
 
+            // Several lineages mean the probe key is assembled from more than one
+            // source (a union or a projection over a join). Each source is still
+            // reported, but when one of them is shared, a single join-probe route
+            // replaces per-source routes so no shared source is filtered for one
+            // consumer only.
             let multiple_consumer_lineages = consumer_lineages.len() > 1;
             let mixed_lineage_join_probe_route_available = multiple_consumer_lineages
                 && consumer_lineages.iter().any(|consumer_lineage| {
@@ -290,6 +318,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                             diagnostics.candidates.push(candidate);
                             continue;
                         }
+                        // The size heuristic is skipped when a join-probe route
+                        // already covers this source, when the producer is an
+                        // exact literal key set, or when the source feeds work
+                        // that fans out, since fewer source rows then save more
+                        // than the source read itself.
                         if !mixed_lineage_join_probe_route_available
                             && !producer_input_is_literal_batch_exact_keyset(&plan, orientation.producer_input)
                             && !dynamic_filter_consumer_source_feeds_downstream_work_fanout(

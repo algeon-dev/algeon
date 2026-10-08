@@ -10,6 +10,11 @@ use super::{
 /// handle from another admitted attempt on the same device is borrowed
 /// directly. Its resident ownership keeps the producer allocation alive, so
 /// the consumer neither copies nor charges those bytes to its own cap.
+///
+/// Fails with `InvalidPlan` when the input is missing, the schema differs from the declared one
+/// (compared as a whole, including nullability), or the handle belongs to another device. All
+/// checks run before any metric is recorded, so a rejected handle leaves no input facts. The
+/// returned frame is ordered on the consumer's stream.
 pub(in crate::exec) fn read_gpu_resident_source(
     context: &ExecutionContext,
     source: &GpuResidentSource,

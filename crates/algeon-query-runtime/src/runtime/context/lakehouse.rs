@@ -28,6 +28,10 @@ use super::{
 
 impl ExecutionContext {
     /// Returns the service-level CUDA stream pool used by source-read workers.
+    ///
+    /// The pool is wrapped with this context's service epoch and query anchor,
+    /// so a lease taken through it is revoked with the attempt and keeps the
+    /// service from reaching idle. A standalone context wraps neither.
     pub fn service_stream_pool(&self) -> QueryServiceStreamPool {
         QueryServiceStreamPool {
             pool: self.device.service_stream_pool.clone(),
@@ -98,6 +102,10 @@ impl ExecutionContext {
         }
         let storage_profile_id = key.storage_profile_id.clone();
         let provider = self.device.source_object_stores.s3_credential_provider(key.clone())?;
+        // The receive below blocks this thread. The control runtime is a
+        // separate multi-thread runtime, so a GPU pool worker or host thread
+        // can wait here without holding up the task that resolves the
+        // credential.
         let (sender, receiver) = sync::mpsc::channel();
         self.device.object_store_control_runtime.spawn(async move {
             let credential = provider.get_credential().await;

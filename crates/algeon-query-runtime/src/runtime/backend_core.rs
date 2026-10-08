@@ -1,4 +1,25 @@
 //! Ownership-enforcing GPU backend construction and lifecycle facade.
+//!
+//! The configuration values (`GpuBackendDeviceProfile`,
+//! `GpuBackendDeviceConfig`, `GpuBackendConfig`) are validated into a
+//! `ValidatedGpuBackendConfig` before any process-wide state is touched.
+//! `GpuBackendCore::construct` then claims the one live-backend lease for the
+//! configured devices, installs the query service and its GPU resources behind
+//! a resource generation, and publishes the core only after every device's
+//! startup record agrees with its validated profile. Two facades enforce
+//! ownership afterwards. `GpuBackendCore` is a counted public handle: its
+//! handles keep the generation live and the last drop closes it.
+//! `GpuBackendSession` holds only a `Weak` to the resource core and can never
+//! keep device ownership alive past close.
+//!
+//! The lifetime invariant the facades enforce is that no admission, service
+//! read, or attempt begin can hold the resource generation unless it won the
+//! `BackendLifecycle` gate before close, and that close releases the live
+//! owner lease only after the service has drained and every such holder is
+//! gone. The gate itself lives in `backend_lifecycle`; the close worker that
+//! consumes the generation lives in `backend_close`. The admission contract
+//! these facades implement is `website/docs/design/admission.mdx`; the thread
+//! and runtime ownership is `website/docs/design/index.mdx#runtimes-and-threads`.
 
 use std::{
     fmt,
@@ -180,6 +201,15 @@ fn resolve_probe_capacities(
 }
 
 /// Soft admission capacity calculation for one device.
+///
+/// `Automatic` resolves at build time, after the device is discovered, to the
+/// owned capacity minus `headroom_bytes`, or to `fallback_bytes` when the
+/// subtraction leaves nothing; `fraction` further caps the result at that
+/// share of the owned capacity. `Explicit` is accepted as given and is
+/// rejected when it exceeds the owned capacity: at validation for a static
+/// partition, at build for a whole device. Both describe the ledger's
+/// configured limit; admission commits grants against it, and neither
+/// constrains the allocator installed on the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum GpuDeviceMemoryLimit {
@@ -831,6 +861,15 @@ fn invalid_config(field: &'static str, message: impl fmt::Display) -> QueryError
 }
 
 /// Construction boundary exposed to deterministic probes and failure injectors.
+///
+/// Execution order differs from declaration order. `BeforeCleanupWorker` and
+/// `AfterCleanupWorker` bracket the close coordinator spawn and come first,
+/// because the coordinator is the rollback owner for everything after it. The
+/// per-device checkpoints then run inside the service install in ordinal
+/// order, followed by the startup-record pair and `Published`. A probe that
+/// fails at any checkpoint after `AfterCleanupWorker` observes the resources
+/// recorded so far in the construction journal, and the coordinator drains
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub(crate) enum GpuBackendConstructionCheckpoint {
@@ -869,6 +908,17 @@ impl GpuBackendConstructionProbe for NoopConstructionProbe {
 impl GpuBackendCore {
     /// Claims the process owner of the configured devices, installs their
     /// GPU resources, and publishes the backend.
+    ///
+    /// Only one backend may be live per process; a second call while one is
+    /// live, or while a closed one is still draining, fails with the
+    /// `backend_already_live` reason. Construction blocks the calling thread
+    /// for the CUDA context, memory manager, and stream pool installation of
+    /// every device. On failure the close coordinator takes over every
+    /// installed resource, and the error carries `rollback_cleanup` facts that
+    /// say whether that cleanup reached quiescence within its bounded slice or
+    /// was transferred to the coordinator's thread. In the latter case the
+    /// owner lease is released asynchronously, so a retry may briefly observe
+    /// `backend_already_live`.
     pub fn new(config: ValidatedGpuBackendConfig) -> Result<Self> {
         Self::construct(
             config,
@@ -878,6 +928,17 @@ impl GpuBackendCore {
         )
     }
 
+    /// The construction transaction behind [`Self::new`].
+    ///
+    /// Ordering matters at three points. The owner lease is claimed before any
+    /// GPU resource exists and moves into the resource generation immediately,
+    /// so a panic or early return cannot drop it from this stack while
+    /// installed resources are still live. The close coordinator is spawned
+    /// before the first device install because from that point the
+    /// coordinator, rather than this function, is the rollback owner.
+    /// Process-exit registration happens after the service install because
+    /// that install is what initializes CUDA, and the registration must
+    /// follow libcudart's own `atexit` handler to run before it.
     fn construct(
         config: ValidatedGpuBackendConfig,
         probe: &dyn GpuBackendConstructionProbe,
@@ -935,6 +996,11 @@ impl GpuBackendCore {
             let service =
                 generation.service().expect("resource service is available immediately after successful installation");
 
+            // The startup records are cross-checked against the validated
+            // profiles rather than copied from them: a device whose installed
+            // worker count or allocation limit differs from its profile means
+            // the service installed something other than what validation
+            // approved, and the backend fails closed instead of publishing.
             let devices = config.validated_devices();
             let observed = service.backend_device_startup_facts();
             let worker_pools = service.gpu_execution_pool_reports();
@@ -1036,6 +1102,9 @@ impl GpuBackendCore {
                 .with_fact("reason", "duplicate_startup_record_install")
             })?;
             probe.checkpoint(GpuBackendConstructionCheckpoint::AfterStartupRecords)?;
+            // Public handles are counted by the tracker because `Arc` strong
+            // counts also include sessions and the coordinator, whose
+            // references must not keep the backend open.
             let close_on_last = Arc::clone(&coordinator);
             let public_handles = PublicHandleTracker::new(move || {
                 close_on_last.signal();
@@ -1062,6 +1131,11 @@ impl GpuBackendCore {
 }
 
 /// Immutable per-device record frozen before backend publication.
+///
+/// Each record combines the discovered device facts with the configuration
+/// the device was installed under. It is read without any permit, so it stays
+/// available after close for diagnostics about a generation that no longer
+/// owns the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuBackendDeviceStartupRecord {
     pub device_ordinal: usize,
@@ -1072,6 +1146,8 @@ pub struct GpuBackendDeviceStartupRecord {
     /// NVML-reported physical framebuffer capacity captured with the immutable device inventory facts.
     pub physical_total_bytes: Option<u64>,
     pub facts: DeviceFacts,
+    /// Managed capacity the ledger commits grants against: the resolved
+    /// [`GpuDeviceMemoryLimit`] minus `backend_reserve_bytes`.
     pub capacity_bytes: u64,
     /// Full ordinal-local resource-controller profile frozen after discovery.
     pub resource_profile: DeviceResourceProfile,
@@ -1091,6 +1167,9 @@ pub struct GpuBackendDeviceStartupRecord {
 }
 
 /// Shared identity facts used to prove facade/session clones reuse one domain.
+///
+/// All three ids come from one process-wide counter, so two backends built in
+/// the same process never share an id even after the first has closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuBackendCoreIdentity {
     pub resource_core: u64,
@@ -1099,11 +1178,20 @@ pub struct GpuBackendCoreIdentity {
 }
 
 /// One process-owned GPU backend core.
+///
+/// Every value of this type is a public handle: clones mint a new
+/// `PublicHandleLease`, and dropping the last lease signals close the same
+/// way [`Self::close`] does. Dropping all handles therefore never leaks the device
+/// owner, but neither does it wait for cleanup; callers that need to know when
+/// the devices are reusable call one of the `close_and_wait*` methods first.
 #[derive(Debug)]
 pub struct GpuBackendCore {
     resource_core: Arc<ResourceCore>,
     observation_core: Arc<ObservationCore>,
     coordinator: Arc<CloseCoordinator>,
+    /// The counted handle. Its tracker fires the close signal on the last
+    /// drop; `Arc` counts on the cores are not consulted because sessions and
+    /// the coordinator hold them too.
     public_handle: PublicHandleLease,
     startup_records: Arc<[GpuBackendDeviceStartupRecord]>,
     generation_id: u64,
@@ -1147,6 +1235,13 @@ impl Clone for GpuBackendCore {
 }
 
 impl GpuBackendCore {
+    /// Mints the capability that session and optimizer state hold.
+    ///
+    /// A session is not a public handle: it holds the resource core weakly, so
+    /// any number of live sessions neither delay the last-handle close signal
+    /// nor keep the resource generation reachable after close has taken it.
+    /// The observation core is held strongly because attempt reports and
+    /// metrics must stay readable after the GPU resources are gone.
     pub fn session_capability(&self) -> GpuBackendSession {
         GpuBackendSession {
             resource_core: Arc::downgrade(&self.resource_core),
@@ -1174,6 +1269,7 @@ impl GpuBackendCore {
         }
     }
 
+    /// See [`GpuBackendSession::begin_attempt`].
     pub fn begin_attempt(&self, request: BeginAttemptRequest) -> Result<AttemptBegin> {
         self.session_capability().begin_attempt(request)
     }
@@ -1186,25 +1282,52 @@ impl GpuBackendCore {
         self.observation_core.backend_metrics.snapshot()
     }
 
+    /// Signals close without waiting. Returns `true` only for the caller that
+    /// won the lifecycle gate; later calls, and a last-handle drop after an
+    /// explicit close, return `false` and change nothing.
+    ///
+    /// From the winning call on, every new admission, service read, and
+    /// attempt begin fails with the `backend_closing` reason, while work that
+    /// already holds a permit runs to completion. Cleanup proceeds on the
+    /// coordinator's thread.
     pub fn close(&self) -> bool {
         self.coordinator.signal()
     }
 
+    /// Point-in-time close progress. Readable at any time, including before
+    /// close and from inside observation delivery.
     pub fn close_snapshot(&self) -> GpuBackendCloseSnapshot {
         self.coordinator.state.snapshot(&self.observation_core.lifecycle)
     }
 
+    /// Signals close and blocks the calling thread until both quiescence
+    /// scopes are reached or `timeout` elapses.
+    ///
+    /// A timeout returns `ServiceOverloaded` with reason `backend_close_timeout`
+    /// and the quiescence facts at that moment; cleanup continues on the
+    /// coordinator's thread and a later call can observe its completion. A
+    /// cleanup failure returns `Internal` with reason `cleanup_failed_closed`;
+    /// the owner lease is then retained, and the devices cannot be claimed
+    /// again in this process. Calling from a runtime observation observer is
+    /// rejected with `reentrant_observation_close` before close is signalled,
+    /// because that observer is itself observation work the wait would need to
+    /// finish.
     pub fn close_and_wait(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
         let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
         self.close_and_wait_until(deadline)
     }
 
+    /// [`Self::close_and_wait`] against an absolute deadline. Lock contention
+    /// inside the wait consumes this same deadline.
     pub fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
         self.coordinator.close_and_wait_until(deadline)
     }
 
+    /// [`Self::close_and_wait`] for callers on a Tokio runtime. The wait parks
+    /// a thread, so it runs on the host runtime's blocking pool; the reentrancy
+    /// check runs first, on the caller's task, so a rejected call never spawns.
     pub async fn close_and_wait_async(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
         let coordinator = Arc::clone(&self.coordinator);
@@ -1246,6 +1369,14 @@ impl GpuBackendSession {
         self.observation_core.lifecycle.is_closing()
     }
 
+    /// Begins one attempt lifecycle under this backend's observation scope.
+    ///
+    /// The observation permit is the linearization point: an attempt that
+    /// obtains it is counted in `attempts_begun` and holds the observation
+    /// scope open until its report is ready, so close cannot complete without
+    /// that report. A begin that loses to close fails with `backend_closing`
+    /// and leaves no counted attempt. No GPU permit is taken here; the attempt
+    /// claims a device only when its first native fragment is admitted.
     pub fn begin_attempt(&self, request: BeginAttemptRequest) -> Result<AttemptBegin> {
         let permit = self.observation_core.lifecycle.try_begin_observation()?;
         self.observation_core.attempt_counters.attempts_begun.fetch_add(1, Ordering::AcqRel);
@@ -1265,6 +1396,9 @@ impl GpuBackendSession {
         self.observation_core.backend_metrics.snapshot()
     }
 
+    /// Drains up to `max` reports of attempts whose completion receiver was
+    /// dropped before the report was ready. Empty when the backend was built
+    /// without an attempt completion queue.
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.observation_core.attempt_completion_queue.as_ref().map_or_else(Vec::new, |queue| queue.drain(max))
     }
@@ -1273,6 +1407,18 @@ impl GpuBackendSession {
         self.observation_core.attempt_counters.snapshot()
     }
 
+    /// Takes the permits an admission or service read needs to enter the
+    /// current resource generation.
+    ///
+    /// The order is load-bearing. The GPU permit is taken while the generation
+    /// slot's mutex is held, and the close worker takes the slot under that
+    /// same mutex only after setting the close bit. A caller that wins the GPU
+    /// permit therefore always finds the generation still in the slot, and
+    /// the close worker, which waits for the GPU permit count to reach zero
+    /// before releasing the generation, can never observe a count of zero
+    /// while a caller still holds a generation clone. The observation permit
+    /// is taken first so a backend that is closing is rejected before the
+    /// mutex is touched.
     fn acquire_resource(&self) -> Result<(ObservationPermit, GpuResourcePermit, ObservationCompletionDispatcher)> {
         let observation = self.observation_core.lifecycle.try_begin_observation()?;
         let resource_core = self.resource_core.upgrade().ok_or_else(backend_closing_resource_error)?;
@@ -1316,12 +1462,29 @@ impl GpuBackendSession {
             .try_admit()
     }
 
+    /// Admits one native attempt, waiting in the bounded admission queue
+    /// until a grant is placed, the request is cancelled, or its queue
+    /// deadline passes.
+    ///
+    /// The observation and GPU permits are taken before the request enters
+    /// the queue and travel with it inside its `QueryCompletion`, so an
+    /// attempt that is queued, admitted, or cleaning up holds the resource
+    /// generation for its whole lifetime, and close waits for it. On a
+    /// rejected or cancelled request the GPU permit is released before the
+    /// observation is sealed and delivered, the observation permit covers that
+    /// delivery and is released afterwards, and the opaque activity lease runs
+    /// last because its destructor may reenter close. Failures before the
+    /// queue carry `backend_closing`
+    /// (`Cancelled`); failures inside the queue are the admission controller's
+    /// (`ServiceOverloaded` for a full queue or an elapsed wait, the typed
+    /// capability or health rejections otherwise).
     pub async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         let (observation, resource, completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().cloned().ok_or_else(resource_generation_unpublished_error)?;
         service.admit_async_with_backend_permits(request, observation, resource, completion_dispatcher).await
     }
 
+    /// Whether both sessions were minted from the same published core.
     pub fn same_backend(&self, other: &Self) -> bool {
         self.identities == other.identities
     }
@@ -1336,6 +1499,8 @@ impl GpuBackendSession {
         self.with_service(|service| Ok(service.device_telemetry_snapshots()))
     }
 
+    /// Runs a read against the live service while holding both permits, so
+    /// the service and its device resources cannot be released mid-read.
     fn with_service<T>(&self, operation: impl FnOnce(&QueryService) -> Result<T>) -> Result<T> {
         let (_observation, resource, _completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().ok_or_else(resource_generation_unpublished_error)?;
@@ -1343,6 +1508,9 @@ impl GpuBackendSession {
     }
 }
 
+/// Projects each sealed attempt report into the backend metrics store. The
+/// sink runs once per attempt at seal time; the store therefore stays a
+/// projection of the observation snapshot and holds no events of its own.
 fn register_backend_attempt_metrics_sink(owner: &AttemptOwner, backend_metrics: BackendMetricsStore) {
     owner.register_sealed_report_sink(move |report| {
         let projection = report.sealed_projection();
@@ -1358,11 +1526,8 @@ fn register_backend_attempt_metrics_sink(owner: &AttemptOwner, backend_metrics: 
     });
 }
 
-/// Permit required by private service admission.
-///
-/// The resource generation field is declared before the lifecycle count so it
-/// is released first; a close waiter that observes the count reach zero then
-/// knows no permit can still retain the generation.
+/// Permit required by private service admission. Field order carries the
+/// release order; see the field comment.
 pub(crate) struct GpuResourcePermit {
     generation: Arc<ResourceGeneration>,
     // Declare this last: this keep-alive guard is never read, but its `Drop`
@@ -1382,12 +1547,27 @@ impl fmt::Debug for GpuResourcePermit {
     }
 }
 
+/// The detachable slot that holds the current resource generation.
+///
+/// Held strongly by public handles and by the close worker, weakly by
+/// sessions. The slot is written twice in a backend's life: filled at
+/// construction and taken by the close worker after it has set the lifecycle
+/// close bit. Because `acquire_resource` reads it under the same mutex while
+/// taking its GPU permit, "closed" and "holds the generation" are mutually
+/// exclusive for every caller.
 #[derive(Debug)]
 pub(crate) struct ResourceCore {
     identity: u64,
     pub(crate) generation: Mutex<Option<Arc<ResourceGeneration>>>,
 }
 
+/// State that outlives the GPU resources: the lifecycle gate, attempt
+/// counters, the abandoned-report queue, metrics, and the observation
+/// delivery executor.
+///
+/// Sessions hold this strongly so attempt begin and report delivery keep
+/// working after GPU quiescence. The `lifecycle` clone is shared with the
+/// close coordinator; both see the same close bit and permit counts.
 #[derive(Debug)]
 pub(crate) struct ObservationCore {
     identity: u64,
@@ -1398,11 +1578,25 @@ pub(crate) struct ObservationCore {
     completion_executor: ObservationCompletionExecutor,
 }
 
+/// Everything one backend generation owns on the devices, plus the lease
+/// that makes it the process's live backend.
+///
+/// Created before any GPU resource exists and retained by every
+/// `GpuResourcePermit`, so the service and journal cannot be dropped while an
+/// admitted attempt or a service read still references them. The close worker
+/// drops the last reference after the service has drained and the GPU permit
+/// count has reached zero; a cleanup panic forgets it instead, which keeps the
+/// owner lease and prevents a replacement backend from claiming devices with
+/// unknown outstanding GPU work.
 #[derive(Debug)]
 pub(crate) struct ResourceGeneration {
+    /// Set once, after the service install succeeds. `None` only during the
+    /// construction window, when no session can exist yet.
     service: OnceLock<QueryService>,
     startup_records: OnceLock<Arc<[GpuBackendDeviceStartupRecord]>>,
     generation_id: u64,
+    /// Keeps every installed GPU resource alive through close so the drain
+    /// can run against them after the service itself has been dropped.
     construction_journal: Arc<ConstructionResourceJournal>,
     // Declared last and explicitly dropped last by the cleanup worker.
     owner_lease: LiveBackendLease,
@@ -1441,6 +1635,16 @@ enum ConstructionResource {
     StartupRecords(Arc<[GpuBackendDeviceStartupRecord]>),
 }
 
+/// Append-only record of every GPU resource created during construction, in
+/// creation order.
+///
+/// The service install records each resource immediately after creating it
+/// and before the next probe checkpoint, so a failure at any checkpoint leaves
+/// a journal that names everything built so far. The entries are clones of
+/// the handles the service also holds; the journal keeps the underlying
+/// pools and contexts alive until the generation drops, so close can drain
+/// them after the service is gone and construction rollback can drain them
+/// when no service was ever published.
 #[derive(Debug, Default)]
 pub(crate) struct ConstructionResourceJournal {
     entries: Mutex<Vec<ConstructionResource>>,
@@ -1472,6 +1676,16 @@ impl ConstructionResourceJournal {
         Ok(())
     }
 
+    /// Closes and drains every journaled runtime in reverse creation order
+    /// under one deadline.
+    ///
+    /// The call is idempotent. Pools that are already closed report
+    /// quiescence at once, so the close worker calls this repeatedly in
+    /// bounded slices. Every entry
+    /// is visited even after a failure; a permanent error (anything other than
+    /// an elapsed cleanup deadline) is returned in preference to a deadline
+    /// error, so a slow drain cannot mask a broken one. Nothing is removed from
+    /// the journal here; the resources are released when the generation drops.
     pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
         // Recording is one append, so a recovered guard holds every resource
         // recorded before a panic; each still needs its rollback.
@@ -1484,6 +1698,10 @@ impl ConstructionResourceJournal {
                 ConstructionResource::StreamPool(pool) => {
                     pool.close_and_wait_until(deadline, "query_engine.gpu_backend_core.rollback")
                 },
+                // Memory managers, device contexts, and startup records have
+                // no drain step. They are journaled for retention order only:
+                // the runtimes above must stop before these are dropped with
+                // the generation.
                 ConstructionResource::MemoryManager(manager) => {
                     let _ = manager.device();
                     Ok(())
@@ -1538,6 +1756,8 @@ fn resource_generation_unpublished_error() -> QueryError {
         .with_fact("reason", "resource_generation_unpublished")
 }
 
+/// Process-wide identity counter shared by generation ids and both core ids,
+/// so no two backends built in one process can present the same identity.
 fn next_backend_identity() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)

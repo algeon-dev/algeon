@@ -16,11 +16,20 @@ use crate::{
 /// occurrence materializes host Arrow for a DataFusion consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptExecutionOccurrence {
+    /// Unique within one manifest; names one invocation site in the final
+    /// DataFusion plan.
     occurrence_id: String,
+    /// Identity of the physical producer, shared by every occurrence of one
+    /// shared producer.
     producer_identity: String,
     execution_scope_fingerprint: PlanFingerprint,
+    /// Present when the plan reads graph source facts that are filled in only
+    /// after Arrow staging. The fingerprint then differs between admission
+    /// and execution, and this identity is what matches.
     deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
     output_schema_fingerprint: SchemaFingerprint,
+    /// Occurrence ids that execute before this one. `validate` admits only
+    /// ids listed earlier in the manifest, which rules out cycles.
     predecessors: Vec<String>,
 }
 
@@ -59,6 +68,9 @@ impl AttemptExecutionOccurrence {
         }
     }
 
+    /// Whether `plan` is the admitted plan. The fingerprint matches a plan
+    /// unchanged since admission; the deferred identity matches one whose
+    /// masked graph source facts were filled in afterwards.
     pub(crate) fn matches_plan(&self, plan: &QueryPlan) -> bool {
         self.execution_scope_fingerprint == plan.execution_fingerprint()
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|expected| expected.matches(plan))
@@ -140,6 +152,8 @@ impl AttemptExecutionManifest {
             .iter()
             .filter(|occurrence| occurrence.producer_identity == producer_identity)
             .collect::<Vec<_>>();
+        // Checks go from coarse to fine so the `reason` fact names the first
+        // identity that failed: the producer, then its plan, then its schema.
         if candidates.is_empty() {
             return Err(manifest_error("execution_producer_not_admitted", Some(producer_identity)));
         }
@@ -231,6 +245,10 @@ impl AttemptProducerOccurrence {
 pub struct AttemptExecutionScope {
     execution_scope_fingerprint: PlanFingerprint,
     output_schema_fingerprint: SchemaFingerprint,
+    /// Shared-resident producers whose output this consumer scope reads.
+    /// Pushed while admitted evidence is assembled; execution later claims
+    /// each one by its occurrence id, which `validate_manifest_core` requires
+    /// to be unique.
     producer_occurrences: Vec<AttemptProducerOccurrence>,
 }
 

@@ -150,6 +150,14 @@ impl CompiledGpuTaskExecutor<'_> {
         )
     }
 
+    /// Builds the filters for `routes` from the producer's key columns.
+    ///
+    /// Key values are copied device to host (`to_host_record_batch`), so the
+    /// `max_build_rows` guard bounds that transfer and the host memory the
+    /// value list takes. Above the large-producer threshold, routes lowered
+    /// into reader predicates receive a min/max range computed on the device,
+    /// and no value list is copied. Each route ends either produced or skipped
+    /// with a reason, so consumers waiting on it can proceed.
     fn produce_dynamic_filters_from_frames(
         &mut self,
         routes: &[DynamicFilterRoute],
@@ -348,6 +356,11 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(())
     }
 
+    /// A range filter from a large keyset is skipped for a consumer small
+    /// enough that reading it costs less than the filter: a dimension-sized
+    /// source with few row groups, or one whose selected bytes are below the
+    /// producer's. A source that feeds further fan-out work keeps the filter
+    /// because the saving applies downstream too.
     fn large_keyset_dimension_sized_local_parquet_route_is_not_promising(
         &self,
         route: &DynamicFilterRoute,
@@ -391,6 +404,12 @@ impl CompiledGpuTaskExecutor<'_> {
             .map_err(|error| error.with_fact_if_absent("join_node_id", join_node_id))
     }
 
+    /// Attaches every ready filter routed to the stream's source before the
+    /// read starts, as reader predicates or post-decode stages per the route's
+    /// lowering. A route that is not ready is a contract error. Compiled
+    /// control edges order producers ahead of consumers and the scheduler
+    /// runs one task at a time, so a producer cannot still be in progress;
+    /// an unready route points at a missing edge.
     pub(super) fn apply_dynamic_filters_to_source_stream(
         &mut self,
         mut stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -717,6 +736,9 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(stream)
     }
 
+    /// The produced filter and its predicate over `schema`, or `None` with a
+    /// skip recorded when the route was never produced, names no consumer
+    /// column, or has no post-decode predicate form for this column type.
     fn resolve_dynamic_filter_predicate(
         &mut self,
         route: &DynamicFilterRoute,
@@ -866,6 +888,10 @@ fn merge_dynamic_filter_ranges(left: DynamicFilter, right: DynamicFilter) -> Dyn
     }
 }
 
+/// Min/max of one producer key column as an i64 range, reduced on the device
+/// with retained execution so the reductions run on the producer's stream.
+/// `Ok(None)` means the type has no range form here or a `u64` value exceeds
+/// `i64::MAX`; `Empty` means the column has no non-null values.
 fn dynamic_filter_i64_range_from_series(
     series: &cudf::Series,
     data_type: &ArrowDataType,
@@ -918,7 +944,7 @@ fn dynamic_filter_i64_range_from_series(
                 .max_value::<u64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?;
             match (min, max) {
-                // No non-null values: a genuine empty producer keyset.
+                // No non-null values, so the producer keyset is empty.
                 (None, None) => Some((None, None)),
                 (Some(min), Some(max)) => {
                     let (Ok(min), Ok(max)) = (i64::try_from(min), i64::try_from(max)) else {

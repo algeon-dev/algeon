@@ -8,6 +8,12 @@ use super::{
     cudf_query_error,
 };
 
+/// Runs `aggregate` as a libcudf groupby on `overrides`.
+///
+/// Rows with a NULL group key form groups of their own (`include_null_keys`), because libcudf
+/// drops them by default and SQL GROUP BY keeps them. Group order is unspecified. An aggregate
+/// with no aggregations runs as a distinct over the key columns. Key columns are renamed to
+/// `output_key_names`.
 pub(in crate::exec) fn execute_groupby_aggregate(
     overrides: Exec<'_>,
     frame: DataFrame,
@@ -28,6 +34,7 @@ pub(in crate::exec) fn execute_groupby_aggregate(
     Ok(output)
 }
 
+/// `execute_groupby_aggregate` under `token`, without an operator-stage record.
 pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
     overrides: Exec<'_>,
     frame: DataFrame,
@@ -42,6 +49,12 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
     )
 }
 
+/// `execute_groupby_aggregate` under `token`; the token selects the stream and memory resource,
+/// so `_overrides` is unused.
+///
+/// With a `context`, the groupby is bracketed by a `LibcudfGroupby` operator stage that records
+/// the input rows and then the output rows or the failure. The group-only form records no
+/// stage. The budget report of the groupby is folded into `metrics`.
 #[expect(
     clippy::too_many_arguments,
     reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
@@ -99,6 +112,8 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
     Ok(output)
 }
 
+/// Renames the key columns of a groupby output from their input names to the aggregate's
+/// `output_key_names`.
 pub(super) fn rename_groupby_key_columns(
     output: &mut DataFrame,
     aggregate: &LoweredAggregate,
@@ -119,6 +134,8 @@ pub(super) fn rename_groupby_key_columns(
     Ok(())
 }
 
+/// Group-only aggregate: one row per distinct key combination, taken with `drop_duplicates`.
+/// Only key columns are kept, so which duplicate survives (`KeepAny`) does not matter.
 fn execute_groupby_distinct(
     overrides: Exec<'_>,
     frame: DataFrame,

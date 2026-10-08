@@ -1,3 +1,15 @@
+//! Structural support of a compiled pipeline for the bounded executor.
+//!
+//! Structural support is the set of graph-shape contracts the executor
+//! requires beyond the schedule invariants `pipeline::validate` checks: every
+//! task kind has an execution contract, each join's build, probe and
+//! materialize trio is complete, a shared producer is of a kind the executor
+//! can share and has a proven shared-subplan lineage, stage tasks sit where
+//! the coordinator can place them, and a window that numbers rows in input
+//! order has that ordering recorded on its input. Each refusal names its
+//! contract through `Reason`; admission reports it as the first unmet
+//! contract.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
@@ -13,6 +25,7 @@ use crate::{
     plan::{NodeId, PlanNode, QueryPlan},
 };
 
+/// Whether the compiled executor can place every task of a pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompiledBoundedPipelineSupport {
     /// A compiled-execution contract rejects the graph. The projection names
@@ -25,6 +38,8 @@ pub enum CompiledBoundedPipelineSupport {
 /// Checks compiled graph shape only; it does not perform capability admission.
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
     match join_task_groups(pipeline) {
+        // Without a join, every task must already carry a compiled contract;
+        // with one, the plan-level check names the task outside the contract.
         JoinTaskGroups::Complete(groups) if groups.is_empty() && !pipeline_tasks_within_compiled_contract(pipeline) => {
             return Ok(admission_rejection(
                 Reason::CompiledPipelineRequiresJoinTaskGroup,
@@ -304,6 +319,10 @@ fn sink_path_terminal_task(pipeline: &CompiledPipeline) -> Option<PipelineTaskId
     }
 }
 
+/// A window, union or final sort runs on the serial coordinator and must sit
+/// on the single-frame path into the sink, feed a modeled join or algorithm
+/// input or a shared branch, or feed a union on that path. The coordinator
+/// has no placement for a stage task anywhere else.
 fn stage_task_outside_sink_path<'a>(
     pipeline: &'a CompiledPipeline,
     sink_path: &BTreeSet<PipelineTaskId>,

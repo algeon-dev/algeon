@@ -43,6 +43,11 @@ pub(super) const NATIVE_ALGEON_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "AlgeonN
 pub(super) const NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str =
     "AlgeonNativeComposedExec[host-output]";
 
+/// Pool reservation for one device-to-host chunk.
+///
+/// Acquired for the cursor's size estimate before the copy and reconciled to
+/// the materialized size after it. The pool can refuse growth, so the only
+/// fallible step runs before host memory is allocated.
 struct HostOutputReservation {
     reservation: Option<MemoryReservation>,
     estimated_bytes: usize,
@@ -231,6 +236,13 @@ enum NativeHostOutputState {
     Done,
 }
 
+/// The stream a host wrapper returns from `execute`.
+///
+/// `LoadingInitial` runs admission and the whole native schedule on first
+/// poll; `LoadingNext` moves one chunk. `reservation` holds the pool bytes of
+/// the chunk most recently yielded and is replaced when the next chunk is
+/// ready, so one stream charges at most one chunk at a time. `publication`
+/// records whether any batch reached the caller, for the error facts.
 struct NativeHostOutputStream {
     schema: SchemaRef,
     state: NativeHostOutputState,
@@ -344,6 +356,10 @@ where
 }
 
 /// Runs a host-facing native query future on its device's dedicated GPU executor.
+///
+/// The body makes synchronous CUDA calls, which must stay off the host runtime
+/// worker polling the DataFusion stream. A pool rejection or job failure is
+/// reported under `operation` with the native facts preserved.
 pub(crate) fn run_gpu_execution_task<B, F, T>(
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
