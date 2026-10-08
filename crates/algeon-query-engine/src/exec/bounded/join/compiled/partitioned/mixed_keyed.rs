@@ -1,16 +1,15 @@
 use super::{
-    BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledMixedSizeData,
-    GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId,
+    BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledMixedJoinCall,
+    GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId,
     PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY, PartitionedJoinDriverPlan, PartitionedJoinInputStats,
     PartitionedJoinOutputSummary, PartitionedJoinPartitionOutput, PartitionedJoinSide, PartitionedJoinSides,
     ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, VecDeque,
-    concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, join_index_error,
-    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    concatenate_streamed_hash_join_outputs, join_side_output_upper_bound_bytes,
     materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partition_join_sides,
     partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
     projected_output_columns_for_retained_sizing, record_partitioned_join_operator_metrics,
     record_partitioned_join_selection, record_partitioned_join_sides, release_partitioned_join_side,
-    residual_input_columns, run_partitioned_join_driver, sum_bounds, validate_partitioned_mixed_keyed_residual_join,
+    run_partitioned_join_driver, sum_bounds, validate_partitioned_mixed_keyed_residual_join,
 };
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
@@ -133,45 +132,13 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
 ) -> Result<PartitionedJoinPartitionOutput> {
-    let residual_columns = residual_input_columns(node)?;
-    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
-    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();
-    let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
-    let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
+    let call = CompiledMixedJoinCall::lower(execution.context(), node)?;
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     let (left, right) = txn.sides();
-    let size_data = match node.spec.join_type {
-        JoinType::Inner => left
-            .frame
-            .on(overrides)
-            .mixed_inner_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Left => left
-            .frame
-            .on(overrides)
-            .mixed_left_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Full => left
-            .frame
-            .on(overrides)
-            .mixed_full_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::LeftSemi => left
-            .frame
-            .on(overrides)
-            .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::LeftAnti { .. } => left
-            .frame
-            .on(overrides)
-            .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated above"),
-    }
-    .map_err(|error| join_index_error(error, node));
+    let size_data = call.size_data(node, &left.frame, &right.frame, overrides);
     let size_data = match size_data {
         Ok(size_data) => size_data,
         Err(error) => {

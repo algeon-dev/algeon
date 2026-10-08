@@ -247,6 +247,60 @@ fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_accepts_decimal_with_narrow_integer_columns() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("amount", DataType::Decimal128(7, 2), false),
+        Field::new("manufact_id", DataType::Int32, true),
+        Field::new("bucket", DataType::UInt16, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-decimal-narrow-integer.parquet")
+                .with_stable_id("reader-predicate-decimal-narrow-integer")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["amount".to_string(), "manufact_id".to_string(), "bucket".to_string()],
+    );
+    let amount_range = Expr::binary(
+        Expr::binary(
+            Expr::column("amount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 6200, precision: 7, scale: 2 }),
+        ),
+        BinaryOp::And,
+        Expr::binary(
+            Expr::column("amount"),
+            BinaryOp::LtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 9200, precision: 7, scale: 2 }),
+        ),
+    );
+    let manufact_in_list = Expr::InList {
+        expr: Box::new(Expr::column("manufact_id")),
+        list: vec![Expr::literal(LiteralValue::Int32(129)), Expr::literal(LiteralValue::Int32(270))],
+        negated: false,
+    };
+    let bucket_equality = Expr::binary(Expr::column("bucket"), BinaryOp::Eq, Expr::literal(LiteralValue::UInt16(3)));
+    let supported =
+        Expr::binary(Expr::binary(amount_range, BinaryOp::And, manufact_in_list), BinaryOp::And, bucket_equality);
+    let out_of_range_literal = Expr::binary(
+        Expr::binary(
+            Expr::column("amount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 6200, precision: 7, scale: 2 }),
+        ),
+        BinaryOp::And,
+        Expr::binary(Expr::column("manufact_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(1 << 40))),
+    );
+
+    assert!(source.reader_predicate_is_supported(&supported, rapids_analysis_context(PlanningPolicy::default())));
+    assert!(
+        !source
+            .reader_predicate_is_supported(&out_of_range_literal, rapids_analysis_context(PlanningPolicy::default()))
+    );
+}
+
+#[test]
 fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),

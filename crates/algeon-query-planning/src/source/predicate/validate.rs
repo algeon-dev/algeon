@@ -448,7 +448,13 @@ fn reader_predicate_source_contract_column_type(source: &LocalParquetSource, exp
     let data_type = source.schema.field_with_name(column.name()).ok()?.data_type().clone();
     match data_type {
         DataType::Boolean
+        | DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
         | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
         | DataType::UInt64
         | DataType::Float64
         | DataType::Utf8

@@ -6,10 +6,9 @@ pub(super) use left_state::*;
 use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledJoinMaterializationRequest,
-    CompiledMixedSizeData, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, bounded_invariant_violation,
-    compiled_join_input_columns, dataframe_mixed_join_options, join_index_error, lower_join_residual_predicate,
-    materialize_compiled_indices_output, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
-    probe_side, release_bounded_join_side_frame, residual_input_columns,
+    CompiledMixedJoinCall, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, bounded_invariant_violation,
+    compiled_join_input_columns, materialize_compiled_indices_output, orient_prepared_inputs,
+    prepare_bounded_join_side_input_from_resident_frame, probe_side, release_bounded_join_side_frame,
     stream_bounded_join_leaf_local_parquet_source_serial,
 };
 
@@ -20,43 +19,11 @@ pub(super) fn execute_compiled_mixed_join_materialize(
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
 ) -> Result<ResidentGpuFrame> {
-    let residual_columns = residual_input_columns(node)?;
-    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
-    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
     let exec_runtime = execution.context().runtime()?;
     let overrides = exec_runtime.exec();
-    let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
-    let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
+    let call = CompiledMixedJoinCall::lower(execution.context(), node)?;
     let timer = Instant::now();
-    let size_data = match node.spec.join_type {
-        JoinType::Inner => left
-            .frame
-            .on(overrides)
-            .mixed_inner_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Left => left
-            .frame
-            .on(overrides)
-            .mixed_left_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::Full => left
-            .frame
-            .on(overrides)
-            .mixed_full_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::Pair),
-        JoinType::LeftSemi => left
-            .frame
-            .on(overrides)
-            .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::LeftAnti { .. } => left
-            .frame
-            .on(overrides)
-            .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
-            .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated above"),
-    }
-    .map_err(|error| join_index_error(error, node))?;
+    let size_data = call.size_data(node, &left.frame, &right.frame, overrides)?;
     let expected_output_rows = size_data.output_size() as u64;
     let size_data_bytes = size_data.device_allocated_size_bytes(node)?;
     execution.metrics().record_mixed_join_size_data_bytes(size_data_bytes);

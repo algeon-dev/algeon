@@ -3,6 +3,7 @@ use std::{
     time::Instant,
 };
 
+use cudf::ops::ast::AstExpression;
 use query_planning::{
     capability::{JoinForm, JoinStrategy, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
     expr::{ColumnQualifier, ColumnRef},
@@ -1103,22 +1104,88 @@ enum CompiledKeylessWork<'a> {
     Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
 }
 
+/// Lowered predicate and options of one keyed mixed join, oriented for cuDF.
+///
+/// cuDF builds a mixed join's equality hash table on the right table it
+/// receives. An inner or full join planned to build on its left input runs
+/// with the two inputs exchanged, and
+/// [`CompiledMixedSizeData::materialize_indices_in`] returns the gather maps in
+/// plan orientation.
+struct CompiledMixedJoinCall {
+    predicate: AstExpression,
+    options: cudf::DataFrameMixedJoinOptions,
+    inputs_exchanged: bool,
+}
+
+impl CompiledMixedJoinCall {
+    fn lower(context: &ExecutionContext, node: &JoinNode) -> Result<Self> {
+        let inputs_exchanged =
+            node.spec.build_side == JoinSide::Left && matches!(node.spec.join_type, JoinType::Inner | JoinType::Full);
+        let residual_columns = residual_input_columns(node)?;
+        let residual_columns =
+            if inputs_exchanged { residual_columns.with_exchanged_cudf_inputs() } else { residual_columns };
+        let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+        let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+        let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
+        let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
+        Ok(Self { predicate, options, inputs_exchanged })
+    }
+
+    fn size_data<'a>(
+        &'a self,
+        node: &JoinNode,
+        left: &DataFrame,
+        right: &DataFrame,
+        overrides: Exec<'_>,
+    ) -> Result<CompiledMixedSizeData<'a>> {
+        let (cudf_left, cudf_right) = if self.inputs_exchanged { (right, left) } else { (left, right) };
+        let (predicate, options) = (&self.predicate, self.options.clone());
+        let pair = |size_data| CompiledMixedSizeData::Pair { size_data, inputs_exchanged: self.inputs_exchanged };
+        match node.spec.join_type {
+            JoinType::Inner => {
+                cudf_left.on(overrides).mixed_inner_join_size_data(cudf_right, predicate, options).map(pair)
+            },
+            JoinType::Left => {
+                cudf_left.on(overrides).mixed_left_join_size_data(cudf_right, predicate, options).map(pair)
+            },
+            JoinType::Full => {
+                cudf_left.on(overrides).mixed_full_join_size_data(cudf_right, predicate, options).map(pair)
+            },
+            JoinType::LeftSemi => cudf_left
+                .on(overrides)
+                .mixed_left_semi_join_size_data(cudf_right, predicate, options)
+                .map(CompiledMixedSizeData::LeftOnly),
+            JoinType::LeftAnti { .. } => cudf_left
+                .on(overrides)
+                .mixed_left_anti_join_size_data(cudf_right, predicate, options)
+                .map(CompiledMixedSizeData::LeftOnly),
+            JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated by the mixed join strategy"),
+        }
+        .map_err(|error| join_index_error(error, node))
+    }
+}
+
 enum CompiledMixedSizeData<'a> {
-    Pair(cudf::DataFrameMixedJoinSizeData<'a>),
+    /// `inputs_exchanged` marks size data computed with the plan's right input
+    /// as cuDF's left table.
+    Pair {
+        size_data: cudf::DataFrameMixedJoinSizeData<'a>,
+        inputs_exchanged: bool,
+    },
     LeftOnly(cudf::DataFrameMixedSingleSideJoinSizeData<'a>),
 }
 
 impl CompiledMixedSizeData<'_> {
     fn output_size(&self) -> usize {
         match self {
-            Self::Pair(size_data) => size_data.output_size(),
+            Self::Pair { size_data, .. } => size_data.output_size(),
             Self::LeftOnly(size_data) => size_data.output_size(),
         }
     }
 
     fn device_allocated_size_bytes(&self, node: &JoinNode) -> Result<u64> {
         let result = match self {
-            Self::Pair(size_data) => size_data.device_allocated_size_bytes(),
+            Self::Pair { size_data, .. } => size_data.device_allocated_size_bytes(),
             Self::LeftOnly(size_data) => size_data.device_allocated_size_bytes(),
         };
         result.map(|bytes| bytes as u64).map_err(|error| {
@@ -1133,11 +1200,15 @@ impl CompiledMixedSizeData<'_> {
 
     fn materialize_indices_in(self, overrides: Exec<'_>, node: &JoinNode) -> Result<CompiledJoinIndices> {
         match self {
-            Self::Pair(size_data) => size_data
+            Self::Pair { size_data, inputs_exchanged } => size_data
                 .materialize_indices(overrides)
-                .map(|indices| CompiledJoinIndices::Pair {
-                    left: indices.left().clone(),
-                    right: indices.right().clone(),
+                .map(|indices| {
+                    let (cudf_left, cudf_right) = (indices.left().clone(), indices.right().clone());
+                    if inputs_exchanged {
+                        CompiledJoinIndices::Pair { left: cudf_right, right: cudf_left }
+                    } else {
+                        CompiledJoinIndices::Pair { left: cudf_left, right: cudf_right }
+                    }
                 })
                 .map_err(|error| join_index_error(error, node)),
             Self::LeftOnly(size_data) => size_data

@@ -41,17 +41,34 @@ impl ResidualColumnLayout {
 pub(in crate::exec) struct JoinResidualColumns {
     left: ResidualColumnLayout,
     right: ResidualColumnLayout,
+    // Plan input that the cuDF call receives as its left table.
+    cudf_left: JoinSide,
 }
 
 impl Default for JoinResidualColumns {
     fn default() -> Self {
-        Self { left: ResidualColumnLayout::empty(), right: ResidualColumnLayout::empty() }
+        Self { left: ResidualColumnLayout::empty(), right: ResidualColumnLayout::empty(), cudf_left: JoinSide::Left }
     }
 }
 
 impl JoinResidualColumns {
     fn new(left: Vec<String>, right: Vec<String>) -> Self {
-        Self { left: ResidualColumnLayout::new(left), right: ResidualColumnLayout::new(right) }
+        Self {
+            left: ResidualColumnLayout::new(left),
+            right: ResidualColumnLayout::new(right),
+            cudf_left: JoinSide::Left,
+        }
+    }
+
+    /// Lays out the predicate for a cuDF call that receives the plan's right
+    /// input as its left table and the plan's left input as its right table.
+    pub(in crate::exec) fn with_exchanged_cudf_inputs(self) -> Self {
+        Self { cudf_left: JoinSide::Right, ..self }
+    }
+
+    /// Plan input that the cuDF call receives as its left table.
+    pub(in crate::exec) fn cudf_left_side(&self) -> JoinSide {
+        self.cudf_left
     }
 
     pub(in crate::exec) fn names(&self, side: JoinSide) -> &[String] {
@@ -245,9 +262,10 @@ fn lower_join_ast_expr(
                 .with_fact("column", column.name())
                 .with_fact("index", index)
             })?;
-            let expression = match side {
-                JoinSide::Left => AstExpression::left_column(index),
-                JoinSide::Right => AstExpression::right_column(index),
+            let expression = if side == residual_columns.cudf_left_side() {
+                AstExpression::left_column(index)
+            } else {
+                AstExpression::right_column(index)
             };
             expression.map_err(|error| {
                 cudf_query_error("query_engine.join.lower_residual", "failed to build cudf AST column reference", error)
