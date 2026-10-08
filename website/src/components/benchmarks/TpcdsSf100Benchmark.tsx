@@ -25,10 +25,10 @@ const colorSpeedupSlow = '#C92A2A';
 const colorMemory = '#6366f1';
 const colorFailed = '#6C757D';
 
-// Broken Y-axis for per-query runtime: on SF100, almost every query is ≤20s
-// while Q72 CPU is ~140s. Skip the empty mid-range so normal bars stay readable.
-const RUNTIME_Y_BREAK_START_MS = 20_000;
-const RUNTIME_Y_BREAK_END_MS = 120_000;
+// Broken Y-axis for per-query runtime: on SF100, most queries are at or under
+// 35s while Q72 CPU is ~86s. Skip the empty mid-range so normal bars stay readable.
+const RUNTIME_Y_BREAK_START_MS = 35_000;
+const RUNTIME_Y_BREAK_END_MS = 80_000;
 const RUNTIME_Y_BREAK_WIDTH_MS = 2_500;
 const RUNTIME_Y_TAIL_SCALE = 0.4;
 
@@ -52,7 +52,7 @@ function brokenRuntimeMs(valueMs: number): number {
 }
 
 function runtimeYTicks(maxRealMs: number): {tickVals: number[]; tickText: string[]} {
-  const lowerSeconds = [0, 5, 10, 15, 20];
+  const lowerSeconds = [0, 10, 20, 30];
   const tickVals = lowerSeconds.map((seconds) => brokenRuntimeMs(seconds * 1000));
   const tickText = lowerSeconds.map((seconds) => `${seconds}s`);
 
@@ -134,7 +134,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     gpuSuccessTotalMs: number;
     gpuSuccessCount: number;
     speedup: number | null;
-    maxReservationLivePeakBytes: number;
+    maxPeakMemoryOperatorClassBytes: number;
     rowsMatchCount: number;
     gpuFasterCount: number;
     gpuSlowerCount: number;
@@ -179,7 +179,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
     }));
   const memoryData = typedRows.map((row) => ({
     query: row.queryId,
-    'Reservation peak': row.reservationLivePeakBytes / bytesPerGiB,
+    'Task memory peak': row.peakMemoryOperatorClassBytes / bytesPerGiB,
   }));
 
   return (
@@ -191,8 +191,8 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
               <strong>Result:</strong> CPU {formatSeconds(typedSummary.cpuTotalMs)}, GPU{' '}
               {formatSeconds(typedSummary.gpuSuccessTotalMs)} across{' '}
               {typedSummary.gpuSuccessCount}/{typedSummary.queryCount} successful native
-              queries, CPU / GPU {formatSpeedup(typedSummary.speedup)}, peak reservation{' '}
-              {formatGiB(typedSummary.maxReservationLivePeakBytes)}. Row counts matched on{' '}
+              queries, CPU / GPU {formatSpeedup(typedSummary.speedup)}, largest task memory peak{' '}
+              {formatGiB(typedSummary.maxPeakMemoryOperatorClassBytes)}. Row counts matched on{' '}
               {typedSummary.rowsMatchCount}/{typedSummary.queryCount} queries.
             </li>
           </ul>
@@ -204,10 +204,9 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
           <Tabs className={styles.chartTabs} groupId="tpcds-sf100-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
               <p className={styles.chartCaption}>
-                Wall time for the measured iteration. GPU bars use successful
-                native time; failed attempts would still show wall time in gray.
+                Wall time for the measured iteration.
                 {runtimeUsesBrokenAxis
-                  ? ` Y-axis skips ${RUNTIME_Y_BREAK_START_MS / 1000}–${RUNTIME_Y_BREAK_END_MS / 1000}s so short queries keep readable CPU vs GPU heights; Q72 and other long outliers still render above the break.`
+                  ? ` The Y-axis skips ${RUNTIME_Y_BREAK_START_MS / 1000}–${RUNTIME_Y_BREAK_END_MS / 1000}s.`
                   : ''}
               </p>
               <p className={styles.chartScrollHint}>
@@ -330,7 +329,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
             </TabItem>
             <TabItem value="memory" label="Memory pressure">
               <p className={styles.chartCaption}>
-                Query-level native reservation ledger high-water marks.
+                Largest cuDF allocator peak that one compiled task reported, per query.
               </p>
               <div className={styles.chart} style={{height: 420}}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -345,7 +344,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                       cursor={tooltipCursorStyle}
                       formatter={(value) => formatGiBShort(Number(value))}
                     />
-                    <Bar dataKey="Reservation peak" fill={colorMemory} />
+                    <Bar dataKey="Task memory peak" fill={colorMemory} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -366,7 +365,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                       <th>GPU outcome</th>
                       <th>Rows</th>
                       <th>Runtime class</th>
-                      <th>Reservation peak</th>
+                      <th>Task memory peak</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -379,7 +378,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                         <td>{row.gpuOutcome}</td>
                         <td>{row.rowsMatch ? 'match' : 'mismatch'}</td>
                         <td>{row.runtimeOperatorClass || '-'}</td>
-                        <td>{formatGiB(row.reservationLivePeakBytes)}</td>
+                        <td>{formatGiB(row.peakMemoryOperatorClassBytes)}</td>
                       </tr>
                     ))}
                   </tbody>
