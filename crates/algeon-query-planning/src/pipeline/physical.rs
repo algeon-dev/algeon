@@ -96,6 +96,11 @@ pub enum SourceOutput {
     /// Keep a read deferred for consumers that include both a join input and
     /// an aggregate.
     SharedJoinAggregateStream { adjacent_stages: bool, chunk_hints: AggregateInputHints },
+    /// Keep a read deferred through a chain of unary stages whose consumers
+    /// take only frames. The last stage reads the source chunk by chunk,
+    /// applies the stages to each chunk and concatenates the stage outputs in
+    /// chunk order, so the whole decoded source is never resident at once.
+    UnaryChainStream,
 }
 
 /// Structural facts an aggregate fed by a deferred source read sizes its

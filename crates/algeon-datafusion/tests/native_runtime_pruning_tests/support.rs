@@ -91,6 +91,7 @@ fn pruning_test_backend() -> &'static AlgeonGpuBackend {
 pub(super) struct TemplatedNativeOptimization {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) report: PlanningReport,
+    pub(super) native_optimizer: NativeOptimizerDiagnostics,
     pub(super) source_diagnostics: Vec<SourceDiagnostics>,
 }
 
@@ -121,6 +122,7 @@ fn optimize_with_optimizer_config(
     TemplatedNativeOptimization {
         plan: optimized,
         report: diagnostics.report,
+        native_optimizer: diagnostics.native_optimizer,
         source_diagnostics: diagnostics.source_diagnostics,
     }
 }

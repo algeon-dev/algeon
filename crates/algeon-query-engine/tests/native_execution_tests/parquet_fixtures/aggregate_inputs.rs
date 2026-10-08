@@ -163,6 +163,26 @@ pub(crate) fn write_uneven_avg_input_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
+/// One row per row group. Group 1 holds `2^53 + 1` and `1`, whose Int64 sum is
+/// exact where a Float64 sum rounds back to `2^53`.
+pub(crate) fn write_large_integer_avg_input_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 1, 2])), Arc::new(Int64Array::from(vec![(1 << 53) + 1, 1, 3]))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
 pub(crate) fn write_uneven_global_avg_input_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
     let batch =

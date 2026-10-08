@@ -171,13 +171,24 @@ pub(in crate::exec) fn sort_by_datafusion_order_if_present(
     Ok(output)
 }
 
+/// Returns `schema` extended with the hidden order columns of `frame`, with
+/// fields in the frame's column order. Aggregate input preparation appends its
+/// columns after the order columns, so the order columns do not always trail.
 pub(in crate::exec) fn schema_with_datafusion_order_columns(frame: &DataFrame, schema: &SchemaRef) -> SchemaRef {
-    let order_columns = datafusion_order_columns(frame);
-    if order_columns.is_empty() {
+    if datafusion_order_columns(frame).is_empty() {
         return Arc::clone(schema);
     }
-    let mut fields = schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
-    fields.extend(order_columns.iter().map(|name| Field::new(name, ArrowDataType::Int64, false)).collect::<Vec<_>>());
+    let fields = frame
+        .column_names()
+        .into_iter()
+        .filter_map(|name| {
+            if is_datafusion_order_column_name(name) {
+                Some(Field::new(name, ArrowDataType::Int64, false))
+            } else {
+                schema.field_with_name(name).ok().cloned()
+            }
+        })
+        .collect::<Vec<_>>();
     Arc::new(Schema::new(fields))
 }
 

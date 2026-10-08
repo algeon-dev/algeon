@@ -38,11 +38,7 @@ pub(crate) fn lower_single_stage_grouped_aggregate_spec(spec: &AggregateSpec) ->
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(
-                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(state.count()),
-                );
+                aggregations.extend(lower_avg_state_aggregations(state.partial_aggregates(&expr.expr))?);
                 output_names.extend(state.output_names());
             },
             _ => {
@@ -69,11 +65,7 @@ pub(crate) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<Lower
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(
-                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(state.count()),
-                );
+                aggregations.extend(lower_avg_state_aggregations(state.partial_aggregates(&expr.expr))?);
                 output_names.extend(state.output_names());
             },
             AggregateFunction::Median => {
@@ -106,8 +98,7 @@ pub(crate) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<Lowered
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(state.sum(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(CudfAggSpec::new(state.count(), GroupByAgg::Sum).with_alias(state.count()));
+                aggregations.extend(lower_avg_state_aggregations(state.merge_aggregates())?);
                 output_names.extend(state.output_names());
             },
             AggregateFunction::Median => {
@@ -134,6 +125,18 @@ pub(crate) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<Lowered
         aggregations,
         output_names,
     })
+}
+
+/// cuDF aggregations for the partial or merge state of one AVG, as the shared
+/// AVG decomposition defines them.
+pub(crate) fn lower_avg_state_aggregations(state: [AggregateExpr; 2]) -> Result<Vec<CudfAggSpec>> {
+    state
+        .iter()
+        .map(|expr| {
+            let input_column = lower_column_expr(&expr.expr, "query_engine.aggregate.lower_avg_state")?;
+            Ok(CudfAggSpec::new(input_column, lower_aggregate_function(expr)).with_alias(expr.alias.as_str()))
+        })
+        .collect()
 }
 
 pub(crate) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {

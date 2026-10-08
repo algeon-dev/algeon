@@ -21,7 +21,8 @@ use crate::{
     },
     prepared::{
         AvgStateAliases, aggregate_spec_has_avg, aggregate_spec_has_distinct,
-        aggregate_spec_has_floating_statistical_aggregate, lower_column_expr, lower_named_column_expr, lower_sort_spec,
+        aggregate_spec_has_floating_statistical_aggregate, avg_declared_sum_state_type, avg_division_type,
+        lower_column_expr, lower_named_column_expr, lower_sort_spec,
     },
     source::{
         SourceNode, local_parquet_execution_frame_columns, local_parquet_execution_frame_schema,
@@ -246,6 +247,7 @@ pub(crate) fn check_node(
                 let data_type = validate_expr(expr, input.output_schema(), input_available, ctx)?;
                 require_timezone_free_operator_key(&data_type, "aggregate group key")?;
             }
+            let mut avg_input_types = Vec::new();
             for expr in &aggregate.spec.aggr_exprs {
                 let data_type = validate_expr(&expr.expr, input.output_schema(), input_available, ctx)?;
                 require_timezone_free_operator_key(&data_type, "aggregate input")?;
@@ -254,8 +256,19 @@ pub(crate) fn check_node(
                     require_boolean(&filter_type, "aggregate filter predicate")?;
                     ctx.backend().check_expression(filter, ExpressionUse::Value)?;
                 }
+                if expr.function == AggregateFunction::Avg {
+                    avg_input_types.push((expr.alias.as_str(), data_type));
+                }
             }
             validate_aggregate_capability(aggregate, node.output_schema(), ctx)?;
+            // After the capability check, so an unsupported AVG output type
+            // keeps that check's error.
+            for (alias, input_type) in avg_input_types {
+                if let Ok(output) = node.output_schema().field_with_name(alias) {
+                    avg_declared_sum_state_type(&input_type, output.data_type())
+                        .map_err(|error| error.with_fact("alias", alias))?;
+                }
+            }
         },
         PlanNode::Window(window) => {
             let input = input_node(plan, window.input, node.id)?;

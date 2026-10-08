@@ -9,7 +9,7 @@ use query_planning::naming::unique_alias_with_suffix;
 
 use super::{
     cudf_query_error,
-    filter_inputs::{filtered_aggregate_input_type, filtered_aggregate_value_expr},
+    filter_inputs::{grouped_aggregate_input_type, materialized_aggregate_argument},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
         filtered_inputs_per_segment_for_budget, null_mask_bytes, unsupported_stateful_filtered_merge,
@@ -17,6 +17,7 @@ use super::{
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
 };
+use crate::prepared::lower_avg_state_aggregations;
 
 // Admission decision plus segmentation plan for filtered grouped aggregates.
 #[derive(Debug, Clone)]
@@ -602,27 +603,27 @@ fn prepare_filtered_grouped_partial_segment(
     let mut masked_expressions = Vec::<(String, cudf::Expr)>::new();
     let mut prepared_indexed = Vec::with_capacity(indexed_exprs.len());
     for (index, aggregate_expr) in indexed_exprs.iter() {
-        let Some(filter) = &aggregate_expr.filter else {
+        let predicate = aggregate_expr
+            .filter
+            .as_ref()
+            .map(|filter| {
+                prepared_chunk.predicate_aliases.get(filter.to_string().as_str()).map(Expr::column).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        "query_engine.filtered_grouped_aggregate.filter_predicates",
+                        "segmented filtered grouped aggregate predicate alias is missing",
+                    )
+                    .with_fact("filter", filter.to_string())
+                })
+            })
+            .transpose()?;
+        let Some(argument) = materialized_aggregate_argument(aggregate_expr, predicate, true, input_schema)? else {
             prepared_indexed.push((*index, aggregate_expr.clone()));
             continue;
         };
-        let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
-        let value_expr = filtered_aggregate_value_expr(aggregate_expr);
-        let alias = unique_filtered_grouped_segment_alias("__algeon_native_filtered_grouped_arg", &fields);
-        let predicate_alias = prepared_chunk.predicate_aliases.get(filter.to_string().as_str()).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.filtered_grouped_aggregate.filter_predicates",
-                "segmented filtered grouped aggregate predicate alias is missing",
-            )
-            .with_fact("filter", filter.to_string())
-        })?;
-        let masked = Expr::case(
-            vec![CaseWhen::new(Expr::column(predicate_alias.clone()), value_expr)],
-            Expr::literal(LiteralValue::Null(input_type.clone())),
-        );
-        masked_expressions.push((alias.clone(), lower_expr(&masked)?));
-        fields.push(Field::new(alias.as_str(), input_type, true));
+        let alias = unique_filtered_grouped_segment_alias("__algeon_native_grouped_segment_arg", &fields);
+        masked_expressions.push((alias.clone(), lower_expr(&argument.value)?));
+        fields.push(Field::new(alias.as_str(), argument.data_type, true));
         prepared_indexed.push((
             *index,
             AggregateExpr::new(aggregate_expr.function, Expr::column(alias), aggregate_expr.alias.clone())
@@ -634,12 +635,14 @@ fn prepare_filtered_grouped_partial_segment(
             .run("dataframe::with_columns", |exec| frame.on(exec).with_columns(masked_expressions))
             .map_err(|error| {
                 cudf_query_error(
-                    "query_engine.filtered_grouped_aggregate.filter_inputs",
+                    "query_engine.filtered_grouped_aggregate.prepare_inputs",
                     "failed to materialize segmented filtered grouped aggregate inputs",
                     error,
                 )
             })
-            .map(|outcome| budgeted_value(outcome, metrics, "query_engine.filtered_grouped_aggregate.filter_inputs"))?;
+            .map(|outcome| {
+                budgeted_value(outcome, metrics, "query_engine.filtered_grouped_aggregate.prepare_inputs")
+            })?;
     }
     metrics.add_operator_time(timer.elapsed());
     Ok((frame, prepared_indexed))
@@ -657,11 +660,7 @@ fn indexed_partial_grouped_aggregate(
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(*index);
-                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(
-                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(state.count()),
-                );
+                aggregations.extend(lower_avg_state_aggregations(state.partial_aggregates(&expr.expr))?);
                 output_names.extend(state.output_names());
             },
             _ => {
@@ -850,7 +849,7 @@ fn estimate_filtered_grouped_materialization_footprint(
         if let Some(filter) = &aggregate_expr.filter {
             unique_filter_predicates.insert(filter.to_string());
         }
-        let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
+        let input_type = grouped_aggregate_input_type(aggregate_expr, input_schema)?;
         let element_width = filtered_fixed_width_dtype_size(&input_type).unwrap_or(STRING_OFFSET_BYTES_CONSERVATIVE);
         value_bytes = value_bytes.saturating_add(input_rows.saturating_mul(element_width));
         validity_bytes = validity_bytes.saturating_add(null_mask_bytes(input_rows));

@@ -5,7 +5,7 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema};
 
-use super::{consumers_by_node, dynamic_filter as dynamic_filter_optimizer, rewrite};
+use super::{dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
     backend::AnalysisContext,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterRoute},
@@ -29,12 +29,19 @@ pub const LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME: &str = "local_parquet_source_reu
 pub struct LocalParquetSourceReuseOptions {
     /// Whether the pass may replace repeated source variants with one superset scan.
     pub enabled: bool,
-    /// Maximum selected source bytes for each source variant; variants with unknown selected bytes are not reused.
+    /// Maximum selected source bytes of a merged scan that widens a variant.
+    ///
+    /// A merged scan widens a variant when it reads columns the variant does
+    /// not read or drops the variant's reader predicate. Such a group is
+    /// reused only when an upper bound on the merged scan's selected bytes is
+    /// known and at most this value, whatever consumes the variants. A group
+    /// whose merged scan reads exactly what every variant reads is reused at
+    /// any size.
     pub max_variant_selected_bytes: u64,
 }
 
 impl LocalParquetSourceReuseOptions {
-    /// Default per-variant selected byte cap for source reuse.
+    /// Default selected byte cap for a merged scan that widens a variant.
     pub const DEFAULT_MAX_VARIANT_SELECTED_BYTES: u64 = 500 * 1024 * 1024;
 
     /// Returns options with source reuse disabled.
@@ -104,7 +111,7 @@ pub struct LocalParquetSourceReuseCandidateDiagnostics {
     pub superset_read_columns: Vec<String>,
     /// Whether any branch predicate is replayed as a native filter.
     pub branch_filter_count: usize,
-    /// Configured maximum selected bytes accepted for each source variant.
+    /// Configured maximum selected bytes of a merged scan that widens a variant.
     pub max_variant_selected_bytes: u64,
     /// Whether the group was rewritten.
     pub applied: bool,
@@ -119,8 +126,9 @@ pub enum LocalParquetSourceReuseRejectedReason {
     ExactDuplicateSkipped,
     /// The source group uses unsupported source metadata for this conservative pass.
     UnsupportedSourceContract,
-    /// Reusing the group would require widening a large source variant.
-    VariantTooLarge,
+    /// The merged scan would widen a variant, and no known upper bound on its
+    /// selected bytes is within the configured cap.
+    WidenedReadTooLarge,
     /// Reusing the group would merge source variants that need different
     /// dynamic-filter consumer routes.
     DynamicFilterConsumerConflict,
@@ -215,16 +223,10 @@ fn discover_source_reuse_candidates(
         };
 
         let superset_read_columns = superset_read_columns(&variants);
-        let has_unknown_variant_size = variants.iter().any(|variant| variant.selected_source_bytes.is_none());
-        let any_variant_too_large = variants.iter().any(|variant| {
-            variant.selected_source_bytes.is_some_and(|bytes| bytes > options.max_variant_selected_bytes)
-        });
-        let large_variant_blocks_source_adjacent_grouped_aggregate = (has_unknown_variant_size
-            || any_variant_too_large)
-            && variants.iter().any(|variant| {
-                source_variant_feeds_source_adjacent_grouped_aggregate(plan, variant.source_node_id)
-                    && source_reuse_would_widen_variant(variant, &superset_read_columns)
-            });
+        let widened_read_too_large = !exact_duplicate
+            && variants.iter().any(|variant| source_reuse_would_widen_variant(variant, &superset_read_columns))
+            && superset_selected_bytes_upper_bound(&variants, &superset_read_columns)
+                .is_none_or(|bytes| bytes > options.max_variant_selected_bytes);
         let dynamic_filter_consumer_conflict =
             source_group_has_dynamic_filter_consumer_conflict(&variants, &dynamic_filter_routes_by_source);
 
@@ -234,8 +236,8 @@ fn discover_source_reuse_candidates(
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
         } else if dynamic_filter_consumer_conflict {
             Some(LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
-        } else if large_variant_blocks_source_adjacent_grouped_aggregate {
-            Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
+        } else if widened_read_too_large {
+            Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge)
         } else if source_group_has_conflicting_file_columns(&variants) {
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
         } else {
@@ -263,34 +265,27 @@ fn discover_source_reuse_candidates(
     SourceReuseDiscovery { diagnostics, rewrites }
 }
 
-fn source_variant_feeds_source_adjacent_grouped_aggregate(plan: &QueryPlan, source_node_id: NodeId) -> bool {
-    let parents = consumers_by_node(plan);
-    let mut stack = parents.get(&source_node_id).cloned().unwrap_or_default();
-    let mut visited = BTreeSet::new();
-    while let Some(node_id) = stack.pop() {
-        if !visited.insert(node_id) {
-            continue;
-        }
-        let Some(node) = plan.node(node_id) else {
-            continue;
-        };
-        match &node.kind {
-            PlanNode::Aggregate(aggregate)
-                if !aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none() =>
-            {
-                return true;
-            },
-            PlanNode::Filter(_) | PlanNode::Projection(_) => {
-                stack.extend(parents.get(&node_id).into_iter().flatten().copied());
-            },
-            _ => {},
-        }
-    }
-    false
-}
-
 fn source_reuse_would_widen_variant(variant: &SourceVariant, superset_read_columns: &[SupersetColumn]) -> bool {
     variant.reader_predicate.is_some() || !variant_read_columns_match_superset(variant, superset_read_columns)
+}
+
+/// Upper bound on the selected bytes of the merged superset scan.
+///
+/// Variants group only when they read the same files with the same row-group
+/// selection, so the merged scan reads those row groups for the superset
+/// columns. A variant that already reads every superset column bounds it by
+/// its own selected bytes. Otherwise column bytes add up, and the sum over the
+/// variants covers the union of their columns.
+fn superset_selected_bytes_upper_bound(
+    variants: &[SourceVariant],
+    superset_read_columns: &[SupersetColumn],
+) -> Option<u64> {
+    variants
+        .iter()
+        .filter(|variant| variant_read_columns_match_superset(variant, superset_read_columns))
+        .filter_map(|variant| variant.selected_source_bytes)
+        .min()
+        .or_else(|| variants.iter().try_fold(0_u64, |total, variant| total.checked_add(variant.selected_source_bytes?)))
 }
 
 fn dynamic_filter_source_route_signatures(

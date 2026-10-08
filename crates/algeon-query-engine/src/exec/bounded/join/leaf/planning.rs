@@ -61,6 +61,22 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     )
 }
 
+pub(in crate::exec::bounded) fn plan_bounded_unary_chain_local_parquet_source_stream(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    metrics: &ExecutionMetrics,
+) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
+    plan_bounded_local_parquet_source_stream(
+        context,
+        source,
+        node_id,
+        SourceTaskMemoryModel::unary_chain_frame(),
+        None,
+        metrics,
+    )
+}
+
 fn plan_bounded_local_parquet_source_stream(
     context: &ExecutionContext,
     source: &LocalParquetSource,

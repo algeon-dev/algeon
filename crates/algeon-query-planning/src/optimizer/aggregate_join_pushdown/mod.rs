@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use super::{
     aggregate_join_pushdown_policy::AggregateJoinPushdownPolicy, rewrite, simple_projection_column,
@@ -7,11 +7,15 @@ use super::{
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
     error::Result,
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnRef, Expr},
     optimizer::NativeOptimizerChange,
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
         ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes,
+    },
+    prepared::{
+        AVG_COUNT_STATE_TYPE, avg_declared_sum_state_type, avg_final_expr, avg_merge_aggregates,
+        avg_partial_aggregates, merged_count_field, zero_filled_count_expr,
     },
 };
 
@@ -21,9 +25,7 @@ mod model;
 mod preaggregate;
 mod rewriter;
 
-pub(in crate::optimizer::aggregate_join_pushdown) use finalize::{
-    avg_pushdown_sum_state_data_type, final_aggregate_rewrite_after_preagg,
-};
+pub(in crate::optimizer::aggregate_join_pushdown) use finalize::final_aggregate_rewrite_after_preagg;
 pub(in crate::optimizer::aggregate_join_pushdown) use lineage::{
     AggregateJoinLineage, join_key_for_side, join_side_index, join_side_introduces_nulls, opposite_side,
     rewritten_join_key_after_preagg,

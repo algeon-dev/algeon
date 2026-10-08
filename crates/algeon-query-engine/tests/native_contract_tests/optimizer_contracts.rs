@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 
-use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    exec::{admit_query_plan, preflight_query_plan},
+    rapids_backend::rapids_analysis_context,
+};
 use query_planning::{
     capability::KeyedHashJoinStrategyOptions,
     dynamic_filter::{
@@ -8,6 +12,7 @@ use query_planning::{
         DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
     error::QueryErrorCode,
+    mode::StatisticalAggregateExecutionMode,
     optimizer::{
         AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
         AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason, COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME,
@@ -25,13 +30,15 @@ use query_planning::{
         NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, OUTER_JOIN_NULL_REJECTION_RULE_NAME,
         OuterJoinNullRejectionDiagnostics, OuterJoinNullRejectionRejectedReason, PROJECTION_SIMPLIFICATION_RULE_NAME,
         ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions, SEMIJOIN_REDUCTION_RULE_NAME,
-        SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
-        SemijoinReductionCostSignal, SemijoinReductionDiagnostics, SemijoinReductionOptions,
-        SemijoinReductionRejectedReason, SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics,
-        SharedResidentExtractionReason, SharedResidentPlan, SharedSubplanMaterializationDiagnostics,
-        SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions,
-        apply_dimension_derived_pruning_with_stats, discover_dimension_derived_pruning_requests, local_parquet_source,
-        optimize_query_plan, seed_dimension_derived_reader_predicates,
+        SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+        SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionCostSignal,
+        SemijoinReductionDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
+        SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
+        SharedResidentPlan, SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
+        SingleDistinctAggregateSplitDiagnostics, SingleDistinctAggregateSplitOptions, StreamFanoutReplayDiagnostics,
+        StreamFanoutReplayOptions, apply_dimension_derived_pruning_with_stats,
+        discover_dimension_derived_pruning_requests, local_parquet_source, optimize_query_plan,
+        seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
@@ -51,6 +58,7 @@ include!("optimizer_contracts/options.rs");
 include!("optimizer_contracts/diagnostics.rs");
 include!("optimizer_contracts/aggregate_join_pushdown.rs");
 include!("optimizer_contracts/count_non_null_pruning.rs");
+include!("optimizer_contracts/single_distinct_aggregate_split.rs");
 include!("optimizer_contracts/shared_subplan_materialization.rs");
 include!("optimizer_contracts/dynamic_filter.rs");
 include!("optimizer_contracts/dimension_pruning.rs");

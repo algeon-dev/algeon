@@ -24,6 +24,7 @@ use super::{
     record_single_grouped_aggregate_strategy_decision_with_metrics,
     select_partial_aggregate_strategy_decision_with_options,
 };
+use crate::prepared::lower_avg_state_aggregations;
 
 const STATISTICAL_MOMENTS_FACT: &str = "algebraic_moments";
 
@@ -550,11 +551,7 @@ fn lower_gpu_native_statistical_aggregate_plan(
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(
-                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(state.count()),
-                );
+                aggregations.extend(lower_avg_state_aggregations(state.partial_aggregates(&expr.expr))?);
                 output_names.extend(state.output_names());
             },
             function if function.is_floating_statistical() => {
@@ -623,11 +620,7 @@ fn lower_gpu_native_statistical_partial_aggregate_plan(
             },
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(
-                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
-                        .with_alias(state.count()),
-                );
+                aggregations.extend(lower_avg_state_aggregations(state.partial_aggregates(&expr.expr))?);
                 output_names.extend(state.output_names());
             },
             _ => {
@@ -678,8 +671,7 @@ fn lower_gpu_native_statistical_final_merge_plan(
             },
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                aggregations.push(CudfAggSpec::new(state.sum(), GroupByAgg::Sum).with_alias(state.sum()));
-                aggregations.push(CudfAggSpec::new(state.count(), GroupByAgg::Sum).with_alias(state.count()));
+                aggregations.extend(lower_avg_state_aggregations(state.merge_aggregates())?);
                 output_names.extend(state.output_names());
             },
             _ => {

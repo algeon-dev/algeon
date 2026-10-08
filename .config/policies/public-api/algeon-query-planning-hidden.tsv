@@ -141,18 +141,13 @@ query_planning::plan::estimated_output_bytes	cross-crate	query-planning plan	pro
 query_planning::plan::join::JoinSpec.advisory_output_statistics	cross-crate	query-planning plan::join	tests: algeon-datafusion, algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::plan::join::JoinSpec::with_advisory_output_statistics	cross-crate	query-planning plan::join	prod: algeon-datafusion; tests: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared	cross-crate	query-planning crate root	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::AVG_COUNT_STATE_TYPE	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::AvgStateAliases	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::DataFusionExactHostAccumulator	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::LoweredSort	cross-crate	query-planning prepared	exposed-by: query_planning::prepared::lower_sort_spec	narrow to pub(crate) once no public signature exposes it
 query_planning::prepared::LoweredSort.columns	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::LoweredSort.descending	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::LoweredSort.nulls_first	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::count	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::count_expr	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::for_aggregate_index	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::output_names	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::sum	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
-query_planning::prepared::aggregate::AvgStateAliases::sum_expr	cross-crate	query-planning prepared::aggregate	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::aggregate_expr_is_exact_nunique	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::aggregate_spec_has_avg	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::aggregate_spec_has_distinct	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
@@ -160,6 +155,17 @@ query_planning::prepared::aggregate_spec_has_filters	cross-crate	query-planning 
 query_planning::prepared::aggregate_spec_has_floating_statistical_aggregate	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::aggregate_spec_has_median	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::aggregate_spec_requires_whole_input	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::count	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::count_expr	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::for_aggregate_index	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::merge_aggregates	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::output_names	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::partial_aggregates	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::sum	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg::AvgStateAliases::sum_expr	cross-crate	query-planning prepared::avg	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg_argument_cast_type	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg_final_expr	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
+query_planning::prepared::avg_sum_state_type	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::datafusion_exact_host_accumulator	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::datafusion_exact_host_group_key_supported	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it
 query_planning::prepared::lower_column_expr	cross-crate	query-planning prepared	prod: algeon-query-engine	narrow to pub(crate) once no other workspace crate names it

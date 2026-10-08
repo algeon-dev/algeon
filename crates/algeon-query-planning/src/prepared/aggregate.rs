@@ -1,4 +1,4 @@
-use super::{AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, Expr};
+use super::{AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType};
 
 pub fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
@@ -133,50 +133,4 @@ pub fn datafusion_exact_host_group_key_supported(input_type: &ArrowDataType, out
                 | ArrowDataType::UInt64
                 | ArrowDataType::Float64
         )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AvgStateAliases {
-    sum_alias: String,
-    count_alias: String,
-}
-
-impl AvgStateAliases {
-    /// Stable internal columns for logical AVG partial/final state.
-    ///
-    /// The public aggregate output keeps the logical AVG alias. These names
-    /// exist only while carrying SUM and non-null COUNT state between partial
-    /// and final aggregate stages.
-    #[doc(hidden)]
-    pub fn for_aggregate_index(index: usize) -> Self {
-        Self {
-            sum_alias: format!("__algeon_native_avg_{index}_sum"),
-            count_alias: format!("__algeon_native_avg_{index}_count"),
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn sum(&self) -> &str {
-        self.sum_alias.as_str()
-    }
-
-    #[doc(hidden)]
-    pub fn count(&self) -> &str {
-        self.count_alias.as_str()
-    }
-
-    #[doc(hidden)]
-    pub fn sum_expr(&self) -> Expr {
-        Expr::column(self.sum_alias.clone())
-    }
-
-    #[doc(hidden)]
-    pub fn count_expr(&self) -> Expr {
-        Expr::column(self.count_alias.clone())
-    }
-
-    #[doc(hidden)]
-    pub fn output_names(&self) -> [String; 2] {
-        [self.sum_alias.clone(), self.count_alias.clone()]
-    }
 }

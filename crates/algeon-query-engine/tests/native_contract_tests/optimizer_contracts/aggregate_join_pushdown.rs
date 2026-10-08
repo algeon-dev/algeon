@@ -626,62 +626,75 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     assert_eq!(preaggregate.spec.aggr_exprs[0].expr, Expr::column("o_orderkey"));
 }
 
-#[test]
-fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state() {
+/// `AVG(qty)` grouped by a dimension attribute over an inner join of the fact
+/// table with that dimension.
+fn avg_over_inner_join_plan(qty_type: DataType, avg_type: DataType) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("reason_sk", DataType::Int32, false),
-        Field::new("qty", DataType::Float64, true),
+        Field::new("qty", qty_type.clone(), true),
     ]));
     let right_schema = Arc::new(Schema::new(vec![
         Field::new("reason_sk", DataType::Int32, false),
         Field::new("reason_desc", DataType::Utf8, true),
     ]));
-    let join_schema = Arc::new(Schema::new(vec![
-        Field::new("qty", DataType::Float64, true),
-        Field::new("reason_desc", DataType::Utf8, true),
-    ]));
+    let join_schema =
+        Arc::new(Schema::new(vec![Field::new("qty", qty_type, true), Field::new("reason_desc", DataType::Utf8, true)]));
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("reason_desc", DataType::Utf8, true),
-        Field::new("avg_qty", DataType::Float64, true),
+        Field::new("avg_qty", avg_type, true),
     ]));
 
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", Arc::clone(&left_schema))));
     let reason =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("reason", Arc::clone(&right_schema))));
-    let join = builder.add_join(
-        fact,
-        reason,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "reason_sk", "reason_sk"),
-                ColumnRef::input(1, "reason_sk", "reason_sk"),
-            )],
+    let join = builder
+        .add_join(
+            fact,
+            reason,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "reason_sk", "reason_sk"),
+                    ColumnRef::input(1, "reason_sk", "reason_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "reason_desc", "reason_desc"), "reason_desc"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "reason_desc", "reason_desc"), "reason_desc"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    ).unwrap();
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("reason_desc")],
-            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
-        ),
-        aggregate_schema,
-    ).unwrap();
-    let plan = builder.finish_with_host_sink(aggregate).unwrap();
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("reason_desc")],
+                vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
+            ),
+            aggregate_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
+}
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
+#[test]
+fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state() {
+    let optimized = optimize_query_plan(
+        avg_over_inner_join_plan(DataType::Float64, DataType::Float64),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
 
     assert!(optimized.changed(), "AVG aggregate-over-join should be pre-aggregated as sum/count state");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
     assert_all_node_inputs_exist(&optimized.plan);
+    preflight_query_plan(&optimized.plan).expect("the AVG final projection must pass native plan validation");
 
     let PlanNode::Projection(final_projection) = &optimized.plan.root_node().kind else {
         panic!("AVG pushdown should project the public average after merging explicit state");
@@ -725,6 +738,117 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
         preaggregate.spec.group_exprs,
         vec![Expr::column("reason_sk").alias("reason_sk")],
         "pre-aggregate must retain the join key before joining the reason dimension"
+    );
+}
+
+/// `COUNT(qty)`, `SUM(qty)` and `AVG(qty)` without a group key over an inner
+/// join of the fact table with a dimension.
+fn global_aggregates_over_inner_join_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("reason_sk", DataType::Int32, false),
+        Field::new("qty", DataType::Float64, true),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("reason_sk", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Float64, true)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("count_qty", DataType::Int64, false),
+        Field::new("sum_qty", DataType::Float64, true),
+        Field::new("avg_qty", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", left_schema)));
+    let reason = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("reason", right_schema)));
+    let join = builder
+        .add_join(
+            fact,
+            reason,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "reason_sk", "reason_sk"),
+                    ColumnRef::input(1, "reason_sk", "reason_sk"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "count_qty"),
+                    AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "sum_qty"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
+                ],
+            ),
+            aggregate_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
+}
+
+#[test]
+fn aggregate_join_pushdown_zero_fills_global_counts_that_merge_no_partial_rows() {
+    let plan = global_aggregates_over_inner_join_plan();
+    let optimized = optimize_query_plan(
+        plan.clone(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    preflight_query_plan(&optimized.plan).expect("the zero-filling projection must pass native plan validation");
+    assert_eq!(optimized.plan.output_schema(), plan.output_schema());
+
+    let PlanNode::Projection(projection) = &optimized.plan.root_node().kind else {
+        panic!("a global merge over an empty join sums no counts, so a projection must restore them");
+    };
+    let zero_filled = Expr::case(
+        vec![CaseWhen::new(Expr::is_null(Expr::column("count_qty")), Expr::literal(LiteralValue::Int64(0)))],
+        Expr::column("count_qty"),
+    )
+    .alias("count_qty");
+    assert_eq!(projection.outputs[0].expr, zero_filled);
+    assert_eq!(projection.outputs[1].expr, Expr::column("sum_qty"));
+
+    let merge_schema = optimized.plan.node(projection.input).expect("projection input should exist").output_schema();
+    assert!(
+        merge_schema.fields().iter().all(|field| field.is_nullable()),
+        "every merged column of a global merge can be null over no partial rows: {merge_schema:?}"
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_keeps_avg_whole_when_datafusion_sums_its_decimal_argument_as_decimal256() {
+    let optimize = |qty_type: DataType, avg_type: DataType| {
+        optimize_query_plan(
+            avg_over_inner_join_plan(qty_type, avg_type),
+            &NativeOptimizerOptions::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap()
+        .diagnostics
+        .aggregate_join_pushdown
+    };
+
+    let decimal128_sum = optimize(DataType::Decimal128(25, 2), DataType::Decimal128(29, 6));
+    assert_eq!(decimal128_sum.applied_count, 1, "{decimal128_sum:?}");
+
+    // A replaced AVG no longer reaches plan validation, so the rewrite itself
+    // must refuse an argument whose sum native Decimal128 state cannot hold.
+    let decimal256_sum = optimize(DataType::Decimal128(26, 2), DataType::Decimal128(30, 6));
+    assert_eq!(decimal256_sum.applied_count, 0, "{decimal256_sum:?}");
+    assert_eq!(
+        decimal256_sum.candidates[0].rejected_reason,
+        Some(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)
     );
 }
 

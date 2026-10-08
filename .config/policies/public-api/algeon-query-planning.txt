@@ -472,6 +472,7 @@ pub const fn query_planning::chunk::SourceTaskMemoryModel::shared_join_aggregate
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_adjacent_operator_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_preflight_slack_slots(self) -> u64
 pub const fn query_planning::chunk::SourceTaskMemoryModel::source_read_slots(self) -> u64
+pub const fn query_planning::chunk::SourceTaskMemoryModel::unary_chain_frame() -> Self
 pub const query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub const query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64
 pub fn query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [query_planning::chunk::SourceChunk], core::option::Option<&'static str>, core::option::Option<u64>)
@@ -1270,7 +1271,7 @@ pub enum query_planning::optimizer::LocalParquetSourceReuseRejectedReason
 pub query_planning::optimizer::LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict
 pub query_planning::optimizer::LocalParquetSourceReuseRejectedReason::ExactDuplicateSkipped
 pub query_planning::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract
-pub query_planning::optimizer::LocalParquetSourceReuseRejectedReason::VariantTooLarge
+pub query_planning::optimizer::LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge
 pub enum query_planning::optimizer::NativeOptimizerChange
 pub query_planning::optimizer::NativeOptimizerChange::Changed
 pub query_planning::optimizer::NativeOptimizerChange::Unchanged
@@ -1328,6 +1329,14 @@ pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
+pub enum query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::DistinctArgumentIsGroupKey
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::FilteredDistinctAggregate
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::GroupingSets
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::MultipleDistinctArguments
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonColumnAggregateArgument
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::NonDecomposableAggregate
+pub query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason::UnresolvedSchema
 pub struct query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::aggregate_node_id: query_planning::plan::NodeId
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::applied: bool
@@ -1531,6 +1540,7 @@ pub query_planning::optimizer::NativeOptimizerDiagnostics::projection_simplifica
 pub query_planning::optimizer::NativeOptimizerDiagnostics::semijoin_reduction: query_planning::optimizer::SemijoinReductionDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::shared_resident_extraction: query_planning::optimizer::SharedResidentExtractionDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::shared_subplan_materialization: query_planning::optimizer::SharedSubplanMaterializationDiagnostics
+pub query_planning::optimizer::NativeOptimizerDiagnostics::single_distinct_aggregate_split: query_planning::optimizer::SingleDistinctAggregateSplitDiagnostics
 pub query_planning::optimizer::NativeOptimizerDiagnostics::stream_fanout_replay: query_planning::optimizer::StreamFanoutReplayDiagnostics
 impl query_planning::optimizer::NativeOptimizerDiagnostics
 pub fn query_planning::optimizer::NativeOptimizerDiagnostics::is_empty(&self) -> bool
@@ -1549,6 +1559,7 @@ pub query_planning::optimizer::NativeOptimizerOptions::outer_join_null_rejection
 pub query_planning::optimizer::NativeOptimizerOptions::projection_simplification: query_planning::optimizer::ProjectionSimplificationOptions
 pub query_planning::optimizer::NativeOptimizerOptions::semijoin_reduction: query_planning::optimizer::SemijoinReductionOptions
 pub query_planning::optimizer::NativeOptimizerOptions::shared_subplan_materialization: query_planning::optimizer::SharedSubplanMaterializationOptions
+pub query_planning::optimizer::NativeOptimizerOptions::single_distinct_aggregate_split: query_planning::optimizer::SingleDistinctAggregateSplitOptions
 pub query_planning::optimizer::NativeOptimizerOptions::stream_fanout_replay: query_planning::optimizer::StreamFanoutReplayOptions
 impl query_planning::optimizer::NativeOptimizerOptions
 pub fn query_planning::optimizer::NativeOptimizerOptions::disabled() -> Self
@@ -1655,6 +1666,22 @@ impl query_planning::optimizer::SharedSubplanMaterializationOptions
 pub fn query_planning::optimizer::SharedSubplanMaterializationOptions::disabled() -> Self
 impl core::default::Default for query_planning::optimizer::SharedSubplanMaterializationOptions
 pub fn query_planning::optimizer::SharedSubplanMaterializationOptions::default() -> Self
+pub struct query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics
+pub query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics::aggregate_node_id: query_planning::plan::NodeId
+pub query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics::applied: bool
+pub query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics::distinct_column: core::option::Option<alloc::string::String>
+pub query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::SingleDistinctAggregateSplitRejectedReason>
+pub query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics::rule_name: &'static str
+pub struct query_planning::optimizer::SingleDistinctAggregateSplitDiagnostics
+pub query_planning::optimizer::SingleDistinctAggregateSplitDiagnostics::applied_count: usize
+pub query_planning::optimizer::SingleDistinctAggregateSplitDiagnostics::candidates: alloc::vec::Vec<query_planning::optimizer::SingleDistinctAggregateSplitCandidateDiagnostics>
+pub query_planning::optimizer::SingleDistinctAggregateSplitDiagnostics::considered_count: usize
+pub struct query_planning::optimizer::SingleDistinctAggregateSplitOptions
+pub query_planning::optimizer::SingleDistinctAggregateSplitOptions::enabled: bool
+impl query_planning::optimizer::SingleDistinctAggregateSplitOptions
+pub fn query_planning::optimizer::SingleDistinctAggregateSplitOptions::disabled() -> Self
+impl core::default::Default for query_planning::optimizer::SingleDistinctAggregateSplitOptions
+pub fn query_planning::optimizer::SingleDistinctAggregateSplitOptions::default() -> Self
 pub struct query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::applied: bool
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::consumer_count: usize
@@ -1684,6 +1711,7 @@ pub const query_planning::optimizer::PROJECTION_SIMPLIFICATION_RULE_NAME: &str
 pub const query_planning::optimizer::SEMIJOIN_REDUCTION_RULE_NAME: &str
 pub const query_planning::optimizer::SHARED_RESIDENT_EXTRACTION_RULE_NAME: &str
 pub const query_planning::optimizer::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME: &str
+pub const query_planning::optimizer::SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME: &str
 pub const query_planning::optimizer::STREAM_FANOUT_REPLAY_RULE_NAME: &str
 pub trait query_planning::optimizer::LakehouseFooterPruningResolver
 pub async fn query_planning::optimizer::LakehouseFooterPruningResolver::dimension_key_filter(&mut self, query_planning::plan::NodeId, &query_planning::source::LocalParquetSource, &str, &query_planning::expr::Expr, &[usize]) -> core::result::Result<core::option::Option<query_planning::optimizer::DimensionKeyFilter>, alloc::string::String>
@@ -1815,6 +1843,7 @@ pub query_planning::pipeline::SourceOutput::JoinLeafStream::adjacent_stages: boo
 pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream
 pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream::adjacent_stages: bool
 pub query_planning::pipeline::SourceOutput::SharedJoinAggregateStream::chunk_hints: query_planning::pipeline::AggregateInputHints
+pub query_planning::pipeline::SourceOutput::UnaryChainStream
 pub enum query_planning::pipeline::TaskPhysical
 pub query_planning::pipeline::TaskPhysical::Aggregate(query_planning::pipeline::AggregatePlan)
 pub query_planning::pipeline::TaskPhysical::EdgeNormalize

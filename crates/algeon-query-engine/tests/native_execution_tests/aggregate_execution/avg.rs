@@ -664,3 +664,66 @@ fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
     let context = backend_context();
     assert_grouped_many_group_decimal_avg(&context);
 }
+
+/// DataFusion casts an integer AVG argument to Float64 before it sums, so group
+/// 1 accumulates `2^53 + 1` as `2^53` and then adds `1` back to `2^53`. A sum
+/// that stayed in Int64 would average to `2^52 + 1`.
+fn assert_grouped_integer_avg_sums_as_float64(context: &BackendQueryContext, filtered: bool) {
+    let dir = unique_temp_dir("query-engine-native-grouped-integer-avg-float64");
+    let path = dir.join("input.parquet");
+    let input_schema = write_large_integer_avg_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("avg_m00", DataType::Float64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let avg = AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "avg_m00");
+    let avg = if filtered {
+        let always = Expr::binary(Expr::column("m00"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0)));
+        avg.with_filter(Some(always))
+    } else {
+        avg
+    };
+    let aggregate = AggregateSpec::new(vec![Expr::column("key")], vec![avg]);
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
+
+    let result = execute_query_plan(context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2]);
+    assert_eq!(float64_array(batch, 1).values().as_ref(), &[(1u64 << 52) as f64, 3.0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_grouped_integer_avg_sums_in_float64_single_stage() {
+    let context = backend_context();
+    assert_grouped_integer_avg_sums_as_float64(&context, false);
+    assert_grouped_integer_avg_sums_as_float64(&context, true);
+}
+
+#[test]
+fn bounded_native_grouped_integer_avg_sums_in_float64_across_partial_chunks() {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    assert_grouped_integer_avg_sums_as_float64(&context, false);
+    assert_grouped_integer_avg_sums_as_float64(&context, true);
+}

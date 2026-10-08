@@ -1,5 +1,8 @@
 use std::{fs::File, path::Path, sync::Arc};
 
+use query_engine::{dimension_pruning::local_dimension_pruning_resolver, rapids_backend::rapids_analysis_context};
+use query_planning::optimizer::optimize_query_plan;
+
 use super::*;
 
 #[test]
@@ -340,6 +343,94 @@ fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// An aggregate holding an exact distinct count reads its whole input and
+/// concatenates it before aggregating. After the single-distinct split both
+/// aggregates merge chunk partials, so the same query fits a grant that holds
+/// the input once but not beside its concatenation.
+#[test]
+fn single_distinct_split_streams_grouped_count_distinct_beside_sum_and_count_within_a_small_grant() {
+    let dir = unique_temp_dir("query-engine-single-distinct-split-grant");
+    let path = dir.join("input.parquet");
+    let row_groups = 64;
+    let rows_per_row_group = 65_536;
+    let rows = row_groups * rows_per_row_group;
+    let input_schema = write_single_distinct_split_input_parquet(&path, rows, rows_per_row_group);
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_groups((0..row_groups).collect()),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "x".to_string(), "y".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::NUnique, Expr::column("x"), "distinct_x"),
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("y"), "sum_y"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("y"), "count_y"),
+        ],
+    );
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("distinct_x", DataType::Int64, false),
+        Field::new("sum_y", DataType::Int64, true),
+        Field::new("count_y", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
+    let optimized = optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+    assert_eq!(optimized.diagnostics.single_distinct_aggregate_split.applied_count, 1);
+
+    // The 80 MiB input fits the grant once; its concatenation does not.
+    let cap = 128 * 1024 * 1024;
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
+        device_budget_bytes: cap,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+
+    let error = execute_query_plan(&context, &plan).err().expect("the whole-input concatenation exceeds the grant");
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.operation(), "query_engine.bounded.union.concat");
+
+    let result = execute_query_plan(&context, &optimized.plan).unwrap();
+    assert_eq!(result.metrics().source_chunks_planned, row_groups as u64);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let mut expected = (0..16).map(|key| (key, 4, 0, (rows / 16) as i64)).collect::<Vec<_>>();
+    for row in 0..rows {
+        expected[row % 16].2 += (row % 1000) as i64;
+    }
+    let actual = (0..batch.num_rows())
+        .map(|row| {
+            (
+                int32_array(batch, 0).value(row),
+                int64_array(batch, 1).value(row),
+                int64_array(batch, 2).value(row),
+                int64_array(batch, 3).value(row),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// Write two Parquet files with intentional cross-file duplicate (key, value) pairs
 /// so that a naive per-chunk NUnique + Sum would overcount.
 ///
@@ -409,5 +500,26 @@ fn write_distinct_count_input_parquet(path: &Path) -> Arc<Schema> {
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+    schema
+}
+
+/// `key = i % 16`, `x = i % 64` and `y = i % 1000`, so each key has four
+/// distinct `x` values repeated across every row group.
+fn write_single_distinct_split_input_parquet(path: &Path, rows: usize, rows_per_row_group: usize) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("x", DataType::Int64, false),
+        Field::new("y", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from_iter_values((0..rows).map(|row| (row % 16) as i32))),
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| (row % 64) as i64))),
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|row| (row % 1000) as i64))),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, rows_per_row_group);
     schema
 }

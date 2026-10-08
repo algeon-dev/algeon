@@ -324,6 +324,70 @@ fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_c
     );
 }
 
+/// A local Parquet scan filtered on `kind`, with `consumer` built over the filter.
+fn filtered_scan_plan(consumer: impl FnOnce(&mut QueryPlanBuilder, NodeId) -> NodeId) -> QueryPlan {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("value", DataType::Int64, false),
+        Field::new("kind", DataType::Int32, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/capability-first-filtered-scan.parquet",
+        Arc::clone(&schema),
+        schema.fields().iter().map(|field| field.name().clone()).collect(),
+    )));
+    let filter = builder
+        .add_filter(source, Expr::binary(Expr::column("kind"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))))
+        .unwrap();
+    let root = consumer(&mut builder, filter);
+    builder.finish_with_host_sink(root).unwrap()
+}
+
+#[test]
+fn capability_admission_keeps_filtered_source_read_deferred_for_frame_only_consumers() {
+    let sort = filtered_scan_plan(|builder, filter| {
+        builder.add_sort(filter, SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)])).unwrap()
+    });
+    let window = filtered_scan_plan(|builder, filter| {
+        let total = Field::new("grp_total", DataType::Int64, true);
+        let function = WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("value"), total);
+        builder.add_window(filter, WindowSpec::new(vec![Expr::column("grp")], Vec::new(), vec![function])).unwrap()
+    });
+    for (label, plan, consumer_kind) in
+        [("sort", &sort, PipelineTaskKind::FinalSort), ("window", &window, PipelineTaskKind::Window)]
+    {
+        let decision = admit_default(plan).expect("admission should not error");
+        let admission = decision.admission().unwrap_or_else(|| panic!("{label}: the plan is admitted"));
+        let pipeline = admission.pipeline();
+        let task = |kind| pipeline.tasks().iter().find(|task| task.kind() == kind).expect("compiled task");
+        let output_form = |kind| {
+            let producer = task(kind).id();
+            pipeline.resources().iter().find(|resource| resource.producer() == producer).expect("output").data_form()
+        };
+        assert_eq!(task(consumer_kind).accepted_input_form(), AcceptedInputForm::Frame, "{label}: frame-only consumer");
+        assert_eq!(
+            task(PipelineTaskKind::SourceRead).physical(),
+            &TaskPhysical::SourceRead(SourceReadPlan {
+                output: SourceOutput::UnaryChainStream,
+                dynamic_filter_routes: false,
+                prefetch_eligible: false,
+            }),
+            "{label}"
+        );
+        assert_eq!(
+            output_form(PipelineTaskKind::SourceRead),
+            ResidentDataForm::SourceStream,
+            "{label}: the filter takes the deferred read"
+        );
+        assert_eq!(
+            output_form(PipelineTaskKind::Unary),
+            ResidentDataForm::Frame,
+            "{label}: the filter settles its per-chunk outputs into the frame its consumer takes"
+        );
+    }
+}
+
 /// A row-number window over a literal source, ordered by `value` when `order_by`.
 fn literal_row_number_plan(order_by: bool) -> QueryPlan {
     let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));

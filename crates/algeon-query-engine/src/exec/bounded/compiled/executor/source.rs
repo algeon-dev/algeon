@@ -12,7 +12,7 @@ use crate::exec::bounded::{
     materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream,
-    try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    plan_bounded_unary_chain_local_parquet_source_stream, try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -126,6 +126,12 @@ impl CompiledGpuTaskExecutor<'_> {
                 )?,
                 None,
             ),
+            // The unary consumers append their stages, and the last one
+            // settles the stream into the frame its consumers take.
+            SourceOutput::UnaryChainStream => {
+                let stream = plan_bounded_unary_chain_local_parquet_source_stream(context, source, node_id, metrics)?;
+                return Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream));
+            },
         };
         if read.prefetch_eligible
             && let Some(prefetch) =

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::prepared::{AVG_COUNT_STATE_TYPE, avg_sum_state_type};
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, Expr, Field, QueryError,
-    QueryErrorCode, Result, Schema, avg_sum_state_data_type, global_valid_count_state_alias, lower_column_expr,
+    QueryErrorCode, Result, Schema, global_valid_count_state_alias, lower_column_expr,
 };
 
 pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
@@ -15,11 +16,7 @@ pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> Ag
             .enumerate()
             .flat_map(|(index, expr)| match expr.function {
                 AggregateFunction::Avg => {
-                    let state = AvgStateAliases::for_aggregate_index(index);
-                    vec![
-                        AggregateExpr::new(AggregateFunction::Sum, expr.expr.clone(), state.sum().to_string()),
-                        AggregateExpr::new(AggregateFunction::Count, expr.expr.clone(), state.count().to_string()),
-                    ]
+                    AvgStateAliases::for_aggregate_index(index).partial_aggregates(&expr.expr).to_vec()
                 },
                 AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => vec![
                     expr.clone(),
@@ -56,9 +53,9 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
                 let state = AvgStateAliases::for_aggregate_index(index);
                 let input_type = global_aggregate_input_data_type(&expr.expr, input_schema)?;
                 let output_field = global_aggregate_output_field(expr.alias.as_str(), aggregate_output_schema)?;
-                let sum_state_type = avg_sum_state_data_type(&input_type, output_field.data_type())?;
+                let sum_state_type = avg_sum_state_type(&input_type, output_field.data_type())?;
                 fields.push(Field::new(state.sum(), sum_state_type, true));
-                fields.push(Field::new(state.count(), ArrowDataType::Int64, false));
+                fields.push(Field::new(state.count(), AVG_COUNT_STATE_TYPE, false));
             },
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 fields.push(Field::new(expr.alias.as_str(), ArrowDataType::Int64, false));
@@ -115,13 +112,7 @@ pub(in crate::exec) fn final_global_aggregate_spec(spec: &AggregateSpec) -> Aggr
                     Expr::column(expr.alias.clone()),
                     expr.alias.clone(),
                 )],
-                AggregateFunction::Avg => {
-                    let state = AvgStateAliases::for_aggregate_index(index);
-                    vec![
-                        AggregateExpr::new(AggregateFunction::Sum, state.sum_expr(), state.sum().to_string()),
-                        AggregateExpr::new(AggregateFunction::Sum, state.count_expr(), state.count().to_string()),
-                    ]
-                },
+                AggregateFunction::Avg => AvgStateAliases::for_aggregate_index(index).merge_aggregates().to_vec(),
                 AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
                     let valid_count_alias = global_valid_count_state_alias(expr.alias.as_str());
                     vec![

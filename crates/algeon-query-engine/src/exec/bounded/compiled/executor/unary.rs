@@ -43,9 +43,13 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         let input_payload = self.take_task_input(task, state, input)?;
         let resource = match (&node.kind, input_payload) {
-            (PlanNode::Filter(filter), CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream)) => Ok(
-                CompiledGpuResource::join_leaf_local_parquet_source(stream.with_filter_stage(node_id, filter.clone())),
-            ),
+            (PlanNode::Filter(filter), CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream)) => {
+                self.apply_dynamic_filters_to_filter_source_stream(node_id, filter, *stream).map(|stream| {
+                    CompiledGpuResource::join_leaf_local_parquet_source(
+                        stream.with_filter_stage(node_id, filter.clone()),
+                    )
+                })
+            },
             (PlanNode::Filter(filter), CompiledGpuResourcePayload::ResidentFrame { frame, .. }) => self
                 .apply_dynamic_filters_to_filter_frame(node_id, filter, *frame)
                 .and_then(|frame| {

@@ -71,6 +71,7 @@ use dynamic_filter::*;
 pub(in crate::exec::bounded) use planning::{
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+    plan_bounded_unary_chain_local_parquet_source_stream,
 };
 use read_serial::*;
 use scheduler::*;
@@ -228,6 +229,20 @@ impl BoundedJoinLeafLocalParquetSourceStream {
 
     pub(in crate::exec::bounded) fn with_filter_stage(mut self, node_id: NodeId, node: FilterNode) -> Self {
         self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node, dynamic_filter: None });
+        self
+    }
+
+    /// Appends the post-decode filter of a dynamic-filter route whose
+    /// consumer is the filter plan node `node_id`.
+    pub(in crate::exec::bounded) fn with_filter_dynamic_filter_stage(
+        mut self,
+        node_id: NodeId,
+        node: FilterNode,
+        route: DynamicFilterRoute,
+        filter: DynamicFilter,
+    ) -> Self {
+        let dynamic_filter = Some(Box::new(BoundedJoinLeafSourceStreamDynamicFilterStage { route, filter }));
+        self.stages.push(BoundedJoinLeafSourceStreamStage::Filter { node_id, node, dynamic_filter });
         self
     }
 

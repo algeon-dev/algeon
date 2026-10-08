@@ -389,30 +389,35 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 }
 
 #[test]
-fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants() {
+fn native_optimizer_rejects_widened_source_reuse_above_cap_for_any_consumer() {
+    // Neither variant reads the superset, so the merged scan is bounded by the
+    // variant sum, 1 GiB, which exceeds the 500 MiB cap; the variants feed a
+    // union rather than a grouped aggregate.
     let plan = large_local_parquet_source_variants_plan();
     let result = optimize_query_plan(
-        plan,
+        plan.clone(),
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
     .unwrap();
 
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
-    assert_eq!(diagnostics.applied_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
     let candidate = &diagnostics.candidates[0];
-    assert!(candidate.applied);
-    assert_eq!(candidate.rejected_reason, None);
+    assert_eq!(candidate.rejected_reason, Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge));
     assert_eq!(candidate.superset_read_columns, vec!["inv_item_sk", "inv_date_sk", "inv_store_sk"]);
-    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
 
 #[test]
-fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_source_variant() {
-    let plan = large_superset_with_smaller_local_parquet_source_variant_plan();
+fn native_optimizer_bounds_widened_source_reuse_by_a_variant_that_reads_the_superset() {
+    // The 400 MiB variant already reads both superset columns, so the merged
+    // scan selects its bytes; the 600 MiB variant sum would exceed the cap.
+    let plan = superset_with_smaller_local_parquet_source_variant_plan(400 * 1024 * 1024);
     let result = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
@@ -429,6 +434,104 @@ fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_so
     assert!(candidate.applied);
     assert_eq!(candidate.superset_read_columns, vec!["inv_item_sk", "inv_date_sk"]);
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
+
+    let plan = superset_with_smaller_local_parquet_source_variant_plan(600 * 1024 * 1024);
+    let result = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
+    assert_eq!(
+        result.diagnostics.local_parquet_source_reuse.candidates[0].rejected_reason,
+        Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge),
+        "widening the small variant into a 600 MiB read exceeds the cap"
+    );
+}
+
+#[test]
+fn native_optimizer_rejects_widened_source_reuse_without_a_size_bound() {
+    let mut builder = QueryPlanBuilder::new();
+    let mut ids = Vec::new();
+    for (columns, file_indices) in [(["id", "state"], [0, 1]), (["id", "zip"], [0, 2])] {
+        let source = builder.add_source(unsized_customer_address_source(&columns, &file_indices));
+        let id = ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false));
+        ids.push(builder.add_projection(source, vec![id]).unwrap());
+    }
+    let union = builder.add_union(ids, schema(&["id"])).unwrap();
+    let plan = builder.finish_gpu_resident(union).unwrap();
+    let result = optimize_query_plan(
+        plan,
+        &source_reuse_only_options(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge)
+    );
+}
+
+#[test]
+fn native_optimizer_reuses_source_variants_that_widen_nothing_at_any_size() {
+    // Unknown and above-cap reads still merge when the merged scan reads
+    // exactly what every variant reads: scans with one scan contract, which
+    // keep their shared reader predicate, and scans of the same columns that
+    // differ only in a branch-local key proof.
+    let SourceNode::LocalParquet(filtered) = unsized_customer_address_source(&["id", "zip"], &[0, 2]) else {
+        unreachable!("unsized source helper always builds local Parquet")
+    };
+    let filtered = filtered.with_reader_predicate(Expr::binary(
+        Expr::column("zip"),
+        BinaryOp::Eq,
+        Expr::literal(LiteralValue::Int32(30301)),
+    ));
+    let duplicate_filtered_unsized =
+        (SourceNode::LocalParquet(filtered.clone().with_max_rows(Some(10))), SourceNode::LocalParquet(filtered));
+    let SourceNode::LocalParquet(keyed) = estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_date_sk"],
+        600 * 1024 * 1024,
+        10_000_000,
+    ) else {
+        unreachable!("estimated source helper always builds local Parquet")
+    };
+    let identical_large = (
+        SourceNode::LocalParquet(
+            keyed.clone().with_unique_key_columns(vec![BTreeSet::from(["inv_item_sk".to_string()])]),
+        ),
+        SourceNode::LocalParquet(keyed),
+    );
+    for (label, (left, right), union_schema) in [
+        ("duplicate filtered unsized", duplicate_filtered_unsized, schema(&["id", "zip"])),
+        ("identical large", identical_large, schema(&["inv_item_sk", "inv_date_sk"])),
+    ] {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(left);
+        let right = builder.add_source(right);
+        let union = builder.add_union(vec![left, right], union_schema).unwrap();
+        let plan = builder.finish_gpu_resident(union).unwrap();
+        let result = optimize_query_plan(
+            plan,
+            &source_reuse_only_options(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+
+        let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+        assert_eq!(diagnostics.applied_count, 1, "{label}");
+        assert_eq!(diagnostics.candidates[0].rejected_reason, None, "{label}");
+        assert_eq!(diagnostics.candidates[0].branch_filter_count, 0, "{label}");
+    }
 }
 
 #[test]
@@ -447,7 +550,10 @@ fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggr
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
     assert_eq!(diagnostics.applied_count, 0);
-    assert_eq!(diagnostics.candidates[0].rejected_reason, Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge));
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge)
+    );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
 
@@ -479,29 +585,13 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
 }
 
 #[test]
-fn native_optimizer_reuses_large_superset_when_grouped_aggregate_variant_is_not_widened() {
-    let plan = large_grouped_aggregate_superset_with_smaller_source_variant_plan();
-    let result = optimize_query_plan(
-        plan,
-        &NativeOptimizerOptions::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-        local_dimension_pruning_resolver(),
-    )
-    .unwrap();
-
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
-    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
-    assert_eq!(diagnostics.considered_count, 1);
-    assert_eq!(diagnostics.applied_count, 1);
-    assert!(diagnostics.candidates[0].applied);
-    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
-}
-
-#[test]
-fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjacent_grouped_aggregate() {
+fn native_optimizer_replays_normalized_reader_predicate_for_widened_superset_within_cap() {
     let plan = large_filtered_superset_with_smaller_local_parquet_source_variant_plan();
     let options = NativeOptimizerOptions {
-        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions {
+            max_variant_selected_bytes: 1024 * 1024 * 1024,
+            ..LocalParquetSourceReuseOptions::default()
+        },
         ..NativeOptimizerOptions::disabled()
     };
     let result = optimize_query_plan(
@@ -821,20 +911,20 @@ fn large_local_parquet_source_variants_plan() -> QueryPlan {
     builder.finish_gpu_resident(union).unwrap()
 }
 
-fn large_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
+fn superset_with_smaller_local_parquet_source_variant_plan(superset_bytes: u64) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
         "inventory",
         &["inv_item_sk", "inv_date_sk"],
-        600 * 1024 * 1024,
+        superset_bytes,
         10_000_000,
     ));
     let subset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
         "inventory",
         &["inv_item_sk"],
-        64 * 1024 * 1024,
+        200 * 1024 * 1024,
         1_000_000,
     ));
     let superset_item = builder
@@ -949,49 +1039,6 @@ fn file_size_only_local_source_with_stable_id(
         Vec::new(),
     );
     SourceNode::LocalParquet(source)
-}
-
-fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let aggregate_input = builder.add_source(estimated_local_source_with_stable_id(
-        "inventory",
-        "inventory",
-        &["inv_item_sk", "inv_quantity", "inv_price"],
-        600 * 1024 * 1024,
-        10_000_000,
-    ));
-    let subset = builder.add_source(estimated_local_source_with_stable_id(
-        "inventory",
-        "inventory",
-        &["inv_item_sk"],
-        64 * 1024 * 1024,
-        1_000_000,
-    ));
-    let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
-    let aggregate = builder
-        .add_aggregate(
-            aggregate_input,
-            AggregateSpec::new(
-                vec![Expr::column("inv_item_sk")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
-            ),
-            Arc::clone(&aggregate_schema),
-        )
-        .unwrap();
-    let subset_item = builder
-        .add_projection(
-            subset,
-            vec![
-                ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
-                ProjectionOutput::new(
-                    Expr::literal(LiteralValue::Int32(0)),
-                    Field::new("sum_qty", DataType::Int32, false),
-                ),
-            ],
-        )
-        .unwrap();
-    let union = builder.add_union(vec![aggregate, subset_item], aggregate_schema).unwrap();
-    builder.finish_gpu_resident(union).unwrap()
 }
 
 fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
@@ -1165,6 +1212,26 @@ fn customer_address_source_with_max_rows(
     }
     source = source.with_max_rows(max_rows);
     SourceNode::LocalParquet(source)
+}
+
+fn source_reuse_only_options() -> NativeOptimizerOptions {
+    NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    }
+}
+
+/// A customer address scan whose file carries no size or row-group facts.
+fn unsized_customer_address_source(columns: &[&str], file_indices: &[usize]) -> SourceNode {
+    let file = LocalParquetFile::new("/tmp/customer_address.parquet").with_stable_id("customer_address");
+    let read_columns = columns.iter().map(|column| (*column).to_string()).collect::<Vec<_>>();
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], schema(columns), read_columns).with_column_file_indices(
+            file_indices.to_vec(),
+            file_indices.to_vec(),
+            Vec::new(),
+        ),
+    )
 }
 
 fn count_star_probe_customer_address_source(column: &str, file_index: usize) -> SourceNode {

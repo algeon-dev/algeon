@@ -8,10 +8,11 @@ use super::{
     LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseCandidateDiagnostics, NativeOptimizerDiagnostics,
     OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics,
     PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationCandidateDiagnostics, SEMIJOIN_REDUCTION_RULE_NAME,
-    SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
-    SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal,
-    SemijoinReductionKeyMappingDiagnostics, SharedResidentExtractionCandidateDiagnostics,
-    SharedSubplanMaterializationCandidateDiagnostics, StreamFanoutReplayCandidateDiagnostics,
+    SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+    SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionCandidateDiagnostics,
+    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionKeyMappingDiagnostics,
+    SharedResidentExtractionCandidateDiagnostics, SharedSubplanMaterializationCandidateDiagnostics,
+    SingleDistinctAggregateSplitCandidateDiagnostics, StreamFanoutReplayCandidateDiagnostics,
 };
 
 impl NativeOptimizerDiagnostics {
@@ -111,6 +112,16 @@ impl NativeOptimizerDiagnostics {
                 pruning.considered_count,
                 pruning.applied_count,
                 format_candidates(&pruning.candidates, format_count_non_null_column_pruning_candidate)
+            ));
+        }
+        if !self.single_distinct_aggregate_split.is_empty() {
+            let split = &self.single_distinct_aggregate_split;
+            rows.push(format!(
+                "rule={},considered_count={},applied_count={},candidates={}",
+                SINGLE_DISTINCT_AGGREGATE_SPLIT_RULE_NAME,
+                split.considered_count,
+                split.applied_count,
+                format_candidates(&split.candidates, format_single_distinct_aggregate_split_candidate)
             ));
         }
         if !self.shared_subplan_materialization.is_empty() {
@@ -330,6 +341,21 @@ fn format_count_non_null_column_pruning_candidate(candidate: &CountNonNullColumn
         stable_diagnostic_field(candidate.column.as_str()),
         candidate.source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
         option_usize_text(candidate.file_column_index),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn format_single_distinct_aggregate_split_candidate(
+    candidate: &SingleDistinctAggregateSplitCandidateDiagnostics,
+) -> String {
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},aggregate_node_id={},distinct_column={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.aggregate_node_id,
+        candidate.distinct_column.as_deref().map_or_else(|| "none".to_string(), stable_diagnostic_field),
         candidate.applied,
         rejected_reason,
     )

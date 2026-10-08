@@ -6,14 +6,20 @@ use crate::{
 };
 
 mod aggregate;
+mod avg;
+mod count;
 
 #[doc(hidden)]
 pub use aggregate::{
-    AvgStateAliases, DataFusionExactHostAccumulator, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
+    DataFusionExactHostAccumulator, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
     aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
     aggregate_spec_has_median, aggregate_spec_requires_whole_input, datafusion_exact_host_accumulator,
     datafusion_exact_host_group_key_supported,
 };
+#[doc(hidden)]
+pub use avg::{AVG_COUNT_STATE_TYPE, AvgStateAliases, avg_argument_cast_type, avg_final_expr, avg_sum_state_type};
+pub(crate) use avg::{avg_declared_sum_state_type, avg_division_type, avg_merge_aggregates, avg_partial_aggregates};
+pub(crate) use count::{merged_count_field, zero_filled_count_expr};
 
 // cuDF-ready sort keys split into the parallel vectors expected by execution.
 #[doc(hidden)]

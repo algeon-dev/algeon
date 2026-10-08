@@ -19,7 +19,7 @@ use super::{
     ExecutionMetrics, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LiteralValue,
     LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, Schema, aggregate_spec_has_avg,
     aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
-    attach_budget_token_failure_facts, avg_sum_state_data_type, budgeted_value, cast_count_output_columns,
+    attach_budget_token_failure_facts, budgeted_value, cast_count_output_columns,
     cast_count_output_columns_with_budget, cast_reduction_output_columns, cast_reduction_output_columns_with_budget,
     cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error, execute_global_aggregate,
     execute_global_aggregate_with_budget, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
@@ -49,7 +49,7 @@ mod statistical;
 #[cfg(test)]
 mod tests;
 
-pub(in crate::exec) use filter_inputs::prepare_filtered_aggregate_frame;
+pub(in crate::exec) use filter_inputs::prepare_aggregate_input_frame;
 use filtered_global::{
     execute_segmented_filtered_global_aggregate_with_budget,
     execute_segmented_filtered_global_partial_aggregate_with_budget, record_filtered_global_aggregate_single_pass,
@@ -162,7 +162,7 @@ pub(in crate::exec) fn execute_aggregate(
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let (frame, spec, prepared_input_schema) =
-        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
+        prepare_aggregate_input_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
     if should_execute_datafusion_exact_floating_statistical_aggregate(context, &spec) {
         return execute_datafusion_exact_host_aggregate(
             context,
@@ -346,7 +346,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     };
     let filtered_global_exact_host = filtered_global_strategy.is_some()
         && should_execute_datafusion_exact_floating_statistical_aggregate(context, &node.spec);
-    let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
+    let (frame, spec, prepared_input_schema) = match prepare_aggregate_input_frame(
         context,
         input.into_frame(),
         input_schema,
@@ -847,7 +847,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let original_input_rows = input.num_rows() as u64;
-    let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
+    let (frame, spec, prepared_input_schema) = match prepare_aggregate_input_frame(
         context,
         input.into_frame(),
         input_schema,

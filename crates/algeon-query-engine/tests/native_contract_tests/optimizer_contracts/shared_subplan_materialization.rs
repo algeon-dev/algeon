@@ -325,12 +325,48 @@ fn native_optimizer_lifts_reader_predicate_filters_for_scalar_count_materializat
 }
 
 #[test]
+fn native_optimizer_splits_repeated_scalar_mixed_distinct_branches_into_streaming_aggregates() {
+    let result = optimize_query_plan(
+        repeated_scalar_mixed_aggregate_materialization_plan(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+        local_dimension_pruning_resolver(),
+    )
+    .unwrap();
+
+    let split = &result.diagnostics.single_distinct_aggregate_split;
+    assert_eq!(split.applied_count, 3, "{split:?}");
+    let aggregates = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 6);
+    assert!(
+        aggregates.iter().flat_map(|aggregate| &aggregate.spec.aggr_exprs).all(|expr| !expr.distinct),
+        "each bucket's AVG, COUNT and COUNT(DISTINCT) must merge chunk state: {}",
+        result.plan
+    );
+}
+
+/// With the single-distinct split disabled, each bucket keeps a whole-input
+/// distinct count, which shared materialization cannot turn into filtered
+/// streaming state.
+#[test]
 fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_streaming_support() {
     let plan = repeated_scalar_mixed_aggregate_materialization_plan();
+    let options = NativeOptimizerOptions {
+        single_distinct_aggregate_split: SingleDistinctAggregateSplitOptions::disabled(),
+        ..NativeOptimizerOptions::default()
+    };
 
     let result = optimize_query_plan(
         plan,
-        &NativeOptimizerOptions::default(),
+        &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     ).unwrap();
@@ -353,13 +389,18 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
         candidate.rejected_reason,
         Some(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)
     );
+    // Merging the bucket scans would drop their reader predicates and read
+    // 512 MiB, above the source-reuse cap, so each bucket keeps its own scan.
     let local_source_reuse = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(local_source_reuse.considered_count, 1);
-    assert_eq!(local_source_reuse.applied_count, 1);
+    assert_eq!(local_source_reuse.applied_count, 0);
     let source_reuse_candidate = &local_source_reuse.candidates[0];
-    assert!(source_reuse_candidate.applied);
-    assert_eq!(source_reuse_candidate.rejected_reason, None);
-    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "store_sales"), 1);
+    assert!(!source_reuse_candidate.applied);
+    assert_eq!(
+        source_reuse_candidate.rejected_reason,
+        Some(LocalParquetSourceReuseRejectedReason::WidenedReadTooLarge)
+    );
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "store_sales"), 3);
 
     let aggregates = result
         .plan
